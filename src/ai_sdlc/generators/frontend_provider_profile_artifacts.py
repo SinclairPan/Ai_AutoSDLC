@@ -1,0 +1,162 @@
+"""Frontend Provider profile artifact instantiation helpers."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+from ai_sdlc.generators._artifact_paths import _dedupe_paths
+from ai_sdlc.models.frontend_provider_profile import (
+    EnterpriseVue2ProviderProfile,
+    build_mvp_enterprise_vue2_provider_profile,
+    build_mvp_public_primevue_provider_profile,
+)
+from ai_sdlc.models.frontend_solution_confirmation import (
+    PUBLIC_PRIMEVUE_TEMPLATE_DEV_DEPENDENCIES,
+    PUBLIC_PRIMEVUE_TEMPLATE_RUNTIME_DEPENDENCIES,
+)
+
+BUILTIN_FRONTEND_PROVIDER_PROFILE_IDS = frozenset(
+    {"enterprise-vue2", "public-primevue"}
+)
+PUBLIC_PRIMEVUE_VISUAL_CONTRACT_VERSION = "v1.8"
+
+
+def frontend_provider_profile_root(root: Path, provider_id: str) -> Path:
+    """Return the canonical root for instantiated Provider profile artifacts."""
+
+    return root / "providers" / "frontend" / provider_id
+
+
+def materialize_frontend_provider_profile_artifacts(
+    root: Path,
+    profile: EnterpriseVue2ProviderProfile,
+) -> list[Path]:
+    """Write the minimal Provider profile artifact set to disk."""
+
+    base_dir = frontend_provider_profile_root(root, profile.provider_id)
+    manifest_payload: dict[str, object] = {
+        "work_item_id": profile.work_item_id,
+        "provider_id": profile.provider_id,
+        "kernel_artifact_ref": profile.kernel_artifact_ref,
+        "access_mode": profile.access_mode,
+        "install_strategy_ids": profile.install_strategy_ids,
+        "availability_prerequisites": profile.availability_prerequisites,
+        "default_style_pack_id": profile.default_style_pack_id,
+        "mapped_components": [mapping.component_id for mapping in profile.mappings],
+        "whitelist_components": [entry.component_id for entry in profile.whitelist],
+        "cross_stack_fallback_targets": profile.cross_stack_fallback_targets,
+    }
+    if profile.provider_id == "public-primevue":
+        manifest_payload.update(
+            {
+                "visual_contract_version": PUBLIC_PRIMEVUE_VISUAL_CONTRACT_VERSION,
+                "theme_required_semantics": ["primary", "surface", "highlight"],
+                "theme_entry": "src/theme.ts",
+                "default_page_root": "src/pages",
+                "legacy_page_root": "src/views",
+                "api_entry": "src/api/client.ts",
+                "dto_transform_root": "src/transform",
+                "i18n_mode": "compatible-optional",
+            }
+        )
+        manifest_payload["template_runtime_dependencies"] = list(
+            PUBLIC_PRIMEVUE_TEMPLATE_RUNTIME_DEPENDENCIES
+        )
+        manifest_payload["template_dev_dependencies"] = list(
+            PUBLIC_PRIMEVUE_TEMPLATE_DEV_DEPENDENCIES
+        )
+
+    return _dedupe_paths([
+        _write_yaml(
+            base_dir / "provider.manifest.yaml",
+            manifest_payload,
+        ),
+        _write_yaml(
+            base_dir / "mappings.yaml",
+            {
+                "items": [
+                    mapping.model_dump(mode="json", exclude_none=True)
+                    for mapping in profile.mappings
+                ]
+            },
+        ),
+        _write_yaml(
+            base_dir / "whitelist.yaml",
+            {
+                "items": [
+                    entry.model_dump(mode="json", exclude_none=True)
+                    for entry in profile.whitelist
+                ]
+            },
+        ),
+        _write_yaml(
+            base_dir / "risk-isolation.yaml",
+            profile.risk_isolation.model_dump(mode="json", exclude_none=True),
+        ),
+        _write_yaml(
+            base_dir / "legacy-adapter.yaml",
+            profile.legacy_adapter.model_dump(mode="json", exclude_none=True),
+        ),
+        _write_yaml(
+            base_dir / "style-support.yaml",
+            {
+                "items": [
+                    entry.model_dump(mode="json", exclude_none=True)
+                    for entry in profile.style_support_matrix
+                ]
+            },
+        ),
+    ])
+
+
+def materialize_builtin_frontend_provider_profile_artifacts(
+    root: Path,
+    *,
+    provider_id: str,
+) -> list[Path]:
+    """Write the minimal built-in provider artifact set required by verification."""
+
+    if provider_id == "enterprise-vue2":
+        return materialize_frontend_provider_profile_artifacts(
+            root,
+            build_mvp_enterprise_vue2_provider_profile(),
+        )
+
+    if provider_id == "public-primevue":
+        return materialize_frontend_provider_profile_artifacts(
+            root,
+            build_mvp_public_primevue_provider_profile(),
+        )
+
+    raise ValueError(f"unsupported built-in provider profile: {provider_id}")
+
+
+def supports_builtin_frontend_provider_profile_artifacts(provider_id: str) -> bool:
+    """Return whether the provider has a built-in profile artifact materializer."""
+
+    return provider_id in BUILTIN_FRONTEND_PROVIDER_PROFILE_IDS
+
+
+def _write_yaml(path: Path, payload: dict[str, object]) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        yaml.safe_dump(
+            payload,
+            allow_unicode=True,
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+__all__ = [
+    "BUILTIN_FRONTEND_PROVIDER_PROFILE_IDS",
+    "PUBLIC_PRIMEVUE_VISUAL_CONTRACT_VERSION",
+    "frontend_provider_profile_root",
+    "materialize_builtin_frontend_provider_profile_artifacts",
+    "materialize_frontend_provider_profile_artifacts",
+    "supports_builtin_frontend_provider_profile_artifacts",
+]

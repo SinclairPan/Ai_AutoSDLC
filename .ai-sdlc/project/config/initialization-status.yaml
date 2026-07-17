@@ -1,0 +1,14 @@
+api_endpoints_found: 10
+completed: true
+completed_at: '2026-07-17T10:23:17+00:00'
+dependencies_found: 5
+languages_detected:
+- python
+- html
+- typescript
+- shell
+- javascript
+risks_found: 95
+test_files_found: 195
+total_files_scanned: 563
+total_lines: 113622

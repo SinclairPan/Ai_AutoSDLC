@@ -1,0 +1,830 @@
+"""Unit tests for telemetry governance publishing and source closure."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from ai_sdlc.telemetry.contracts import (
+    Artifact,
+    Evaluation,
+    Evidence,
+    TelemetryEvent,
+    Violation,
+)
+from ai_sdlc.telemetry.enums import (
+    ArtifactRole,
+    ArtifactStatus,
+    ArtifactType,
+    EvaluationResult,
+    EvaluationStatus,
+    ScopeLevel,
+    TelemetryEventStatus,
+    TraceLayer,
+    ViolationRiskLevel,
+    ViolationStatus,
+)
+from ai_sdlc.telemetry.generators import build_audit_report
+from ai_sdlc.telemetry.governance_publisher import GovernancePublisher
+from ai_sdlc.telemetry.store import TelemetryStore
+from ai_sdlc.telemetry.writer import TelemetryWriter
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_ndjson(path: Path) -> list[dict]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+
+
+def _seed_completed_run(
+    writer: TelemetryWriter,
+) -> tuple[TelemetryEvent, Evidence, Evaluation]:
+    event = TelemetryEvent(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        trace_layer=TraceLayer.EVALUATION,
+        status=TelemetryEventStatus.SUCCEEDED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+        timestamp="2026-03-27T10:00:00Z",
+    )
+    evidence = Evidence(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        locator="verify-constraints:report:sha256:0123456789abcdef0123456789abcdef",
+        digest="sha256:0123456789abcdef0123456789abcdef",
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    evaluation = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        result=EvaluationResult.PASSED,
+        status=EvaluationStatus.PASSED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    writer.write_event(event)
+    writer.write_evidence(evidence)
+    writer.write_evaluation(evaluation)
+    return event, evidence, evaluation
+
+
+def test_generate_run_reports_includes_evaluation_summary_and_audit_report(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+
+    reports = publisher.generate_run_reports(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )
+
+    assert set(reports) == {"evaluation_summary", "violation_summary", "audit_report"}
+    assert reports["evaluation_summary"]["totals"]["count"] == 1
+    assert reports["evaluation_summary"]["source_evidence_refs"] == [evidence.evidence_id]
+    assert reports["evaluation_summary"]["source_object_refs"] == [f"evaluation:{evaluation.evaluation_id}"]
+    assert reports["evaluation_summary"]["coverage_view"]["coverage_state"] == "covered"
+    assert reports["evaluation_summary"]["evidence_quality_view"]["quality_state"] == "complete"
+    assert reports["violation_summary"]["open_debt"]["count"] == 0
+    assert reports["audit_report"]["audit_status"] == "clean"
+
+
+def test_generate_run_reports_deduplicates_summary_refs_and_rollup_items(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    violation = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ViolationStatus.OPEN,
+        risk_level=ViolationRiskLevel.HIGH,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    evaluation_payload = evaluation.model_dump(mode="json")
+    violation_payload = violation.model_dump(mode="json")
+    evidence_payload = evidence.model_dump(mode="json")
+    original_load_current_snapshots = store.load_current_snapshots
+
+    def _load_current_snapshots(
+        kind: str,
+        *,
+        goal_session_id: str | None = None,
+        workflow_run_id: str | None = None,
+        step_id: str | None = None,
+    ) -> list[dict[str, object]]:
+        if kind == "evaluation":
+            return [evaluation_payload, evaluation_payload]
+        if kind == "violation":
+            return [violation_payload, violation_payload]
+        return original_load_current_snapshots(
+            kind,
+            goal_session_id=goal_session_id,
+            workflow_run_id=workflow_run_id,
+            step_id=step_id,
+        )
+
+    monkeypatch.setattr(store, "load_current_snapshots", _load_current_snapshots)
+    monkeypatch.setattr(
+        store,
+        "load_canonical_evidence_payloads",
+        lambda **_: [evidence_payload, evidence_payload],
+    )
+
+    reports = publisher.generate_run_reports(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )
+
+    assert reports["evaluation_summary"]["source_evidence_refs"] == [evidence.evidence_id]
+    assert reports["evaluation_summary"]["source_object_refs"] == [
+        f"evaluation:{evaluation.evaluation_id}"
+    ]
+    assert reports["evaluation_summary"]["evidence_quality_view"]["total_count"] == 1
+    assert reports["violation_summary"]["open_debt"]["count"] == 1
+    assert reports["violation_summary"]["open_items"] == [
+        {
+            "violation_id": violation.violation_id,
+            "status": ViolationStatus.OPEN.value,
+            "risk_level": ViolationRiskLevel.HIGH.value,
+        }
+    ]
+
+
+def test_publish_promotes_artifact_when_source_closure_is_valid(tmp_path: Path) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    report_payload = publisher.generate_run_reports(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )["evaluation_summary"]
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.EVALUATION,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    published = publisher.publish_artifact(
+        artifact,
+        report_name="evaluation_summary",
+        report_payload=report_payload,
+    )
+
+    assert published.status is ArtifactStatus.PUBLISHED
+    snapshot = _read_json(store.current_object_path(published))
+    assert snapshot["status"] == ArtifactStatus.PUBLISHED.value
+    report_path = store.governance_report_path(published.artifact_id)
+    assert report_path.is_file()
+    assert report_path.is_relative_to(store.reports_root)
+    report = _read_json(report_path)
+    assert report["source_closure_status"] == "closed"
+
+
+def test_publish_audit_report_emits_audit_report_generated_control_point(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.AUDIT,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    persisted = publisher.publish_artifact(
+        artifact,
+        report_name="audit_report",
+        report_payload={"audit_status": "clean"},
+    )
+
+    run_events = _read_ndjson(
+        store.event_stream_path(
+            scope_level=ScopeLevel.RUN,
+            goal_session_id=event.goal_session_id,
+            workflow_run_id=event.workflow_run_id,
+        )
+    )
+    run_evidence = _read_ndjson(
+        store.evidence_stream_path(
+            scope_level=ScopeLevel.RUN,
+            goal_session_id=event.goal_session_id,
+            workflow_run_id=event.workflow_run_id,
+        )
+    )
+    audit_events = [
+        payload
+        for payload in run_events
+        if payload["trace_layer"] == TraceLayer.EVALUATION.value
+        and payload["status"] == TelemetryEventStatus.SUCCEEDED.value
+    ]
+    audit_locators = [
+        payload["locator"]
+        for payload in run_evidence
+        if payload.get("locator", "").startswith(
+            "ccp:v1:audit_report_generated:event:"
+        )
+    ]
+    audit_evidence = [
+        payload
+        for payload in run_evidence
+        if payload.get("locator", "").startswith(
+            "ccp:v1:audit_report_generated:event:"
+        )
+    ]
+
+    assert len(audit_locators) == 1
+    event_id = audit_locators[0].split(":")[4]
+    assert any(
+        payload["event_id"] == event_id
+        and payload["scope_level"] == ScopeLevel.RUN.value
+        and payload["actor_type"] == "framework_runtime"
+        and payload["capture_mode"] == "auto"
+        and payload["confidence"] == "high"
+        for payload in audit_events
+    )
+    assert audit_locators == [
+        f"ccp:v1:audit_report_generated:event:{event_id}:artifact:{persisted.artifact_id}"
+    ]
+    assert audit_evidence[0]["digest"]
+
+
+def test_publish_non_audit_report_does_not_emit_audit_report_generated_control_point(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.AUDIT,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    publisher.publish_artifact(
+        artifact,
+        report_name="evaluation_summary",
+        report_payload={"coverage_state": "covered"},
+    )
+
+    run_evidence = _read_ndjson(
+        store.evidence_stream_path(
+            scope_level=ScopeLevel.RUN,
+            goal_session_id=event.goal_session_id,
+            workflow_run_id=event.workflow_run_id,
+        )
+    )
+
+    assert not [
+        payload
+        for payload in run_evidence
+        if payload.get("locator", "").startswith(
+            "ccp:v1:audit_report_generated:event:"
+        )
+    ]
+
+
+def test_publish_step_scope_audit_report_does_not_emit_audit_report_generated_control_point(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    artifact = Artifact(
+        scope_level=ScopeLevel.STEP,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        step_id="st_0123456789abcdef0123456789abcdef",
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.AUDIT,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    publisher.publish_artifact(
+        artifact,
+        report_name="audit_report",
+        report_payload={"audit_status": "clean"},
+    )
+
+    evidence_payloads = store.load_canonical_evidence_payloads(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )
+
+    assert not [
+        payload
+        for payload in evidence_payloads
+        if payload.get("locator", "").startswith(
+            "ccp:v1:audit_report_generated:event:"
+        )
+    ]
+
+
+def test_publish_promotes_run_artifact_with_same_run_step_sources(tmp_path: Path) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    goal_session_id = "gs_0123456789abcdef0123456789abcdef"
+    workflow_run_id = "wr_0123456789abcdef0123456789abcdef"
+    step_id = "st_0123456789abcdef0123456789abcdef"
+    evidence = Evidence(
+        scope_level=ScopeLevel.STEP,
+        goal_session_id=goal_session_id,
+        workflow_run_id=workflow_run_id,
+        step_id=step_id,
+        locator="verify-constraints:report:sha256:0123456789abcdef0123456789abcdef",
+        digest="sha256:0123456789abcdef0123456789abcdef",
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    evaluation = Evaluation(
+        scope_level=ScopeLevel.STEP,
+        goal_session_id=goal_session_id,
+        workflow_run_id=workflow_run_id,
+        step_id=step_id,
+        result=EvaluationResult.PASSED,
+        status=EvaluationStatus.PASSED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    writer.write_evidence(evidence)
+    writer.write_evaluation(evaluation)
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=goal_session_id,
+        workflow_run_id=workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.EVALUATION,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    published = publisher.publish_artifact(
+        artifact,
+        report_name="evaluation_summary",
+        report_payload={"coverage_state": "covered"},
+    )
+
+    assert published.status is ArtifactStatus.PUBLISHED
+    report = _read_json(store.governance_report_path(published.artifact_id))
+    assert report["source_closure_ok"] is True
+    assert report["artifact_status"] == ArtifactStatus.PUBLISHED.value
+
+
+def test_publish_with_invalid_source_refs_keeps_artifact_below_published(tmp_path: Path) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, _, _ = _seed_completed_run(writer)
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.AUDIT,
+        source_evidence_refs=("evd_99999999999999999999999999999999",),
+        source_object_refs=("evaluation:eval_99999999999999999999999999999999",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    attempted = publisher.publish_artifact(
+        artifact,
+        report_name="audit_report",
+        report_payload={"audit_status": "issues_found"},
+    )
+
+    assert attempted.status is ArtifactStatus.GENERATED
+    snapshot = _read_json(store.current_object_path(attempted))
+    assert snapshot["status"] != ArtifactStatus.PUBLISHED.value
+    report = _read_json(store.governance_report_path(attempted.artifact_id))
+    assert report["source_closure_status"] == "incomplete"
+    assert report["hard_fail_category"] is None
+
+
+def test_publish_with_broken_resolver_marks_source_closure_unknown_and_records_candidate(
+    tmp_path: Path,
+) -> None:
+    class BrokenResolver:
+        def resolve(self, source_kind: str, source_ref: str) -> object:
+            raise RuntimeError(
+                f"source closure resolver corrupted for {source_kind}:{source_ref}"
+            )
+
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    publisher = GovernancePublisher(
+        store=store,
+        writer=writer,
+        resolver=BrokenResolver(),
+    )
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.AUDIT,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+
+    try:
+        attempted = publisher.publish_artifact(
+            artifact,
+            report_name="audit_report",
+            report_payload={"audit_status": "issues_found"},
+        )
+    except RuntimeError as exc:  # pragma: no cover - this is the current gap under TDD
+        pytest.fail(f"broken source-closure resolver should degrade to unknown, got {exc!r}")
+
+    assert attempted.status is ArtifactStatus.GENERATED
+    report = _read_json(store.governance_report_path(attempted.artifact_id))
+    assert report["source_closure_status"] == "unknown"
+    assert report["hard_fail_category"] == "policy_overridable_hard_fail_candidate"
+
+
+def test_revalidate_downgrades_previously_published_artifact_when_refs_break(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, evidence, evaluation = _seed_completed_run(writer)
+    artifact = Artifact(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ArtifactStatus.GENERATED,
+        artifact_type=ArtifactType.REPORT,
+        artifact_role=ArtifactRole.AUDIT,
+        source_evidence_refs=(evidence.evidence_id,),
+        source_object_refs=(f"evaluation:{evaluation.evaluation_id}",),
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+    published = publisher.publish_artifact(
+        artifact,
+        report_name="audit_report",
+        report_payload={"audit_status": "clean"},
+    )
+    assert published.status is ArtifactStatus.PUBLISHED
+    store.evidence_stream_path(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    ).unlink()
+
+    downgraded = publisher.revalidate_published_artifacts()
+
+    assert [item.artifact_id for item in downgraded] == [published.artifact_id]
+    latest = _read_json(store.current_object_path(downgraded[0]))
+    assert latest["status"] == ArtifactStatus.REVIEWED.value
+    report = _read_json(store.governance_report_path(published.artifact_id))
+    assert report["artifact_status"] == ArtifactStatus.REVIEWED.value
+    assert report["source_closure_ok"] is False
+
+
+def test_evaluation_summary_contains_minimal_coverage_and_evidence_quality_views(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, _, _ = _seed_completed_run(writer)
+    missing_digest = Evidence(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        locator="verify-constraints:report:sha256:abcdef",
+        digest=None,
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+    failed = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        result=EvaluationResult.FAILED,
+        status=EvaluationStatus.FAILED,
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+    writer.write_evidence(missing_digest)
+    writer.write_evaluation(failed)
+
+    summary = publisher.generate_run_reports(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )["evaluation_summary"]
+
+    assert summary["coverage_view"]["coverage_state"] == "partial"
+    assert summary["coverage_view"]["issue_evaluation_count"] == 1
+    assert summary["evidence_quality_view"]["quality_state"] == "partial"
+    assert summary["evidence_quality_view"]["missing_digest_count"] == 1
+    assert missing_digest.evidence_id in summary["evidence_quality_view"]["missing_digest_refs"]
+
+
+def test_accepted_violation_remains_open_debt_not_resolved_in_audit_report(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, _, _ = _seed_completed_run(writer)
+    accepted = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ViolationStatus.ACCEPTED,
+        risk_level=ViolationRiskLevel.HIGH,
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+    fixed = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ViolationStatus.FIXED,
+        risk_level=ViolationRiskLevel.LOW,
+        created_at="2026-03-27T10:00:02Z",
+        updated_at="2026-03-27T10:00:02Z",
+    )
+    writer.write_violation(accepted)
+    writer.write_violation(fixed)
+
+    report = publisher.generate_run_reports(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )["audit_report"]
+    debt = report["violation_summary"]["open_debt"]
+    resolved = report["violation_summary"]["resolved"]
+
+    assert debt["count"] == 1
+    assert debt["accepted_count"] == 1
+    assert debt["violation_ids"] == [accepted.violation_id]
+    assert resolved["count"] == 1
+    assert fixed.violation_id in resolved["violation_ids"]
+
+
+def test_violation_summary_includes_status_risk_and_open_item_rollups(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    event, _, _ = _seed_completed_run(writer)
+    triaged_high = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ViolationStatus.TRIAGED,
+        risk_level=ViolationRiskLevel.HIGH,
+        created_at="2026-03-27T10:00:01Z",
+        updated_at="2026-03-27T10:00:01Z",
+    )
+    accepted_high = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ViolationStatus.ACCEPTED,
+        risk_level=ViolationRiskLevel.HIGH,
+        created_at="2026-03-27T10:00:02Z",
+        updated_at="2026-03-27T10:00:02Z",
+    )
+    fixed_low = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+        status=ViolationStatus.FIXED,
+        risk_level=ViolationRiskLevel.LOW,
+        created_at="2026-03-27T10:00:03Z",
+        updated_at="2026-03-27T10:00:03Z",
+    )
+    writer.write_violation(triaged_high)
+    writer.write_violation(accepted_high)
+    writer.write_violation(fixed_low)
+
+    violation_summary = publisher.generate_run_reports(
+        goal_session_id=event.goal_session_id,
+        workflow_run_id=event.workflow_run_id,
+    )["violation_summary"]
+
+    assert violation_summary["by_status"] == {
+        ViolationStatus.TRIAGED.value: 1,
+        ViolationStatus.ACCEPTED.value: 1,
+        ViolationStatus.FIXED.value: 1,
+    }
+    assert violation_summary["by_risk"] == {
+        ViolationRiskLevel.HIGH.value: 2,
+        ViolationRiskLevel.LOW.value: 1,
+    }
+    assert [
+        item["violation_id"] for item in violation_summary["open_items"]
+    ] == sorted([triaged_high.violation_id, accepted_high.violation_id])
+    assert {item["status"] for item in violation_summary["open_items"]} == {
+        ViolationStatus.TRIAGED.value,
+        ViolationStatus.ACCEPTED.value,
+    }
+
+
+def test_audit_report_marks_failed_evaluation_as_issues_found_without_violations() -> None:
+    failed_evaluation = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.FAILED,
+        status=EvaluationStatus.FAILED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+
+    report = build_audit_report([failed_evaluation], [])
+
+    assert report["audit_status"] == "issues_found"
+
+
+def test_audit_report_does_not_mark_pending_only_evaluations_clean() -> None:
+    pending = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.PASSED,
+        status=EvaluationStatus.PENDING,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+
+    report = build_audit_report([pending], [])
+
+    assert report["audit_status"] == "issues_found"
+
+
+def test_audit_report_does_not_mark_waived_not_applicable_clean() -> None:
+    waived = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.NOT_APPLICABLE,
+        status=EvaluationStatus.WAIVED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+
+    report = build_audit_report([waived], [])
+
+    assert report["audit_status"] == "issues_found"
+
+
+def test_audit_report_does_not_mark_warning_clean() -> None:
+    warning = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.WARNING,
+        status=EvaluationStatus.PASSED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+
+    report = build_audit_report([warning], [])
+
+    assert report["audit_status"] == "issues_found"
+
+
+def test_audit_report_keeps_blocked_priority_over_non_passing_evaluation() -> None:
+    pending = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.PASSED,
+        status=EvaluationStatus.PENDING,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    accepted_high = Violation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id=pending.goal_session_id,
+        workflow_run_id=pending.workflow_run_id,
+        status=ViolationStatus.ACCEPTED,
+        risk_level=ViolationRiskLevel.HIGH,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+
+    report = build_audit_report([pending], [accepted_high])
+
+    assert report["audit_status"] == "blocked"
+
+
+def test_evaluation_summary_pending_is_non_passing_and_not_covered(tmp_path: Path) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    pending = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.PASSED,
+        status=EvaluationStatus.PENDING,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    writer.write_evaluation(pending)
+
+    summary = publisher.generate_run_reports(
+        goal_session_id=pending.goal_session_id,
+        workflow_run_id=pending.workflow_run_id or "",
+    )["evaluation_summary"]
+
+    assert summary["totals"]["count"] == 1
+    assert summary["totals"]["passed_count"] == 0
+    assert summary["totals"]["failed_count"] == 1
+    assert summary["coverage_view"]["coverage_state"] == "partial"
+    assert summary["coverage_view"]["passed_evaluation_count"] == 0
+    assert summary["coverage_view"]["issue_evaluation_count"] == 1
+
+
+def test_evaluation_summary_waived_not_applicable_is_non_passing_and_not_covered(
+    tmp_path: Path,
+) -> None:
+    store = TelemetryStore(tmp_path)
+    writer = TelemetryWriter(store)
+    publisher = GovernancePublisher(store=store, writer=writer)
+    waived = Evaluation(
+        scope_level=ScopeLevel.RUN,
+        goal_session_id="gs_0123456789abcdef0123456789abcdef",
+        workflow_run_id="wr_0123456789abcdef0123456789abcdef",
+        result=EvaluationResult.NOT_APPLICABLE,
+        status=EvaluationStatus.WAIVED,
+        created_at="2026-03-27T10:00:00Z",
+        updated_at="2026-03-27T10:00:00Z",
+    )
+    writer.write_evaluation(waived)
+
+    summary = publisher.generate_run_reports(
+        goal_session_id=waived.goal_session_id,
+        workflow_run_id=waived.workflow_run_id or "",
+    )["evaluation_summary"]
+
+    assert summary["totals"]["passed_count"] == 0
+    assert summary["totals"]["failed_count"] == 1
+    assert summary["coverage_view"]["coverage_state"] == "partial"
+    assert summary["coverage_view"]["passed_evaluation_count"] == 0

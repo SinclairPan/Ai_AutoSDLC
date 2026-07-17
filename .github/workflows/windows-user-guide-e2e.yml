@@ -1,0 +1,272 @@
+name: Windows User Guide E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag to verify against the user guide.
+        required: true
+        default: v1.0.0
+  pull_request:
+    paths:
+      - ".github/workflows/windows-user-guide-e2e.yml"
+      - "USER_GUIDE.zh-CN.md"
+      - "packaging/offline/**"
+      - "tests/integration/test_github_workflows.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-user-guide-e2e-${{ github.event.pull_request.number || inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  existing-project-online-install:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    env:
+      RELEASE_TAG: ${{ inputs.tag || 'v1.0.0' }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Checkout repository truth
+        uses: actions/checkout@v6
+
+      - name: Set up package build Python
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build Windows offline bundle for pull request replay
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv python install 3.11
+          runtime_python="$(uv python find --managed-python 3.11)"
+          runtime_python="$(cygpath -u "$runtime_python")"
+          runtime_root="$(dirname "$runtime_python")"
+          PYTHON="$runtime_python" \
+            PYTHONUTF8="1" \
+            PYTHONIOENCODING="utf-8" \
+            AI_SDLC_OFFLINE_PYTHON_RUNTIME="$runtime_root" \
+            AI_SDLC_OFFLINE_PYTHON_VERSIONS="3.11,3.12" \
+            AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64" \
+            AI_SDLC_OFFLINE_TARGET_PLATFORM="win_amd64" \
+            bash packaging/offline/build_offline_bundle.sh
+
+      - name: Replay Windows existing-project guide path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $utf8 = [System.Text.UTF8Encoding]::new($false)
+          [Console]::InputEncoding = $utf8
+          [Console]::OutputEncoding = $utf8
+          $OutputEncoding = $utf8
+
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "ai-sdlc-windows-user-guide-e2e"
+          $workRoot = Join-Path $env:RUNNER_TEMP "work"
+          $projectRoot = Join-Path $workRoot "my-existing-project"
+          Remove-Item -Recurse -Force $evidenceRoot, $workRoot -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $evidenceRoot, $projectRoot | Out-Null
+
+          $packageSourceMode = if ($env:GITHUB_EVENT_NAME -eq "pull_request") { "pull_request_local_bundle" } else { "published_release" }
+          "release_tag=$env:RELEASE_TAG; package_source=$packageSourceMode" |
+            Out-File -FilePath (Join-Path $evidenceRoot "scenario.txt") -Encoding utf8
+
+          @"
+          {
+            "scripts": {
+              "build": "node -e \"console.log('existing project build placeholder')\""
+            },
+            "dependencies": {}
+          }
+          "@ | Out-File -FilePath (Join-Path $projectRoot "package.json") -Encoding utf8
+          New-Item -ItemType Directory -Force -Path (Join-Path $projectRoot "src") | Out-Null
+          "console.log('existing project source file');" | Out-File -FilePath (Join-Path $projectRoot "src\main.js") -Encoding utf8
+          "# Existing Project" | Out-File -FilePath (Join-Path $projectRoot "README.md") -Encoding utf8
+          "- [ ] Existing imported task" | Out-File -FilePath (Join-Path $projectRoot "TODO.md") -Encoding utf8
+          $businessFiles = @(
+            (Join-Path $projectRoot "package.json"),
+            (Join-Path $projectRoot "src\main.js"),
+            (Join-Path $projectRoot "README.md"),
+            (Join-Path $projectRoot "TODO.md")
+          )
+          Get-ChildItem -LiteralPath $projectRoot -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize |
+            Out-String |
+            Out-File -FilePath (Join-Path $evidenceRoot "existing-project-before.txt") -Encoding utf8
+          $businessFileHashesBefore = Get-FileHash -Algorithm SHA256 -LiteralPath $businessFiles | Sort-Object Path
+          $businessFileHashesBefore |
+            Format-Table -AutoSize |
+            Out-String |
+            Out-File -FilePath (Join-Path $evidenceRoot "business-file-hashes-before.txt") -Encoding utf8
+
+          # USER_GUIDE.zh-CN.md Chapter 2, Scenario B: online download from Release.
+          Push-Location $projectRoot
+          cd ..
+          $BundleName = "ai-sdlc-offline-1.0.0-windows-amd64"
+          $PackageName = "$BundleName.zip"
+          $PackageDir = (Get-Location).Path
+          $ExtractRoot = Join-Path $PackageDir ".ai-sdlc-install"
+          if ($env:RELEASE_TAG -ne "v1.0.0") {
+            throw "This guide replay intentionally follows the current USER_GUIDE.zh-CN.md v1.0.0 Windows commands."
+          }
+          $packagePath = Join-Path $PackageDir $PackageName
+          if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
+            $localPackage = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "dist-offline") -Filter $PackageName -File |
+              Select-Object -First 1
+            if (-not $localPackage) {
+              throw "Pull request guide replay expected local package from dist-offline: $PackageName"
+            }
+            Copy-Item -LiteralPath $localPackage.FullName -Destination $packagePath -Force
+          } else {
+            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.0/$PackageName" -OutFile $packagePath
+          }
+          New-Item -ItemType Directory -Path $ExtractRoot -Force | Out-Null
+          Write-Host "正在解压安装包；如果已经解压过，会安静覆盖同名文件。"
+          Write-Host "Extracting package; existing installer files will be overwritten quietly."
+          Expand-Archive -LiteralPath (Join-Path $PackageDir $PackageName) -DestinationPath $ExtractRoot -Force
+          Set-Location (Join-Path $ExtractRoot $BundleName)
+          powershell -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddToPath *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "install.log")
+          if ($LASTEXITCODE -ne 0) {
+            throw "install_offline.ps1 -AddToPath failed with exit code $LASTEXITCODE"
+          }
+          .\.venv\Scripts\python.exe -m ai_sdlc --help *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "help-via-bundle-python.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "bundle python -m ai_sdlc --help failed with exit code $LASTEXITCODE"
+          }
+          $stableShimDir = Join-Path $env:LOCALAPPDATA "AI-SDLC\bin"
+          $stableShim = Join-Path $stableShimDir "ai-sdlc.exe"
+          if (-not (Test-Path $stableShim)) {
+            throw "installer did not create stable user command shim: $stableShim"
+          }
+          $stalePathDir = Join-Path $workRoot "old-python\Scripts"
+          New-Item -ItemType Directory -Force -Path $stalePathDir | Out-Null
+          @"
+          #!/usr/bin/env sh
+          echo stale ai-sdlc should not run >&2
+          exit 127
+          "@ | Out-File -FilePath (Join-Path $stalePathDir "ai-sdlc") -Encoding ascii
+          $bashCandidates = @(
+            "C:\Program Files\Git\bin\bash.exe",
+            "C:\Program Files\Git\usr\bin\bash.exe"
+          )
+          $bashExe = $bashCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $bashExe) {
+            throw "Git Bash was not found on the Windows runner"
+          }
+          $originalPath = $env:Path
+          $env:Path = "$stalePathDir;$originalPath"
+          try {
+            $gitBashOutput = & $bashExe -lc 'type -a ai-sdlc; ai-sdlc --version' 2>&1
+            $gitBashExit = $LASTEXITCODE
+          } finally {
+            $env:Path = $originalPath
+          }
+          $gitBashOutput |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "git-bash-bare-version.txt")
+          if ($gitBashExit -ne 0) {
+            throw "Git Bash bare ai-sdlc --version failed with exit code $gitBashExit"
+          }
+          $expectedVersion = $env:RELEASE_TAG -replace '^v', ''
+          $gitBashText = ($gitBashOutput | Out-String)
+          if ($gitBashText -notmatch [regex]::Escape($expectedVersion)) {
+            throw "Git Bash bare ai-sdlc --version did not report $expectedVersion"
+          }
+          if ($gitBashText -match "stale ai-sdlc should not run") {
+            throw "Git Bash resolved the stale PATH entry instead of the stable AI-SDLC shim"
+          }
+          Pop-Location
+
+          $installOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "install.log") -Raw
+          if ($installOutput -notmatch "Direct shim") {
+            throw "installer output did not include Direct shim guidance required by USER_GUIDE.zh-CN.md"
+          }
+          if ($installOutput -notmatch "Codex \+ PowerShell project init") {
+            "installer_printed_codex_powershell_init=false" |
+              Out-File -FilePath (Join-Path $evidenceRoot "released-package-guide-gap.txt") -Encoding utf8
+            Write-Warning "Published package did not print Codex + PowerShell project init; continuing with the explicit command documented by USER_GUIDE.zh-CN.md."
+          } else {
+            "installer_printed_codex_powershell_init=true" |
+              Out-File -FilePath (Join-Path $evidenceRoot "released-package-guide-gap.txt") -Encoding utf8
+          }
+
+          $directShim = Join-Path $ExtractRoot "$BundleName\.venv\Scripts\ai-sdlc.exe"
+          if (-not (Test-Path $directShim)) {
+            throw "expected Direct shim executable was missing: $directShim"
+          }
+
+          # USER_GUIDE.zh-CN.md Chapter 2, Step 3: return to the existing project
+          # root and run the Direct shim init command shape.
+          Set-Location $projectRoot
+          & $directShim init . --agent-target codex --shell powershell *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "init-existing-project.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct shim Codex + PowerShell init failed with exit code $LASTEXITCODE"
+          }
+          $initOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "init-existing-project.txt") -Raw
+          if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
+            throw "init output did not include the guide's bilingual Result/Next surface"
+          }
+          if ($initOutput -match "adapter ingress|materialized|unverified|host ingress|governance activation") {
+            throw "init output exposed internal adapter diagnostic terminology"
+          }
+          if (-not (Test-Path (Join-Path $projectRoot ".ai-sdlc"))) {
+            throw "init did not create .ai-sdlc in the existing project"
+          }
+          if (-not (Test-Path (Join-Path $projectRoot "AGENTS.md"))) {
+            throw "init did not create the Codex adapter guidance file AGENTS.md"
+          }
+
+          & $directShim adopt . *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "adopt-existing-project.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "adopt . failed with exit code $LASTEXITCODE"
+          }
+          $adoptOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "adopt-existing-project.txt") -Raw
+          if ($adoptOutput -notmatch "接入已有项目") {
+            throw "adopt output did not include the guide's existing-project adoption wording"
+          }
+
+          $businessFileHashesAfter = Get-FileHash -Algorithm SHA256 -LiteralPath $businessFiles | Sort-Object Path
+          $businessFileHashesAfter |
+            Format-Table -AutoSize |
+            Out-String |
+            Out-File -FilePath (Join-Path $evidenceRoot "business-file-hashes-after.txt") -Encoding utf8
+          $businessFileHashDiff = Compare-Object `
+            -ReferenceObject $businessFileHashesBefore `
+            -DifferenceObject $businessFileHashesAfter `
+            -Property Path, Hash
+          if ($businessFileHashDiff) {
+            $businessFileHashDiff |
+              Format-Table -AutoSize |
+              Out-String |
+              Out-File -FilePath (Join-Path $evidenceRoot "business-file-hash-diff.txt") -Encoding utf8
+            throw "init/adopt modified existing business files"
+          }
+          Get-ChildItem -LiteralPath $projectRoot -Recurse |
+            Select-Object FullName, Length |
+            Format-Table -AutoSize |
+            Out-String |
+            Out-File -FilePath (Join-Path $evidenceRoot "existing-project-after.txt") -Encoding utf8
+
+      - name: Upload guide replay evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: windows-user-guide-existing-project-evidence
+          path: ${{ runner.temp }}/ai-sdlc-windows-user-guide-e2e
+          if-no-files-found: error

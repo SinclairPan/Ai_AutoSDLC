@@ -1,0 +1,5 @@
+decisions:
+  - id: INIT-001
+    question: default_execution_mode
+    choice: auto
+    rationale: bootstrap default

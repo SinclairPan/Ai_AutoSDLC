@@ -1,0 +1,212 @@
+"""Unit tests for installed runtime update advisor."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+
+from ai_sdlc.core.update_advisor import (
+    AUTO_NOTICE_REPEAT_INTERVAL,
+    NOTICE_ACTIONABLE,
+    NOTICE_LIGHT,
+    _cache_path,
+    ack_notice,
+    detect_runtime_identity,
+    evaluate_update_advisor,
+    notice_already_acknowledged,
+    notice_recently_rendered,
+    record_notice_rendered,
+)
+
+
+def _force_installed(monkeypatch, tmp_path, *, channel: str = "github-archive") -> None:
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_INSTALLED", "1")
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_VERSION", "1.0.0")
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_CHANNEL", channel)
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_CACHE_DIR", str(tmp_path))
+
+
+def test_source_runtime_fails_closed(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("AI_SDLC_SOURCE_RUNTIME", "1")
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_CACHE_DIR", str(tmp_path))
+
+    identity = detect_runtime_identity()
+    evaluation = evaluate_update_advisor()
+
+    assert identity.installed_runtime is False
+    assert evaluation.refresh_attempted is False
+    assert evaluation.refresh_result == "disabled"
+    assert evaluation.eligible_notice_classes == ()
+
+
+def test_installed_module_invocation_is_installed_runtime(monkeypatch, tmp_path) -> None:
+    site_packages = tmp_path / "site-packages"
+    executable = site_packages / "ai_sdlc" / "__main__.py"
+    executable.parent.mkdir(parents=True)
+    executable.write_text("", encoding="utf-8")
+
+    class FakeDistribution:
+        version = "1.1.0"
+
+        def read_text(self, name: str) -> str | None:
+            return None
+
+        def locate_file(self, path: str) -> Path:
+            return site_packages / path
+
+    monkeypatch.setattr("sys.argv", [str(executable), "self-update", "check"])
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor.metadata.distribution",
+        lambda name: FakeDistribution(),
+    )
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_CACHE_DIR", str(tmp_path / "cache"))
+
+    identity = detect_runtime_identity()
+
+    assert identity.installed_runtime is True
+    assert identity.installed_version == "1.1.0"
+    assert identity.reason_code == "installed_runtime"
+
+
+def test_github_archive_installed_runtime_gets_actionable_notice(
+    monkeypatch, tmp_path
+) -> None:
+    _force_installed(monkeypatch, tmp_path, channel="github-archive")
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
+
+    evaluation = evaluate_update_advisor(
+        now=datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    )
+
+    assert evaluation.refresh_attempted is True
+    assert evaluation.refresh_result == "success"
+    assert evaluation.freshness == "fresh"
+    assert evaluation.upstream_latest_version == "1.0.1"
+    assert evaluation.channel_latest_version == "1.0.1"
+    assert NOTICE_LIGHT in evaluation.eligible_notice_classes
+    assert NOTICE_ACTIONABLE in evaluation.eligible_notice_classes
+    assert evaluation.upgrade_command == "ai-sdlc self-update check"
+
+
+def test_cache_path_sanitizes_runtime_identity_for_windows(monkeypatch, tmp_path) -> None:
+    _force_installed(monkeypatch, tmp_path, channel="github-archive")
+
+    identity = detect_runtime_identity()
+
+    assert identity.runtime_identity.startswith("sha256:")
+    assert ":" not in _cache_path(identity).name
+
+
+def test_unknown_installed_channel_still_gets_actionable_update(
+    monkeypatch, tmp_path
+) -> None:
+    _force_installed(monkeypatch, tmp_path, channel="unknown")
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
+
+    evaluation = evaluate_update_advisor()
+
+    assert evaluation.upstream_latest_version == "1.0.1"
+    assert evaluation.channel_latest_version == "1.0.1"
+    assert NOTICE_LIGHT in evaluation.eligible_notice_classes
+    assert NOTICE_ACTIONABLE in evaluation.eligible_notice_classes
+    assert evaluation.upgrade_command == "ai-sdlc self-update check"
+
+
+def test_failure_backoff_prevents_repeated_refresh(monkeypatch, tmp_path) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    calls = 0
+
+    def fail_fetch(timeout: float) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        raise OSError("network unavailable")
+
+    first = evaluate_update_advisor(
+        now=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
+        fetch_latest=fail_fetch,
+    )
+    second = evaluate_update_advisor(
+        now=datetime(2026, 5, 1, 13, 0, tzinfo=UTC),
+        fetch_latest=fail_fetch,
+    )
+
+    assert first.refresh_attempted is True
+    assert first.refresh_result == "network_error"
+    assert second.refresh_attempted is False
+    assert second.refresh_result == "backoff"
+    assert calls == 1
+
+
+def test_explicit_check_can_ignore_failure_backoff(monkeypatch, tmp_path) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    calls = 0
+
+    def fail_fetch(timeout: float) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        raise OSError("network unavailable")
+
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    first = evaluate_update_advisor(now=now, fetch_latest=fail_fetch)
+    second = evaluate_update_advisor(
+        now=now + timedelta(hours=1),
+        fetch_latest=fail_fetch,
+        ignore_failure_backoff=True,
+    )
+
+    assert first.refresh_attempted is True
+    assert second.refresh_attempted is True
+    assert second.refresh_result == "network_error"
+    assert calls == 2
+
+
+def test_stale_cache_still_emits_known_update_notice_without_refresh(
+    monkeypatch, tmp_path
+) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    evaluate_update_advisor(now=now)
+
+    stale = evaluate_update_advisor(now=now + timedelta(days=2), allow_refresh=False)
+
+    assert stale.freshness == "stale_but_usable"
+    assert stale.refresh_attempted is False
+    assert NOTICE_LIGHT in stale.eligible_notice_classes
+    assert NOTICE_ACTIONABLE in stale.eligible_notice_classes
+    assert stale.upgrade_command == "ai-sdlc self-update check"
+
+
+def test_rendered_notice_throttles_without_acknowledging(
+    monkeypatch, tmp_path
+) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    evaluation = evaluate_update_advisor(now=now)
+
+    recorded = record_notice_rendered(NOTICE_ACTIONABLE, "1.0.1", now=now)
+
+    assert recorded is True
+    assert notice_already_acknowledged(evaluation, NOTICE_ACTIONABLE) is False
+    assert notice_recently_rendered(
+        evaluation,
+        NOTICE_ACTIONABLE,
+        now=now + AUTO_NOTICE_REPEAT_INTERVAL - timedelta(seconds=1),
+    )
+    assert not notice_recently_rendered(
+        evaluation,
+        NOTICE_ACTIONABLE,
+        now=now + AUTO_NOTICE_REPEAT_INTERVAL + timedelta(seconds=1),
+    )
+
+
+def test_ack_notice_records_notice_version(monkeypatch, tmp_path) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
+    evaluation = evaluate_update_advisor()
+
+    ack = ack_notice(NOTICE_LIGHT, "1.0.1")
+
+    assert ack.ack_recorded is True
+    assert notice_already_acknowledged(evaluation, NOTICE_LIGHT) is True

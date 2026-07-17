@@ -1,0 +1,64 @@
+from pathlib import Path
+
+from scripts.validate_public_release_identity import (
+    CURRENT_REPOSITORY_URL,
+    scan_paths,
+    validate_required_surfaces,
+)
+
+
+def test_scan_rejects_non_public_surfaces_and_pre_release_identity(
+    tmp_path: Path,
+) -> None:
+    candidate_version = f"{0}.{8}.{0}"
+    files = {
+        f"docs/releases/v{candidate_version}.md": "candidate release",
+        ".ai-sdlc/work-items/001-demo/handoff.md": "runtime state",
+        "internal-notes.md": "private material",
+        "README.md": f"AI-SDLC v{candidate_version}",
+    }
+
+    findings = scan_paths(tmp_path, files)
+
+    assert {finding.marker for finding in findings} == {
+        "non-public-root-doc",
+        "non-public-work-state",
+        "pre-1.0-product-version",
+    }
+
+
+def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
+    tmp_path: Path,
+) -> None:
+    local_path = "/" + "Users" + "/demo/project/sample"
+    files = {
+        "README.md": "https://github.com/example/sample\n" + local_path,
+    }
+
+    findings = scan_paths(tmp_path, files)
+
+    assert {finding.marker for finding in findings} == {
+        "local-path-disclosure",
+        "repository-identity-mismatch",
+    }
+
+
+def test_required_surfaces_enforce_current_release_identity() -> None:
+    files = {
+        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.0",
+    }
+
+    findings = validate_required_surfaces(files)
+
+    assert any(finding.marker == "required-public-surface-missing" for finding in findings)
+    assert not any(finding.path == "README.md" for finding in findings)
+
+
+def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:
+    files = {
+        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.0",
+        "uv.lock": 'name = "example"\nversion = "3.4.2"',
+        "managed/frontend/package-lock.json": '{"version":"3.3.0"}',
+    }
+
+    assert scan_paths(tmp_path, files) == []

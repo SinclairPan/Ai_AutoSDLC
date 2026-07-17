@@ -1,0 +1,13 @@
+product_form: hybrid
+default_execution_mode: auto
+default_branch_strategy: dual
+max_parallel_agents: 3
+document_locale: zh-CN
+preferred_shell: powershell
+agent_target: codex
+adapter_canonical_path: AGENTS.md
+agentops_reporting_mode: 'off'
+agentops_ingestion_mode: gateway
+agentops_ingestion_token_env: AGENTOPS_INGESTION_TOKEN
+telemetry_profile: self_hosting
+telemetry_mode: lite
