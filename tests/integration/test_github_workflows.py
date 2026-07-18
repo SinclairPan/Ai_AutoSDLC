@@ -242,10 +242,11 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
 
     assert "clean-online-interactive-user-journey:" in workflow
     assert (
-        "raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/main/packaging/install_online.ps1"
+        "raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/"
+        "$remoteSha/packaging/install_online.ps1"
         in workflow
     )
-    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@main" in workflow
+    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@$remoteSha" in workflow
     assert "pywinpty" in workflow
     assert "windows-clean-online-user-e2e-evidence" in workflow
     assert "PtyProcess.spawn" in driver
@@ -257,6 +258,31 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert '"--agent-target"' not in driver
     assert '"--shell"' not in driver
     assert "import ai_sdlc" not in driver
+
+
+def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+
+    workflow = workflow_path.read_text(encoding="utf-8").split(
+        "clean-online-interactive-user-journey:", 1
+    )[1]
+    resolve_remote_main = (
+        "$remoteSha = ((git ls-remote "
+        "https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main)"
+    )
+    pinned_installer = (
+        'raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/'
+        '$remoteSha/packaging/install_online.ps1'
+    )
+    pinned_package = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@$remoteSha"
+
+    assert resolve_remote_main in workflow
+    assert pinned_installer in workflow
+    assert pinned_package in workflow
+    assert workflow.index(resolve_remote_main) < workflow.index(pinned_installer)
+    assert workflow.index(pinned_installer) < workflow.index("Invoke-WebRequest")
+    assert workflow.count(resolve_remote_main) == 1
+    assert '$directUrl.vcs_info.requested_revision -ne $remoteSha' in workflow
 
 
 def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> None:

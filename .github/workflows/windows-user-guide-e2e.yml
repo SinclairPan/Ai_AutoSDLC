@@ -317,8 +317,12 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
           $installerPath = Join-Path $env:RUNNER_TEMP "install_online.ps1"
           $installVenv = Join-Path $env:RUNNER_TEMP "ai-sdlc-online"
-          $installerUri = "https://raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/main/packaging/install_online.ps1"
-          $packageSpec = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@main"
+          $remoteSha = ((git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main) -split "`t")[0]
+          if ($LASTEXITCODE -ne 0 -or -not $remoteSha) {
+            throw "Unable to resolve the public remote main SHA."
+          }
+          $installerUri = "https://raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/$remoteSha/packaging/install_online.ps1"
+          $packageSpec = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@$remoteSha"
 
           Invoke-WebRequest -Uri $installerUri -OutFile $installerPath
           Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath |
@@ -364,12 +368,8 @@ jobs:
           }
           Copy-Item -LiteralPath $directUrlPath.FullName -Destination (Join-Path $evidenceRoot "direct_url.json")
           $directUrl = Get-Content -LiteralPath $directUrlPath.FullName -Raw | ConvertFrom-Json
-          $remoteSha = ((git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main) -split "`t")[0]
-          if ($LASTEXITCODE -ne 0 -or -not $remoteSha) {
-            throw "Unable to resolve the public remote main SHA."
-          }
-          if ($directUrl.vcs_info.requested_revision -ne "main") {
-            throw "Installed package did not record main as the requested public revision."
+          if ($directUrl.vcs_info.requested_revision -ne $remoteSha) {
+            throw "Installed package did not record the pinned public revision $remoteSha."
           }
           if ($directUrl.vcs_info.commit_id -ne $remoteSha) {
             throw "Installed package commit $($directUrl.vcs_info.commit_id) does not match remote main $remoteSha."
