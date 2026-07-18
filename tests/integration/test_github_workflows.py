@@ -230,6 +230,126 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "actions/upload-artifact@v7" in workflow
 
 
+def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    assert workflow_path.is_file()
+    assert driver_path.is_file()
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    driver = driver_path.read_text(encoding="utf-8")
+
+    install_inputs = (
+        '- "src/**"',
+        '- "pyproject.toml"',
+        '- "packaging_backend.py"',
+        '- "README.md"',
+        '- "templates/**"',
+        '- "scripts/frontend_browser_gate_probe_runner.mjs"',
+        '- "packaging/install_online.ps1"',
+    )
+    assert all(path_filter in workflow for path_filter in install_inputs)
+    assert "clean-online-interactive-user-journey:" in workflow
+    assert (
+        "raw.githubusercontent.com/$sourceRepository/"
+        "$remoteSha/packaging/install_online.ps1"
+        in workflow
+    )
+    assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
+    assert "pywinpty" in workflow
+    assert "windows-clean-online-user-e2e-evidence" in workflow
+    assert "PtyProcess.spawn" in driver
+    assert '[cli_path, "init", "."]' in driver
+    assert "请选择当前实际用于聊天开发的 AI 代理入口" in driver
+    assert "请选择当前项目默认使用的命令 Shell" in driver
+    assert 'process.write("2\\r\\n")' in driver
+    assert 'process.write("1\\r\\n")' in driver
+    assert '"--agent-target"' not in driver
+    assert '"--shell"' not in driver
+    assert "import ai_sdlc" not in driver
+
+
+def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+
+    workflow = workflow_path.read_text(encoding="utf-8").split(
+        "clean-online-interactive-user-journey:", 1
+    )[1]
+    resolve_remote_main = (
+        "$remoteSha = ((git ls-remote "
+        "https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main)"
+    )
+    pinned_installer = (
+        'raw.githubusercontent.com/$sourceRepository/'
+        '$remoteSha/packaging/install_online.ps1'
+    )
+    pinned_package = "git+https://github.com/$sourceRepository.git@$remoteSha"
+
+    assert resolve_remote_main in workflow
+    assert pinned_installer in workflow
+    assert pinned_package in workflow
+    assert workflow.index(resolve_remote_main) < workflow.index(pinned_installer)
+    assert workflow.index(pinned_installer) < workflow.index("Invoke-WebRequest")
+    assert workflow.count(resolve_remote_main) == 1
+    assert '$directUrl.vcs_info.requested_revision -ne $remoteSha' in workflow
+
+
+def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    workflow = workflow_path.read_text(encoding="utf-8").split(
+        "clean-online-interactive-user-journey:", 1
+    )[1]
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert "PR_HEAD_REPOSITORY:" in workflow
+    assert "github.event.pull_request.head.repo.full_name" in workflow
+    assert "PR_HEAD_SHA:" in workflow
+    assert "github.event.pull_request.head.sha" in workflow
+    assert 'if ($env:GITHUB_EVENT_NAME -eq "pull_request")' in workflow
+    assert "$sourceRepository = $env:PR_HEAD_REPOSITORY" in workflow
+    assert "$remoteSha = $env:PR_HEAD_SHA" in workflow
+    assert (
+        "raw.githubusercontent.com/$sourceRepository/"
+        "$remoteSha/packaging/install_online.ps1"
+        in workflow
+    )
+    assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
+    assert "AI_SDLC_E2E_INSTALL_SOURCE=$sourceKind" in workflow
+    assert "AI_SDLC_E2E_SOURCE_REVISION=$remoteSha" in workflow
+    assert 'os.environ.get("AI_SDLC_E2E_INSTALL_SOURCE", "remote-main")' in driver
+    assert 'os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", "")' in driver
+
+
+def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> None:
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    assert driver_path.is_file()
+
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert '"program validate: PASS"' in driver
+    assert '"program", "solution-confirm", "--dry-run"' in driver
+    assert '"--mode", "advanced"' in driver
+    assert '"--frontend-stack",' in driver
+    assert '"vue3",' in driver
+    assert '"--provider-id",' in driver
+    assert '"public-primevue",' in driver
+    assert '"--style-pack-id",' in driver
+    assert '"data-console",' in driver
+    assert "PrimeVue + @primeuix/themes + primeicons" in driver
+    assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in driver
+    assert "enterprise-default" in driver
+    assert "data-console" in driver
+    assert "high-clarity" in driver
+    assert "macos-glass" in driver
+    assert "enterprise-vue2" in driver
+    assert "--execute" not in driver
+    assert '["program", "managed-delivery-apply"' not in driver
+
+
 def test_historical_update_prompt_workflow_is_not_published() -> None:
     assert not (_WORKFLOWS_DIR / "windows-update-prompt-e2e.yml").exists()
 
