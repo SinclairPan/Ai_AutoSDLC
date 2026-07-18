@@ -103,6 +103,47 @@ def test_first_required_then_targeted_fix_passes_second_round(tmp_path: Path) ->
     ]
 
 
+def test_fresh_verification_supersedes_previous_diff_receipt(tmp_path: Path) -> None:
+    loop_id = "impl-superseded-verification"
+    test_source = "tests/superseded_verification.py"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _commit_fixture(tmp_path, test_source, "print('verified')\n")
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+    stale_ref = _record_targeted_verification(tmp_path, loop_id, test_source)
+
+    first = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert first.status == "needs_fix"
+    _write(tmp_path, "src/app.py", "def _build_future():\n    return object()\n")
+    fresh_ref = _record_targeted_verification(tmp_path, loop_id, test_source)
+
+    second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+
+    assert stale_ref != fresh_ref
+    assert second.status == "ready", second
+    assert second.evaluation_round == 2
+
+
+def test_stale_verification_alone_cannot_satisfy_second_round(tmp_path: Path) -> None:
+    loop_id = "impl-stale-only-verification"
+    test_source = "tests/stale_only_verification.py"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _commit_fixture(tmp_path, test_source, "print('verified')\n")
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+    _record_targeted_verification(tmp_path, loop_id, test_source)
+
+    first = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert first.status == "needs_fix"
+    _write(tmp_path, "src/app.py", "def _build_future():\n    return object()\n")
+
+    second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    report = LeanEvaluationReport.model_validate_json(
+        (_lean_dir(tmp_path, loop_id) / "round-002" / "report.json").read_text("utf-8")
+    )
+
+    assert second.status == "needs_fix"
+    assert any(item.rule_id == "lean.targeted-verification" for item in report.findings)
+
+
 def test_second_round_without_new_targeted_verification_needs_fix(
     tmp_path: Path,
 ) -> None:
@@ -1116,6 +1157,34 @@ def _seed_enabled_loop(
             loop_run_path=artifacts.loop_run_path.relative_to(root).as_posix(),
         ),
     )
+
+
+def _record_targeted_verification(
+    root: Path,
+    loop_id: str,
+    test_source: str,
+) -> str:
+    verified = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+    assert verified.status == "ready", verified
+    recorded = record_implementation_progress(
+        ImplementationRecordOptions(
+            root=root,
+            loop_id=loop_id,
+            task_id="T11",
+            status="done",
+            evidence=(verified.receipt_path,),
+        )
+    )
+    assert recorded.status == "ready", recorded
+    return verified.receipt_path
 
 
 def _lean_dir(root: Path, loop_id: str) -> Path:

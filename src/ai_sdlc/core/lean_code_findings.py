@@ -111,16 +111,15 @@ def generated_scope_findings(
 def targeted_verification_findings(
     evaluation_round: int,
     previous_had_actionable_findings: bool,
+    has_current_verification: bool,
     verification_digest: str,
     previous_verification_digest: str,
 ) -> list[LeanFinding]:
     """Require second-round evidence to change after an actionable first round."""
 
-    if (
-        evaluation_round < 2
-        or not previous_had_actionable_findings
-        or verification_digest != previous_verification_digest
-    ):
+    if evaluation_round < 2 or not previous_had_actionable_findings:
+        return []
+    if has_current_verification and verification_digest != previous_verification_digest:
         return []
     return [
         make_finding(

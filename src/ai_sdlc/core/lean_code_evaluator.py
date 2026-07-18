@@ -107,6 +107,7 @@ def _collect_findings(options: LeanEvaluationOptions, metrics) -> list[LeanFindi
         *targeted_verification_findings(
             options.evaluation_round,
             options.previous_had_actionable_findings,
+            bool(options.verification_refs),
             verification_digest(options.verification_refs),
             options.previous_verification_digest,
         ),

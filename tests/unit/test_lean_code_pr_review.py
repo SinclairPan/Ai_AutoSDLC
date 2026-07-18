@@ -35,6 +35,7 @@ from ai_sdlc.core.pr_review_service import (
     PRReviewStartOptions,
     attest_pr_review,
     close_pr_review,
+    doctor_pr_review,
     start_pr_review,
 )
 from ai_sdlc.models.work import WorkType
@@ -100,6 +101,64 @@ def test_pr_review_blocks_lean_binding_for_different_diff_source(
     assert started.status == PRReviewCommandStatus.BLOCKED
     assert "Lean source snapshot" in started.blocker
     assert "diff source" in started.blocker
+
+
+def test_pr_review_preview_blocks_stale_lean_report(tmp_path: Path) -> None:
+    _seed_lean_loop(tmp_path, "impl-preview-stale")
+    _write(tmp_path, "src/app.py", "def _small():\n    return 2\n")
+
+    dry_run = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-preview-stale",
+            dry_run=True,
+        )
+    )
+    doctor = doctor_pr_review(
+        root=tmp_path,
+        base_ref="",
+        diff_source="local-unstaged",
+        provider_id="mock-reviewer",
+    )
+
+    assert dry_run.status == PRReviewCommandStatus.BLOCKED
+    assert doctor.status == PRReviewCommandStatus.BLOCKED
+    assert "lean" in dry_run.blocker.lower()
+    assert doctor.blocker == dry_run.blocker
+
+
+def test_pr_review_preview_blocks_different_lean_diff_source(tmp_path: Path) -> None:
+    _seed_lean_loop(tmp_path, "impl-preview-source-mismatch")
+    patch = _git_output(tmp_path, "diff", "--binary", "--no-ext-diff", "--no-textconv")
+    patch_path = tmp_path / ".ai-sdlc" / "reviews" / "preview-source.patch"
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    patch_path.write_bytes(patch)
+    patch_ref = patch_path.relative_to(tmp_path).as_posix()
+
+    dry_run = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file=patch_ref,
+            provider_id="mock-reviewer",
+            review_id="review-preview-source-mismatch",
+            dry_run=True,
+        )
+    )
+    doctor = doctor_pr_review(
+        root=tmp_path,
+        base_ref="",
+        diff_source="patch",
+        patch_file=patch_ref,
+        provider_id="mock-reviewer",
+    )
+
+    assert dry_run.status == PRReviewCommandStatus.BLOCKED
+    assert doctor.status == PRReviewCommandStatus.BLOCKED
+    assert "diff source" in dry_run.blocker
+    assert doctor.blocker == dry_run.blocker
 
 
 def test_pr_review_blocks_patch_binding_for_different_head(tmp_path: Path) -> None:

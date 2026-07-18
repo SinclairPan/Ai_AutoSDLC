@@ -242,7 +242,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             next_action="Fix the diff source and rerun local PR review.",
             source_resolution=source_resolution,
         )
-    lean_source_blocker = _lean_source_mismatch(
+    lean_source_blocker = lean_source_mismatch(
         root,
         options.lean_binding,
         source_resolution,
@@ -527,7 +527,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
     )
 
 
-def _lean_source_mismatch(
+def lean_source_mismatch(
     root: Path,
     binding: LeanReviewBinding | None,
     source: SourceAdapterResolution,
@@ -1116,5 +1116,6 @@ __all__ = [
     "analyze_pr_review_redaction",
     "build_review_pack",
     "decide_incomplete_review_pack",
+    "lean_source_mismatch",
     "resolve_review_input_for_source",
 ]

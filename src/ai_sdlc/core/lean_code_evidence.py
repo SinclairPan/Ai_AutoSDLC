@@ -155,16 +155,17 @@ def implementation_verification_artifacts(
                 continue
             path = _safe_path(root, reference)
             digest = _digest(path.read_bytes())
-            _receipt, issue = validate_execution_receipt(
+            receipt, issue = validate_execution_receipt(
                 root,
                 reference,
                 expected_digest=digest,
                 expected_purpose="targeted-verification",
                 expected_loop_id=impl_input.loop_id,
-                current_diff_hash=current_diff_hash,
             )
-            if issue:
+            if issue or receipt is None:
                 raise ValueError(f"targeted verification receipt is invalid: {issue}")
+            if current_diff_hash and receipt.diff_hash != current_diff_hash:
+                continue
             references.append(reference)
             digests[reference] = digest
     ordered = tuple(sorted(set(references)))

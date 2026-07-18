@@ -53,6 +53,7 @@ from ai_sdlc.core.pr_review_pack import (
     analyze_pr_review_redaction,
     build_review_pack,
     decide_incomplete_review_pack,
+    lean_source_mismatch,
     resolve_review_input_for_source,
 )
 from ai_sdlc.core.pr_review_provider import (
@@ -2032,6 +2033,38 @@ def _preview(
         )
     provider_options = _normalize_provider_options(
         _apply_policy_provider_default(options, policy)
+    )
+    lean_binding, lean_blocker = resolve_lean_review_binding(root)
+    if not lean_blocker:
+        lean_blocker = lean_source_mismatch(
+            root,
+            lean_binding,
+            source_resolution,
+            changed_files,
+        )
+    if lean_blocker:
+        checks.append(
+            PRReviewCheck(
+                name="lean",
+                status=PRReviewCommandStatus.BLOCKED,
+                detail=lean_blocker,
+            )
+        )
+        return (
+            checks,
+            PRReviewCommandStatus.BLOCKED,
+            lean_blocker,
+            "Run a fresh passed Lean evaluation for the exact PR review diff source.",
+            None,
+            None,
+            source_resolution,
+        )
+    checks.append(
+        PRReviewCheck(
+            name="lean",
+            status=PRReviewCommandStatus.READY,
+            detail="Lean prerequisite is satisfied or not enabled.",
+        )
     )
     provider_blocker = _unsupported_provider_blocker(provider_options.provider_id)
     if provider_blocker:

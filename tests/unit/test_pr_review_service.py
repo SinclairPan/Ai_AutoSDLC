@@ -92,6 +92,7 @@ def test_start_dry_run_rejects_unknown_provider(tmp_path) -> None:
     assert [check.name for check in result.checks] == [
         "init",
         "diff_source",
+        "lean",
         "provider",
     ]
     assert not (tmp_path / ".ai-sdlc" / "reviews").exists()
@@ -238,7 +239,12 @@ def test_start_dry_run_preserves_blocked_model_policy(tmp_path) -> None:
     assert result.status == PRReviewCommandStatus.BLOCKED
     assert "forbids sending code" in result.blocker
     assert result.next_action == "Choose an allowed model or update loop-policy.yaml."
-    assert [check.name for check in result.checks] == ["init", "diff_source", "model"]
+    assert [check.name for check in result.checks] == [
+        "init",
+        "diff_source",
+        "lean",
+        "model",
+    ]
     assert result.checks[-1].status == PRReviewCommandStatus.BLOCKED
     assert not (tmp_path / ".ai-sdlc" / "reviews").exists()
 
@@ -267,7 +273,12 @@ def test_doctor_preserves_blocked_model_policy(tmp_path) -> None:
     assert result.status == PRReviewCommandStatus.BLOCKED
     assert "forbids sending code" in result.blocker
     assert result.next_action == "Choose an allowed model or update loop-policy.yaml."
-    assert [check.name for check in result.checks] == ["init", "diff_source", "model"]
+    assert [check.name for check in result.checks] == [
+        "init",
+        "diff_source",
+        "lean",
+        "model",
+    ]
     assert result.checks[-1].status == PRReviewCommandStatus.BLOCKED
 
 
