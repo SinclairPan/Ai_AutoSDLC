@@ -139,6 +139,15 @@ def revalidate_source_snapshot(root: Path, snapshot: SourceSnapshot) -> SourceFr
             reason="commit_changed",
             current_diff_hash=current.diff_hash,
         )
+    if (
+        snapshot.source_kind in {"local-staged", "local-unstaged"}
+        and current.index_identity != snapshot.index_identity
+    ):
+        return SourceFreshness(
+            fresh=False,
+            reason="index_identity_changed",
+            current_diff_hash=current.diff_hash,
+        )
     return SourceFreshness(fresh=True, current_diff_hash=current.diff_hash)
 
 
@@ -149,7 +158,7 @@ def _build_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
         return _worktree_parts(root, staged=True)
     if options.source_kind == "local-unstaged":
         return _worktree_parts(root, staged=False)
-    return _patch_parts(root, options.patch_file)
+    return _patch_parts(root, options)
 
 
 def _git_range_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
@@ -193,13 +202,14 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
         head_ref="INDEX" if staged else "WORKTREE",
         base_commit=head,
         head_commit=head,
-        index_identity=_digest(_git(root, "ls-files", "-s", "-z")),
+        index_identity=_index_identity(root),
         untracked_files=untracked,
         untracked_payload=_untracked_payload(root, untracked),
     )
 
 
-def _patch_parts(root: Path, patch_file: str) -> _SnapshotParts:
+def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
+    patch_file = options.patch_file
     if not patch_file.strip():
         raise ValueError("patch_file is required for patch source")
     path = (root / patch_file).resolve()
@@ -210,18 +220,25 @@ def _patch_parts(root: Path, patch_file: str) -> _SnapshotParts:
     if not path.is_file():
         raise ValueError(f"patch_file not found: {patch_file}")
     patch = path.read_bytes()
-    head = _git_text(root, "rev-parse", "HEAD")
+    head_ref = options.head_ref.strip() or "HEAD"
+    head = _git_text(root, "rev-parse", head_ref)
     from ai_sdlc.core.source_snapshot_view import patch_name_status
 
     return _SnapshotParts(
         diff_bytes=patch,
         status_bytes=patch_name_status(root, path.relative_to(root).as_posix(), head),
         base_ref="patch-file",
-        head_ref="HEAD",
+        head_ref=head_ref,
         base_commit=head,
         head_commit=head,
         patch_file=path.relative_to(root).as_posix(),
     )
+
+
+def _index_identity(root: Path) -> str:
+    entries = _git(root, "ls-files", "-s", "-z")
+    flags = _git(root, "ls-files", "-v", "-z")
+    return _digest(entries + b"\0INDEX-FLAGS\0" + flags)
 
 
 def _parse_name_status(payload: bytes) -> list[tuple[str, str, str]]:

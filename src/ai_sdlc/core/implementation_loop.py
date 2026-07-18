@@ -66,6 +66,7 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
 
 _TASK_ID = re.compile(r"\bT\d{2,3}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
@@ -126,14 +127,22 @@ def start_implementation_loop(
             artifacts=planned_refs,
         )
 
-    impl_input = build_implementation_input(
-        root=root,
-        loop_id=loop_id,
-        work_item_dir=work_item_dir,
-        design_contract_loop_id=design_contract_loop_id,
-        design_contract_report_path=design_report_path,
-        task_items=task_items,
-    )
+    try:
+        impl_input = build_implementation_input(
+            root=root,
+            loop_id=loop_id,
+            work_item_dir=work_item_dir,
+            design_contract_loop_id=design_contract_loop_id,
+            design_contract_report_path=design_report_path,
+            task_items=task_items,
+        )
+    except LoopPolicyError as exc:
+        return _blocked_result(
+            str(exc),
+            loop_id=loop_id,
+            next_action=f"Fix {LOOP_POLICY_PATH.as_posix()} and retry.",
+            artifacts=planned_refs,
+        )
     tasks = ImplementationTasks(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,

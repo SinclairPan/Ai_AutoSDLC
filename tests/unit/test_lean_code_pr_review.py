@@ -72,6 +72,101 @@ def test_review_pack_contains_fresh_lean_digest_chain(tmp_path: Path) -> None:
     assert pack.lean_diff_hash == binding.diff_hash
 
 
+def test_pr_review_blocks_lean_binding_for_different_diff_source(
+    tmp_path: Path,
+) -> None:
+    _seed_lean_loop(tmp_path, "impl-review-source-mismatch")
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    patch_path = tmp_path / ".ai-sdlc" / "reviews" / "review-source.patch"
+    patch_path.parent.mkdir(parents=True, exist_ok=True)
+    patch_path.write_bytes(patch)
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file=patch_path.relative_to(tmp_path).as_posix(),
+            provider_id="mock-reviewer",
+            review_id="review-source-mismatch",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.BLOCKED
+    assert "Lean source snapshot" in started.blocker
+    assert "diff source" in started.blocker
+
+
+def test_pr_review_blocks_patch_binding_for_different_head(tmp_path: Path) -> None:
+    patch_file = ".ai-sdlc/reviews/lean-source.patch"
+    _seed_lean_loop(
+        tmp_path,
+        "impl-patch-head-mismatch",
+        source_kind="patch",
+        patch_file=patch_file,
+    )
+    head = _git_output(tmp_path, "rev-parse", "HEAD").decode().strip()
+    tree = _git_output(tmp_path, "rev-parse", "HEAD^{tree}").decode().strip()
+    other = (
+        subprocess.run(
+            ["git", "commit-tree", tree, "-p", head],
+            cwd=tmp_path,
+            input=b"other head\n",
+            capture_output=True,
+            check=True,
+        )
+        .stdout.decode()
+        .strip()
+    )
+    _git(tmp_path, "branch", "other", other)
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file=patch_file,
+            head_ref="other",
+            provider_id="mock-reviewer",
+            review_id="review-patch-head-mismatch",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.BLOCKED
+    assert "Lean source snapshot" in started.blocker
+    assert "diff source" in started.blocker
+
+
+def test_pr_review_includes_untracked_files_from_matching_unstaged_source(
+    tmp_path: Path,
+) -> None:
+    _seed_lean_loop(
+        tmp_path,
+        "impl-review-untracked",
+        include_untracked=True,
+    )
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-untracked",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    diff = (Path(started.review_dir) / "diff.patch").read_text("utf-8")
+    assert "tests/untracked_probe.py" in diff
+    assert "print('untracked')" in diff
+
+
 def test_review_run_detects_lean_report_tamper_at_same_path(tmp_path: Path) -> None:
     _seed_lean_loop(tmp_path, "impl-tamper")
     binding, blocker = resolve_lean_review_binding(tmp_path)
@@ -234,9 +329,30 @@ def test_lean_exception_risk_propagates_to_pr_verdict_and_attestation(
     assert attestation.lean_exception_ids == ["EX-PR"]
 
 
-def _seed_lean_loop(root: Path, loop_id: str) -> None:
+def _seed_lean_loop(
+    root: Path,
+    loop_id: str,
+    *,
+    source_kind: str = "local-unstaged",
+    patch_file: str = "",
+    include_untracked: bool = False,
+) -> None:
     _init_repo(root)
     _write(root, "src/app.py", "def _small():\n    return 1\n")
+    if include_untracked:
+        _write(root, "tests/untracked_probe.py", "print('untracked')\n")
+    if source_kind == "patch":
+        target = root / patch_file
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(
+            _git_output(
+                root,
+                "diff",
+                "--binary",
+                "--no-ext-diff",
+                "--no-textconv",
+            )
+        )
     artifacts = implementation_artifacts(root, loop_id)
     store = LoopArtifactStore(root)
     store.create_loop_run_dir(loop_id, loop_type=LoopType.IMPLEMENTATION.value)
@@ -252,7 +368,10 @@ def _seed_lean_loop(root: Path, loop_id: str) -> None:
             design_contract_loop_id="design-review",
             work_type=WorkType.NEW_REQUIREMENT,
             quality_profiles=["lean-code"],
-            declared_scope=["src/app.py"],
+            declared_scope=[
+                "src/app.py",
+                *(["tests/untracked_probe.py"] if include_untracked else []),
+            ],
         ),
     )
     store.write_json_artifact(
@@ -272,7 +391,14 @@ def _seed_lean_loop(root: Path, loop_id: str) -> None:
             loop_run_path=artifacts.loop_run_path.relative_to(root).as_posix(),
         ),
     )
-    result = run_lean_check(LeanCheckOptions(root=root, loop_id=loop_id))
+    result = run_lean_check(
+        LeanCheckOptions(
+            root=root,
+            loop_id=loop_id,
+            source_kind=source_kind,
+            patch_file=patch_file,
+        )
+    )
     assert result.status == "ready"
 
 
@@ -405,3 +531,10 @@ def _git(root: Path, *args: str) -> None:
     result = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
     if result.returncode:
         raise AssertionError(result.stderr.decode("utf-8", errors="replace"))
+
+
+def _git_output(root: Path, *args: str) -> bytes:
+    result = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
+    if result.returncode:
+        raise AssertionError(result.stderr.decode("utf-8", errors="replace"))
+    return result.stdout

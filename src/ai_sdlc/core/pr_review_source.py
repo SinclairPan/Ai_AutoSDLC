@@ -13,6 +13,7 @@ from ai_sdlc.core.pr_review_models import (
     SourceAccessStatus,
     SourceAdapterResolution,
 )
+from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
 
 LOCAL_WORKTREE_SOURCE_KINDS = ("local-staged", "local-unstaged")
 
@@ -30,7 +31,9 @@ class DiffSourceResolutionOptions:
     source_provider: str = ""
 
 
-def resolve_diff_source(options: DiffSourceResolutionOptions) -> SourceAdapterResolution:
+def resolve_diff_source(
+    options: DiffSourceResolutionOptions,
+) -> SourceAdapterResolution:
     """Resolve a review source without baking SCM-specific assumptions into callers."""
 
     source_kind = _parse_source_kind(options.source_kind)
@@ -207,19 +210,27 @@ def _resolve_local_worktree_source(
     source_kind: DiffSourceKind,
 ) -> SourceAdapterResolution:
     root = options.root.resolve()
-    diff_args = (
-        ("diff", "--cached", "--name-only")
-        if source_kind == DiffSourceKind.LOCAL_STAGED
-        else ("diff", "--name-only")
-    )
     try:
-        changed_files = _git_lines(root, *diff_args)
-        diff_text = _git_text(
-            root,
-            *(("diff", "--cached") if source_kind == DiffSourceKind.LOCAL_STAGED else ("diff",)),
+        # 与 Lean 复用 snapshot，统一 index、未跟踪文件和 diff 身份。
+        snapshot = build_source_snapshot(
+            SourceSnapshotOptions(root=root, source_kind=source_kind.value)
         )
-        head_commit = GitClient(root).resolve_revision("HEAD")
-    except GitError as exc:
+    except ValueError as exc:
+        label = "staged" if source_kind == DiffSourceKind.LOCAL_STAGED else "unstaged"
+        if str(exc) == "source snapshot contains no changed files":
+            return SourceAdapterResolution(
+                source_kind=source_kind,
+                adapter_id=source_kind.value,
+                repo_root=str(root),
+                head_ref="HEAD",
+                access_status=SourceAccessStatus.NEEDS_USER,
+                requires_user_choice=True,
+                unavailable_reason=f"no_{label}_changes",
+                blocker=f"No {label} changes are available for local PR review.",
+                next_command=(
+                    "Choose another --diff-source or create the expected local changes."
+                ),
+            )
         return SourceAdapterResolution(
             source_kind=source_kind,
             adapter_id=source_kind.value,
@@ -227,42 +238,25 @@ def _resolve_local_worktree_source(
             head_ref="HEAD",
             access_status=SourceAccessStatus.BLOCKED,
             unavailable_reason="git_source_unavailable",
-            blocker=str(exc),
+            blocker=f"Cannot resolve {source_kind.value} source: {exc}",
             next_command="Check the Git repository state and rerun pr-review doctor.",
         )
-    if not changed_files:
-        label = "staged" if source_kind == DiffSourceKind.LOCAL_STAGED else "unstaged"
-        return SourceAdapterResolution(
-            source_kind=source_kind,
-            adapter_id=source_kind.value,
-            repo_root=str(root),
-            head_ref="HEAD",
-            head_commit=head_commit,
-            access_status=SourceAccessStatus.NEEDS_USER,
-            requires_user_choice=True,
-            unavailable_reason=f"no_{label}_changes",
-            blocker=f"No {label} changes are available for local PR review.",
-            next_command=(
-                "Choose another --diff-source or create the expected local changes."
-            ),
-        )
-    diff_hash = hashlib.sha256(diff_text.encode("utf-8")).hexdigest()
-    base_ref = "HEAD" if source_kind == DiffSourceKind.LOCAL_STAGED else "INDEX"
-    head_ref = "INDEX" if source_kind == DiffSourceKind.LOCAL_STAGED else "WORKTREE"
+    diff_hash = snapshot.diff_hash.removeprefix("sha256:")
     return SourceAdapterResolution(
         source_kind=source_kind,
         adapter_id=source_kind.value,
         source_id=source_kind.value,
         repo_root=str(root),
-        base_ref=base_ref,
-        head_ref=head_ref,
-        base_commit=head_commit,
-        head_commit=head_commit,
+        base_ref=snapshot.base_ref,
+        head_ref=snapshot.head_ref,
+        base_commit=snapshot.base_commit,
+        head_commit=snapshot.head_commit,
         patch_hash=diff_hash,
         access_status=SourceAccessStatus.RESOLVED,
         next_command=f"Start local PR review from {source_kind.value}.",
         source_metadata={
-            "changed_files": len(changed_files),
+            "changed_files": len(snapshot.changed_files),
+            "untracked_files": len(snapshot.untracked_files),
             "diff_hash": diff_hash,
         },
     )
@@ -291,10 +285,6 @@ def _git_text(root: Path, *args: str) -> str:
             f"{result.stderr.strip()}"
         )
     return result.stdout
-
-
-def _git_lines(root: Path, *args: str) -> list[str]:
-    return [line for line in _git_text(root, *args).splitlines() if line.strip()]
 
 
 def _p1_source_contract(

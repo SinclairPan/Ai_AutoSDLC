@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import difflib
+import hashlib
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -32,6 +34,11 @@ from ai_sdlc.core.pr_review_redaction import RedactionReport, analyze_redaction
 from ai_sdlc.core.pr_review_source import (
     DiffSourceResolutionOptions,
     resolve_diff_source,
+)
+from ai_sdlc.core.source_snapshot import (
+    SourceSnapshot,
+    SourceSnapshotOptions,
+    build_source_snapshot,
 )
 
 STRICT_OMITTED_FILE_POLICIES = {"blocked", "forbid", "fail-closed", "strict"}
@@ -233,6 +240,22 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             status=ReviewPackBuildStatus.BLOCKED,
             blocker=str(exc),
             next_action="Fix the diff source and rerun local PR review.",
+            source_resolution=source_resolution,
+        )
+    lean_source_blocker = _lean_source_mismatch(
+        root,
+        options.lean_binding,
+        source_resolution,
+        review_input.changed_files,
+    )
+    if lean_source_blocker:
+        return _build_result(
+            options=options,
+            review_dir=review_dir,
+            source_resolution_path=source_resolution_path,
+            status=ReviewPackBuildStatus.BLOCKED,
+            blocker=lean_source_blocker,
+            next_action="Run Lean evaluation for the exact PR review diff source.",
             source_resolution=source_resolution,
         )
     base_commit = source_resolution.base_commit
@@ -504,6 +527,50 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
     )
 
 
+def _lean_source_mismatch(
+    root: Path,
+    binding: LeanReviewBinding | None,
+    source: SourceAdapterResolution,
+    reviewed_files: list[str],
+) -> str:
+    if binding is None:
+        return ""
+    try:
+        snapshot_path = (root / binding.snapshot_path).resolve()
+        snapshot_path.relative_to(root)
+        payload = snapshot_path.read_bytes()
+        digest = f"sha256:{hashlib.sha256(payload).hexdigest()}"
+        if digest != binding.snapshot_digest:
+            return "Lean source snapshot digest changed before PR review."
+        evaluated = SourceSnapshot.model_validate_json(payload)
+        current = build_source_snapshot(
+            SourceSnapshotOptions(
+                root=root,
+                source_kind=str(source.source_kind),
+                base_ref=source.base_ref,
+                head_ref=source.head_ref,
+                patch_file=source.patch_file,
+            )
+        )
+    except (OSError, ValueError) as exc:
+        return f"Lean source snapshot cannot verify the PR review diff source: {exc}"
+    if evaluated.source_kind != current.source_kind:
+        return "Lean source snapshot does not match the PR review diff source kind."
+    identity = (
+        "diff_hash",
+        "base_commit",
+        "head_commit",
+        "index_identity",
+    )
+    if any(getattr(evaluated, field) != getattr(current, field) for field in identity):
+        return "Lean source snapshot does not match the resolved PR review diff source."
+    if evaluated.changed_files != current.changed_files or sorted(
+        reviewed_files
+    ) != sorted(current.changed_files):
+        return "Lean source snapshot file coverage does not match the PR review diff source."
+    return ""
+
+
 def _git_changed_files(root: Path, base_ref: str, head_ref: str) -> list[str]:
     cmd = ["git", "diff", "--name-only", f"{base_ref}...{head_ref}"]
     try:
@@ -560,8 +627,20 @@ def _resolve_review_input(
             base_file_bytes=_git_file_blobs(root, "HEAD", changed_files),
         )
     if source_kind == DiffSourceKind.LOCAL_UNSTAGED:
-        diff_text = _git_text(root, "diff")
-        changed_files = _git_name_only(root, "diff", "--name-only")
+        snapshot = build_source_snapshot(
+            SourceSnapshotOptions(root=root, source_kind="local-unstaged")
+        )
+        tracked_diff = _git_text(
+            root,
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+        )
+        diff_text = tracked_diff + "".join(
+            _untracked_file_diff(root, path) for path in snapshot.untracked_files
+        )
+        changed_files = snapshot.changed_files
         return ResolvedReviewInput(
             changed_files=changed_files,
             diff_text=diff_text,
@@ -599,7 +678,7 @@ def _diff_for_source(
     if source_kind == DiffSourceKind.LOCAL_STAGED:
         return _git_diff_for_paths(root, ["diff", "--cached"], included_files)
     if source_kind == DiffSourceKind.LOCAL_UNSTAGED:
-        return _git_diff_for_paths(root, ["diff"], included_files)
+        return _filter_patch_diff(review_input.diff_text, included_files)
     raise GitError(f"Unsupported resolved diff source: {source_resolution.source_kind}")
 
 
@@ -610,6 +689,30 @@ def _read_patch_text(root: Path, patch_file: str) -> str:
         return resolved.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
         raise GitError(f"Patch file is not accessible: {patch_file}") from exc
+
+
+def _untracked_file_diff(root: Path, path: str) -> str:
+    if "\n" in path or "\r" in path:
+        raise GitError("Untracked file paths containing newlines cannot be reviewed.")
+    payload = (root / path).read_bytes()
+    header = f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+    try:
+        lines = payload.decode("utf-8").splitlines()
+    except UnicodeDecodeError:
+        digest = hashlib.sha256(payload).hexdigest()
+        return (
+            header
+            + f"Binary files /dev/null and b/{path} differ\n"
+            + f"binary-sha256 {digest}\n"
+        )
+    patch = difflib.unified_diff(
+        [],
+        lines,
+        fromfile="/dev/null",
+        tofile=f"b/{path}",
+        lineterm="",
+    )
+    return header + "\n".join(patch) + "\n"
 
 
 def _patch_changed_files(patch_text: str) -> list[str]:
