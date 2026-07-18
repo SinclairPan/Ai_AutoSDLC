@@ -371,6 +371,40 @@ def test_direct_red_execution_rejects_non_assertion_signature(
     assert not list(execution_root.glob("*/receipt.json"))
 
 
+def test_lean_execution_blocks_when_unstaged_source_is_empty(tmp_path: Path) -> None:
+    loop_id = "impl-empty-unstaged-source"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    test_source = "tests/empty_unstaged_probe.py"
+    signature = "assertion:empty-unstaged-source"
+    _write(
+        tmp_path,
+        test_source,
+        f"print({signature!r})\nraise SystemExit(1)\n",
+    )
+    _git(tmp_path, "add", "src/app.py", test_source)
+
+    for purpose, failure_signature in (
+        ("targeted-verification", ""),
+        ("regression-red", signature),
+    ):
+        result = run_lean_command(
+            LeanExecutionOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                purpose=purpose,
+                command_argv=(sys.executable, test_source),
+                test_source_ref=test_source,
+                failure_signature=failure_signature,
+            )
+        )
+        assert result.status == "blocked"
+        assert "source snapshot" in result.blocker.lower()
+
+    execution_root = _lean_dir(tmp_path, loop_id) / "executions"
+    assert not list(execution_root.glob("*/receipt.json"))
+
+
 def test_verification_receipt_from_another_loop_cannot_advance_round(
     tmp_path: Path,
 ) -> None:

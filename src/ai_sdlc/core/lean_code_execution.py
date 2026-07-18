@@ -49,15 +49,18 @@ def run_lean_command(options: LeanExecutionOptions) -> LeanExecutionResult:
     issue = _options_issue(root, options)
     if issue:
         return _blocked(issue)
-    snapshot = build_source_snapshot(
-        SourceSnapshotOptions(
-            root=root,
-            source_kind=options.source_kind,
-            base_ref=options.base_ref,
-            head_ref=options.head_ref,
-            patch_file=options.patch_file,
+    try:
+        snapshot = build_source_snapshot(
+            SourceSnapshotOptions(
+                root=root,
+                source_kind=options.source_kind,
+                base_ref=options.base_ref,
+                head_ref=options.head_ref,
+                patch_file=options.patch_file,
+            )
         )
-    )
+    except (OSError, ValueError) as exc:
+        return _blocked(f"Lean execution source snapshot is unavailable: {exc}")
     receipt_id = options.receipt_id or uuid.uuid4().hex
     run_dir = _run_dir(root, options.loop_id, receipt_id)
     if run_dir.exists():
