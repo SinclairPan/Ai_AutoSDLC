@@ -439,6 +439,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             "high_risk_secret_policy": policy.high_risk_secret_policy,
             "allowed_omitted_file_policy": policy.allowed_omitted_file_policy,
             "incomplete_review_waiver": incomplete_decision.waiver_allowed,
+            "lean_binding_required": options.lean_binding is not None,
             "default_close_mode": policy.default_close_mode,
             "code_egress": options.code_egress,
         },

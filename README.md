@@ -131,6 +131,8 @@ ai-sdlc loop implementation lean-no-go --loop-id <implementation-loop-id> `
 
 `report`、`warning`、`blocking` 分别用于只报告非完整性 REQUIRED、要求定向修复、以及阻断未解决 REQUIRED；artifact 完整性、scope drift、验证失败和无效例外始终 fail-closed。当前语义指标的精确 adapter 为 Python AST。TypeScript、Java、Go 等语言仍保留确定性 diff/分类指标；缺少可靠语义 adapter 时会明确标记 `unsupported` 并进入 `needs_user`，不会用零复杂度或零调用者制造假结论。Local PR Reviewer 与 Implementation Agent 保持独立，并将 report、snapshot、policy、findings 和 evaluation input 纳入 review-pack、final-report 与 attestation digest 链；内置审计证明独立进程与独立输入上下文，不宣称不同人类身份。需要职责分离时应另配 reviewer 账号/provider 并保留 actor/session 记录。CI 只验证确定性 artifact，不调用模型自动修复。
 
+本地 digest 链用于发现过期 artifact、单点变更和链内不一致，不是外部签名或不可变账本。能够同时改写全部本地 artifact、策略标记与 digest 的主体不在这项本地完整性保证范围；需要覆盖该信任边界时，应把 attestation 交由受保护 CI、外部审计存储或签名系统保管。
+
 ### 3. 预演与执行
 
 ```powershell

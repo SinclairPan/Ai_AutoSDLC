@@ -8,6 +8,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ai_sdlc.core.implementation_store import (
+    ImplementationArtifacts,
     implementation_artifacts,
     read_input,
     read_loop_run,
@@ -18,6 +19,7 @@ from ai_sdlc.core.lean_code_artifacts import LeanCurrentPointer
 from ai_sdlc.core.lean_code_models import LeanEvaluationInput, LeanEvaluationReport
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.lean_code_runtime import validate_lean_close
+from ai_sdlc.core.pr_review_models import ReviewPack, ReviewRun
 
 
 class LeanReviewBinding(BaseModel):
@@ -97,7 +99,20 @@ def resolve_lean_review_binding(root: Path) -> tuple[LeanReviewBinding | None, s
     ), ""
 
 
-def _read_binding_files(root: Path, paths):
+def _read_binding_files(
+    root: Path,
+    paths: ImplementationArtifacts,
+) -> tuple[
+    LeanCurrentPointer,
+    Path,
+    Path,
+    Path,
+    Path,
+    Path,
+    Path,
+    LeanEvaluationReport,
+    LeanEvaluationInput,
+]:
     pointer = LeanCurrentPointer.model_validate_json(
         (paths.loop_dir / "lean" / "current.json").read_text("utf-8")
     )
@@ -119,10 +134,22 @@ def _read_binding_files(root: Path, paths):
     )
 
 
-def validate_review_run_lean_binding(root: Path, review_run) -> str:
+def validate_review_run_lean_binding(root: Path, review_run: ReviewRun) -> str:
     """Revalidate every persisted Lean byte digest against the current binding."""
 
     if not getattr(review_run, "lean_report_path", ""):
+        if _has_stored_lean_metadata(review_run):
+            return "Stored Lean binding is incomplete."
+        pack_requires_lean, pack_blocker = _review_pack_requires_lean(root, review_run)
+        if pack_blocker:
+            return pack_blocker
+        if pack_requires_lean:
+            return "Stored Lean binding is incomplete relative to its review pack."
+        current, blocker = resolve_lean_review_binding(root)
+        if blocker:
+            return blocker
+        if current is not None:
+            return "Required Lean binding is missing from the reviewer run."
         return ""
     stored = _stored_binding(review_run)
     for path, expected, label in _binding_files(stored):
@@ -140,6 +167,27 @@ def validate_review_run_lean_binding(root: Path, review_run) -> str:
     if current.model_dump() != stored.model_dump():
         return "Current Lean binding changed after the reviewer run."
     return ""
+
+
+def _has_stored_lean_metadata(binding: ReviewRun | ReviewPack) -> bool:
+    return any(
+        bool(value)
+        for name, value in binding.model_dump().items()
+        if name.startswith("lean_")
+    )
+
+
+def _review_pack_requires_lean(root: Path, review_run: ReviewRun) -> tuple[bool, str]:
+    if not review_run.review_pack_path:
+        return False, ""
+    try:
+        pack = ReviewPack.model_validate_json(
+            _safe_path(root, review_run.review_pack_path).read_text(encoding="utf-8")
+        )
+    except (OSError, ValueError, ValidationError) as exc:
+        return False, f"Lean review pack cannot be verified: {exc}"
+    required_by_profile = pack.policy_decisions.get("lean_binding_required") is True
+    return required_by_profile or _has_stored_lean_metadata(pack), ""
 
 
 def _binding_from_paths(
@@ -176,7 +224,7 @@ def _binding_from_paths(
     )
 
 
-def _stored_binding(review_run) -> LeanReviewBinding:
+def _stored_binding(review_run: ReviewRun) -> LeanReviewBinding:
     return LeanReviewBinding(
         implementation_loop_id=review_run.lean_implementation_loop_id,
         work_item_id=review_run.lean_work_item_id,

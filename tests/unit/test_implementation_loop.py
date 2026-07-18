@@ -347,6 +347,19 @@ def test_close_implementation_loop_writes_close_artifact(tmp_path: Path) -> None
     )
     assert close_payload["artifact_kind"] == "implementation-close"
     assert close_payload["next_loop_type"] == "local-pr-review"
+    spec_path = tmp_path / "specs" / "demo-implementation-loop" / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8") + "\n前端页面和浏览器证据。\n",
+        encoding="utf-8",
+    )
+
+    repeated = close_implementation_loop(
+        ImplementationCloseOptions(root=tmp_path, loop_id="impl-close", yes=True)
+    )
+
+    assert repeated.next_action == "Run ai-sdlc pr-review start."
+    assert repeated.next_guidance.reason.endswith("local-pr-review.")
+    assert repeated.next_guidance.requires_model is True
 
 
 def test_close_implementation_loop_routes_frontend_work_to_frontend_evidence(

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from ai_sdlc.core.close_check import _local_pr_review_artifact_blocker
 from ai_sdlc.core.implementation_models import (
+    CURRENT_IMPLEMENTATION_PATH,
     ImplementationCurrentPointer,
     ImplementationInput,
     ImplementationProgress,
@@ -257,6 +258,140 @@ def test_review_run_detects_lean_report_tamper_at_same_path(tmp_path: Path) -> N
     report.write_text(report.read_text("utf-8") + "\n", encoding="utf-8")
 
     assert "changed" in validate_review_run_lean_binding(tmp_path, review_run).lower()
+
+
+def test_review_run_cannot_remove_required_lean_binding(tmp_path: Path) -> None:
+    _seed_lean_loop(tmp_path, "impl-binding-removed")
+    binding, blocker = resolve_lean_review_binding(tmp_path)
+    assert blocker == ""
+    assert binding is not None
+    review_run = ReviewRun(
+        review_id="review-binding-removed",
+        loop_id="pr-loop-binding-removed",
+        lean_report_path=binding.report_path,
+        lean_report_digest=binding.report_digest,
+        lean_report_markdown_path=binding.report_markdown_path,
+        lean_report_markdown_digest=binding.report_markdown_digest,
+        lean_input_path=binding.input_path,
+        lean_input_digest=binding.input_digest,
+        lean_snapshot_path=binding.snapshot_path,
+        lean_snapshot_digest=binding.snapshot_digest,
+        lean_findings_path=binding.findings_path,
+        lean_findings_digest=binding.findings_digest,
+        lean_policy_path=binding.policy_path,
+        lean_policy_snapshot_digest=binding.policy_snapshot_digest,
+        lean_diff_hash=binding.diff_hash,
+        lean_policy_digest=binding.policy_digest,
+        lean_implementation_loop_id=binding.implementation_loop_id,
+        lean_work_item_id=binding.work_item_id,
+    ).model_copy(update={"lean_report_path": ""})
+
+    validation = validate_review_run_lean_binding(tmp_path, review_run)
+
+    assert "incomplete" in validation.lower()
+
+
+def test_partial_lean_binding_is_not_treated_as_legacy(tmp_path: Path) -> None:
+    legacy = ReviewRun(review_id="legacy-review", loop_id="legacy-loop")
+    assert validate_review_run_lean_binding(tmp_path, legacy) == ""
+
+    for update in (
+        {"lean_report_digest": "sha256:deadbeef"},
+        {"lean_implementation_loop_id": "impl-old"},
+    ):
+        validation = validate_review_run_lean_binding(
+            tmp_path,
+            legacy.model_copy(update=update),
+        )
+        assert "incomplete" in validation.lower()
+
+
+def test_review_pack_prevents_fully_removed_lean_binding(tmp_path: Path) -> None:
+    _seed_lean_loop(tmp_path, "impl-pack-binding")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-pack-binding",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED
+    review_run = ReviewRun.model_validate_json(
+        (Path(started.review_dir) / "review-run.json").read_text(encoding="utf-8")
+    )
+    empty_binding = {
+        name: []
+        if name == "lean_exception_ids"
+        else False
+        if name == "lean_risk_accepted"
+        else ""
+        for name in ReviewRun.model_fields
+        if name.startswith("lean_")
+    }
+    stripped = review_run.model_copy(update=empty_binding)
+    (tmp_path / CURRENT_IMPLEMENTATION_PATH).unlink()
+
+    validation = validate_review_run_lean_binding(tmp_path, stripped)
+
+    assert "incomplete" in validation.lower()
+    pack_path = tmp_path / review_run.review_pack_path
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    for name in tuple(pack):
+        if name.startswith("lean_"):
+            pack[name] = (
+                []
+                if name == "lean_exception_ids"
+                else False
+                if name == "lean_risk_accepted"
+                else ""
+            )
+    pack["lean_report_digest"] = "sha256:partial"
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+
+    validation = validate_review_run_lean_binding(tmp_path, stripped)
+
+    assert "incomplete" in validation.lower()
+
+
+def test_close_uses_profile_marker_when_lean_fields_are_removed(tmp_path: Path) -> None:
+    _seed_lean_loop(tmp_path, "impl-binding-downgrade")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-binding-downgrade",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED
+    review_run_path = Path(started.review_dir) / "review-run.json"
+    review_run = json.loads(review_run_path.read_text(encoding="utf-8"))
+    pack_path = tmp_path / review_run["review_pack_path"]
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    for payload in (pack, review_run):
+        for name in tuple(payload):
+            if name.startswith("lean_"):
+                payload[name] = (
+                    []
+                    if name == "lean_exception_ids"
+                    else False
+                    if name == "lean_risk_accepted"
+                    else ""
+                )
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+    review_run["review_pack_digest"] = hashlib.sha256(
+        pack_path.read_bytes()
+    ).hexdigest()
+    review_run_path.write_text(json.dumps(review_run), encoding="utf-8")
+    (tmp_path / CURRENT_IMPLEMENTATION_PATH).unlink()
+
+    closed = close_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert "lean" in closed.blocker.lower()
 
 
 def test_pr_binding_rejects_source_snapshot_tamper(tmp_path: Path) -> None:

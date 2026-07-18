@@ -583,6 +583,1460 @@ def _caller_c():
     assert _severities(report, "lean.public-callers") == set()
 
 
+def test_public_class_method_counts_resolved_call_forms(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+
+    def _from_self(self):
+        return self.build_value()
+""",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import ValueBuilder
+
+def _from_instance():
+    builder = ValueBuilder()
+    return builder.build_value()
+
+def _from_class():
+    return ValueBuilder.build_value(ValueBuilder())
+""",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_public_class_method_counts_annotated_instance_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}(builder: ValueBuilder):\n    return builder.build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.symbol == "ValueBuilder.build_value"
+    assert method.caller_count == 3
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_reassigned_instance_does_not_count_as_class_method_caller(
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import ValueBuilder
+from src.other import OtherBuilder
+
+def _caller():
+    builder = ValueBuilder()
+    builder = OtherBuilder()
+    return builder.build_value()
+""",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_tuple_rebinding_instance_does_not_count_target_method(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = ValueBuilder()
+    builder, marker = OtherBuilder(), None
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_deleted_instance_does_not_count_target_method(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = ValueBuilder()
+    del builder
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 0
+
+
+def test_annotation_without_value_preserves_target_instance(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {"src/other.py": "class OtherBuilder:\n    pass\n"},
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = ValueBuilder()
+    builder: OtherBuilder
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 3
+
+
+def test_comprehension_target_does_not_shadow_outer_class(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    [ValueBuilder for ValueBuilder in [object()]]
+    return ValueBuilder().build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 3
+
+
+def test_shadowed_target_class_name_does_not_satisfy_caller_budget(
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    ValueBuilder = OtherBuilder
+    return ValueBuilder().build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_shadowing_target_class_with_parameter_does_not_count(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}(ValueBuilder):
+    return ValueBuilder().build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 0
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_reassigned_self_does_not_count_as_target_method_caller(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    methods = "\n".join(
+        f"""    def _caller_{index}(self):
+        self = OtherBuilder()
+        return self.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        f"""from src.other import OtherBuilder
+
+class ValueBuilder:
+    def build_value(self):
+        return 1
+
+{methods}""",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_loop_rebinding_instance_does_not_count_target_method(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = ValueBuilder()
+    for builder in [OtherBuilder()]:
+        return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_exception_binding_does_not_shadow_as_target_class(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherError(Exception):
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    try:
+        raise OtherError()
+    except OtherError as ValueBuilder:
+        return ValueBuilder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherError\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_exception_and_context_bindings_clear_target_instance(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherError(Exception):
+    def build_value(self):
+        return 2
+
+class OtherBuilder:
+    def build_value(self):
+        return 3
+
+class OtherContext:
+    def __enter__(self):
+        return OtherBuilder()
+
+    def __exit__(self, *args):
+        return False
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import ValueBuilder
+from src.other import OtherContext, OtherError
+
+def _except_a():
+    builder = ValueBuilder()
+    try:
+        raise OtherError()
+    except OtherError as builder:
+        return builder.build_value()
+
+def _except_b():
+    builder = ValueBuilder()
+    try:
+        raise OtherError()
+    except OtherError as builder:
+        return builder.build_value()
+
+def _context():
+    builder = ValueBuilder()
+    with OtherContext() as builder:
+        return builder.build_value()
+""",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_package_import_alias_resolves_class_method_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    return target_api.ValueBuilder().build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src import api as target_api\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.symbol == "ValueBuilder.build_value"
+    assert method.caller_count == 3
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_local_import_alias_resolves_class_method_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/pkg/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    from src.pkg.api import ValueBuilder as VB
+    return VB().build_value()
+"""
+        for index in range(3)
+    )
+    _write(tmp_path, "src/pkg/callers.py", callers)
+
+    report = _evaluate(tmp_path, scope=("src/pkg/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 3
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_relative_import_resolves_class_method_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/pkg/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    return ValueBuilder().build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/pkg/callers.py",
+        f"from .api import ValueBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/pkg/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 3
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_package_initializer_resolves_relative_class_import(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/pkg/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return ValueBuilder().build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/pkg/__init__.py",
+        f"from .api import ValueBuilder\n\n{callers}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/pkg/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_module_rebinding_does_not_preserve_target_class_alias(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    _write(
+        tmp_path,
+        "src/assign.py",
+        """from src.api import ValueBuilder
+from src.other import OtherBuilder
+ValueBuilder = OtherBuilder
+
+def _caller_a():
+    return ValueBuilder().build_value()
+
+def _caller_b():
+    return ValueBuilder().build_value()
+""",
+    )
+    _write(
+        tmp_path,
+        "src/reimport.py",
+        """from src.api import ValueBuilder as VB
+from src.other import OtherBuilder as VB
+
+def _caller_c():
+    return VB().build_value()
+""",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_local_reimport_does_not_preserve_target_class_alias(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    from src.api import ValueBuilder as VB
+    from src.other import OtherBuilder as VB
+    return VB().build_value()
+"""
+        for index in range(3)
+    )
+    _write(tmp_path, "src/callers.py", callers)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_branch_order_does_not_change_possible_target_callers(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    target_first = "\n".join(
+        f"""def _first_{index}(flag):
+    if flag:
+        builder = ValueBuilder()
+    else:
+        builder = OtherBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    target_last = "\n".join(
+        f"""def _last_{index}(flag):
+    if flag:
+        builder = OtherBuilder()
+    else:
+        builder = ValueBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{target_first}\n{target_last}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 6
+
+
+def test_named_expression_instance_counts_target_method_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return (builder := ValueBuilder()).build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_conditional_expression_counts_possible_target_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}(flag):
+    builder = ValueBuilder() if flag else OtherBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_try_branch_order_does_not_change_possible_target_callers(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    target_success = "\n".join(
+        f"""def _success_{index}():
+    try:
+        might_fail()
+        builder = ValueBuilder()
+    except Exception:
+        builder = OtherBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    target_handler = "\n".join(
+        f"""def _handler_{index}():
+    try:
+        might_fail()
+        builder = OtherBuilder()
+    except Exception:
+        builder = ValueBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{target_success}\n{target_handler}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 6
+
+
+def test_try_midpoint_exception_preserves_possible_target_instance(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = OtherBuilder()
+    try:
+        builder = ValueBuilder()
+        might_fail()
+        builder = OtherBuilder()
+    except RuntimeError:
+        pass
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_module_try_midpoint_exception_preserves_possible_target_binding(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return Builder().build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import ValueBuilder
+from src.other import OtherBuilder
+Builder = OtherBuilder
+try:
+    Builder = ValueBuilder
+    might_fail()
+    Builder = OtherBuilder
+except RuntimeError:
+    pass
+
+"""
+        + callers,
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_try_nested_if_preserves_possible_exception_state(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}(flag):
+    builder = OtherBuilder()
+    try:
+        if flag:
+            builder = ValueBuilder()
+            might_fail()
+            builder = OtherBuilder()
+    except RuntimeError:
+        pass
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_try_nested_with_preserves_possible_exception_state(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = OtherBuilder()
+    try:
+        with context():
+            builder = ValueBuilder()
+            might_fail()
+            builder = OtherBuilder()
+    except RuntimeError:
+        pass
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_failed_final_assignment_does_not_create_handler_target(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    builder = OtherBuilder()
+    try:
+        builder = ValueBuilder()
+    except RuntimeError:
+        return builder.build_value()
+    return 0
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_failed_final_import_does_not_create_handler_target(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    Builder = OtherBuilder
+    try:
+        from src.api import ValueBuilder as Builder
+    except ImportError:
+        return Builder().build_value()
+    return 0
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.other import OtherBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+
+
+def test_module_try_nested_if_preserves_possible_exception_state(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return Builder().build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import ValueBuilder
+from src.other import OtherBuilder
+Builder = OtherBuilder
+try:
+    if FLAG:
+        Builder = ValueBuilder
+        might_fail()
+        Builder = OtherBuilder
+except RuntimeError:
+    pass
+
+"""
+        + callers,
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_match_case_order_does_not_change_possible_target_callers(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    target_first = "\n".join(
+        f"""def _first_{index}(value):
+    match value:
+        case 0:
+            builder = ValueBuilder()
+        case _:
+            builder = OtherBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    target_last = target_first.replace("_first_", "_last_").replace(
+        "builder = ValueBuilder()\n        case _:\n            builder = OtherBuilder()",
+        "builder = OtherBuilder()\n        case _:\n            builder = ValueBuilder()",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{target_first}\n{target_last}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 6
+
+
+def test_zero_iteration_loops_preserve_possible_target_instance(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    for_callers = "\n".join(
+        f"""def _for_{index}(values):
+    builder = ValueBuilder()
+    for builder in values:
+        builder = OtherBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    while_callers = "\n".join(
+        f"""def _while_{index}(flag):
+    builder = ValueBuilder()
+    while flag:
+        builder = OtherBuilder()
+    return builder.build_value()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{for_callers}\n{while_callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 6
+
+
+def test_module_control_flow_preserves_possible_target_bindings(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return Builder().build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/module_if.py",
+        """from src.api import ValueBuilder
+from src.other import OtherBuilder
+if FLAG:
+    Builder = ValueBuilder
+else:
+    Builder = OtherBuilder
+
+"""
+        + callers,
+    )
+    imported_callers = callers.replace("Builder", "VB").replace(
+        "_caller_", "_imported_"
+    )
+    _write(
+        tmp_path,
+        "src/module_try.py",
+        """try:
+    from src.api import ValueBuilder as VB
+except ImportError:
+    from src.other import OtherBuilder as VB
+
+"""
+        + imported_callers,
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 6
+
+
+def test_local_try_import_preserves_possible_target_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"""def _caller_{index}():
+    try:
+        from src.api import ValueBuilder as Builder
+    except ImportError:
+        from src.other import OtherBuilder as Builder
+    return Builder().build_value()
+"""
+        for index in range(3)
+    )
+    _write(tmp_path, "src/callers.py", callers)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_named_expression_class_alias_counts_target_caller(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return ((Alias := ValueBuilder)()).build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
+def test_nested_closure_inherits_resolved_target_instance(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""def _outer_{index}():
+    builder = ValueBuilder()
+    def _inner():
+        return builder.build_value()
+    return _inner()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"from src.api import ValueBuilder\n\n{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.caller_count == 3
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_nested_closure_uses_instance_state_at_invocation(tmp_path: Path) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/other.py": """class OtherBuilder:
+    def build_value(self):
+        return 2
+"""
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        """class ValueBuilder:
+    def build_value(self):
+        return 1
+""",
+    )
+    before = "\n".join(
+        f"""def _before_{index}():
+    builder = ValueBuilder()
+    def _inner_before_{index}():
+        return builder.build_value()
+    result = _inner_before_{index}()
+    builder = OtherBuilder()
+    return result
+"""
+        for index in range(3)
+    )
+    after = "\n".join(
+        f"""def _after_{index}():
+    builder = ValueBuilder()
+    def _inner_after_{index}():
+        return builder.build_value()
+    builder = OtherBuilder()
+    return _inner_after_{index}()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        f"from src.other import OtherBuilder\n\n{before}\n{after}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 3
+
+
 def test_nested_function_call_counts_only_innermost_caller(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")

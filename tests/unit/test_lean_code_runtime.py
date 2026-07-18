@@ -786,6 +786,23 @@ def test_implementation_close_blocks_stale_lean_then_accepts_fresh_report(
     )
     assert closed.closed is True
     assert closed.loop_status == LoopStatus.CLOSED
+    report = json.loads(
+        implementation_artifacts(tmp_path, "impl-close").report_json_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["status"] == LoopStatus.PASSED
+    assert report["next_action"] == "Run ai-sdlc pr-review start."
+    artifacts = implementation_artifacts(tmp_path, "impl-close")
+    markdown = artifacts.report_md_path.read_text(encoding="utf-8")
+    persisted_loop = json.loads(artifacts.loop_run_path.read_text(encoding="utf-8"))
+    assert "- Status: `passed`" in markdown
+    assert persisted_loop["status"] == LoopStatus.CLOSED
+    execution_round = next(
+        item for item in persisted_loop["rounds"] if item["round_kind"] == "execution"
+    )
+    assert execution_round["status"] == LoopStatus.CLOSED
+    assert persisted_loop["rounds"][-1]["status"] == LoopStatus.PASSED
 
 
 def test_runtime_persists_valid_exception_and_allows_risk_accepted_close(

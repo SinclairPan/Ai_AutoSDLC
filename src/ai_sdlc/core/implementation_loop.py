@@ -56,6 +56,9 @@ from ai_sdlc.core.implementation_store import (
     resolve_loop_id,
     validate_explicit_loop_id,
 )
+from ai_sdlc.core.implementation_store import (
+    read_report as read_implementation_report,
+)
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.lean_code_runtime import validate_lean_close
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
@@ -328,6 +331,14 @@ def close_implementation_loop(
     impl_input, tasks, progress = loaded
     report = _build_report(root, impl_input, tasks, progress)
     if loop_run.status == LoopStatus.CLOSED and artifacts.close_path.is_file():
+        try:
+            report = read_implementation_report(artifacts.report_json_path)
+        except (OSError, ValueError) as exc:
+            return _blocked_result(
+                f"Persisted implementation report is malformed: {exc}",
+                loop_id=loop_run.loop_id,
+                artifacts=artifacts.refs(root, include_close=True),
+            )
         return _result_from_report(
             report,
             artifacts=artifacts.refs(root, include_close=True),
@@ -438,6 +449,12 @@ def _write_close(
     artifacts: ImplementationArtifacts,
     closed_by: str,
 ) -> ImplementationCommandResult:
+    report = report.model_copy(
+        update={
+            "status": LoopStatus.PASSED,
+            "next_action": _next_loop_action(report),
+        }
+    )
     next_loop_type = (
         LoopType.FRONTEND_EVIDENCE
         if report.requires_frontend_evidence
@@ -461,9 +478,7 @@ def _write_close(
             repo_relative_path(root, artifacts.close_path),
         )
         execution_round.next_action = loop_run.next_action
-    store = LoopArtifactStore(root)
-    store.write_json_artifact(artifacts.close_path, close)
-    store.write_json_artifact(artifacts.loop_run_path, loop_run)
+    _persist_close_artifacts(root, artifacts, report, close, loop_run)
     return _result_from_report(
         report,
         artifacts=artifacts.refs(root, include_close=True),
@@ -472,6 +487,22 @@ def _write_close(
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
     )
+
+
+def _persist_close_artifacts(
+    root: Path,
+    artifacts: ImplementationArtifacts,
+    report: ImplementationReport,
+    close: ImplementationClose,
+    loop_run: LoopRun,
+) -> None:
+    store = LoopArtifactStore(root)
+    store.write_json_artifact(artifacts.report_json_path, report)
+    store.write_markdown_artifact(
+        artifacts.report_md_path, _render_report_markdown(report)
+    )
+    store.write_json_artifact(artifacts.close_path, close)
+    store.write_json_artifact(artifacts.loop_run_path, loop_run)
 
 
 def _write_artifacts(
