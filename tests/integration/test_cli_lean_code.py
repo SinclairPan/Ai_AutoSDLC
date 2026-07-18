@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+from click import unstyle
 from typer.testing import CliRunner
 
 from ai_sdlc.cli.main import app
@@ -141,7 +142,7 @@ def test_controlled_execution_cli_requires_explicit_loop_id(tmp_path: Path) -> N
 
     for result in (verify, regression):
         assert result.exit_code == 2
-        assert "--loop-id" in result.output
+        assert "Missing option '--loop-id'" in unstyle(result.output)
 
 
 def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> None:
