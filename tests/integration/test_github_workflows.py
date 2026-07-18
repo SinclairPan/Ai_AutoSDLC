@@ -230,6 +230,61 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "actions/upload-artifact@v7" in workflow
 
 
+def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    assert workflow_path.is_file()
+    assert driver_path.is_file()
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert "clean-online-interactive-user-journey:" in workflow
+    assert (
+        "raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/main/packaging/install_online.ps1"
+        in workflow
+    )
+    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@main" in workflow
+    assert "pywinpty" in workflow
+    assert "windows-clean-online-user-e2e-evidence" in workflow
+    assert "PtyProcess.spawn" in driver
+    assert '[cli_path, "init", "."]' in driver
+    assert "请选择当前实际用于聊天开发的 AI 代理入口" in driver
+    assert "请选择当前项目默认使用的命令 Shell" in driver
+    assert 'process.write("2\\r\\n")' in driver
+    assert 'process.write("1\\r\\n")' in driver
+    assert '"--agent-target"' not in driver
+    assert '"--shell"' not in driver
+    assert "import ai_sdlc" not in driver
+
+
+def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> None:
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    assert driver_path.is_file()
+
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert '"program", "solution-confirm", "--dry-run"' in driver
+    assert '"--mode", "advanced"' in driver
+    assert '"--frontend-stack",' in driver
+    assert '"vue3",' in driver
+    assert '"--provider-id",' in driver
+    assert '"public-primevue",' in driver
+    assert '"--style-pack-id",' in driver
+    assert '"data-console",' in driver
+    assert "PrimeVue + @primeuix/themes + primeicons" in driver
+    assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in driver
+    assert "enterprise-default" in driver
+    assert "data-console" in driver
+    assert "high-clarity" in driver
+    assert "macos-glass" in driver
+    assert "enterprise-vue2" in driver
+    assert "--execute" not in driver
+    assert '["program", "managed-delivery-apply"' not in driver
+
+
 def test_historical_update_prompt_workflow_is_not_published() -> None:
     assert not (_WORKFLOWS_DIR / "windows-update-prompt-e2e.yml").exists()
 
