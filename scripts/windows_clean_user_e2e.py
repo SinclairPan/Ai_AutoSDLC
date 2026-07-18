@@ -285,7 +285,7 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
         cwd=project_root,
         evidence_path=evidence_root / "program-validate.txt",
     )
-    _assert_contains(validate_output, "Program manifest is valid")
+    _assert_contains(validate_output, "program validate: PASS")
 
     simple_output = _run_cli(
         cli_path,
