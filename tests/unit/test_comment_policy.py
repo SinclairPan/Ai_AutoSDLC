@@ -15,7 +15,9 @@ from ai_sdlc.core.comment_policy import (
 
 def test_comment_language_uses_current_user_language() -> None:
     zh = decide_comment_language(current_user_text="请修复支付回调，并保留原有注释")
-    en = decide_comment_language(current_user_text="Please fix the payment callback behavior")
+    en = decide_comment_language(
+        current_user_text="Please fix the payment callback behavior"
+    )
 
     assert zh.language is CommentLanguage.SIMPLIFIED_CHINESE
     assert zh.source == "current_user_text"
@@ -41,7 +43,9 @@ def test_comment_policy_adds_comments_for_complex_code_not_obvious_code() -> Non
 
 
 def test_comment_policy_detects_noise_comment() -> None:
-    assert should_avoid_noise_comment(code="save_user_profile(user)", comment="save user profile")
+    assert should_avoid_noise_comment(
+        code="save_user_profile(user)", comment="save user profile"
+    )
     assert should_avoid_noise_comment(code="保存用户资料(user)", comment="保存用户资料")
 
 
@@ -92,7 +96,9 @@ def test_comment_deletion_blocker_uses_git_diff(tmp_path: Path) -> None:
     _init_git_repo(tmp_path)
     source = tmp_path / "src" / "a.py"
     source.parent.mkdir()
-    source.write_text("# explains payment idempotency\ndef handle():\n    pass\n", encoding="utf-8")
+    source.write_text(
+        "# explains payment idempotency\ndef handle():\n    pass\n", encoding="utf-8"
+    )
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True)
     source.write_text("def handle():\n    pass\n", encoding="utf-8")
@@ -107,14 +113,20 @@ def test_comment_deletion_reason_must_match_path_and_comment(tmp_path: Path) -> 
     _init_git_repo(tmp_path)
     source = tmp_path / "src" / "a.py"
     source.parent.mkdir()
-    source.write_text("# explains payment idempotency\ndef handle():\n    pass\n", encoding="utf-8")
+    source.write_text(
+        "# explains payment idempotency\ndef handle():\n    pass\n", encoding="utf-8"
+    )
     log = tmp_path / "specs" / "001-demo" / "task-execution-log.md"
     log.parent.mkdir(parents=True)
     log.write_text("# Log\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "init"], cwd=tmp_path, check=True, capture_output=True
+    )
     source.write_text("def handle():\n    pass\n", encoding="utf-8")
-    log.write_text("# Log\n\n- removed comment: unrelated generic reason\n", encoding="utf-8")
+    log.write_text(
+        "# Log\n\n- removed comment: unrelated generic reason\n", encoding="utf-8"
+    )
 
     assert collect_comment_deletion_blockers(tmp_path)
 
@@ -126,6 +138,19 @@ def test_comment_deletion_reason_must_match_path_and_comment(tmp_path: Path) -> 
     )
 
     assert collect_comment_deletion_blockers(tmp_path) == []
+
+
+def test_markdown_heading_deletion_is_not_code_comment_removal() -> None:
+    findings = collect_removed_comment_findings(
+        diff_text="""diff --git a/docs/releases/v1.0.0.md b/docs/releases/v1.0.0.md
+--- a/docs/releases/v1.0.0.md
++++ /dev/null
+@@ -1 +0,0 @@
+-# AI-SDLC 1.0.0
+"""
+    )
+
+    assert findings == ()
 
 
 def _init_git_repo(root: Path) -> None:

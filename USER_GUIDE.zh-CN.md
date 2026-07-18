@@ -185,7 +185,78 @@ ai-sdlc loop implementation
 
 实现闭环比较任务、代码变更、测试与质量门禁，输出可执行的缺口列表。
 
-### 5.5 前端证据闭环
+### 5.5 Lean Code 有界质量闭环
+
+Lean Code 是 Implementation Loop 的质量 Profile。它用确定性证据限制新功能和 Bug 修复的范围、风险与关闭条件，不会创建新的顶层 Loop，也不会自动修改业务代码。
+
+运行评估：
+
+```powershell
+ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id>
+```
+
+也可以省略 `--loop-id`，使用当前 Implementation pointer。命令支持 `--json`，并始终说明 `Result / Next`、finding 数量、artifact 路径、是否调用模型和是否写应用代码。
+
+判定方式：
+
+- `BLOCKER`：artifact/policy/input 损坏或过期、未批准的 scope drift、验证失败、行为或安全合同破坏、无效例外；不能关闭。
+- `REQUIRED`：文件/函数超出初始预算并伴随复杂度、重复、耦合或范围风险，Bug 修复缺少 RED/GREEN 证据，或新增公共抽象少于 3 个真实调用者；需要定向处理或显式风险决策。
+- `ADVISORY`：只有 400/50 数值超限、历史债务或不影响关闭的可读性机会；可以保留并进入最终报告。
+
+新功能只允许覆盖冻结的 acceptance/tasks。Bug 修复还需要同一目标断言先失败、后通过的结构化证据。用 CLI 执行同一 argv；`--` 后的参数不会交给 shell：
+
+```powershell
+ai-sdlc loop implementation lean-regression --loop-id <implementation-loop-id> `
+  --phase red --test-id <test-id> --test-source tests/test_bug.py `
+  --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
+# 完成最小修复后，使用完全相同的 test-id、test-source、signature 和 argv
+ai-sdlc loop implementation lean-regression --loop-id <implementation-loop-id> `
+  --phase green --test-id <test-id> --test-source tests/test_bug.py `
+  --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
+ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id> `
+  --regression-evidence <GREEN 返回的 evidence_path>
+```
+
+运行时 receipt 会绑定 source snapshot、退出码、stdout/stderr、测试源码、受控 runner adapter、可执行文件字节和依赖锁环境。当前接受 `python <path>`、`python -m pytest <path>::<node>`、`python -m py_compile <path>`、直接 `pytest <path>` 等可解释形态；只把路径放进 `python -c` 的普通参数、ignore/config 参数或输出文本不会通过。
+
+例外通过项目内 JSON artifact 传入：
+
+```powershell
+ai-sdlc loop implementation lean-check `
+  --loop-id <implementation-loop-id> `
+  --exception "evidence/lean-exception.json"
+```
+
+例外必须绑定 rule/finding、path 或 symbol、scope、policy、base/head、diff、有效期、负责人、审批人和证据 digest。有效例外保留原 finding，最终状态为 `risk_accepted`；缺字段、证据不存在、digest 不匹配或已过期时直接 BLOCKER。
+
+第一次评估产生 BLOCKER/REQUIRED 后，Implementation Agent 只能按 fix plan 做定向修改，并真实执行定向验证：
+
+```powershell
+ai-sdlc loop implementation lean-verify --loop-id <implementation-loop-id> `
+  --test-source tests/test_target.py -- python -m pytest tests/test_target.py -q
+ai-sdlc loop implementation record --loop-id <implementation-loop-id> `
+  --task-id <task-id> --status done --evidence <返回的 receipt_path>
+```
+
+然后再运行第二次评估。只填写 `--verification` 文本不算执行证据。最多两轮；相同 stable finding 仍未解决时进入 `needs_user`。如果修复只能破坏行为，或成本明显高于收益，记录结构化 No-Go：
+
+```powershell
+ai-sdlc loop implementation lean-no-go `
+  --loop-id <implementation-loop-id> `
+  --reason "Metric-only change would break behavior." `
+  --owner "implementation-owner" `
+  --repair-cost "behavioral regression" `
+  --expected-benefit "one metric reduction" `
+  --evidence "evidence/no-go-proof.txt"
+```
+
+No-Go 会写入绑定当前 report/diff 的决策 artifact，并将现有 Loop 置为 `needs_user`；它不会新增状态枚举或修改应用代码。
+
+generated/vendored 文件只有带生成头或可核验上游 provenance 时才享受独立分类；目录名、后缀或 `vendor/` 路径本身不是豁免证据。`report` 模式只报告非完整性 REQUIRED，`warning` 要求定向修复，`blocking` 阻断未解决 REQUIRED；完整性、scope drift、验证失败与无效例外始终 fail-closed。close 与 PR 会重新读取 receipt、例外和证据；删除、替换、跨 work item 重绑或过期都会使旧结论失效。
+
+能力边界：当前精确语义 adapter 使用 Python AST。TypeScript、Java、Go 等语言仍计算可重复的 diff、文件分类和行数指标；没有可靠 parser 时语义能力标记为 `unsupported` 并进入 `needs_user`，不把缺失测量写成零风险。Local PR Reviewer 必须与 Implementation Agent 独立，消费 fresh Lean report；report、snapshot、policy、findings、evaluation input、review-pack、final-report 和 attestation 通过 digest 链相互绑定。内置审计证明独立进程和独立输入上下文，不冒充不同人类身份；需要职责分离时应配置不同 reviewer 账号/provider，并在治理系统中保留 actor/session 记录。
+
+### 5.6 前端证据闭环
 
 ```powershell
 ai-sdlc loop frontend-evidence
@@ -193,7 +264,7 @@ ai-sdlc loop frontend-evidence
 
 前端闭环可组合浏览器探针、视觉证据、可访问性结果、页面契约和交付上下文。
 
-### 5.6 安全预演与确认执行
+### 5.7 安全预演与确认执行
 
 ```powershell
 ai-sdlc run --dry-run

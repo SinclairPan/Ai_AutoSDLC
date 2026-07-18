@@ -11,6 +11,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict
 
 from ai_sdlc.branch.git_client import GitClient, GitError
+from ai_sdlc.core.lean_code_review import LeanReviewBinding
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopPolicyProfile
 from ai_sdlc.core.loop_policy import (
@@ -71,6 +72,7 @@ class ReviewPackBuildOptions:
     max_file_bytes: int = 1_000_000
     clear_stale_artifacts: bool = True
     preserve_resolution_history: bool = False
+    lean_binding: LeanReviewBinding | None = None
 
 
 class ReviewPackBuildResult(BaseModel):
@@ -426,6 +428,56 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         code_egress=options.code_egress,
         redaction_report_path=_repo_relative(root, redaction_report_path),
         reviewer_allowlist=included_files,
+        lean_report_path=options.lean_binding.report_path
+        if options.lean_binding
+        else "",
+        lean_report_digest=options.lean_binding.report_digest
+        if options.lean_binding
+        else "",
+        lean_report_markdown_path=(
+            options.lean_binding.report_markdown_path if options.lean_binding else ""
+        ),
+        lean_report_markdown_digest=(
+            options.lean_binding.report_markdown_digest if options.lean_binding else ""
+        ),
+        lean_input_path=options.lean_binding.input_path if options.lean_binding else "",
+        lean_input_digest=options.lean_binding.input_digest
+        if options.lean_binding
+        else "",
+        lean_snapshot_path=(
+            options.lean_binding.snapshot_path if options.lean_binding else ""
+        ),
+        lean_snapshot_digest=(
+            options.lean_binding.snapshot_digest if options.lean_binding else ""
+        ),
+        lean_findings_path=(
+            options.lean_binding.findings_path if options.lean_binding else ""
+        ),
+        lean_findings_digest=(
+            options.lean_binding.findings_digest if options.lean_binding else ""
+        ),
+        lean_policy_path=(
+            options.lean_binding.policy_path if options.lean_binding else ""
+        ),
+        lean_policy_snapshot_digest=(
+            options.lean_binding.policy_snapshot_digest if options.lean_binding else ""
+        ),
+        lean_diff_hash=options.lean_binding.diff_hash if options.lean_binding else "",
+        lean_policy_digest=options.lean_binding.policy_digest
+        if options.lean_binding
+        else "",
+        lean_implementation_loop_id=(
+            options.lean_binding.implementation_loop_id if options.lean_binding else ""
+        ),
+        lean_work_item_id=options.lean_binding.work_item_id
+        if options.lean_binding
+        else "",
+        lean_risk_accepted=options.lean_binding.risk_accepted
+        if options.lean_binding
+        else False,
+        lean_exception_ids=options.lean_binding.exception_ids
+        if options.lean_binding
+        else [],
     )
     review_pack_path = store.write_json_artifact(
         review_dir / "review-pack.json",
@@ -663,7 +715,9 @@ def _filter_patch_diff(patch_text: str, included_files: list[str]) -> str:
     if not included:
         return ""
     discovered = _patch_changed_files(patch_text)
-    if discovered and all(_normalize_repo_path(path) in included for path in discovered):
+    if discovered and all(
+        _normalize_repo_path(path) in included for path in discovered
+    ):
         return patch_text
 
     output: list[str] = []

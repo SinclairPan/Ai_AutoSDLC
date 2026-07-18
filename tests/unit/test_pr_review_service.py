@@ -89,7 +89,11 @@ def test_start_dry_run_rejects_unknown_provider(tmp_path) -> None:
 
     assert result.status == PRReviewCommandStatus.NEEDS_USER
     assert "Unsupported PR review provider: typo" in result.blocker
-    assert [check.name for check in result.checks] == ["init", "diff_source", "provider"]
+    assert [check.name for check in result.checks] == [
+        "init",
+        "diff_source",
+        "provider",
+    ]
     assert not (tmp_path / ".ai-sdlc" / "reviews").exists()
 
 
@@ -431,7 +435,9 @@ def test_start_mock_reviewer_writes_pack_findings_run_and_pointer(tmp_path) -> N
 
     pointer = json.loads((tmp_path / CURRENT_REVIEW_PATH).read_text(encoding="utf-8"))
     assert pointer["review_id"] == "review-001"
-    assert pointer["review_run_path"] == ".ai-sdlc/reviews/pr/review-001/review-run.json"
+    assert (
+        pointer["review_run_path"] == ".ai-sdlc/reviews/pr/review-001/review-run.json"
+    )
     assert status_pr_review(tmp_path).review_run_path == result.review_run_path
 
 
@@ -682,13 +688,19 @@ def test_fix_generates_plan_and_resolution_without_advisory_auto_plan(
     assert Path(result.fix_plan_path).is_file()
     assert Path(result.resolution_path).is_file()
 
-    resolution = yaml.safe_load(Path(result.resolution_path).read_text(encoding="utf-8"))
+    resolution = yaml.safe_load(
+        Path(result.resolution_path).read_text(encoding="utf-8")
+    )
     assert [item["finding_id"] for item in resolution["finding_resolutions"]] == [
         "MOCK-001"
     ]
-    assert "ADV-001" not in Path(result.fix_plan_path).read_text(encoding="utf-8").split(
-        "## Required Fixes", 1
-    )[1].split("## Advisory", 1)[0]
+    assert (
+        "ADV-001"
+        not in Path(result.fix_plan_path)
+        .read_text(encoding="utf-8")
+        .split("## Required Fixes", 1)[1]
+        .split("## Advisory", 1)[0]
+    )
 
 
 def test_fix_dry_run_does_not_write_fix_artifacts(tmp_path) -> None:
@@ -1069,9 +1081,12 @@ def test_close_uses_reviewed_head_ref_not_checked_out_head(tmp_path) -> None:
     result = close_pr_review(tmp_path)
 
     assert start.status == PRReviewCommandStatus.STARTED
-    assert json.loads(Path(start.review_pack_path).read_text(encoding="utf-8"))[
-        "head_commit"
-    ] == feature_head
+    assert (
+        json.loads(Path(start.review_pack_path).read_text(encoding="utf-8"))[
+            "head_commit"
+        ]
+        == feature_head
+    )
     assert result.status == PRReviewCommandStatus.CLOSED
     assert result.verdict == "fully_clean"
     attest = attest_pr_review(tmp_path)
@@ -1665,7 +1680,7 @@ def test_close_final_report_discloses_valid_waiver_metadata(tmp_path) -> None:
 
     report = Path(result.final_report_path).read_text(encoding="utf-8")
     assert result.status == PRReviewCommandStatus.CLOSED
-    assert result.verdict == "fully_clean"
+    assert result.verdict == "risk_accepted"
     assert "MOCK-001" in report
     assert "waived" in report
     assert "Accepted for release scope." in report
@@ -2316,7 +2331,5 @@ def _git(path: Path, *args: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()

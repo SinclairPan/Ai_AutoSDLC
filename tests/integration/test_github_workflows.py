@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 import yaml
@@ -19,11 +20,22 @@ def test_github_workflows_are_valid_yaml() -> None:
         yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
 
     pr_checks = (_WORKFLOWS_DIR / "pr-checks.yml").read_text(encoding="utf-8")
-    required = ("fetch-depth: 0", "persist-credentials: false", "git branch --force main HEAD^1", 'git switch --create "$GITHUB_HEAD_REF" HEAD^2')
-    assert all(token in pr_checks for token in required) and pr_checks.index("Pytest smoke") < pr_checks.index(required[2]) < pr_checks.index(required[3]) < pr_checks.index("uv run ai-sdlc verify constraints")
+    required = (
+        "fetch-depth: 0",
+        "persist-credentials: false",
+        "git branch --force main HEAD^1",
+        'git switch --create "$GITHUB_HEAD_REF" HEAD^2',
+    )
+    assert all(token in pr_checks for token in required) and pr_checks.index(
+        "Pytest smoke"
+    ) < pr_checks.index(required[2]) < pr_checks.index(required[3]) < pr_checks.index(
+        "uv run ai-sdlc verify constraints"
+    )
 
 
-def test_windows_offline_smoke_workflow_covers_bundle_build_install_and_cli_checks() -> None:
+def test_windows_offline_smoke_workflow_covers_bundle_build_install_and_cli_checks() -> (
+    None
+):
     workflow_path = _WORKFLOWS_DIR / "windows-offline-smoke.yml"
 
     assert workflow_path.is_file()
@@ -59,7 +71,10 @@ def test_windows_offline_smoke_workflow_covers_bundle_build_install_and_cli_chec
     assert "--require-bundled-runtime" in workflow
     assert "--install-log" in workflow
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in workflow
-    assert "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath" in workflow
+    assert (
+        "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath"
+        in workflow
+    )
     assert '$cliDir = Join-Path $bundleDir.FullName ".venv\\Scripts"' in workflow
     assert "$env:Path = $cliDir + [IO.Path]::PathSeparator + $env:Path" in workflow
     assert "Get-Command ai-sdlc" in workflow
@@ -68,7 +83,9 @@ def test_windows_offline_smoke_workflow_covers_bundle_build_install_and_cli_chec
     assert "recover --reconcile" in workflow
 
 
-def test_posix_offline_smoke_workflow_covers_macos_linux_bundle_install_and_cli_checks() -> None:
+def test_posix_offline_smoke_workflow_covers_macos_linux_bundle_install_and_cli_checks() -> (
+    None
+):
     workflow_path = _WORKFLOWS_DIR / "posix-offline-smoke.yml"
 
     assert workflow_path.is_file()
@@ -144,7 +161,10 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
     assert "run --dry-run" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in workflow
-    assert "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath" in workflow
+    assert (
+        "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath"
+        in workflow
+    )
     assert '$cliDir = Join-Path $bundleDir.FullName ".venv\\Scripts"' in workflow
     assert "$env:Path = $cliDir + [IO.Path]::PathSeparator + $env:Path" in workflow
     assert "Get-Command ai-sdlc" in workflow
@@ -181,7 +201,10 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     assert "actions/upload-artifact@v7" in workflow
     assert "gh release upload" in workflow
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in workflow
-    assert "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath" in workflow
+    assert (
+        "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath"
+        in workflow
+    )
     assert '$cliDir = Join-Path $bundleDir.FullName ".venv\\Scripts"' in workflow
     assert "$env:Path = $cliDir + [IO.Path]::PathSeparator + $env:Path" in workflow
     assert "Get-Command ai-sdlc" in workflow
@@ -253,8 +276,7 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert "clean-online-interactive-user-journey:" in workflow
     assert (
         "raw.githubusercontent.com/$sourceRepository/"
-        "$remoteSha/packaging/install_online.ps1"
-        in workflow
+        "$remoteSha/packaging/install_online.ps1" in workflow
     )
     assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
     assert "pywinpty" in workflow
@@ -281,8 +303,8 @@ def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None
         "https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main)"
     )
     pinned_installer = (
-        'raw.githubusercontent.com/$sourceRepository/'
-        '$remoteSha/packaging/install_online.ps1'
+        "raw.githubusercontent.com/$sourceRepository/"
+        "$remoteSha/packaging/install_online.ps1"
     )
     pinned_package = "git+https://github.com/$sourceRepository.git@$remoteSha"
 
@@ -292,7 +314,7 @@ def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None
     assert workflow.index(resolve_remote_main) < workflow.index(pinned_installer)
     assert workflow.index(pinned_installer) < workflow.index("Invoke-WebRequest")
     assert workflow.count(resolve_remote_main) == 1
-    assert '$directUrl.vcs_info.requested_revision -ne $remoteSha' in workflow
+    assert "$directUrl.vcs_info.requested_revision -ne $remoteSha" in workflow
 
 
 def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
@@ -313,8 +335,7 @@ def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
     assert "$remoteSha = $env:PR_HEAD_SHA" in workflow
     assert (
         "raw.githubusercontent.com/$sourceRepository/"
-        "$remoteSha/packaging/install_online.ps1"
-        in workflow
+        "$remoteSha/packaging/install_online.ps1" in workflow
     )
     assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
     assert "AI_SDLC_E2E_INSTALL_SOURCE=$sourceKind" in workflow
@@ -323,7 +344,9 @@ def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
     assert 'os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", "")' in driver
 
 
-def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> None:
+def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> (
+    None
+):
     driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
 
     assert driver_path.is_file()
@@ -352,6 +375,44 @@ def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choi
 
 def test_historical_update_prompt_workflow_is_not_published() -> None:
     assert not (_WORKFLOWS_DIR / "windows-update-prompt-e2e.yml").exists()
+
+
+def test_windows_online_job_runs_real_installed_lean_user_flow() -> None:
+    workflow = (_WORKFLOWS_DIR / "windows-user-guide-e2e.yml").read_text(
+        encoding="utf-8"
+    )
+    driver_path = _REPO_ROOT / "scripts" / "windows_lean_code_e2e.py"
+
+    assert driver_path.is_file()
+    driver = driver_path.read_text(encoding="utf-8")
+    assert "Run the installed Lean Code user journey" in workflow
+    assert "windows_lean_code_e2e.py" in workflow
+    assert "windows-clean-online-user-e2e-evidence" in workflow
+    adjacent_cli_tokens: set[tuple[str, str]] = set()
+    for node in ast.walk(ast.parse(driver)):
+        if not isinstance(node, (ast.List, ast.Tuple)):
+            continue
+        values = [
+            item.value
+            if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            else ""
+            for item in node.elts
+        ]
+        adjacent_cli_tokens.update(zip(values, values[1:], strict=False))
+    assert {
+        ("requirement", "start"),
+        ("requirement", "freeze"),
+        ("design-contract", "check"),
+        ("design-contract", "close"),
+        ("implementation", "start"),
+        ("implementation", "record"),
+        ("implementation", "lean-verify"),
+        ("implementation", "lean-regression"),
+        ("implementation", "lean-check"),
+        ("implementation", "close"),
+    } <= adjacent_cli_tokens
+    assert "src/订单.py" in driver
+    assert "ai_sdlc.core" not in driver
 
 
 def test_posix_offline_smoke_matrix_concurrency_is_job_scoped() -> None:

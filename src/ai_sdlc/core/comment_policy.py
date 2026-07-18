@@ -139,12 +139,12 @@ def collect_removed_comment_findings(
             continue
         if raw_line.startswith("-") and not raw_line.startswith("---"):
             text = raw_line[1:]
-            if _is_comment_line(text):
+            if _is_comment_line(text, path=current_path):
                 removed_comments.append(text.strip())
             continue
         if raw_line.startswith("+") and not raw_line.startswith("+++"):
             text = raw_line[1:]
-            if _is_comment_line(text):
+            if _is_comment_line(text, path=current_path):
                 added_comments.append(text.strip())
     flush()
     return tuple(findings)
@@ -177,9 +177,15 @@ def _detect_text_language(text: str) -> CommentLanguage | None:
     return None
 
 
-def _is_comment_line(text: str) -> bool:
+def _is_comment_line(text: str, *, path: str = "") -> bool:
     stripped = text.strip()
-    return bool(_COMMENT_PREFIX_RE.match(stripped) or _BLOCK_COMMENT_SUFFIX_RE.search(stripped))
+    if Path(path).suffix.lower() in {".md", ".markdown"} and re.match(
+        r"^#{1,6}\s+", stripped
+    ):
+        return False
+    return bool(
+        _COMMENT_PREFIX_RE.match(stripped) or _BLOCK_COMMENT_SUFFIX_RE.search(stripped)
+    )
 
 
 def _path_from_diff_header(line: str) -> str:
@@ -238,7 +244,9 @@ def _changed_execution_log_records_comment_deletion(
         if not line.startswith("+") or line.startswith("+++"):
             continue
         lowered = line.lower()
-        if not any(token.lower() in lowered for token in _COMMENT_DELETION_REASON_TOKENS):
+        if not any(
+            token.lower() in lowered for token in _COMMENT_DELETION_REASON_TOKENS
+        ):
             continue
         if finding.path not in line:
             continue

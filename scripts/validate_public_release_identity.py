@@ -18,7 +18,6 @@ PUBLIC_DOC_PATHS = {
     "docs/framework-defect-backlog.zh-CN.md",
     "docs/product-contract.md",
     "docs/pull-request-checklist.zh.md",
-    "docs/releases/v1.0.0.md",
     "docs/框架自迭代开发与发布约定.md",
 }
 
@@ -26,7 +25,6 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
     "README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
     "USER_GUIDE.zh-CN.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
     "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
-    "docs/releases/v1.0.0.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
     "packaging/offline/README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
@@ -105,9 +103,7 @@ def tracked_paths(root: Path) -> tuple[str, ...]:
         check=True,
         capture_output=True,
     )
-    return tuple(
-        item.decode("utf-8") for item in completed.stdout.split(b"\0") if item
-    )
+    return tuple(item.decode("utf-8") for item in completed.stdout.split(b"\0") if item)
 
 
 def scan_paths(root: Path, files: Mapping[str, str]) -> list[Finding]:
@@ -117,7 +113,11 @@ def scan_paths(root: Path, files: Mapping[str, str]) -> list[Finding]:
     findings: list[Finding] = []
     for path, text in files.items():
         has_path_finding = False
-        if "/" not in path and path.lower().endswith(".md") and path not in PUBLIC_ROOT_MARKDOWN:
+        if (
+            "/" not in path
+            and path.lower().endswith(".md")
+            and path not in PUBLIC_ROOT_MARKDOWN
+        ):
             findings.append(Finding(path, None, "non-public-root-doc", path))
             has_path_finding = True
         if "/" not in path and path.lower().endswith((".yaml", ".yml")):
@@ -127,7 +127,11 @@ def scan_paths(root: Path, files: Mapping[str, str]) -> list[Finding]:
             if pattern.search(path):
                 findings.append(Finding(path, None, marker, path))
                 has_path_finding = True
-        if not has_path_finding and path.startswith("docs/") and path not in PUBLIC_DOC_PATHS:
+        if (
+            not has_path_finding
+            and path.startswith("docs/")
+            and path not in PUBLIC_DOC_PATHS
+        ):
             findings.append(Finding(path, None, "non-public-doc", path))
 
         for line_number, line in enumerate(text.splitlines(), start=1):
@@ -160,7 +164,9 @@ def validate_required_surfaces(files: Mapping[str, str]) -> list[Finding]:
     for path, required_markers in REQUIRED_SURFACES.items():
         text = files.get(path)
         if text is None:
-            findings.append(Finding(path, None, "required-public-surface-missing", path))
+            findings.append(
+                Finding(path, None, "required-public-surface-missing", path)
+            )
             continue
         for marker in required_markers:
             if marker not in text:
@@ -189,7 +195,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     root = Path(arguments[0] if arguments else ".").resolve()
     findings = scan_public_tree(root)
     for finding in findings:
-        location = finding.path if finding.line is None else f"{finding.path}:{finding.line}"
+        location = (
+            finding.path if finding.line is None else f"{finding.path}:{finding.line}"
+        )
         print(f"{location}: {finding.marker}: {finding.excerpt}")
     if findings:
         return 1

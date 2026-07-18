@@ -56,6 +56,8 @@ from ai_sdlc.core.implementation_store import (
     resolve_loop_id,
     validate_explicit_loop_id,
 )
+from ai_sdlc.core.lean_code_policy import stable_artifact_digest
+from ai_sdlc.core.lean_code_runtime import validate_lean_close
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import (
     LoopRound,
@@ -88,7 +90,9 @@ def start_implementation_loop(
     artifacts = implementation_artifacts(root, loop_id)
     planned_refs = artifacts.refs(root)
     if work_item_blocker:
-        return _blocked_result(work_item_blocker, loop_id=loop_id, artifacts=planned_refs)
+        return _blocked_result(
+            work_item_blocker, loop_id=loop_id, artifacts=planned_refs
+        )
     if artifacts.loop_run_path.is_file() and not options.dry_run:
         return _blocked_result(
             "Implementation loop id already exists; choose a new --loop-id.",
@@ -128,6 +132,7 @@ def start_implementation_loop(
         work_item_dir=work_item_dir,
         design_contract_loop_id=design_contract_loop_id,
         design_contract_report_path=design_report_path,
+        task_items=task_items,
     )
     tasks = ImplementationTasks(
         loop_id=loop_id,
@@ -137,10 +142,7 @@ def start_implementation_loop(
     progress = ImplementationProgress(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
-        tasks=[
-            ImplementationTaskProgress(task_id=item.task_id)
-            for item in task_items
-        ],
+        tasks=[ImplementationTaskProgress(task_id=item.task_id) for item in task_items],
     )
     evidence = ImplementationVerificationEvidence(
         loop_id=loop_id,
@@ -164,7 +166,9 @@ def start_implementation_loop(
             dry_run=True,
         )
 
-    _write_artifacts(root, impl_input, tasks, progress, evidence, report, loop_run, artifacts)
+    _write_artifacts(
+        root, impl_input, tasks, progress, evidence, report, loop_run, artifacts
+    )
     return _result_from_report(
         report,
         artifacts=artifacts.refs(root),
@@ -198,7 +202,12 @@ def record_implementation_progress(
             next_action=loop_run.next_action,
         )
     artifacts = implementation_artifacts(root, loop_run.loop_id)
-    loaded = _read_current_state(root, artifacts, loop_id=loop_run.loop_id)
+    loaded = _read_current_state(
+        root,
+        artifacts,
+        loop_id=loop_run.loop_id,
+        input_digest=loop_run.input_digest,
+    )
     if isinstance(loaded, ImplementationCommandResult):
         return loaded
     impl_input, tasks, progress = loaded
@@ -222,7 +231,9 @@ def record_implementation_progress(
         )
 
     progress_by_task = {item.task_id: item for item in progress.tasks}
-    current = progress_by_task.get(task_id) or ImplementationTaskProgress(task_id=task_id)
+    current = progress_by_task.get(task_id) or ImplementationTaskProgress(
+        task_id=task_id
+    )
     evidence = _clean_items((*current.evidence, *options.evidence))
     verification = _clean_items((*current.verification_commands, *options.verification))
     if status == ImplementationTaskStatus.DONE and not evidence and not verification:
@@ -241,8 +252,7 @@ def record_implementation_progress(
         }
     )
     progress.tasks = [
-        updated if item.task_id == task_id else item
-        for item in progress.tasks
+        updated if item.task_id == task_id else item for item in progress.tasks
     ]
     if task_id not in progress_by_task:
         progress.tasks.append(updated)
@@ -251,9 +261,10 @@ def record_implementation_progress(
     loop_run.status = report.status
     loop_run.updated_at = utc_now_iso()
     loop_run.next_action = report.next_action
-    if loop_run.rounds:
-        loop_run.rounds[0].status = report.status
-        loop_run.rounds[0].next_action = report.next_action
+    execution_round = _execution_round(loop_run)
+    if execution_round is not None:
+        execution_round.status = report.status
+        execution_round.next_action = report.next_action
     _write_artifacts(
         root,
         impl_input,
@@ -293,9 +304,16 @@ def close_implementation_loop(
         loop_run = read_loop_run(loop_run_path)
         validate_explicit_loop_id(loop_run.loop_id)
     except ValueError as exc:
-        return _blocked_result(str(exc), result="Implementation loop artifact is malformed.")
+        return _blocked_result(
+            str(exc), result="Implementation loop artifact is malformed."
+        )
     artifacts = implementation_artifacts(root, loop_run.loop_id)
-    loaded = _read_current_state(root, artifacts, loop_id=loop_run.loop_id)
+    loaded = _read_current_state(
+        root,
+        artifacts,
+        loop_id=loop_run.loop_id,
+        input_digest=loop_run.input_digest,
+    )
     if isinstance(loaded, ImplementationCommandResult):
         return loaded
     impl_input, tasks, progress = loaded
@@ -342,7 +360,66 @@ def close_implementation_loop(
             status=ImplementationCommandStatus.NEEDS_FIX,
             blocker=close_blockers[0],
         )
+    lean_blocker = validate_lean_close(root, loop_run.loop_id)
+    if lean_blocker:
+        return _lean_close_failure(
+            root,
+            loop_run,
+            impl_input,
+            tasks,
+            progress,
+            report,
+            artifacts,
+            lean_blocker,
+        )
     return _write_close(root, loop_run, report, artifacts, options.closed_by)
+
+
+def _lean_close_failure(
+    root: Path,
+    loop_run: LoopRun,
+    impl_input: ImplementationInput,
+    tasks: ImplementationTasks,
+    progress: ImplementationProgress,
+    report: ImplementationReport,
+    artifacts: ImplementationArtifacts,
+    blocker: str,
+) -> ImplementationCommandResult:
+    effective_status = (
+        loop_run.status
+        if loop_run.status in {LoopStatus.NEEDS_FIX, LoopStatus.NEEDS_USER}
+        else LoopStatus.NEEDS_REVIEW
+    )
+    next_action = "Run ai-sdlc loop implementation lean-check."
+    updated_report = report.model_copy(
+        update={
+            "status": effective_status,
+            "blocker_count": report.blocker_count + 1,
+            "blockers": [*report.blockers, blocker],
+            "next_action": next_action,
+        }
+    )
+    loop_run.status = effective_status
+    loop_run.updated_at = utc_now_iso()
+    loop_run.next_action = next_action
+    _write_artifacts(
+        root,
+        impl_input,
+        tasks,
+        progress,
+        _evidence_from_progress(progress),
+        updated_report,
+        loop_run,
+        artifacts,
+    )
+    return _result_from_report(
+        updated_report,
+        artifacts=artifacts.refs(root),
+        result="Implementation close requires a fresh passed Lean evaluation.",
+        status=ImplementationCommandStatus.NEEDS_FIX,
+        blocker=blocker,
+        loop_status=effective_status,
+    )
 
 
 def _write_close(
@@ -367,13 +444,14 @@ def _write_close(
     loop_run.status = LoopStatus.CLOSED
     loop_run.updated_at = utc_now_iso()
     loop_run.next_action = _next_loop_action(report)
-    if loop_run.rounds:
-        loop_run.rounds[0].status = LoopStatus.CLOSED
-        loop_run.rounds[0].output_artifacts = append_unique(
-            loop_run.rounds[0].output_artifacts,
+    execution_round = _execution_round(loop_run)
+    if execution_round is not None:
+        execution_round.status = LoopStatus.CLOSED
+        execution_round.output_artifacts = append_unique(
+            execution_round.output_artifacts,
             repo_relative_path(root, artifacts.close_path),
         )
-        loop_run.rounds[0].next_action = loop_run.next_action
+        execution_round.next_action = loop_run.next_action
     store = LoopArtifactStore(root)
     store.write_json_artifact(artifacts.close_path, close)
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
@@ -426,7 +504,11 @@ def _read_current_state(
     artifacts: ImplementationArtifacts,
     *,
     loop_id: str,
-) -> tuple[ImplementationInput, ImplementationTasks, ImplementationProgress] | ImplementationCommandResult:
+    input_digest: str = "",
+) -> (
+    tuple[ImplementationInput, ImplementationTasks, ImplementationProgress]
+    | ImplementationCommandResult
+):
     try:
         impl_input = read_input(artifacts.input_path)
         tasks = read_tasks(artifacts.tasks_path)
@@ -436,6 +518,13 @@ def _read_current_state(
             str(exc),
             loop_id=loop_id,
             result="Implementation loop artifact is malformed.",
+            artifacts=artifacts.refs(root),
+        )
+    if input_digest and stable_artifact_digest(impl_input) != input_digest:
+        return _blocked_result(
+            "Implementation input digest mismatch; the frozen input was modified.",
+            loop_id=loop_id,
+            result="Implementation loop artifact is malformed or tampered.",
             artifacts=artifacts.refs(root),
         )
     return impl_input, tasks, progress
@@ -452,30 +541,46 @@ def _design_contract_gate(
         try:
             safe_loop_id = validate_design_contract_loop_id(loop_id)
         except ValueError as exc:
-            return "", "", f"Invalid design-contract loop id: {exc}", (
-                "Run ai-sdlc loop design-contract status."
+            return (
+                "",
+                "",
+                f"Invalid design-contract loop id: {exc}",
+                ("Run ai-sdlc loop design-contract status."),
             )
         artifacts = design_contract_artifacts(root, safe_loop_id)
         loop_run_path = artifacts.loop_run_path
     else:
         loop_run_path, blocker = resolve_design_contract_loop_run_path(root, "")
         if blocker:
-            return "", "", (
-                "A closed current design-contract loop is required before "
-                f"implementation start: {blocker}"
-            ), "Run ai-sdlc loop design-contract check --wi specs/<work-item>."
+            return (
+                "",
+                "",
+                (
+                    "A closed current design-contract loop is required before "
+                    f"implementation start: {blocker}"
+                ),
+                "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
+            )
     try:
         loop_run = read_design_contract_loop_run(loop_run_path)
     except ValueError as exc:
-        return "", "", (
-            f"Design-contract loop must exist and be closed before implementation start: {exc}"
-        ), "Run ai-sdlc loop design-contract check --wi specs/<work-item>."
+        return (
+            "",
+            "",
+            (
+                f"Design-contract loop must exist and be closed before implementation start: {exc}"
+            ),
+            "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
+        )
     artifacts = design_contract_artifacts(root, loop_run.loop_id)
     try:
         report = read_design_contract_report(artifacts.report_json_path)
     except ValueError as exc:
-        return "", "", f"Design-contract report is malformed: {exc}", (
-            "Run ai-sdlc loop design-contract check --wi specs/<work-item>."
+        return (
+            "",
+            "",
+            f"Design-contract report is malformed: {exc}",
+            ("Run ai-sdlc loop design-contract check --wi specs/<work-item>."),
         )
     blocker = _design_contract_blocker(loop_run, report, artifacts, work_item_id)
     if blocker:
@@ -535,7 +640,9 @@ def _parse_tasks_file(
                 required=priority in {"P0", "P1"},
                 files=_task_files(section),
                 acceptance=_task_list_after_label(section, "验收标准", "acceptance"),
-                verification_hints=_task_list_after_label(section, "验证", "verification"),
+                verification_hints=_task_list_after_label(
+                    section, "验证", "verification"
+                ),
                 source_path=repo_relative_path(root, tasks_path),
             )
         )
@@ -550,7 +657,9 @@ def _task_sections(text: str) -> list[str]:
     matches = list(_TASK_SECTION.finditer(text))
     sections: list[str] = []
     for index, match in enumerate(matches):
-        next_task_start = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        next_task_start = (
+            matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        )
         next_heading_start = _next_peer_heading_start(text, match.end())
         sections.append(text[match.start() : min(next_task_start, next_heading_start)])
     return sections
@@ -650,10 +759,13 @@ def _build_report(
     if blockers:
         status = LoopStatus.NEEDS_FIX
     elif len(done_required) == len(required):
-        status = LoopStatus.PASSED
+        status = (
+            LoopStatus.NEEDS_REVIEW
+            if "lean-code" in impl_input.quality_profiles
+            else LoopStatus.PASSED
+        )
     evidence_count = sum(
-        len(item.evidence) + len(item.verification_commands)
-        for item in progress.tasks
+        len(item.evidence) + len(item.verification_commands) for item in progress.tasks
     )
     return ImplementationReport(
         loop_id=impl_input.loop_id,
@@ -667,7 +779,11 @@ def _build_report(
         blocker_count=len(blockers),
         blockers=blockers,
         requires_frontend_evidence=_requires_frontend_evidence(root, impl_input),
-        next_action=_next_action_for_progress(tasks, progress, status),
+        next_action=_next_action_for_progress(
+            tasks,
+            progress,
+            status,
+        ),
     )
 
 
@@ -676,6 +792,8 @@ def _next_action_for_progress(
     progress: ImplementationProgress,
     status: LoopStatus,
 ) -> str:
+    if status == LoopStatus.NEEDS_REVIEW:
+        return "Run ai-sdlc loop implementation lean-check."
     if status == LoopStatus.PASSED:
         return "Run ai-sdlc loop implementation close --yes."
     return _record_next_action(tasks, progress)
@@ -699,7 +817,10 @@ def _record_next_action(
         progress_item = progress_by_task.get(item.task_id)
         if not item.required:
             continue
-        if progress_item is None or progress_item.status != ImplementationTaskStatus.DONE:
+        if (
+            progress_item is None
+            or progress_item.status != ImplementationTaskStatus.DONE
+        ):
             return (
                 "Run ai-sdlc loop implementation record "
                 f"--task-id {item.task_id} --status done "
@@ -718,7 +839,10 @@ def _close_blockers(
         if not item.required:
             continue
         progress_item = progress_by_task.get(item.task_id)
-        if progress_item is None or progress_item.status != ImplementationTaskStatus.DONE:
+        if (
+            progress_item is None
+            or progress_item.status != ImplementationTaskStatus.DONE
+        ):
             blockers.append(f"{item.task_id} is not done.")
             continue
         if not _has_evidence(progress_item):
@@ -728,6 +852,13 @@ def _close_blockers(
 
 def _has_evidence(progress: ImplementationTaskProgress) -> bool:
     return bool(progress.evidence or progress.verification_commands)
+
+
+def _execution_round(loop_run: LoopRun) -> LoopRound | None:
+    return next(
+        (item for item in loop_run.rounds if item.round_kind == "execution"),
+        None,
+    )
 
 
 def _evidence_from_progress(
@@ -764,6 +895,7 @@ def _build_loop_run(
         loop_type=LoopType.IMPLEMENTATION,
         status=report.status,
         work_item_id=impl_input.work_item_id,
+        input_digest=stable_artifact_digest(impl_input),
         current_round=1,
         rounds=[
             LoopRound(
@@ -881,7 +1013,11 @@ def _next_guidance_for_result(
         if artifact.kind in {"implementation-report-json", "implementation-progress"}
     ]
     if closed:
-        next_loop = "frontend-evidence" if report.requires_frontend_evidence else "local-pr-review"
+        next_loop = (
+            "frontend-evidence"
+            if report.requires_frontend_evidence
+            else "local-pr-review"
+        )
         return ImplementationNextGuidance(
             command=_command_from_next_action(next_action),
             reason=f"Implementation is closed; continue with {next_loop}.",
@@ -934,7 +1070,11 @@ def _command_from_next_action(next_action: str) -> str:
 
 def _requires_frontend_evidence(root: Path, impl_input: ImplementationInput) -> bool:
     texts = []
-    for path_text in (impl_input.spec_path, impl_input.plan_path, impl_input.tasks_path):
+    for path_text in (
+        impl_input.spec_path,
+        impl_input.plan_path,
+        impl_input.tasks_path,
+    ):
         path = root / path_text
         if path.is_file():
             texts.append(path.read_text(encoding="utf-8"))

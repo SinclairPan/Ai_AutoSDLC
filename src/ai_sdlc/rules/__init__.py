@@ -19,6 +19,7 @@ _STAGE_HINTS: dict[str, list[str]] = {
     "debugging": ["execute"],
     "code-review": ["execute", "verify"],
     "quality-gate": ["verify", "close"],
+    "lean-code": ["execute", "verify", "close"],
     "verification": ["verify", "close"],
     "git-branch": ["design", "execute"],
     "multi-agent": ["execute"],

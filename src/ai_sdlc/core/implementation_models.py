@@ -14,6 +14,7 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.models.work import WorkType
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_IMPLEMENTATION_PATH = (
@@ -54,6 +55,11 @@ class ImplementationInput(LoopArtifactModel):
     tasks_path: str
     design_contract_loop_id: str
     design_contract_report_path: str = ""
+    work_type: WorkType = WorkType.UNCERTAIN
+    quality_profiles: list[str] = Field(default_factory=list)
+    declared_scope: list[str] = Field(default_factory=list)
+    tasks_digest: str = ""
+    acceptance_digest: str = ""
 
     @field_validator("loop_id", "work_item_id", "work_item_path")
     @classmethod
