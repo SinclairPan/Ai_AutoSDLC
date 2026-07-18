@@ -19,7 +19,9 @@ from ai_sdlc.core.implementation_models import (
     ImplementationInput,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
+from ai_sdlc.core.lean_code_evidence import regression_evidence_issue
 from ai_sdlc.core.lean_code_execution import validate_execution_receipt
+from ai_sdlc.core.lean_code_models import RegressionEvidence
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
 from ai_sdlc.models.work import WorkType
@@ -408,7 +410,9 @@ def test_controlled_execution_cli_requires_explicit_loop_id(tmp_path: Path) -> N
         assert "Missing option '--loop-id'" in unstyle(result.output)
 
 
-def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> None:
+def test_lean_regression_cli_validates_selected_snapshot_test_source(
+    tmp_path: Path,
+) -> None:
     loop_id = "impl-cli-regression"
     _seed_loop(tmp_path, loop_id)
     signature = "assertion:cli-regression"
@@ -422,6 +426,7 @@ def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> Non
         "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n",
     )
     _git(tmp_path, "add", "src/app.py", "tests/regression_probe.py")
+    (tmp_path / "tests/regression_probe.py").unlink()
     prefix = [
         "loop",
         "implementation",
@@ -452,6 +457,10 @@ def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> Non
     payload = json.loads(green.output)
     assert payload["status"] == "ready"
     assert (tmp_path / payload["evidence_path"]).is_file()
+    evidence = RegressionEvidence.model_validate_json(
+        (tmp_path / payload["evidence_path"]).read_text("utf-8")
+    )
+    assert regression_evidence_issue(tmp_path, evidence, loop_id) == ""
 
 
 def test_lean_regression_cli_rejects_red_green_source_selector_mismatch(

@@ -387,6 +387,7 @@ def test_windows_online_job_runs_real_installed_lean_user_flow() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "Run the installed Lean Code user journey" in workflow
     assert "windows_lean_code_e2e.py" in workflow
+    assert '      - "scripts/windows_lean_code_e2e_support.py"' in workflow
     assert "windows-clean-online-user-e2e-evidence" in workflow
     adjacent_cli_tokens: set[tuple[str, str]] = set()
     for node in ast.walk(ast.parse(driver)):

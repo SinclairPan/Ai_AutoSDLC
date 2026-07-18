@@ -583,6 +583,35 @@ def _caller_c():
     assert _severities(report, "lean.public-callers") == set()
 
 
+def test_nested_function_call_counts_only_innermost_caller(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import build_value
+
+def _outer():
+    def _middle():
+        def _inner():
+            return build_value()
+        return _inner()
+    return _middle()
+""",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 1
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
 def test_unrelated_same_name_calls_do_not_satisfy_public_caller_budget(
     tmp_path: Path,
 ) -> None:

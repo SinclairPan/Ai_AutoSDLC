@@ -9,6 +9,7 @@ from pathlib import Path
 from ai_sdlc.core.implementation_models import ImplementationInput
 from ai_sdlc.core.implementation_store import implementation_artifacts, read_progress
 from ai_sdlc.core.lean_code_execution import validate_execution_receipt
+from ai_sdlc.core.lean_code_execution_models import LeanCommandExecutionReceipt
 from ai_sdlc.core.lean_code_models import RegressionEvidence
 
 
@@ -22,7 +23,6 @@ def regression_evidence_issue(
     references = (
         (evidence.red_output_ref, evidence.red_output_digest, "RED output"),
         (evidence.green_output_ref, evidence.green_output_digest, "GREEN output"),
-        (evidence.test_source_ref, evidence.test_source_digest, "test source"),
         (evidence.red_receipt_ref, evidence.red_receipt_digest, "RED receipt"),
         (evidence.green_receipt_ref, evidence.green_receipt_digest, "GREEN receipt"),
     )
@@ -75,7 +75,11 @@ def _regression_receipt_issue(
     return _regression_field_issue(red, green, evidence)
 
 
-def _regression_field_issue(red, green, evidence: RegressionEvidence) -> str:
+def _regression_field_issue(
+    red: LeanCommandExecutionReceipt,
+    green: LeanCommandExecutionReceipt,
+    evidence: RegressionEvidence,
+) -> str:
     expected = (
         (red.command_argv, evidence.command_argv, "command argv"),
         (green.command_argv, evidence.command_argv, "GREEN command argv"),

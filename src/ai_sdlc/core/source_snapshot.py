@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -66,6 +67,7 @@ class SourceSnapshotOptions:
 class _SnapshotParts:
     diff_bytes: bytes
     status_bytes: bytes
+    numstat_bytes: bytes
     base_ref: str
     head_ref: str
     base_commit: str
@@ -167,12 +169,18 @@ def _git_range_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotPar
     head_ref = options.head_ref or "HEAD"
     base_commit = _git_text(root, "merge-base", options.base_ref, head_ref)
     head_commit = _git_text(root, "rev-parse", head_ref)
-    args = [base_commit, head_commit]
+    from ai_sdlc.core.source_snapshot_view import selected_git_diff
+
+    diff, status, numstat = selected_git_diff(
+        root,
+        "local-git-range",
+        base_commit=base_commit,
+        head_commit=head_commit,
+    )
     return _SnapshotParts(
-        diff_bytes=_git(
-            root, "diff", "--binary", "--no-ext-diff", "--no-textconv", *args
-        ),
-        status_bytes=_git(root, "diff", "--name-status", "-z", "-M", *args),
+        diff_bytes=diff,
+        status_bytes=status,
+        numstat_bytes=numstat,
         base_ref=options.base_ref,
         head_ref=head_ref,
         base_commit=base_commit,
@@ -182,11 +190,18 @@ def _git_range_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotPar
 
 def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
     head = _git_text(root, "rev-parse", "HEAD")
-    diff_args = ["diff"]
     if staged:
-        diff_args.append("--cached")
-    diff = _git(root, *diff_args, "--binary", "--no-ext-diff", "--no-textconv")
-    status = _git(root, *diff_args, "--name-status", "-z", "-M")
+        from ai_sdlc.core.source_snapshot_view import selected_git_diff
+
+        diff, status, numstat = selected_git_diff(
+            root,
+            "local-staged",
+            base_commit=head,
+        )
+    else:
+        diff = _git(root, "diff", "--binary", "--no-ext-diff", "--no-textconv")
+        status = _git(root, "diff", "--name-status", "-z", "-M")
+        numstat = _git(root, "diff", "--numstat", "-z", "-M")
     discovered = (
         ()
         if staged
@@ -198,6 +213,7 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
     return _SnapshotParts(
         diff_bytes=diff,
         status_bytes=status,
+        numstat_bytes=numstat,
         base_ref="HEAD" if staged else "INDEX",
         head_ref="INDEX" if staged else "WORKTREE",
         base_commit=head,
@@ -222,11 +238,18 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
     patch = path.read_bytes()
     head_ref = options.head_ref.strip() or "HEAD"
     head = _git_text(root, "rev-parse", head_ref)
-    from ai_sdlc.core.source_snapshot_view import patch_name_status
+    from ai_sdlc.core.source_snapshot_view import patch_diff_metadata
+
+    status, numstat = patch_diff_metadata(
+        root,
+        path.relative_to(root).as_posix(),
+        head,
+    )
 
     return _SnapshotParts(
         diff_bytes=patch,
-        status_bytes=patch_name_status(root, path.relative_to(root).as_posix(), head),
+        status_bytes=status,
+        numstat_bytes=numstat,
         base_ref="patch-file",
         head_ref=head_ref,
         base_commit=head,
@@ -264,14 +287,56 @@ def _binary_files(
     parts: _SnapshotParts,
     statuses: list[tuple[str, str, str]],
 ) -> list[str]:
-    binary: list[str] = []
-    for _status, path, _old in statuses:
+    changed_paths = {path for _status, path, _old in statuses}
+    tracked_paths = changed_paths - set(parts.untracked_files)
+    numstat = _parse_numstat(parts.numstat_bytes)
+    if set(numstat) != tracked_paths:
+        raise ValueError("numstat paths do not match source status")
+    binary = {path for path, is_binary in numstat.items() if is_binary}
+    for path in parts.untracked_files:
         target = root / path
         if target.is_file() and b"\0" in target.read_bytes()[:8192]:
-            binary.append(path)
-    if b"GIT binary patch" in parts.diff_bytes:
-        binary.extend(path for _status, path, _old in statuses)
-    return sorted(set(binary))
+            binary.add(path)
+    return sorted(binary)
+
+
+def _parse_binary_numstat(payload: bytes) -> list[str]:
+    return [path for path, is_binary in _parse_numstat(payload).items() if is_binary]
+
+
+def _parse_numstat(payload: bytes) -> dict[str, bool]:
+    if not payload:
+        return {}
+    if not payload.endswith(b"\0"):
+        raise ValueError("git numstat is not NUL terminated")
+    fields = payload.split(b"\0")
+    fields.pop()
+    parsed: dict[str, bool] = {}
+    index = 0
+    while index < len(fields):
+        if not fields[index]:
+            raise ValueError("git numstat contains an empty record")
+        record = fields[index].split(b"\t", 2)
+        index += 1
+        if len(record) != 3:
+            raise ValueError("malformed git numstat record")
+        added, deleted, encoded_path = record
+        binary = added == b"-" and deleted == b"-"
+        if not binary and (not added.isdigit() or not deleted.isdigit()):
+            raise ValueError("git numstat counts are invalid")
+        if encoded_path:
+            path = _decode_path(encoded_path)
+        else:
+            if index + 1 >= len(fields):
+                raise ValueError("malformed git rename numstat record")
+            if not fields[index] or not fields[index + 1]:
+                raise ValueError("git rename numstat path is empty")
+            path = _decode_path(fields[index + 1])
+            index += 2
+        if path in parsed:
+            raise ValueError("git numstat contains a duplicate path")
+        parsed[path] = binary
+    return parsed
 
 
 def _snapshot_digests(root: Path, snapshot: SourceSnapshot) -> dict[str, str]:
@@ -290,7 +355,18 @@ def _untracked_payload(root: Path, paths: tuple[str, ...]) -> bytes:
     for path in sorted(paths):
         raw_path = path.encode("utf-8")
         payload.extend(b"\0UNTRACKED\0" + raw_path + b"\0")
-        payload.extend(hashlib.sha256((root / path).read_bytes()).digest())
+        target = root / path
+        if target.is_symlink():
+            payload.extend(b"SYMLINK\0")
+            payload.extend(hashlib.sha256(os.fsencode(os.readlink(target))).digest())
+            continue
+        if not target.is_file():
+            raise ValueError(f"untracked source path is not a file: {path}")
+        executable = (
+            b"1" if target.stat(follow_symlinks=False).st_mode & 0o111 else b"0"
+        )
+        payload.extend(b"FILE\0" + executable + b"\0")
+        payload.extend(hashlib.sha256(target.read_bytes()).digest())
     return bytes(payload)
 
 

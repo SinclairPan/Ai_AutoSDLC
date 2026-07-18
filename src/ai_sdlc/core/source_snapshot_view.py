@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
+import shutil
 import subprocess
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import IO
 
-from ai_sdlc.core.source_snapshot import SourceSnapshot
+from ai_sdlc.core.source_snapshot import (
+    SourceSnapshot,
+    _is_runtime_artifact,
+)
+from ai_sdlc.core.source_snapshot import (
+    _untracked_payload as _snapshot_untracked_payload,
+)
 
 
 def file_versions(
@@ -62,19 +71,33 @@ def materialized_source_view(
     """Yield a filesystem view whose bytes match the selected snapshot after-view."""
 
     if snapshot.source_kind == "local-unstaged":
-        yield root.resolve()
+        with _index_worktree(
+            root,
+            expected_index_identity=snapshot.index_identity,
+        ) as env:
+            target = Path(env["GIT_WORK_TREE"])
+            _overlay_unstaged_source(root, target, snapshot, env)
+            yield target
         return
-    with tempfile.TemporaryDirectory(prefix="ai-sdlc-source-view-") as directory:
-        target = Path(directory).resolve()
-        if snapshot.source_kind == "local-staged":
-            _checkout_index(root, target)
-        elif snapshot.source_kind == "local-git-range":
-            with _revision_index(root, snapshot.head_commit) as env:
-                _checkout_index(root, target, env=env)
-        else:
-            with _patched_index(root, snapshot) as env:
-                _checkout_index(root, target, env=env)
-        yield target
+    if snapshot.source_kind == "local-staged":
+        with _index_worktree(
+            root,
+            expected_index_identity=snapshot.index_identity,
+        ) as env:
+            yield Path(env["GIT_WORK_TREE"])
+        return
+    if snapshot.source_kind == "local-git-range":
+        with (
+            _revision_index(root, snapshot.head_commit) as index_env,
+            _index_worktree(root, index_env) as env,
+        ):
+            yield Path(env["GIT_WORK_TREE"])
+        return
+    with (
+        _patched_index(root, snapshot) as index_env,
+        _index_worktree(root, index_env) as env,
+    ):
+        yield Path(env["GIT_WORK_TREE"])
 
 
 def _revision_python_sources(root: Path, revision: str) -> dict[str, bytes]:
@@ -101,8 +124,14 @@ def _patched_index(root: Path, snapshot: SourceSnapshot) -> Iterator[dict[str, s
         raise ValueError("patch source has no patch_file")
     patch_path = (root / snapshot.patch_file).resolve()
     patch_path.relative_to(root.resolve())
-    with _patch_index(root, patch_path, snapshot.base_commit) as env:
-        yield env
+    patch = patch_path.read_bytes()
+    if _payload_digest(patch) != snapshot.diff_hash:
+        raise ValueError("patch identity changed before materialization")
+    with tempfile.TemporaryDirectory(prefix="ai-sdlc-frozen-patch-") as directory:
+        captured_patch = Path(directory) / "selected.patch"
+        captured_patch.write_bytes(patch)
+        with _patch_index(root, captured_patch, snapshot.base_commit) as env:
+            yield env
 
 
 @contextmanager
@@ -130,13 +159,349 @@ def _checkout_index(
     )
 
 
-def patch_name_status(root: Path, patch_file: str, base_commit: str) -> bytes:
-    """Read rename-aware name status from the isolated patched index."""
+def patch_diff_metadata(
+    root: Path,
+    patch_file: str,
+    base_commit: str,
+) -> tuple[bytes, bytes]:
+    """Read status and numstat from one isolated patched source view."""
 
     patch_path = (root / patch_file).resolve()
     patch_path.relative_to(root.resolve())
-    with _patch_index(root, patch_path, base_commit) as env:
-        return _git(root, "diff", "--cached", "--name-status", "-z", "-M", env=env)
+    with (
+        _patch_index(root, patch_path, base_commit) as env,
+        _index_worktree(root, env) as selected_env,
+    ):
+        _diff, status, numstat = _diff_outputs(("--cached", base_commit), selected_env)
+        return status, numstat
+
+
+def selected_git_diff(
+    root: Path,
+    source_kind: str,
+    *,
+    base_commit: str = "",
+    head_commit: str = "",
+) -> tuple[bytes, bytes, bytes]:
+    """Build diff outputs with attributes read from the selected after-view."""
+
+    if source_kind == "local-staged" and base_commit:
+        with _index_worktree(root) as env:
+            return _diff_outputs(("--cached", base_commit), env)
+    if source_kind == "local-git-range" and base_commit and head_commit:
+        with (
+            _revision_index(root, head_commit) as index_env,
+            _index_worktree(root, index_env) as env,
+        ):
+            return _diff_outputs((base_commit, head_commit), env)
+    raise ValueError(f"unsupported selected diff source: {source_kind}")
+
+
+def _diff_outputs(
+    selector: tuple[str, ...],
+    env: dict[str, str],
+) -> tuple[bytes, bytes, bytes]:
+    worktree = Path(env["GIT_WORK_TREE"])
+    return (
+        _git(
+            worktree,
+            "diff",
+            "--binary",
+            "--no-ext-diff",
+            "--no-textconv",
+            *selector,
+            env=env,
+        ),
+        _git(worktree, "diff", "--name-status", "-z", "-M", *selector, env=env),
+        _git(worktree, "diff", "--numstat", "-z", "-M", *selector, env=env),
+    )
+
+
+@contextmanager
+def _index_worktree(
+    root: Path,
+    index_env: dict[str, str] | None = None,
+    expected_index_identity: str = "",
+) -> Iterator[dict[str, str]]:
+    with tempfile.TemporaryDirectory(prefix="ai-sdlc-attributes-") as directory:
+        temporary_root = Path(directory).resolve()
+        source_env = dict(index_env or os.environ)
+        if "GIT_INDEX_FILE" not in source_env:
+            source_env["GIT_INDEX_FILE"] = str(
+                _repository_path(root, "--git-path", "index")
+            )
+        entries = _git(root, "ls-files", "-s", "-z", env=source_env)
+        flags = _git(root, "ls-files", "-v", "-z", env=source_env)
+        captured_identity = _index_payload_identity(entries, flags)
+        if expected_index_identity and captured_identity != expected_index_identity:
+            raise ValueError(
+                "selected source index identity changed before materialization"
+            )
+        target = temporary_root / "worktree"
+        target.mkdir()
+        metadata_root = temporary_root / "metadata"
+        empty_config = temporary_root / "empty-gitconfig"
+        empty_config.touch()
+        empty_attributes = temporary_root / "empty-attributes"
+        empty_attributes.touch()
+        empty_template = temporary_root / "empty-template"
+        empty_template.mkdir()
+        init_env = _clean_git_environment(empty_config)
+        object_format = (
+            _optional_git(root, "rev-parse", "--show-object-format")
+            .decode("ascii", errors="strict")
+            .strip()
+        )
+        init_args = ["init", "--quiet", f"--template={empty_template}"]
+        if object_format:
+            init_args.append(f"--object-format={object_format}")
+        init_args.append(str(metadata_root))
+        _git(root, *init_args, env=init_env)
+        _git(
+            metadata_root,
+            "config",
+            "core.attributesFile",
+            str(empty_attributes),
+            env=init_env,
+        )
+        object_dir = _repository_path(root, "--git-path", "objects")
+        isolated_env = {
+            key: value
+            for key, value in source_env.items()
+            if key
+            not in {
+                "GIT_COMMON_DIR",
+                "GIT_DEFAULT_HASH",
+                "GIT_DIR",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_WORK_TREE",
+            }
+            and not key.startswith("GIT_ATTR_")
+            and not key.startswith("GIT_CONFIG_")
+            and not key.startswith("GIT_TEMPLATE_")
+        }
+        selected_env = {
+            **isolated_env,
+            "GIT_ATTR_NOSYSTEM": "1",
+            "GIT_CONFIG_GLOBAL": str(empty_config),
+            "GIT_CONFIG_NOSYSTEM": "1",
+            "GIT_CONFIG_SYSTEM": str(empty_config),
+            "GIT_DIR": str(metadata_root / ".git"),
+            "GIT_INDEX_FILE": str(temporary_root / "index"),
+            "GIT_OBJECT_DIRECTORY": str(object_dir),
+            "GIT_WORK_TREE": str(target),
+        }
+        _git(target, "read-tree", "--empty", env=selected_env)
+        _git_input(
+            target, ("update-index", "-z", "--index-info"), entries, selected_env
+        )
+        _checkout_index(target, target, env=selected_env)
+        _restore_regular_index_blobs(target, target, selected_env)
+        yield selected_env
+
+
+def _clean_git_environment(empty_config: Path) -> dict[str, str]:
+    cleaned = {
+        key: value
+        for key, value in os.environ.items()
+        if key
+        not in {
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_COMMON_DIR",
+            "GIT_DEFAULT_HASH",
+            "GIT_DIR",
+            "GIT_INDEX_FILE",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_WORK_TREE",
+        }
+        and not key.startswith("GIT_ATTR_")
+        and not key.startswith("GIT_CONFIG_")
+        and not key.startswith("GIT_TEMPLATE_")
+    }
+    return {
+        **cleaned,
+        "GIT_ATTR_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": str(empty_config),
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_SYSTEM": str(empty_config),
+    }
+
+
+def _restore_regular_index_blobs(
+    root: Path,
+    target: Path,
+    env: dict[str, str],
+) -> None:
+    """将普通文件恢复为 index blob 原始字节，消除 checkout 转换。"""
+
+    regular_entries: list[tuple[bytes, Path]] = []
+    records = _git(root, "ls-files", "--stage", "-z", env=env).split(b"\0")
+    for record in records:
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split(b" ")
+        if not separator or len(fields) != 3:
+            raise ValueError("malformed staged index entry")
+        mode, object_id, stage = fields
+        if stage != b"0":
+            raise ValueError("unmerged index entries cannot be materialized")
+        if mode not in {b"100644", b"100755"}:
+            continue
+        path = Path(raw_path.decode("utf-8", errors="strict"))
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError(f"unsafe index path: {path}")
+        destination = target / path
+        if destination.is_symlink() or not destination.is_file():
+            raise ValueError(f"regular index path was not materialized: {path}")
+        regular_entries.append((object_id, destination))
+    _restore_blobs_from_batch(root, regular_entries, env)
+
+
+def _overlay_unstaged_source(
+    root: Path,
+    target: Path,
+    snapshot: SourceSnapshot,
+    frozen_env: dict[str, str],
+) -> None:
+    removed = set(snapshot.deleted_files) | set(snapshot.renamed_files.values())
+    for path in sorted(removed):
+        _remove_materialized_path(_selected_path(target, path))
+    for path in snapshot.changed_files:
+        if path in snapshot.deleted_files:
+            continue
+        source = _selected_path(root, path)
+        destination = _selected_path(target, path)
+        _copy_selected_path(source, destination)
+    verify_env = {
+        **os.environ,
+        "GIT_INDEX_FILE": frozen_env["GIT_INDEX_FILE"],
+        "GIT_WORK_TREE": str(target),
+    }
+    diff = _git(
+        root,
+        "diff",
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        env=verify_env,
+    )
+    discovered = _nul_paths(
+        _git(
+            root,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+            env=verify_env,
+        )
+    )
+    untracked = tuple(path for path in discovered if not _is_runtime_artifact(path))
+    payload = diff + _snapshot_untracked_payload(target, untracked)
+    if _payload_digest(payload) != snapshot.diff_hash:
+        raise ValueError("unstaged source identity changed before materialization")
+
+
+def _selected_path(root: Path, path: str) -> Path:
+    relative = Path(path)
+    if relative.is_absolute() or ".." in relative.parts:
+        raise ValueError(f"unsafe selected source path: {path}")
+    return root / relative
+
+
+def _remove_materialized_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _copy_selected_path(source: Path, destination: Path) -> None:
+    _remove_materialized_path(destination)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        destination.symlink_to(os.readlink(source), target_is_directory=source.is_dir())
+        return
+    if not source.is_file():
+        raise ValueError(f"selected source path is unavailable: {source}")
+    shutil.copy2(source, destination, follow_symlinks=False)
+
+
+def _restore_blobs_from_batch(
+    root: Path,
+    entries: list[tuple[bytes, Path]],
+    env: dict[str, str],
+) -> None:
+    if not entries:
+        return
+    process = subprocess.Popen(
+        ["git", "cat-file", "--batch"],
+        cwd=root,
+        env=env,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise ValueError("git cat-file batch pipes are unavailable")
+    try:
+        for object_id, destination in entries:
+            process.stdin.write(object_id + b"\n")
+            process.stdin.flush()
+            header = process.stdout.readline().rstrip(b"\n")
+            fields = header.split(b" ")
+            if len(fields) != 3 or fields[0] != object_id or fields[1] != b"blob":
+                raise ValueError("git cat-file returned an invalid blob header")
+            try:
+                size = int(fields[2])
+            except ValueError as exc:
+                raise ValueError("git cat-file returned an invalid blob size") from exc
+            blob = _read_exact(process.stdout, size)
+            if process.stdout.read(1) != b"\n":
+                raise ValueError("git cat-file blob framing is invalid")
+            destination.write_bytes(blob)
+        process.stdin.close()
+        stderr = process.stderr.read()
+        returncode = process.wait()
+        if returncode:
+            message = stderr.decode("utf-8", errors="replace").strip()
+            raise ValueError(f"git cat-file --batch failed: {message}")
+    except Exception:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+        raise
+    finally:
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if not stream.closed:
+                stream.close()
+
+
+def _read_exact(stream: IO[bytes], size: int) -> bytes:
+    payload = bytearray()
+    while len(payload) < size:
+        chunk = stream.read(size - len(payload))
+        if not chunk:
+            raise ValueError("git cat-file blob payload is truncated")
+        payload.extend(chunk)
+    return bytes(payload)
+
+
+def _index_payload_identity(entries: bytes, flags: bytes) -> str:
+    payload = entries + b"\0INDEX-FLAGS\0" + flags
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _payload_digest(payload: bytes) -> str:
+    return f"sha256:{hashlib.sha256(payload).hexdigest()}"
+
+
+def _repository_path(root: Path, *args: str) -> Path:
+    raw = _git(root, "rev-parse", *args).decode("utf-8", errors="strict").strip()
+    path = Path(raw)
+    return path.resolve() if path.is_absolute() else (root / path).resolve()
 
 
 @contextmanager
@@ -168,6 +533,8 @@ def _index_blob(root: Path, path: str, *, env: dict[str, str] | None = None) -> 
 
 def _worktree_blob(root: Path, path: str) -> bytes:
     target = root / path
+    if target.is_symlink():
+        return os.fsencode(os.readlink(target))
     return target.read_bytes() if target.is_file() else b""
 
 
@@ -188,6 +555,25 @@ def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
     return result.stdout
 
 
+def _git_input(
+    root: Path,
+    args: tuple[str, ...],
+    payload: bytes,
+    env: dict[str, str],
+) -> None:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=root,
+        input=payload,
+        capture_output=True,
+        check=False,
+        env=env,
+    )
+    if result.returncode:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"git {' '.join(args)} failed: {message}")
+
+
 def _nul_paths(payload: bytes) -> list[str]:
     return [
         item.decode("utf-8", errors="strict").replace("\\", "/")
@@ -199,6 +585,7 @@ def _nul_paths(payload: bytes) -> list[str]:
 __all__ = [
     "file_versions",
     "materialized_source_view",
-    "patch_name_status",
+    "patch_diff_metadata",
     "python_sources",
+    "selected_git_diff",
 ]

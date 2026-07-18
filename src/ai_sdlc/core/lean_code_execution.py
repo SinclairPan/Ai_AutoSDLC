@@ -37,7 +37,7 @@ from ai_sdlc.core.source_snapshot import (
     build_source_snapshot,
     revalidate_source_snapshot,
 )
-from ai_sdlc.core.source_snapshot_view import file_versions, materialized_source_view
+from ai_sdlc.core.source_snapshot_view import materialized_source_view
 
 _PURPOSES = {"targeted-verification", "regression-red", "regression-green"}
 _REGRESSION_PURPOSES = {"regression-red", "regression-green"}
@@ -132,6 +132,18 @@ def _execute_and_persist(
     test_source = safe_project_path(execution_root, options.test_source_ref)
     if not test_source.is_file():
         raise ValueError("test source is unavailable in the selected source view")
+    test_source_digest = optional_file_digest(
+        execution_root,
+        options.test_source_ref,
+    )
+    snapshot = snapshot.model_copy(
+        update={
+            "file_digests": {
+                **snapshot.file_digests,
+                options.test_source_ref: test_source_digest,
+            }
+        }
+    )
     adapter = resolve_execution_adapter(
         execution_root,
         options.command_argv,
@@ -169,7 +181,7 @@ def _execute_and_persist(
         finished_at,
         accepted,
         adapter,
-        optional_file_digest(execution_root, options.test_source_ref),
+        test_source_digest,
     )
     return LeanExecutionResult(
         status="ready" if accepted else "blocked",
@@ -331,8 +343,11 @@ def _snapshot_file_digest(
 ) -> str:
     if not reference:
         return ""
-    _before, after = file_versions(root, snapshot, reference)
-    return payload_digest(after)
+    del root
+    digest = snapshot.file_digests.get(reference, "")
+    if not digest:
+        raise ValueError("test source digest is absent from the frozen snapshot")
+    return digest
 
 
 def _options_issue(root: Path, options: LeanExecutionOptions) -> str:

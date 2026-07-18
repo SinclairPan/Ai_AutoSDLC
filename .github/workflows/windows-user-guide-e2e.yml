@@ -21,6 +21,7 @@ on:
       - "packaging/offline/**"
       - "scripts/windows_clean_user_e2e.py"
       - "scripts/windows_lean_code_e2e.py"
+      - "scripts/windows_lean_code_e2e_support.py"
       - "tests/integration/test_github_workflows.py"
 
 permissions:

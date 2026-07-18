@@ -29,7 +29,7 @@ def attach_python_callers(
     }
     if not targets:
         return
-    callers = {target: set() for target in targets}
+    callers: dict[tuple[str, str], set[str]] = {target: set() for target in targets}
     for path, payload in python_sources(root, snapshot).items():
         if (
             classify_file(path, payload, False)
@@ -68,16 +68,47 @@ def _collect_target_callers(
 
 
 def _function_calls_target(
-    node: ast.AST,
+    node: ast.FunctionDef | ast.AsyncFunctionDef,
     direct_names: set[str],
     module_names: set[str],
     target_name: str,
 ) -> bool:
-    return any(
-        isinstance(child, ast.Call)
-        and _calls_target(child.func, direct_names, module_names, target_name)
-        for child in ast.walk(node)
-    )
+    finder = _DirectFunctionCallFinder(direct_names, module_names, target_name)
+    for statement in node.body:
+        finder.visit(statement)
+    return finder.found
+
+
+class _DirectFunctionCallFinder(ast.NodeVisitor):
+    """Find calls owned by one function without descending into nested scopes."""
+
+    def __init__(
+        self,
+        direct_names: set[str],
+        module_names: set[str],
+        target_name: str,
+    ) -> None:
+        self.direct_names = direct_names
+        self.module_names = module_names
+        self.target_name = target_name
+        self.found = False
+
+    def visit_Call(self, node: ast.Call) -> None:
+        if _calls_target(
+            node.func, self.direct_names, self.module_names, self.target_name
+        ):
+            self.found = True
+            return
+        self.generic_visit(node)
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        return
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        return
+
+    def visit_ClassDef(self, node: ast.ClassDef) -> None:
+        return
 
 
 def _target_import_names(
