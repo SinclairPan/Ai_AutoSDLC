@@ -35,7 +35,9 @@ from ai_sdlc.core.source_snapshot import (
     SourceSnapshot,
     SourceSnapshotOptions,
     build_source_snapshot,
+    revalidate_source_snapshot,
 )
+from ai_sdlc.core.source_snapshot_view import file_versions, materialized_source_view
 
 _PURPOSES = {"targeted-verification", "regression-red", "regression-green"}
 _REGRESSION_PURPOSES = {"regression-red", "regression-green"}
@@ -61,16 +63,30 @@ def run_lean_command(options: LeanExecutionOptions) -> LeanExecutionResult:
         )
     except (OSError, ValueError) as exc:
         return _blocked(f"Lean execution source snapshot is unavailable: {exc}")
+    freshness = revalidate_source_snapshot(root, snapshot)
+    if not freshness.fresh:
+        return _blocked(
+            "Lean execution source snapshot changed before execution: "
+            f"{freshness.reason}"
+        )
     receipt_id = options.receipt_id or uuid.uuid4().hex
     run_dir = _run_dir(root, options.loop_id, receipt_id)
     if run_dir.exists():
         return _blocked(f"Lean execution receipt already exists: {receipt_id}")
     try:
-        return _execute_and_persist(root, options, snapshot, receipt_id, run_dir)
+        with materialized_source_view(root, snapshot) as execution_root:
+            return _execute_and_persist(
+                root,
+                execution_root,
+                options,
+                snapshot,
+                receipt_id,
+                run_dir,
+            )
     except subprocess.TimeoutExpired:
         return _blocked(f"Lean execution timed out after {options.timeout_seconds}s.")
-    except OSError as exc:
-        return _blocked(f"Lean execution could not start: {exc}")
+    except (OSError, ValueError) as exc:
+        return _blocked(f"Lean selected source execution could not start: {exc}")
 
 
 def validate_execution_receipt(
@@ -101,17 +117,30 @@ def validate_execution_receipt(
 
 def _execute_and_persist(
     root: Path,
+    execution_root: Path,
     options: LeanExecutionOptions,
     snapshot: SourceSnapshot,
     receipt_id: str,
     run_dir: Path,
 ) -> LeanExecutionResult:
-    run_cwd = safe_project_path(root, options.cwd)
+    run_cwd = safe_project_path(execution_root, options.cwd)
+    test_candidate = execution_root / options.test_source_ref
+    if test_candidate.is_symlink():
+        raise ValueError(
+            "test source must be a regular file in the selected source view"
+        )
+    test_source = safe_project_path(execution_root, options.test_source_ref)
+    if not test_source.is_file():
+        raise ValueError("test source is unavailable in the selected source view")
     adapter = resolve_execution_adapter(
-        root,
+        execution_root,
         options.command_argv,
         options.test_source_ref,
     )
+    if not adapter:
+        raise ValueError(
+            "supported runner command target must resolve inside the selected source view"
+        )
     command_argv = effective_command_argv(adapter, options.command_argv)
     started_at = utc_now_iso()
     completed = subprocess.run(
@@ -139,6 +168,8 @@ def _execute_and_persist(
         started_at,
         finished_at,
         accepted,
+        adapter,
+        optional_file_digest(execution_root, options.test_source_ref),
     )
     return LeanExecutionResult(
         status="ready" if accepted else "blocked",
@@ -164,6 +195,8 @@ def _write_receipt(
     started_at: str,
     finished_at: str,
     accepted: bool,
+    adapter: str,
+    test_source_digest: str,
 ) -> tuple[LeanCommandExecutionReceipt, Path, Path]:
     store = LoopArtifactStore(root)
     toolchain = execution_toolchain(root, options.command_argv[0])
@@ -185,13 +218,9 @@ def _write_receipt(
         output_ref=repo_relative_path(root, output_path),
         output_digest=payload_digest(output_path.read_bytes()),
         test_source_ref=options.test_source_ref,
-        test_source_digest=optional_file_digest(root, options.test_source_ref),
+        test_source_digest=test_source_digest,
         failure_signature=options.failure_signature,
-        runner_adapter=resolve_execution_adapter(
-            root,
-            options.command_argv,
-            options.test_source_ref,
-        ),
+        runner_adapter=adapter,
         toolchain_fingerprint=toolchain[0],
         toolchain_executable=toolchain[1],
         toolchain_executable_digest=toolchain[2],
@@ -264,10 +293,15 @@ def _receipt_content_issue(
         != receipt.output_digest
     ):
         return "execution output digest is stale"
-    if (
-        optional_file_digest(root, receipt.test_source_ref)
-        != receipt.test_source_digest
-    ):
+    try:
+        current_test_digest = _snapshot_file_digest(
+            root,
+            snapshot,
+            receipt.test_source_ref,
+        )
+    except (OSError, ValueError) as exc:
+        return f"execution test source artifact is unavailable: {exc}"
+    if current_test_digest != receipt.test_source_digest:
         return "execution test source digest is stale"
     if (
         resolve_execution_adapter(
@@ -290,6 +324,17 @@ def _receipt_content_issue(
     return issue if not accepted else ""
 
 
+def _snapshot_file_digest(
+    root: Path,
+    snapshot: SourceSnapshot,
+    reference: str,
+) -> str:
+    if not reference:
+        return ""
+    _before, after = file_versions(root, snapshot, reference)
+    return payload_digest(after)
+
+
 def _options_issue(root: Path, options: LeanExecutionOptions) -> str:
     if options.purpose not in _PURPOSES:
         return f"Unsupported Lean execution purpose: {options.purpose}"
@@ -306,20 +351,10 @@ def _options_issue(root: Path, options: LeanExecutionOptions) -> str:
         return "Lean execution timeout must be between 1 and 1800 seconds."
     if not options.test_source_ref:
         return "Lean execution requires a project-local test source."
-    if not resolve_execution_adapter(
-        root,
-        options.command_argv,
-        options.test_source_ref,
-    ):
-        return (
-            "Lean execution requires a supported runner that executes the test source."
-        )
     try:
         artifacts = implementation_artifacts(root, options.loop_id)
         loop_run = read_loop_run(artifacts.loop_run_path)
         impl_input = read_input(artifacts.input_path)
-        safe_project_path(root, options.cwd)
-        safe_project_path(root, options.test_source_ref).read_bytes()
     except (OSError, ValueError) as exc:
         return f"Lean execution input is unavailable: {exc}"
     if (

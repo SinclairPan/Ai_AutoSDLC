@@ -197,6 +197,8 @@ ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id>
 
 也可以省略 `--loop-id`，使用当前 Implementation pointer。命令支持 `--json`，并始终说明 `Result / Next`、finding 数量、artifact 路径、是否调用模型和是否写应用代码。
 
+评估源支持 `local-unstaged`、`local-staged`、`local-git-range` 和项目内 patch。若 `lean-check` 选择了非默认源，`lean-verify` 以及 `lean-regression` 的 RED/GREEN 阶段必须重复使用同一组 `--diff-source / --base / --head / --patch-file` 参数。CLI 会把完整 source tuple 传入受控执行器；receipt 与评估按精确 diff hash 绑定，不会自动改用其他工作区视图。
+
 判定方式：
 
 - `BLOCKER`：artifact/policy/input 损坏或过期、未批准的 scope drift、验证失败、行为或安全合同破坏、无效例外；不能关闭。
@@ -238,7 +240,7 @@ ai-sdlc loop implementation record --loop-id <implementation-loop-id> `
   --task-id <task-id> --status done --evidence <返回的 receipt_path>
 ```
 
-然后再运行第二次评估。只填写 `--verification` 文本不算执行证据。最多两轮；相同 stable finding 仍未解决时进入 `needs_user`。如果修复只能破坏行为，或成本明显高于收益，记录结构化 No-Go：
+然后再运行第二次评估。只填写 `--verification` 文本不算执行证据。Implementation start 时冻结的任务内容不能在评估前或关闭前改写；当前任务的语义摘要必须持续匹配冻结值。最多两轮；在当前 enforcement mode 下，第二轮只要仍有未解决的 BLOCKER/REQUIRED，无论 finding 是否与上一轮相同，都会进入 `needs_user`。如果修复只能破坏行为，或成本明显高于收益，记录结构化 No-Go：
 
 ```powershell
 ai-sdlc loop implementation lean-no-go `

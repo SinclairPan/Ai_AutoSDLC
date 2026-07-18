@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from click import unstyle
 from typer.testing import CliRunner
 
@@ -17,11 +19,22 @@ from ai_sdlc.core.implementation_models import (
     ImplementationInput,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
+from ai_sdlc.core.lean_code_execution import validate_execution_receipt
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
 from ai_sdlc.models.work import WorkType
 
 runner = CliRunner()
+
+
+def test_lean_source_bound_commands_expose_the_same_source_options() -> None:
+    for command in ("lean-check", "lean-verify", "lean-regression"):
+        result = runner.invoke(app, ["loop", "implementation", command, "--help"])
+
+        assert result.exit_code == 0, (command, result.output)
+        plain = unstyle(result.output)
+        for option in ("--diff-source", "--base", "--head", "--patch-file"):
+            assert option in plain, (command, option, plain)
 
 
 def test_lean_check_json_is_deterministic_and_model_free(tmp_path: Path) -> None:
@@ -103,6 +116,256 @@ def test_lean_verify_cli_executes_argv_and_writes_receipt(tmp_path: Path) -> Non
     assert (tmp_path / payload["receipt_path"]).is_file()
 
 
+def test_lean_verify_cli_binds_receipt_to_selected_diff_source(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-cli-verify-staged"
+    _seed_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "def _small():\n    return 1\n")
+    _write(
+        tmp_path,
+        "tests/verify_staged.py",
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        "raise SystemExit(0 if 'return 1' in source else 1)\n",
+    )
+    _git(tmp_path, "add", "src/app.py", "tests/verify_staged.py")
+    _write(tmp_path, "src/app.py", "def _small():\n    return 0\n")
+    (tmp_path / "tests/verify_staged.py").unlink()
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "lean-verify",
+                "--loop-id",
+                loop_id,
+                "--test-source",
+                "tests/verify_staged.py",
+                "--diff-source",
+                "local-staged",
+                "--json",
+                "--",
+                sys.executable,
+                "tests/verify_staged.py",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    receipt = _receipt_payload(tmp_path, payload)
+    snapshot = _receipt_snapshot(tmp_path, payload)
+    assert snapshot["source_kind"] == "local-staged"
+    assert receipt["test_source_digest"] == _payload_digest(
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        "raise SystemExit(0 if 'return 1' in source else 1)\n"
+    )
+    validated, issue = validate_execution_receipt(
+        tmp_path, str(payload["receipt_path"])
+    )
+    assert validated is not None
+    assert issue == ""
+
+
+def test_lean_verify_staged_ignores_external_worktree_symlink_overlay(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-cli-verify-staged-symlink"
+    test_source = "tests/verify_staged_symlink.py"
+    test_content = "print('selected staged test')\n"
+    _seed_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, test_source, test_content)
+    _git(tmp_path, "add", "src/app.py", test_source)
+    selected_path = tmp_path / test_source
+    selected_path.unlink()
+    outside = tmp_path.parent / f"{tmp_path.name}-outside.py"
+    outside.write_text("raise SystemExit(1)\n", encoding="utf-8")
+    try:
+        selected_path.symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "lean-verify",
+                "--loop-id",
+                loop_id,
+                "--test-source",
+                test_source,
+                "--diff-source",
+                "local-staged",
+                "--json",
+                "--",
+                sys.executable,
+                test_source,
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    receipt = _receipt_payload(tmp_path, payload)
+    assert receipt["test_source_digest"] == _payload_digest(test_content)
+    validated, issue = validate_execution_receipt(
+        tmp_path, str(payload["receipt_path"])
+    )
+    assert validated is not None
+    assert issue == ""
+
+
+def test_lean_verify_cli_forwards_git_range_and_patch_source_parameters(
+    tmp_path: Path,
+) -> None:
+    range_root = tmp_path / "range"
+    range_root.mkdir()
+    range_loop = "impl-cli-verify-range"
+    _seed_loop(range_root, range_loop)
+    _write(range_root, "src/app.py", "VALUE = 1\n")
+    _write(
+        range_root,
+        "tests/verify_range.py",
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n",
+    )
+    _git(range_root, "add", "src/app.py", "tests/verify_range.py")
+    _git(range_root, "commit", "-m", "add range fixture")
+    _write(range_root, "src/app.py", "VALUE = 0\n")
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=range_root):
+        range_result = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "lean-verify",
+                "--loop-id",
+                range_loop,
+                "--test-source",
+                "tests/verify_range.py",
+                "--diff-source",
+                "local-git-range",
+                "--base",
+                "HEAD~1",
+                "--head",
+                "HEAD",
+                "--json",
+                "--",
+                sys.executable,
+                "tests/verify_range.py",
+            ],
+        )
+    assert range_result.exit_code == 0, range_result.output
+    range_snapshot = _receipt_snapshot(range_root, json.loads(range_result.output))
+    assert range_snapshot["source_kind"] == "local-git-range"
+    assert range_snapshot["base_ref"] == "HEAD~1"
+    assert range_snapshot["head_ref"] == "HEAD"
+
+    patch_root = tmp_path / "patch"
+    patch_root.mkdir()
+    patch_loop = "impl-cli-verify-patch"
+    _seed_loop(patch_root, patch_loop)
+    _write(patch_root, "src/app.py", "VALUE = 0\n")
+    _write(
+        patch_root,
+        "tests/verify_patch.py",
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n",
+    )
+    _git(patch_root, "add", "src/app.py", "tests/verify_patch.py")
+    _git(patch_root, "commit", "-m", "add patch fixture")
+    _write(patch_root, "src/app.py", "VALUE = 1\n")
+    _write_patch(patch_root, "evidence/change.patch")
+    _write(patch_root, "src/app.py", "VALUE = 2\n")
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=patch_root):
+        patch_result = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "lean-verify",
+                "--loop-id",
+                patch_loop,
+                "--test-source",
+                "tests/verify_patch.py",
+                "--diff-source",
+                "patch",
+                "--patch-file",
+                "evidence/change.patch",
+                "--json",
+                "--",
+                sys.executable,
+                "tests/verify_patch.py",
+            ],
+        )
+    assert patch_result.exit_code == 0, patch_result.output
+    patch_snapshot = _receipt_snapshot(patch_root, json.loads(patch_result.output))
+    assert patch_snapshot["source_kind"] == "patch"
+    assert patch_snapshot["patch_file"] == "evidence/change.patch"
+
+
+def test_lean_verify_patch_executes_test_source_added_by_selected_patch(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-cli-verify-patch-added-test"
+    test_source = "tests/patch_added_verify.py"
+    test_content = (
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n"
+    )
+    _seed_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add patch baseline")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, test_source, test_content)
+    _git(tmp_path, "add", "--intent-to-add", test_source)
+    _write_patch(tmp_path, "evidence/add-test.patch")
+    (tmp_path / test_source).unlink()
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "lean-verify",
+                "--loop-id",
+                loop_id,
+                "--test-source",
+                test_source,
+                "--diff-source",
+                "patch",
+                "--patch-file",
+                "evidence/add-test.patch",
+                "--json",
+                "--",
+                sys.executable,
+                test_source,
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    payload = json.loads(result.output)
+    receipt = _receipt_payload(tmp_path, payload)
+    snapshot = _receipt_snapshot(tmp_path, payload)
+    assert snapshot["source_kind"] == "patch"
+    assert receipt["test_source_digest"] == _payload_digest(test_content)
+    validated, issue = validate_execution_receipt(
+        tmp_path, str(payload["receipt_path"])
+    )
+    assert validated is not None
+    assert issue == ""
+
+
 def test_controlled_execution_cli_requires_explicit_loop_id(tmp_path: Path) -> None:
     _seed_loop(tmp_path, "impl-cli-required-loop")
 
@@ -158,6 +421,7 @@ def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> Non
         f"print({signature!r}) if 'VALUE = 1' not in source else print('passed')\n"
         "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n",
     )
+    _git(tmp_path, "add", "src/app.py", "tests/regression_probe.py")
     prefix = [
         "loop",
         "implementation",
@@ -170,13 +434,115 @@ def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> Non
         "tests/regression_probe.py",
         "--failure-signature",
         signature,
+        "--diff-source",
+        "local-staged",
         "--json",
     ]
     command = ["--", sys.executable, "tests/regression_probe.py"]
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        _write(tmp_path, "src/app.py", "VALUE = 1\n")
         red = runner.invoke(app, [*prefix, "--phase", "red", *command])
         _write(tmp_path, "src/app.py", "VALUE = 1\n")
+        _git(tmp_path, "add", "src/app.py")
+        _write(tmp_path, "src/app.py", "VALUE = 0\n")
         green = runner.invoke(app, [*prefix, "--phase", "green", *command])
+
+    assert red.exit_code == 0, red.output
+    assert green.exit_code == 0, green.output
+    payload = json.loads(green.output)
+    assert payload["status"] == "ready"
+    assert (tmp_path / payload["evidence_path"]).is_file()
+
+
+def test_lean_regression_cli_rejects_red_green_source_selector_mismatch(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-cli-regression-source-mismatch"
+    _seed_loop(tmp_path, loop_id)
+    signature = "assertion:cli-source-mismatch"
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(
+        tmp_path,
+        "tests/regression_source.py",
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        f"print({signature!r}) if 'VALUE = 1' not in source else print('passed')\n"
+        "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n",
+    )
+    _git(tmp_path, "add", "src/app.py", "tests/regression_source.py")
+    common = [
+        "loop",
+        "implementation",
+        "lean-regression",
+        "--loop-id",
+        loop_id,
+        "--test-id",
+        "source-mismatch",
+        "--test-source",
+        "tests/regression_source.py",
+        "--failure-signature",
+        signature,
+        "--json",
+    ]
+    command = ["--", sys.executable, "tests/regression_source.py"]
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        red = runner.invoke(
+            app,
+            [*common, "--phase", "red", "--diff-source", "local-staged", *command],
+        )
+        _write(tmp_path, "src/app.py", "VALUE = 1\n")
+        green = runner.invoke(app, [*common, "--phase", "green", *command])
+
+    assert red.exit_code == 0, red.output
+    assert green.exit_code == 1
+    payload = json.loads(green.output)
+    assert payload["status"] == "blocked"
+    assert "source selection" in payload["blocker"].lower()
+
+
+def test_lean_regression_cli_captures_patch_red_then_green(tmp_path: Path) -> None:
+    loop_id = "impl-cli-regression-patch"
+    _seed_loop(tmp_path, loop_id)
+    signature = "assertion:cli-regression-patch"
+    _write(tmp_path, "src/app.py", "VALUE = -1\n")
+    _write(
+        tmp_path,
+        "tests/regression_patch.py",
+        "from pathlib import Path\n"
+        "source = Path('src/app.py').read_text(encoding='utf-8')\n"
+        f"print({signature!r}) if 'VALUE = 1' not in source else print('passed')\n"
+        "raise SystemExit(0 if 'VALUE = 1' in source else 1)\n",
+    )
+    _git(tmp_path, "add", "src/app.py", "tests/regression_patch.py")
+    _git(tmp_path, "commit", "-m", "add patch regression fixture")
+    common = [
+        "loop",
+        "implementation",
+        "lean-regression",
+        "--loop-id",
+        loop_id,
+        "--test-id",
+        "cli-regression-patch",
+        "--test-source",
+        "tests/regression_patch.py",
+        "--failure-signature",
+        signature,
+        "--diff-source",
+        "patch",
+        "--patch-file",
+        "evidence/regression.patch",
+        "--json",
+    ]
+    command = ["--", sys.executable, "tests/regression_patch.py"]
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        _write(tmp_path, "src/app.py", "VALUE = 0\n")
+        _write_patch(tmp_path, "evidence/regression.patch")
+        _write(tmp_path, "src/app.py", "VALUE = 1\n")
+        red = runner.invoke(app, [*common, "--phase", "red", *command])
+        _write(tmp_path, "src/app.py", "VALUE = 1\n")
+        _write_patch(tmp_path, "evidence/regression.patch")
+        _write(tmp_path, "src/app.py", "VALUE = 0\n")
+        green = runner.invoke(app, [*common, "--phase", "green", *command])
 
     assert red.exit_code == 0, red.output
     assert green.exit_code == 0, green.output
@@ -353,6 +719,33 @@ def _write(root: Path, relative: str, content: str) -> None:
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+
+
+def _write_patch(root: Path, relative: str) -> None:
+    target = root / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr.decode("utf-8", errors="replace"))
+    target.write_bytes(result.stdout)
+
+
+def _receipt_snapshot(root: Path, payload: dict[str, object]) -> dict[str, object]:
+    receipt = _receipt_payload(root, payload)
+    return json.loads((root / receipt["source_snapshot_ref"]).read_text("utf-8"))
+
+
+def _receipt_payload(root: Path, payload: dict[str, object]) -> dict[str, object]:
+    return json.loads((root / str(payload["receipt_path"])).read_text("utf-8"))
+
+
+def _payload_digest(content: str) -> str:
+    return f"sha256:{hashlib.sha256(content.encode('utf-8')).hexdigest()}"
 
 
 def _git(root: Path, *args: str) -> None:

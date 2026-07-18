@@ -9,6 +9,7 @@ from pathlib import Path
 from ai_sdlc.core.implementation_models import ImplementationInput
 from ai_sdlc.core.implementation_store import (
     implementation_artifacts,
+    implementation_task_items_digest,
     read_tasks,
 )
 from ai_sdlc.core.lean_code_artifacts import (
@@ -191,6 +192,12 @@ def implementation_task_bindings(
     if not path.is_file():
         return (impl_input.tasks_path,), ""
     tasks = read_tasks(path)
+    current_digest = implementation_task_items_digest(tasks.items)
+    if impl_input.tasks_digest and current_digest != impl_input.tasks_digest:
+        raise ValueError(
+            "Implementation tasks snapshot does not match the digest frozen at "
+            "implementation start."
+        )
     return tuple(item.task_id for item in tasks.items), _bytes_digest(path)
 
 

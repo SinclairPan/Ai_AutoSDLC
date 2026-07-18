@@ -82,19 +82,20 @@ def resolve_execution_adapter(
 
 
 def _target_indexes(root: Path, argv: tuple[str, ...], reference: str) -> set[int]:
-    expected = safe_project_path(root, reference)
+    expected = _lexical_project_path(root, reference)
     indexes: set[int] = set()
     for index, item in enumerate(argv[1:], start=1):
         target = item.replace("\\", "/").split("::", 1)[0]
-        candidate = Path(target)
-        resolved = (
-            candidate.resolve()
-            if candidate.is_absolute()
-            else (root / candidate).resolve()
-        )
+        resolved = _lexical_project_path(root, target)
         if resolved == expected:
             indexes.add(index)
     return indexes
+
+
+def _lexical_project_path(root: Path, reference: str) -> str:
+    candidate = Path(reference)
+    path = candidate if candidate.is_absolute() else root / candidate
+    return os.path.normcase(os.path.abspath(path))
 
 
 def _python_adapter(argv: tuple[str, ...], targets: set[int]) -> str:

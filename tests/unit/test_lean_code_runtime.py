@@ -123,7 +123,9 @@ def test_fresh_verification_supersedes_previous_diff_receipt(tmp_path: Path) -> 
     assert second.evaluation_round == 2
 
 
-def test_stale_verification_alone_cannot_satisfy_second_round(tmp_path: Path) -> None:
+def test_stale_verification_alone_forces_user_decision_at_second_round(
+    tmp_path: Path,
+) -> None:
     loop_id = "impl-stale-only-verification"
     test_source = "tests/stale_only_verification.py"
     _seed_enabled_loop(tmp_path, loop_id)
@@ -140,11 +142,12 @@ def test_stale_verification_alone_cannot_satisfy_second_round(tmp_path: Path) ->
         (_lean_dir(tmp_path, loop_id) / "round-002" / "report.json").read_text("utf-8")
     )
 
-    assert second.status == "needs_fix"
+    assert second.status == "needs_user"
+    assert second.stop_reason.startswith("max_rounds_reached:")
     assert any(item.rule_id == "lean.targeted-verification" for item in report.findings)
 
 
-def test_second_round_without_new_targeted_verification_needs_fix(
+def test_second_round_without_new_targeted_verification_needs_user(
     tmp_path: Path,
 ) -> None:
     loop_id = "impl-no-targeted-verification"
@@ -158,11 +161,12 @@ def test_second_round_without_new_targeted_verification_needs_fix(
         (_lean_dir(tmp_path, loop_id) / "round-002" / "report.json").read_text("utf-8")
     )
 
-    assert second.status == "needs_fix"
+    assert second.status == "needs_user"
+    assert second.stop_reason.startswith("max_rounds_reached:")
     assert any(item.rule_id == "lean.targeted-verification" for item in report.findings)
 
 
-def test_unexecuted_verification_command_does_not_advance_second_round(
+def test_unexecuted_verification_command_forces_user_decision_at_second_round(
     tmp_path: Path,
 ) -> None:
     loop_id = "impl-unexecuted-verification"
@@ -184,7 +188,8 @@ def test_unexecuted_verification_command_does_not_advance_second_round(
 
     second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
 
-    assert second.status == "needs_fix"
+    assert second.status == "needs_user"
+    assert second.stop_reason.startswith("max_rounds_reached:")
 
 
 def test_targeted_verification_requires_a_bound_test_source(tmp_path: Path) -> None:
@@ -548,6 +553,44 @@ def test_same_required_finding_twice_enters_needs_user(tmp_path: Path) -> None:
     assert "maximum of 2" in third.blocker
 
 
+def test_new_actionable_finding_at_final_round_enters_needs_user(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-final-round-new-finding"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _commit_fixture(tmp_path, "tests/final_round_probe.py", "print('verified')\n")
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+
+    first = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert first.status == "needs_fix"
+    _write(tmp_path, "src/app.py", "def _build_future():\n    return object()\n")
+    _write(tmp_path, "src/unrelated.py", "VALUE = 1\n")
+    _record_targeted_verification(
+        tmp_path,
+        loop_id,
+        "tests/final_round_probe.py",
+    )
+
+    second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    second_report = LeanEvaluationReport.model_validate_json(
+        (_lean_dir(tmp_path, loop_id) / "round-002" / "report.json").read_text("utf-8")
+    )
+
+    assert second.status == "needs_user"
+    assert second.loop_status == LoopStatus.NEEDS_USER
+    current_signatures = sorted(
+        item.stable_signature
+        for item in second_report.findings
+        if item.rule_id == "lean.scope-drift"
+    )
+    assert current_signatures
+    assert second.stop_reason == "max_rounds_reached:" + ",".join(current_signatures)
+    assert "run lean-check again" not in second.next_action.lower()
+    third = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert third.status == "blocked"
+    assert "maximum of 2" in third.blocker
+
+
 def test_advisory_only_can_close_but_source_change_makes_report_stale(
     tmp_path: Path,
 ) -> None:
@@ -587,6 +630,30 @@ def test_report_mode_required_finding_is_visible_but_does_not_block_close(
     assert result.status == "ready"
     assert result.required_count == 1
     assert validate_lean_close(tmp_path, loop_id) == ""
+
+
+def test_report_mode_required_findings_remain_non_blocking_at_final_round(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-report-mode-final-round"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(
+        tmp_path,
+        ".ai-sdlc/project/config/loop-policy.yaml",
+        "lean_enforcement_mode: report\n",
+    )
+    _git(tmp_path, "add", ".ai-sdlc/project/config/loop-policy.yaml")
+    _git(tmp_path, "commit", "-m", "configure report mode")
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+
+    first = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+
+    assert first.status == "ready"
+    assert second.status == "ready"
+    assert second.loop_status == LoopStatus.PASSED
+    assert second.stop_reason == ""
+    assert second.required_count >= 1
 
 
 def test_controlled_red_green_receipts_satisfy_bugfix_gate(tmp_path: Path) -> None:
@@ -904,6 +971,43 @@ def test_close_rejects_task_and_acceptance_byte_changes(tmp_path: Path) -> None:
     acceptance_blocker = validate_lean_close(tmp_path, loop_id)
 
     assert "acceptance" in acceptance_blocker.lower()
+
+
+def test_lean_evaluation_rejects_tasks_changed_after_implementation_start(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-frozen-tasks"
+    _seed_enabled_loop(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    tasks = json.loads(artifacts.tasks_path.read_text("utf-8"))
+    tasks["items"][0]["required"] = False
+    artifacts.tasks_path.write_text(json.dumps(tasks), encoding="utf-8")
+    _write(tmp_path, "src/app.py", "def _small():\n    return 1\n")
+
+    result = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+
+    assert result.status == "blocked"
+    assert "frozen" in result.blocker.lower()
+    assert not (_lean_dir(tmp_path, loop_id) / "current.json").exists()
+
+
+def test_lean_evaluation_allows_task_artifact_reformat_before_evaluation(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-reformatted-tasks"
+    _seed_enabled_loop(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    tasks = json.loads(artifacts.tasks_path.read_text("utf-8"))
+    artifacts.tasks_path.write_text(
+        json.dumps(tasks, ensure_ascii=False, indent=4, sort_keys=True),
+        encoding="utf-8",
+    )
+    _write(tmp_path, "src/app.py", "def _small():\n    return 1\n")
+
+    result = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+
+    assert result.status == "ready"
+    assert validate_lean_close(tmp_path, loop_id) == ""
 
 
 def test_close_returns_blocker_for_malformed_task_artifact(tmp_path: Path) -> None:

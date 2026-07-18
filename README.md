@@ -100,6 +100,8 @@ Lean Code 是 Implementation Loop 的质量 Profile，不是新的顶层 Loop，
 ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id>
 ```
 
+评估源可以选择 `local-unstaged`、`local-staged`、`local-git-range` 或项目内 patch。若使用非默认源，后续 `lean-verify` 以及 `lean-regression` 的 RED/GREEN 阶段必须重复传入同一组 `--diff-source / --base / --head / --patch-file` 参数；receipt 与评估会按精确 diff hash 交叉绑定，不会静默回退到工作区未暂存变更。
+
 Bug 修复先由公开 CLI 真实执行同一回归 argv；`--` 后的参数不会经过 shell：
 
 ```powershell
@@ -112,9 +114,9 @@ ai-sdlc loop implementation lean-regression --loop-id <id> --phase green `
   --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
 ```
 
-如果第一轮产生可操作 finding，修复后用 `lean-verify --loop-id <id> --test-source <path> -- <argv>` 生成当前 diff 的执行 receipt。声明的 test source 必须由受控 runner 形态实际执行，例如 `python <path>`、`python -m pytest <path>::<node>`、`python -m py_compile <path>` 或直接 `pytest <path>`；只把路径放进 `python -c` 的普通参数、ignore/config 参数或输出文本不会被接受。把返回的 `receipt_path` 记录为 Implementation evidence；只记录命令文本不会推进第二轮。
+如果第一轮产生可操作 finding，修复后用 `lean-verify --loop-id <id> --test-source <path> -- <argv>` 生成当前 diff 的执行 receipt。声明的 test source 必须由受控 runner 形态实际执行，例如 `python <path>`、`python -m pytest <path>::<node>`、`python -m py_compile <path>` 或直接 `pytest <path>`；只把路径放进 `python -c` 的普通参数、ignore/config 参数或输出文本不会被接受。把返回的 `receipt_path` 记录为 Implementation evidence；只记录命令文本不会推进第二轮。Implementation start 时冻结的任务内容不可事后修改；评估与 close 都会对照冻结摘要并 fail-closed。
 
-评估只读取项目事实并写入 JSON/Markdown artifact，不调用模型，也不修改应用代码。BLOCKER/REQUIRED 会生成定向 fix plan，由 Implementation Agent 修改后再运行第二轮评估。最多两轮；相同 finding 仍存在时进入 `needs_user`，不会无限重试。close 与 PR 会重新验证 receipt、例外及其证据，删除或替换后旧结论立即失效。
+评估只读取项目事实并写入 JSON/Markdown artifact，不调用模型，也不修改应用代码。BLOCKER/REQUIRED 会生成定向 fix plan，由 Implementation Agent 修改后再运行第二轮评估。最多两轮；在当前 enforcement mode 下，第二轮只要仍有未解决的 BLOCKER/REQUIRED，无论是否与上一轮相同，都会进入 `needs_user`，不会留下无法继续评估的悬空状态。close 与 PR 会重新验证 receipt、例外及其证据，删除或替换后旧结论立即失效。
 
 确有边界风险时，可通过 `--exception <project-local-json>` 提交绑定 finding、scope、policy、commit、diff、有效期与证据 digest 的结构化例外。例外不会隐藏 finding，结论只能是 `risk_accepted`。如果降低指标只能破坏行为，或修复成本大于收益，可以记录 source-bound No-Go：
 

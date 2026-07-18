@@ -130,11 +130,15 @@ def _collect_findings(options: LeanEvaluationOptions, metrics) -> list[LeanFindi
 
 
 def _build_report(options, metrics, findings, exception_ids, status, policy_digest):
-    repeated = _repeated_blocking_signatures(options.previous_findings, findings)
     stop_reason = ""
-    if options.evaluation_round >= options.policy.max_rounds and repeated:
+    actionable = _unresolved_actionable_signatures(findings)
+    if (
+        options.evaluation_round >= options.policy.max_rounds
+        and status in {LoopStatus.NEEDS_FIX, LoopStatus.BLOCKED}
+        and actionable
+    ):
         status = LoopStatus.NEEDS_USER
-        stop_reason = "max_rounds_reached:" + ",".join(repeated)
+        stop_reason = "max_rounds_reached:" + ",".join(actionable)
     return LeanEvaluationReport(
         loop_id=options.loop_id,
         work_item_id=options.work_item_id,
@@ -342,15 +346,7 @@ def _evaluation_status(
     return LoopStatus.PASSED
 
 
-def _repeated_blocking_signatures(
-    previous: tuple[LeanFinding, ...],
-    current: list[LeanFinding],
-) -> list[str]:
-    old = {
-        item.stable_signature
-        for item in previous
-        if item.severity in {FindingSeverity.BLOCKER, FindingSeverity.REQUIRED}
-    }
+def _unresolved_actionable_signatures(current: list[LeanFinding]) -> list[str]:
     return sorted(
         item.stable_signature
         for item in current
@@ -361,7 +357,6 @@ def _repeated_blocking_signatures(
             FindingResolutionStatus.WAIVED,
             FindingResolutionStatus.NOT_APPLICABLE,
         }
-        and item.stable_signature in old
     )
 
 

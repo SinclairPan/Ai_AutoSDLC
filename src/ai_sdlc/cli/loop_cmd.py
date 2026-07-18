@@ -423,6 +423,16 @@ def implementation_lean_verify(
     test_source: str = typer.Option(
         ..., "--test-source", help="Project-local test or verification source path."
     ),
+    diff_source: str = typer.Option(
+        "local-unstaged",
+        "--diff-source",
+        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
+    ),
+    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
+    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Project-local patch file."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
 ) -> None:
     """Execute targeted verification and write a current-diff receipt."""
@@ -435,6 +445,10 @@ def implementation_lean_verify(
             purpose="targeted-verification",
             command_argv=tuple(command),
             test_source_ref=test_source,
+            source_kind=diff_source,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            patch_file=patch_file,
         )
     )
     _emit_controlled_result(result, json_output=json_output)
@@ -456,6 +470,16 @@ def implementation_lean_regression(
         ..., "--failure-signature", help="Exact assertion signature in RED output."
     ),
     test_symbol: str = typer.Option("", "--test-symbol", help="Optional test symbol."),
+    diff_source: str = typer.Option(
+        "local-unstaged",
+        "--diff-source",
+        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
+    ),
+    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
+    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Project-local patch file."
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
 ) -> None:
     """Capture the same regression command failing, then passing after the fix."""
@@ -471,6 +495,10 @@ def implementation_lean_regression(
             command_argv=tuple(command),
             test_source_ref=test_source,
             failure_signature=failure_signature,
+            source_kind=diff_source,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            patch_file=patch_file,
         )
     )
     _emit_controlled_result(result, json_output=json_output)

@@ -97,7 +97,7 @@ def build_implementation_input(
         work_type=work_type,
         quality_profiles=quality_profiles,
         declared_scope=scope,
-        tasks_digest=_stable_digest([item.model_dump(mode="json") for item in items]),
+        tasks_digest=implementation_task_items_digest(items),
         acceptance_digest=_stable_digest(acceptance),
     )
 
@@ -123,6 +123,12 @@ def _stable_digest(payload: object) -> str:
         separators=(",", ":"),
     ).encode("utf-8")
     return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def implementation_task_items_digest(items: list[ImplementationTaskItem]) -> str:
+    """Hash the task content frozen into one Implementation input."""
+
+    return _stable_digest([item.model_dump(mode="json") for item in items])
 
 
 def resolve_loop_id(loop_id: str) -> str:
@@ -342,6 +348,7 @@ __all__ = [
     "artifact_ref",
     "build_implementation_input",
     "implementation_artifacts",
+    "implementation_task_items_digest",
     "read_evidence",
     "read_input",
     "read_loop_run",

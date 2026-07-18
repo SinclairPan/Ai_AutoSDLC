@@ -54,6 +54,29 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
     }
 
 
+@contextmanager
+def materialized_source_view(
+    root: Path,
+    snapshot: SourceSnapshot,
+) -> Iterator[Path]:
+    """Yield a filesystem view whose bytes match the selected snapshot after-view."""
+
+    if snapshot.source_kind == "local-unstaged":
+        yield root.resolve()
+        return
+    with tempfile.TemporaryDirectory(prefix="ai-sdlc-source-view-") as directory:
+        target = Path(directory).resolve()
+        if snapshot.source_kind == "local-staged":
+            _checkout_index(root, target)
+        elif snapshot.source_kind == "local-git-range":
+            with _revision_index(root, snapshot.head_commit) as env:
+                _checkout_index(root, target, env=env)
+        else:
+            with _patched_index(root, snapshot) as env:
+                _checkout_index(root, target, env=env)
+        yield target
+
+
 def _revision_python_sources(root: Path, revision: str) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-tree", "-r", "--name-only", "-z", revision))
     return {
@@ -80,6 +103,31 @@ def _patched_index(root: Path, snapshot: SourceSnapshot) -> Iterator[dict[str, s
     patch_path.relative_to(root.resolve())
     with _patch_index(root, patch_path, snapshot.base_commit) as env:
         yield env
+
+
+@contextmanager
+def _revision_index(root: Path, revision: str) -> Iterator[dict[str, str]]:
+    with tempfile.TemporaryDirectory(prefix="ai-sdlc-revision-") as directory:
+        env = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
+        _git(root, "read-tree", revision, env=env)
+        yield env
+
+
+def _checkout_index(
+    root: Path,
+    target: Path,
+    *,
+    env: dict[str, str] | None = None,
+) -> None:
+    prefix = f"{target.as_posix()}/"
+    _git(
+        root,
+        "checkout-index",
+        "--all",
+        "--force",
+        f"--prefix={prefix}",
+        env=env,
+    )
 
 
 def patch_name_status(root: Path, patch_file: str, base_commit: str) -> bytes:
@@ -148,4 +196,9 @@ def _nul_paths(payload: bytes) -> list[str]:
     ]
 
 
-__all__ = ["file_versions", "patch_name_status", "python_sources"]
+__all__ = [
+    "file_versions",
+    "materialized_source_view",
+    "patch_name_status",
+    "python_sources",
+]

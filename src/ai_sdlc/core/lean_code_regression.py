@@ -39,6 +39,10 @@ class LeanRegressionCaptureState(LoopArtifactModel):
     cwd: str = "."
     test_source_ref: str
     failure_signature: str
+    source_kind: str = "local-unstaged"
+    base_ref: str = ""
+    head_ref: str = "HEAD"
+    patch_file: str = ""
     red_receipt_ref: str
     red_receipt_digest: str
 
@@ -102,6 +106,10 @@ def _capture_red(options: LeanRegressionOptions) -> LeanRegressionResult:
         cwd=options.cwd,
         test_source_ref=options.test_source_ref,
         failure_signature=options.failure_signature,
+        source_kind=options.source_kind,
+        base_ref=options.base_ref,
+        head_ref=options.head_ref,
+        patch_file=options.patch_file,
         red_receipt_ref=result.receipt_path,
         red_receipt_digest=result.receipt_digest,
     )
@@ -224,6 +232,18 @@ def _state_issue(
         or state.test_symbol != options.test_symbol
     ):
         return "GREEN test identity must match the RED phase."
+    if (
+        state.source_kind,
+        state.base_ref,
+        state.head_ref,
+        state.patch_file,
+    ) != (
+        options.source_kind,
+        options.base_ref,
+        options.head_ref,
+        options.patch_file,
+    ):
+        return "GREEN source selection must match the RED phase."
     return ""
 
 
