@@ -10,7 +10,13 @@ on:
   pull_request:
     paths:
       - ".github/workflows/windows-user-guide-e2e.yml"
+      - "src/**"
+      - "pyproject.toml"
+      - "packaging_backend.py"
+      - "README.md"
       - "USER_GUIDE.zh-CN.md"
+      - "templates/**"
+      - "scripts/frontend_browser_gate_probe_runner.mjs"
       - "packaging/install_online.ps1"
       - "packaging/offline/**"
       - "scripts/windows_clean_user_e2e.py"

@@ -240,7 +240,16 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     workflow = workflow_path.read_text(encoding="utf-8")
     driver = driver_path.read_text(encoding="utf-8")
 
-    assert '- "packaging/install_online.ps1"' in workflow
+    install_inputs = (
+        '- "src/**"',
+        '- "pyproject.toml"',
+        '- "packaging_backend.py"',
+        '- "README.md"',
+        '- "templates/**"',
+        '- "scripts/frontend_browser_gate_probe_runner.mjs"',
+        '- "packaging/install_online.ps1"',
+    )
+    assert all(path_filter in workflow for path_filter in install_inputs)
     assert "clean-online-interactive-user-journey:" in workflow
     assert (
         "raw.githubusercontent.com/$sourceRepository/"
