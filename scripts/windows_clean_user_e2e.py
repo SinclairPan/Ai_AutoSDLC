@@ -32,7 +32,8 @@ def _sha256(path: Path) -> str:
 
 
 def _assert_contains(text: str, *expected: str) -> None:
-    missing = [item for item in expected if item not in text]
+    searchable = " ".join(text.split())
+    missing = [item for item in expected if " ".join(item.split()) not in searchable]
     if missing:
         raise AssertionError(f"输出缺少预期内容: {missing}")
 
