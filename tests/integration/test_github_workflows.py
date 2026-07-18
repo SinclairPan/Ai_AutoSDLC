@@ -242,11 +242,11 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
 
     assert "clean-online-interactive-user-journey:" in workflow
     assert (
-        "raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/"
+        "raw.githubusercontent.com/$sourceRepository/"
         "$remoteSha/packaging/install_online.ps1"
         in workflow
     )
-    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@$remoteSha" in workflow
+    assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
     assert "pywinpty" in workflow
     assert "windows-clean-online-user-e2e-evidence" in workflow
     assert "PtyProcess.spawn" in driver
@@ -271,10 +271,10 @@ def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None
         "https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main)"
     )
     pinned_installer = (
-        'raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/'
+        'raw.githubusercontent.com/$sourceRepository/'
         '$remoteSha/packaging/install_online.ps1'
     )
-    pinned_package = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@$remoteSha"
+    pinned_package = "git+https://github.com/$sourceRepository.git@$remoteSha"
 
     assert resolve_remote_main in workflow
     assert pinned_installer in workflow
@@ -283,6 +283,34 @@ def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None
     assert workflow.index(pinned_installer) < workflow.index("Invoke-WebRequest")
     assert workflow.count(resolve_remote_main) == 1
     assert '$directUrl.vcs_info.requested_revision -ne $remoteSha' in workflow
+
+
+def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    workflow = workflow_path.read_text(encoding="utf-8").split(
+        "clean-online-interactive-user-journey:", 1
+    )[1]
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert "PR_HEAD_REPOSITORY:" in workflow
+    assert "github.event.pull_request.head.repo.full_name" in workflow
+    assert "PR_HEAD_SHA:" in workflow
+    assert "github.event.pull_request.head.sha" in workflow
+    assert 'if ($env:GITHUB_EVENT_NAME -eq "pull_request")' in workflow
+    assert "$sourceRepository = $env:PR_HEAD_REPOSITORY" in workflow
+    assert "$remoteSha = $env:PR_HEAD_SHA" in workflow
+    assert (
+        "raw.githubusercontent.com/$sourceRepository/"
+        "$remoteSha/packaging/install_online.ps1"
+        in workflow
+    )
+    assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
+    assert "AI_SDLC_E2E_INSTALL_SOURCE=$sourceKind" in workflow
+    assert "AI_SDLC_E2E_SOURCE_REVISION=$remoteSha" in workflow
+    assert 'os.environ.get("AI_SDLC_E2E_INSTALL_SOURCE", "remote-main")' in driver
+    assert 'os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", "")' in driver
 
 
 def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> None:

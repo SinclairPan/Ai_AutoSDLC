@@ -278,6 +278,8 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
+      PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
 
     steps:
       - name: Checkout E2E keyboard and screen driver only
@@ -317,12 +319,23 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
           $installerPath = Join-Path $env:RUNNER_TEMP "install_online.ps1"
           $installVenv = Join-Path $env:RUNNER_TEMP "ai-sdlc-online"
-          $remoteSha = ((git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main) -split "`t")[0]
-          if ($LASTEXITCODE -ne 0 -or -not $remoteSha) {
-            throw "Unable to resolve the public remote main SHA."
+          $sourceKind = "remote-main"
+          $sourceRepository = "SinclairPan/Ai_AutoSDLC"
+          if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
+            if (-not $env:PR_HEAD_REPOSITORY -or -not $env:PR_HEAD_SHA) {
+              throw "Pull request source repository or revision is unavailable."
+            }
+            $sourceKind = "remote-pull-request-head"
+            $sourceRepository = $env:PR_HEAD_REPOSITORY
+            $remoteSha = $env:PR_HEAD_SHA
+          } else {
+            $remoteSha = ((git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main) -split "`t")[0]
+            if ($LASTEXITCODE -ne 0 -or -not $remoteSha) {
+              throw "Unable to resolve the public remote main SHA."
+            }
           }
-          $installerUri = "https://raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/$remoteSha/packaging/install_online.ps1"
-          $packageSpec = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@$remoteSha"
+          $installerUri = "https://raw.githubusercontent.com/$sourceRepository/$remoteSha/packaging/install_online.ps1"
+          $packageSpec = "git+https://github.com/$sourceRepository.git@$remoteSha"
 
           Invoke-WebRequest -Uri $installerUri -OutFile $installerPath
           Get-FileHash -Algorithm SHA256 -LiteralPath $installerPath |
@@ -372,11 +385,13 @@ jobs:
             throw "Installed package did not record the pinned public revision $remoteSha."
           }
           if ($directUrl.vcs_info.commit_id -ne $remoteSha) {
-            throw "Installed package commit $($directUrl.vcs_info.commit_id) does not match remote main $remoteSha."
+            throw "Installed package commit $($directUrl.vcs_info.commit_id) does not match source revision $remoteSha."
           }
-          "remote_main_sha=$remoteSha" |
-            Out-File -FilePath (Join-Path $evidenceRoot "remote-main-sha.txt") -Encoding utf8
+          "source_kind=$sourceKind`nsource_repository=$sourceRepository`nsource_revision=$remoteSha" |
+            Out-File -FilePath (Join-Path $evidenceRoot "remote-source.txt") -Encoding utf8
           "AI_SDLC_E2E_CLI=$stableShim" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AI_SDLC_E2E_INSTALL_SOURCE=$sourceKind" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "AI_SDLC_E2E_SOURCE_REVISION=$remoteSha" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install ConPTY keyboard and screen automation dependency
         shell: pwsh

@@ -382,7 +382,8 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
 
     summary = {
         "result": "passed",
-        "install_source": "remote-main",
+        "install_source": os.environ.get("AI_SDLC_E2E_INSTALL_SOURCE", "remote-main"),
+        "source_revision": os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", ""),
         "terminal_backend": "ConPTY",
         "init_command": "ai-sdlc init .",
         "selected_agent_target": "codex",
