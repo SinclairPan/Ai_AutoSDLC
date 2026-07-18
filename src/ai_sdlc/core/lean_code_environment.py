@@ -114,7 +114,9 @@ def _python_adapter(argv: tuple[str, ...], targets: set[int]) -> str:
 
 def _pytest_target(argv: tuple[str, ...], targets: set[int], start: int) -> bool:
     target_indexes = {index for index in targets if index >= start}
-    if not target_indexes or any("::" not in argv[index] for index in target_indexes):
+    if not target_indexes or any(
+        argv[index].startswith("-") for index in target_indexes
+    ):
         return False
     index = start
     while index < len(argv):

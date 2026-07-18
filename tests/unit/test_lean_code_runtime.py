@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -24,6 +25,7 @@ from ai_sdlc.core.implementation_models import (
     ImplementationTaskStatus,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
+from ai_sdlc.core.lean_code_environment import resolve_execution_adapter
 from ai_sdlc.core.lean_code_execution import LeanExecutionOptions, run_lean_command
 from ai_sdlc.core.lean_code_models import (
     LeanEvaluationInput,
@@ -298,6 +300,75 @@ def test_targeted_verification_requires_a_bound_test_source(tmp_path: Path) -> N
     assert "runner" in deselected.blocker.lower()
     assert collect_only.status == "blocked"
     assert pytest_node.status == "ready"
+
+
+def test_documented_whole_file_pytest_targets_execute(tmp_path: Path) -> None:
+    loop_id = "impl-whole-file-pytest"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    test_source = "tests/whole_file_probe.py"
+    _write(tmp_path, test_source, "def test_value():\n    assert True\n")
+    pytest_executable = shutil.which("pytest")
+    assert pytest_executable is not None
+
+    commands = (
+        (sys.executable, "-m", "pytest", test_source, "-q"),
+        (pytest_executable, test_source, "-q"),
+    )
+    for command in commands:
+        result = run_lean_command(
+            LeanExecutionOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                purpose="targeted-verification",
+                command_argv=command,
+                test_source_ref=test_source,
+            )
+        )
+        assert result.status == "ready", result
+
+
+def test_pytest_option_shaped_path_cannot_impersonate_test_source(
+    tmp_path: Path,
+) -> None:
+    _write(tmp_path, "tests/subject.py", "def test_subject():\n    assert False\n")
+    (tmp_path / "-kpassing").mkdir()
+    option_path = "-kpassing/../tests/subject.py"
+
+    adapter = resolve_execution_adapter(
+        tmp_path,
+        ("pytest", option_path, "-q"),
+        "tests/subject.py",
+    )
+
+    assert adapter == ""
+
+
+def test_direct_red_execution_rejects_non_assertion_signature(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-direct-invalid-signature"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    test_source = "tests/direct_invalid_signature.py"
+    signature = "plain-non-assertion-signature"
+    _write(tmp_path, test_source, f"print({signature!r})\nraise SystemExit(1)\n")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="regression-red",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+            failure_signature=signature,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "assertion:" in result.blocker
+    execution_root = _lean_dir(tmp_path, loop_id) / "executions"
+    assert not list(execution_root.glob("*/receipt.json"))
 
 
 def test_verification_receipt_from_another_loop_cannot_advance_round(

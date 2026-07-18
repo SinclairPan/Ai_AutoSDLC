@@ -38,6 +38,7 @@ from ai_sdlc.core.source_snapshot import (
 )
 
 _PURPOSES = {"targeted-verification", "regression-red", "regression-green"}
+_REGRESSION_PURPOSES = {"regression-red", "regression-green"}
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
@@ -95,7 +96,13 @@ def validate_execution_receipt(
     return (None, issue) if issue else (receipt, "")
 
 
-def _execute_and_persist(root, options, snapshot, receipt_id, run_dir):
+def _execute_and_persist(
+    root: Path,
+    options: LeanExecutionOptions,
+    snapshot: SourceSnapshot,
+    receipt_id: str,
+    run_dir: Path,
+) -> LeanExecutionResult:
     run_cwd = safe_project_path(root, options.cwd)
     adapter = resolve_execution_adapter(
         root,
@@ -144,17 +151,17 @@ def _execute_and_persist(root, options, snapshot, receipt_id, run_dir):
 
 
 def _write_receipt(
-    root,
-    options,
-    snapshot,
-    receipt_id,
-    run_dir,
-    exit_code,
-    output,
-    started_at,
-    finished_at,
-    accepted,
-):
+    root: Path,
+    options: LeanExecutionOptions,
+    snapshot: SourceSnapshot,
+    receipt_id: str,
+    run_dir: Path,
+    exit_code: int,
+    output: str,
+    started_at: str,
+    finished_at: str,
+    accepted: bool,
+) -> tuple[LeanCommandExecutionReceipt, Path, Path]:
     store = LoopArtifactStore(root)
     toolchain = execution_toolchain(root, options.command_argv[0])
     output_path = run_dir / "output.txt"
@@ -195,7 +202,12 @@ def _write_receipt(
 
 
 def _receipt_binding_issue(
-    root, receipt, raw, expected_digest, expected_purpose, current_diff_hash
+    root: Path,
+    receipt: LeanCommandExecutionReceipt,
+    raw: bytes,
+    expected_digest: str,
+    expected_purpose: str,
+    current_diff_hash: str,
 ) -> str:
     if expected_digest and payload_digest(raw) != expected_digest:
         return "execution receipt digest is stale"
@@ -215,7 +227,12 @@ def _receipt_binding_issue(
     return _receipt_content_issue(root, receipt, snapshot, output, current_diff_hash)
 
 
-def _receipt_loop_issue(root, path, receipt, expected_loop_id: str) -> str:
+def _receipt_loop_issue(
+    root: Path,
+    path: Path,
+    receipt: LeanCommandExecutionReceipt,
+    expected_loop_id: str,
+) -> str:
     if not expected_loop_id:
         return ""
     if receipt.loop_id != expected_loop_id:
@@ -226,7 +243,13 @@ def _receipt_loop_issue(root, path, receipt, expected_loop_id: str) -> str:
     return ""
 
 
-def _receipt_content_issue(root, receipt, snapshot, output, current_diff_hash) -> str:
+def _receipt_content_issue(
+    root: Path,
+    receipt: LeanCommandExecutionReceipt,
+    snapshot: SourceSnapshot,
+    output: str,
+    current_diff_hash: str,
+) -> str:
     if stable_artifact_digest(snapshot) != receipt.source_snapshot_digest:
         return "execution source snapshot digest is stale"
     if snapshot.diff_hash != receipt.diff_hash:
@@ -267,6 +290,11 @@ def _receipt_content_issue(root, receipt, snapshot, output, current_diff_hash) -
 def _options_issue(root: Path, options: LeanExecutionOptions) -> str:
     if options.purpose not in _PURPOSES:
         return f"Unsupported Lean execution purpose: {options.purpose}"
+    if (
+        options.purpose in _REGRESSION_PURPOSES
+        and not options.failure_signature.startswith("assertion:")
+    ):
+        return "Regression failure signature must start with 'assertion:'."
     if not options.command_argv or any(not item for item in options.command_argv):
         return "Lean execution requires a non-empty argv."
     if options.receipt_id and not _SAFE_ID.fullmatch(options.receipt_id):
@@ -301,7 +329,11 @@ def _options_issue(root: Path, options: LeanExecutionOptions) -> str:
     return ""
 
 
-def _outcome(options: LeanExecutionOptions, exit_code: int, output: str):
+def _outcome(
+    options: LeanExecutionOptions,
+    exit_code: int,
+    output: str,
+) -> tuple[bool, str]:
     if options.purpose == "regression-red":
         if exit_code == 0:
             return False, "RED command unexpectedly passed."
@@ -311,7 +343,10 @@ def _outcome(options: LeanExecutionOptions, exit_code: int, output: str):
     return (True, "") if exit_code == 0 else (False, "Verification command failed.")
 
 
-def _outcome_from_receipt(receipt, output):
+def _outcome_from_receipt(
+    receipt: LeanCommandExecutionReceipt,
+    output: str,
+) -> tuple[bool, str]:
     options = LeanExecutionOptions(
         root=Path(),
         loop_id=receipt.loop_id,

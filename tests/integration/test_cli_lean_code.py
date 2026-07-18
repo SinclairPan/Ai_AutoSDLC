@@ -185,6 +185,46 @@ def test_lean_regression_cli_captures_real_red_then_green(tmp_path: Path) -> Non
     assert (tmp_path / payload["evidence_path"]).is_file()
 
 
+def test_lean_regression_cli_rejects_invalid_failure_signature(tmp_path: Path) -> None:
+    loop_id = "impl-cli-invalid-signature"
+    _seed_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    test_source = "tests/invalid_signature_probe.py"
+    signature = "cli-invalid-signature"
+    _write(tmp_path, test_source, f"print({signature!r})\nraise SystemExit(1)\n")
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "lean-regression",
+                "--loop-id",
+                loop_id,
+                "--phase",
+                "red",
+                "--test-id",
+                "invalid-signature",
+                "--test-source",
+                test_source,
+                "--failure-signature",
+                signature,
+                "--json",
+                "--",
+                sys.executable,
+                test_source,
+            ],
+        )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert "assertion:" in payload["blocker"]
+    regression_dir = implementation_artifacts(tmp_path, loop_id).loop_dir / "lean"
+    assert not (regression_dir / "regressions" / "invalid-signature").exists()
+
+
 def test_lean_check_exception_option_fails_closed_for_missing_artifact(
     tmp_path: Path,
 ) -> None:

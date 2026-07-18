@@ -17,6 +17,10 @@ from ai_sdlc.core.lean_code_execution import (
     run_lean_command,
     validate_execution_receipt,
 )
+from ai_sdlc.core.lean_code_execution_models import (
+    LeanCommandExecutionReceipt,
+    LeanExecutionResult,
+)
 from ai_sdlc.core.lean_code_models import RegressionEvidence
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopArtifactModel
@@ -154,7 +158,12 @@ def _capture_green(options: LeanRegressionOptions) -> LeanRegressionResult:
     )
 
 
-def _regression_evidence(state, red, green, green_result) -> RegressionEvidence:
+def _regression_evidence(
+    state: LeanRegressionCaptureState,
+    red: LeanCommandExecutionReceipt,
+    green: LeanCommandExecutionReceipt,
+    green_result: LeanExecutionResult,
+) -> RegressionEvidence:
     return RegressionEvidence(
         test_id=state.test_id,
         test_symbol=state.test_symbol,
@@ -182,7 +191,10 @@ def _regression_evidence(state, red, green, green_result) -> RegressionEvidence:
     )
 
 
-def _execution_options(options, purpose: str) -> LeanExecutionOptions:
+def _execution_options(
+    options: LeanRegressionOptions,
+    purpose: str,
+) -> LeanExecutionOptions:
     return LeanExecutionOptions(
         root=options.root,
         loop_id=options.loop_id,
@@ -198,7 +210,10 @@ def _execution_options(options, purpose: str) -> LeanExecutionOptions:
     )
 
 
-def _state_issue(state, options) -> str:
+def _state_issue(
+    state: LeanRegressionCaptureState,
+    options: LeanRegressionOptions,
+) -> str:
     if state.loop_id != options.loop_id or state.test_id != options.test_id:
         return "Regression RED state identity does not match."
     if state.command_argv != list(options.command_argv) or state.cwd != options.cwd:
@@ -222,7 +237,7 @@ def _capture_paths(root: Path, loop_id: str, test_id: str) -> tuple[Path, Path]:
     return directory / "capture-state.json", directory / "regression-evidence.json"
 
 
-def _from_execution(result) -> LeanRegressionResult:
+def _from_execution(result: LeanExecutionResult) -> LeanRegressionResult:
     return LeanRegressionResult(
         status=result.status,
         result=result.result,
