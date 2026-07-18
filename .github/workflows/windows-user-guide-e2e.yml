@@ -11,6 +11,7 @@ on:
     paths:
       - ".github/workflows/windows-user-guide-e2e.yml"
       - "USER_GUIDE.zh-CN.md"
+      - "packaging/install_online.ps1"
       - "packaging/offline/**"
       - "scripts/windows_clean_user_e2e.py"
       - "tests/integration/test_github_workflows.py"
