@@ -200,6 +200,10 @@ class LeanEvaluationInput(LoopArtifactModel):
     regression_evidence_digests: dict[str, str] = Field(default_factory=dict)
     exception_refs: list[str]
     exception_digests: dict[str, str] = Field(default_factory=dict)
+    previous_report_path: str = ""
+    previous_report_digest: str = ""
+    previous_verification_digest: str = ""
+    previous_actionable_signatures: list[str] = Field(default_factory=list)
     evaluation_round: int = Field(ge=1, le=2)
 
 

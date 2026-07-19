@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -11,6 +10,7 @@ from pydantic import BaseModel, ConfigDict
 from ai_sdlc.core.implementation_store import (
     implementation_artifacts,
     repo_relative_path,
+    validate_explicit_loop_id,
 )
 from ai_sdlc.core.lean_code_execution import (
     LeanExecutionOptions,
@@ -21,11 +21,10 @@ from ai_sdlc.core.lean_code_execution_models import (
     LeanCommandExecutionReceipt,
     LeanExecutionResult,
 )
+from ai_sdlc.core.lean_code_identifiers import is_safe_artifact_id
 from ai_sdlc.core.lean_code_models import RegressionEvidence
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopArtifactModel
-
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 class LeanRegressionCaptureState(LoopArtifactModel):
@@ -84,7 +83,11 @@ def capture_regression_phase(options: LeanRegressionOptions) -> LeanRegressionRe
 
     if options.phase not in {"red", "green"}:
         return _blocked("Regression phase must be red or green.")
-    if not _SAFE_ID.fullmatch(options.test_id):
+    try:
+        validate_explicit_loop_id(options.loop_id)
+    except ValueError as exc:
+        return _blocked(f"Regression loop id is invalid: {exc}")
+    if not is_safe_artifact_id(options.test_id):
         return _blocked("Regression test id is unsafe.")
     return _capture_red(options) if options.phase == "red" else _capture_green(options)
 

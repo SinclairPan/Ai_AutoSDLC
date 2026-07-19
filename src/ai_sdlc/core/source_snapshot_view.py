@@ -7,11 +7,20 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import IO
 
+from ai_sdlc.core.git_filter_safety import external_filter_overrides
+from ai_sdlc.core.source_change_capture import (
+    CapturedPathChange,
+    affected_paths,
+    capture_index_changes,
+    capture_path_changes,
+    read_git_blobs,
+    read_index_states,
+    read_tree_states,
+)
 from ai_sdlc.core.source_snapshot import (
     SourceSnapshot,
     _is_runtime_artifact,
@@ -19,6 +28,10 @@ from ai_sdlc.core.source_snapshot import (
 from ai_sdlc.core.source_snapshot import (
     _untracked_payload as _snapshot_untracked_payload,
 )
+
+_FileVersions = dict[str, tuple[bytes, bytes]]
+_SourceLoader = Callable[[], dict[str, bytes]]
+_MetricSource = tuple[_FileVersions, _SourceLoader]
 
 
 def file_versions(
@@ -65,6 +78,140 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
 
 
 @contextmanager
+def lean_metric_source(
+    root: Path,
+    snapshot: SourceSnapshot,
+) -> Iterator[_MetricSource]:
+    """Yield batched file versions and a caller-source loader from one view."""
+    if snapshot.source_kind == "patch":
+        with _patched_index(root, snapshot) as env:
+            changes = capture_index_changes(
+                root,
+                snapshot.base_commit,
+                affected_paths(snapshot),
+                env,
+            )
+            yield _verified_metric_source(
+                snapshot,
+                changes,
+                lambda: _index_python_sources(root, env=env),
+            )
+        return
+    if snapshot.source_kind in {"local-staged", "local-unstaged"}:
+        with _local_metric_source(root, snapshot) as source:
+            yield source
+        return
+    changes = capture_path_changes(root, snapshot)
+    yield _verified_metric_source(
+        snapshot,
+        changes,
+        lambda: _revision_python_sources(root, snapshot.head_commit),
+    )
+
+
+@contextmanager
+def _local_metric_source(
+    root: Path,
+    snapshot: SourceSnapshot,
+) -> Iterator[_MetricSource]:
+    with _index_worktree(
+        root,
+        expected_index_identity=snapshot.index_identity,
+    ) as env:
+        if snapshot.source_kind == "local-staged":
+            changes = capture_index_changes(
+                root, snapshot.base_commit, affected_paths(snapshot), env
+            )
+            yield _verified_metric_source(
+                snapshot,
+                changes,
+                lambda: _index_python_sources(root, env=env),
+            )
+            return
+        changes = capture_path_changes(
+            root,
+            snapshot,
+            git_config_args=external_filter_overrides(root),
+        )
+        yield _verified_metric_source(
+            snapshot,
+            changes,
+            lambda: _unstaged_python_sources(root, snapshot, changes, env),
+        )
+
+
+def _verified_metric_source(
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+    load_sources: _SourceLoader,
+) -> _MetricSource:
+    _verify_captured_changes(snapshot, changes)
+    sources = load_sources()
+    return _version_map(snapshot, changes), lambda: sources
+
+
+def _unstaged_python_sources(
+    root: Path,
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+    env: dict[str, str],
+) -> dict[str, bytes]:
+    sources = _index_python_sources(root, env=env)
+    removed = set(snapshot.deleted_files) | set(snapshot.renamed_files.values())
+    for path in removed:
+        sources.pop(path, None)
+    for path in snapshot.changed_files:
+        change = changes.get(path)
+        if change is None:
+            raise ValueError(f"source state is missing for changed path: {path}")
+        if path.endswith(".py") and change.after.mode in {
+            "100644",
+            "100755",
+            "120000",
+        }:
+            sources[path] = change.after.payload
+        else:
+            sources.pop(path, None)
+    return sources
+
+
+def _verify_captured_changes(
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+) -> None:
+    from ai_sdlc.core.source_content_identity import (
+        CHANGE_IDENTITY_KIND,
+        build_raw_change_identities,
+    )
+    from ai_sdlc.core.source_snapshot import source_snapshot_identity_issue
+
+    issue = source_snapshot_identity_issue(snapshot)
+    if issue:
+        raise ValueError(issue)
+    if snapshot.change_identity_kind != CHANGE_IDENTITY_KIND:
+        return
+    current = build_raw_change_identities(snapshot, changes)
+    if current != snapshot.raw_change_identities:
+        raise ValueError("source content changed before Lean metric collection")
+
+
+def _version_map(
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+) -> dict[str, tuple[bytes, bytes]]:
+    versions: dict[str, tuple[bytes, bytes]] = {}
+    for path in snapshot.changed_files:
+        before_path = snapshot.renamed_files.get(path, path)
+        if before_path not in changes or path not in changes:
+            raise ValueError(f"source state is missing for changed path: {path}")
+        versions[path] = (
+            changes[before_path].before.payload,
+            changes[path].after.payload,
+        )
+    return versions
+
+
+@contextmanager
 def materialized_source_view(
     root: Path,
     snapshot: SourceSnapshot,
@@ -103,20 +250,18 @@ def materialized_source_view(
 
 def _revision_python_sources(root: Path, revision: str) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-tree", "-r", "--name-only", "-z", revision))
-    return {
-        path: _revision_blob(root, revision, path)
-        for path in paths
-        if path.endswith(".py")
-    }
+    python_paths = [path for path in paths if path.endswith(".py")]
+    states = read_tree_states(root, revision, python_paths)
+    return {path: states[path].payload for path in python_paths if path in states}
 
 
 def _index_python_sources(
     root: Path, *, env: dict[str, str] | None = None
 ) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-files", "-z", env=env))
-    return {
-        path: _index_blob(root, path, env=env) for path in paths if path.endswith(".py")
-    }
+    python_paths = [path for path in paths if path.endswith(".py")]
+    states = read_index_states(root, python_paths, env=env)
+    return {path: states[path].payload for path in python_paths if path in states}
 
 
 @contextmanager
@@ -249,7 +394,7 @@ def _index_worktree(
         empty_template.mkdir()
         init_env = _clean_git_environment(empty_config)
         object_format = (
-            _optional_git(root, "rev-parse", "--show-object-format")
+            _git(root, "rev-parse", "--show-object-format")
             .decode("ascii", errors="strict")
             .strip()
         )
@@ -379,8 +524,10 @@ def _overlay_unstaged_source(
         "GIT_INDEX_FILE": frozen_env["GIT_INDEX_FILE"],
         "GIT_WORK_TREE": str(target),
     }
+    git_config_args = external_filter_overrides(root)
     diff = _git(
         root,
+        *git_config_args,
         "diff",
         "--binary",
         "--no-ext-diff",
@@ -435,59 +582,14 @@ def _restore_blobs_from_batch(
 ) -> None:
     if not entries:
         return
-    process = subprocess.Popen(
-        ["git", "cat-file", "--batch"],
-        cwd=root,
+    object_ids = [item.decode("ascii", errors="strict") for item, _path in entries]
+    blobs = read_git_blobs(
+        root,
+        sorted(set(object_ids)),
         env=env,
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
     )
-    if process.stdin is None or process.stdout is None or process.stderr is None:
-        process.kill()
-        process.wait()
-        raise ValueError("git cat-file batch pipes are unavailable")
-    try:
-        for object_id, destination in entries:
-            process.stdin.write(object_id + b"\n")
-            process.stdin.flush()
-            header = process.stdout.readline().rstrip(b"\n")
-            fields = header.split(b" ")
-            if len(fields) != 3 or fields[0] != object_id or fields[1] != b"blob":
-                raise ValueError("git cat-file returned an invalid blob header")
-            try:
-                size = int(fields[2])
-            except ValueError as exc:
-                raise ValueError("git cat-file returned an invalid blob size") from exc
-            blob = _read_exact(process.stdout, size)
-            if process.stdout.read(1) != b"\n":
-                raise ValueError("git cat-file blob framing is invalid")
-            destination.write_bytes(blob)
-        process.stdin.close()
-        stderr = process.stderr.read()
-        returncode = process.wait()
-        if returncode:
-            message = stderr.decode("utf-8", errors="replace").strip()
-            raise ValueError(f"git cat-file --batch failed: {message}")
-    except Exception:
-        if process.poll() is None:
-            process.kill()
-        process.wait()
-        raise
-    finally:
-        for stream in (process.stdin, process.stdout, process.stderr):
-            if not stream.closed:
-                stream.close()
-
-
-def _read_exact(stream: IO[bytes], size: int) -> bytes:
-    payload = bytearray()
-    while len(payload) < size:
-        chunk = stream.read(size - len(payload))
-        if not chunk:
-            raise ValueError("git cat-file blob payload is truncated")
-        payload.extend(chunk)
-    return bytes(payload)
+    for object_id, (_raw_id, destination) in zip(object_ids, entries, strict=True):
+        destination.write_bytes(blobs[object_id])
 
 
 def _index_payload_identity(entries: bytes, flags: bytes) -> str:
@@ -541,11 +643,13 @@ def _apply_patch(root: Path, path: Path, env: dict[str, str]) -> None:
 
 
 def _revision_blob(root: Path, revision: str, path: str) -> bytes:
-    return _optional_git(root, "show", f"{revision}:{path}")
+    entry = _git(root, "ls-tree", "-z", revision, "--", path)
+    return _tree_entry_blob(root, entry, path)
 
 
 def _index_blob(root: Path, path: str, *, env: dict[str, str] | None = None) -> bytes:
-    return _optional_git(root, "show", f":{path}", env=env)
+    entry = _git(root, "ls-files", "--stage", "-z", "--", path, env=env)
+    return _index_entry_blob(root, entry, path, env=env)
 
 
 def _worktree_blob(root: Path, path: str) -> bytes:
@@ -555,17 +659,61 @@ def _worktree_blob(root: Path, path: str) -> bytes:
     return target.read_bytes() if target.is_file() else b""
 
 
-def _optional_git(root: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
-    result = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, check=False, env=env
-    )
-    return result.stdout if result.returncode == 0 else b""
+def _tree_entry_blob(root: Path, entry: bytes, path: str) -> bytes:
+    if not entry:
+        return b""
+    metadata, separator, raw_path = entry.removesuffix(b"\0").partition(b"\t")
+    fields = metadata.split()
+    if not separator or len(fields) != 3 or _decode_selected_path(raw_path) != path:
+        raise ValueError("git ls-tree returned an invalid selected entry")
+    mode, object_type, object_id = fields
+    if mode == b"160000" and object_type == b"commit":
+        return object_id
+    if object_type != b"blob":
+        raise ValueError("selected revision entry is not a blob")
+    return _git(root, "cat-file", "blob", object_id.decode("ascii"))
+
+
+def _index_entry_blob(
+    root: Path,
+    entry: bytes,
+    path: str,
+    *,
+    env: dict[str, str] | None,
+) -> bytes:
+    if not entry:
+        return b""
+    metadata, separator, raw_path = entry.removesuffix(b"\0").partition(b"\t")
+    fields = metadata.split()
+    if (
+        not separator
+        or len(fields) != 3
+        or fields[2] != b"0"
+        or _decode_selected_path(raw_path) != path
+    ):
+        raise ValueError("git index returned an invalid selected entry")
+    mode, object_id, _stage = fields
+    if not object_id.strip(b"0"):
+        return b""
+    if mode == b"160000":
+        return object_id
+    return _git(root, "cat-file", "blob", object_id.decode("ascii"), env=env)
 
 
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
-    result = subprocess.run(
-        ["git", *args], cwd=root, capture_output=True, check=False, env=env
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"git {' '.join(args)} timed out") from exc
+    except OSError as exc:
+        raise ValueError(f"git {' '.join(args)} is unavailable: {exc}") from exc
     if result.returncode:
         message = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"git {' '.join(args)} failed: {message}")
@@ -578,14 +726,20 @@ def _git_input(
     payload: bytes,
     env: dict[str, str],
 ) -> None:
-    result = subprocess.run(
-        ["git", *args],
-        cwd=root,
-        input=payload,
-        capture_output=True,
-        check=False,
-        env=env,
-    )
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            input=payload,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"git {' '.join(args)} timed out") from exc
+    except OSError as exc:
+        raise ValueError(f"git {' '.join(args)} is unavailable: {exc}") from exc
     if result.returncode:
         message = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"git {' '.join(args)} failed: {message}")
@@ -599,8 +753,13 @@ def _nul_paths(payload: bytes) -> list[str]:
     ]
 
 
+def _decode_selected_path(payload: bytes) -> str:
+    return payload.decode("utf-8", errors="strict").replace("\\", "/")
+
+
 __all__ = [
     "file_versions",
+    "lean_metric_source",
     "materialized_source_view",
     "patch_diff_metadata",
     "python_sources",

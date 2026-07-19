@@ -11,6 +11,7 @@ from ai_sdlc.core.implementation_store import (
     implementation_artifacts,
     read_input,
     read_loop_run,
+    repo_relative_path,
     resolve_implementation_loop_run_path,
 )
 from ai_sdlc.core.lean_code_artifacts import (
@@ -79,10 +80,19 @@ def validate_lean_close(
     return ""
 
 
-def validate_lean_integrity(root: Path, loop_id: str) -> str:
+def validate_lean_integrity(
+    root: Path,
+    loop_id: str,
+    *,
+    require_fresh_source: bool = True,
+) -> str:
     """Validate the complete chain without requiring a passed disposition."""
 
-    _chain, issue = _validated_chain(root.resolve(), loop_id)
+    _chain, issue = _validated_chain(
+        root.resolve(),
+        loop_id,
+        require_fresh_source=require_fresh_source,
+    )
     return issue
 
 
@@ -183,6 +193,7 @@ def _binding_issue(root: Path, chain: _LeanChain) -> str:
         _identity_binding_issue(root, chain),
         _source_binding_issue(chain),
         _policy_binding_issue(chain),
+        _history_binding_issue(root, chain),
     ):
         if issue:
             return issue
@@ -224,6 +235,8 @@ def _identity_binding_issue(root: Path, chain: _LeanChain) -> str:
         or report.evaluation_round != chain.findings.evaluation_round
     ):
         return "Lean evaluation round does not match across the artifact chain."
+    if canonical_issue := _canonical_pointer_issue(root, chain):
+        return canonical_issue
     if value.declared_scope != chain.impl_input.declared_scope:
         return "Lean declared scope does not match the Implementation input."
     task_refs, tasks_digest = implementation_task_bindings(root, chain.impl_input)
@@ -236,6 +249,24 @@ def _identity_binding_issue(root: Path, chain: _LeanChain) -> str:
         or value.acceptance_digests != acceptance_digests
     ):
         return "Lean acceptance evidence does not match the Implementation input."
+    return ""
+
+
+def _canonical_pointer_issue(root: Path, chain: _LeanChain) -> str:
+    report = chain.report
+    paths = lean_artifact_paths(root, report.loop_id, report.evaluation_round)
+    expected_paths = (
+        (chain.pointer.report_path, paths.report_path),
+        (chain.pointer.snapshot_path, paths.snapshot_path),
+        (chain.pointer.policy_path, paths.policy_path),
+        (chain.pointer.findings_path, paths.findings_path),
+        (chain.pointer.input_path, paths.input_path),
+    )
+    if any(
+        actual != repo_relative_path(root, expected)
+        for actual, expected in expected_paths
+    ):
+        return "Lean current pointer does not use canonical artifact paths."
     return ""
 
 
@@ -276,6 +307,45 @@ def _policy_binding_issue(chain: _LeanChain) -> str:
         return "Lean enforcement disposition does not match the policy snapshot."
     if chain.findings.findings != report.findings:
         return "Lean findings do not match the report."
+    return ""
+
+
+def _history_binding_issue(root: Path, chain: _LeanChain) -> str:
+    value = chain.evaluation_input
+    if chain.report.evaluation_round == 1:
+        history = (
+            value.previous_report_path,
+            value.previous_report_digest,
+            value.previous_verification_digest,
+            value.previous_actionable_signatures,
+        )
+        return (
+            "Lean first round unexpectedly contains previous report history."
+            if any(history)
+            else ""
+        )
+    expected_path = lean_artifact_paths(root, chain.report.loop_id, 1).report_path
+    expected_ref = repo_relative_path(root, expected_path)
+    if value.previous_report_path != expected_ref:
+        return "Lean previous report path is not canonical."
+    previous = LeanEvaluationReport.model_validate_json(
+        expected_path.read_text("utf-8")
+    )
+    if (
+        previous.loop_id != chain.report.loop_id
+        or previous.evaluation_round != chain.report.evaluation_round - 1
+    ):
+        return "Lean previous report identity does not match the current round."
+    if stable_artifact_digest(previous) != value.previous_report_digest:
+        return "Lean previous report digest does not match the frozen history."
+    if previous.verification_digest != value.previous_verification_digest:
+        return "Lean previous verification digest does not match the frozen history."
+    actionable = sorted(item.stable_signature for item in previous.blocking_findings)
+    if actionable != value.previous_actionable_signatures:
+        return "Lean previous actionable findings do not match the frozen history."
+    signatures = [item.stable_signature for item in previous.findings]
+    if signatures != chain.report.previous_signatures:
+        return "Lean previous finding signatures do not match the current report."
     return ""
 
 
@@ -323,6 +393,7 @@ def _regression_issue(root: Path, chain: _LeanChain) -> str:
         return "Lean regression evidence digest inventory does not match its refs."
     if (
         chain.report.work_type == "production_issue"
+        and chain.report.status == LoopStatus.PASSED
         and not value.regression_evidence_refs
         and not chain.report.exception_ids
     ):

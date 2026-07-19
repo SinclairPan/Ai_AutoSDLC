@@ -3,15 +3,26 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+import ai_sdlc.core.source_change_capture as source_change_capture
+import ai_sdlc.core.source_content_identity as source_content_identity
+import ai_sdlc.core.source_snapshot as source_snapshot_module
 import ai_sdlc.core.source_snapshot_view as source_snapshot_view
 from ai_sdlc.core.lean_code_execution import _snapshot_file_digest
+from ai_sdlc.core.lean_code_metrics import collect_lean_metrics
+from ai_sdlc.core.lean_code_policy import stable_artifact_digest
+from ai_sdlc.core.lean_code_review_scope_store import (
+    compare_source_content,
+    source_content_equivalent,
+)
 from ai_sdlc.core.source_snapshot import (
+    SourceSnapshot,
     SourceSnapshotOptions,
     _binary_files,
     _parse_binary_numstat,
@@ -589,6 +600,188 @@ new file mode 100644
     assert snapshot.changed_files == ["src/from-patch.py"]
 
 
+def test_patch_snapshot_materializes_selected_index_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    for index in range(3):
+        _write(tmp_path, f"src/file-{index}.py", f"VALUE = {index}\n")
+    _git(tmp_path, "add", "src")
+    patch = _git(tmp_path, "diff", "--cached", "--binary", "--no-ext-diff")
+    _git(tmp_path, "reset", "--hard", "HEAD")
+    _write(tmp_path, "change.patch", patch + "\n")
+    original = source_snapshot_view._apply_patch
+    calls = 0
+
+    def counted(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_snapshot_view, "_apply_patch", counted)
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="patch",
+            patch_file="change.patch",
+        )
+    )
+
+    assert len(snapshot.changed_files) == 3
+    assert calls == 1
+
+
+def test_large_patch_uses_bounded_capture_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    for index in range(250):
+        _write(tmp_path, f"src/long-name-{index:03d}.py", f"VALUE = {index}\n")
+    _git(tmp_path, "add", "src")
+    patch = _git(tmp_path, "diff", "--cached", "--binary", "--no-ext-diff")
+    _git(tmp_path, "reset", "--hard", "HEAD")
+    _write(tmp_path, "change.patch", patch + "\n")
+    original = source_change_capture.subprocess.run
+    capture_commands: list[list[str]] = []
+
+    def counted(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list):
+            capture_commands.append(command)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_change_capture.subprocess, "run", counted)
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="patch",
+            patch_file="change.patch",
+        )
+    )
+
+    assert len(snapshot.changed_files) == 250
+    assert sum("cat-file" in command for command in capture_commands) <= 2
+    assert all(len(command) < 20 for command in capture_commands)
+
+
+@pytest.mark.parametrize("source_kind", ["local-staged", "patch"])
+def test_large_lean_metric_capture_uses_bounded_git_processes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+) -> None:
+    _init_repo(tmp_path)
+    for index in range(250):
+        content = (
+            "def public_entry():\n    return 0\n"
+            if index == 0
+            else f"VALUE = {index}\n"
+        )
+        _write(tmp_path, f"src/metric-{index:03d}.py", content)
+    _git(tmp_path, "add", "src")
+    if source_kind == "patch":
+        patch = _git(tmp_path, "diff", "--cached", "--binary", "--no-ext-diff")
+        _git(tmp_path, "reset", "--hard", "HEAD")
+        _write(tmp_path, "change.patch", patch + "\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind=source_kind,
+            patch_file="change.patch" if source_kind == "patch" else "",
+        )
+    )
+    original_run = subprocess.run
+    original_apply = source_snapshot_view._apply_patch
+    git_commands: list[list[str]] = []
+    apply_calls = 0
+
+    def counted_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and command and command[0] == "git":
+            git_commands.append(command)
+        return original_run(*args, **kwargs)  # type: ignore[arg-type]
+
+    def counted_apply(*args: object, **kwargs: object) -> None:
+        nonlocal apply_calls
+        apply_calls += 1
+        original_apply(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(subprocess, "run", counted_run)
+    monkeypatch.setattr(source_snapshot_view, "_apply_patch", counted_apply)
+
+    metrics = collect_lean_metrics(tmp_path, snapshot, ("src/",))
+
+    assert metrics.changed_file_count == 250
+    assert apply_calls == (1 if source_kind == "patch" else 0)
+    assert len(git_commands) <= 20
+    assert all(len(command) < 20 for command in git_commands)
+
+
+@pytest.mark.parametrize("source_kind", ["local-staged", "local-unstaged"])
+def test_lean_metric_callers_share_one_frozen_local_view(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    source_kind: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/callers.py",
+        """from src.api import public_entry
+
+def _caller_a():
+    return public_entry()
+
+def _caller_b():
+    return public_entry()
+
+def _caller_c():
+    return public_entry()
+""",
+    )
+    _git(tmp_path, "add", "src/callers.py")
+    _git(tmp_path, "commit", "-m", "add callers")
+    _write(tmp_path, "src/api.py", "def public_entry():\n    return 1\n")
+    if source_kind == "local-staged":
+        _git(tmp_path, "add", "src/api.py")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind=source_kind)
+    )
+    original_verify = source_snapshot_view._verify_captured_changes
+    mutated = False
+
+    def mutate_after_verify(*args: object, **kwargs: object) -> None:
+        nonlocal mutated
+        original_verify(*args, **kwargs)  # type: ignore[arg-type]
+        if mutated:
+            return
+        mutated = True
+        _write(tmp_path, "src/callers.py", "VALUE = 'changed after verification'\n")
+        if source_kind == "local-staged":
+            _git(tmp_path, "add", "src/callers.py")
+
+    monkeypatch.setattr(
+        source_snapshot_view,
+        "_verify_captured_changes",
+        mutate_after_verify,
+    )
+
+    metrics = collect_lean_metrics(tmp_path, snapshot, ("src/",))
+
+    helper = next(
+        function
+        for metric in metrics.files
+        for function in metric.functions
+        if function.symbol == "public_entry"
+    )
+    assert mutated is True
+    assert helper.caller_count == 3
+
+
 def test_staged_snapshot_supports_sha256_repository(tmp_path: Path) -> None:
     initialized = subprocess.run(
         [
@@ -684,6 +877,525 @@ def test_patch_snapshot_hashes_raw_bytes_and_detects_tamper(tmp_path: Path) -> N
     assert revalidate_source_snapshot(tmp_path, snapshot).fresh is True
     patch.write_bytes(patch.read_bytes() + b"\n")
     assert revalidate_source_snapshot(tmp_path, snapshot).fresh is False
+
+
+def test_canonical_content_digest_matches_autocrlf_source_transition(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "def value():\n    return 0\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add app")
+    _git(tmp_path, "config", "core.autocrlf", "true")
+    _write_bytes(tmp_path, "src/app.py", b"def value():\r\n    return 1\r\n")
+
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "change app")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+
+    assert evaluated.diff_hash == current.diff_hash
+    assert evaluated.file_digests != current.file_digests
+    assert evaluated.canonical_file_digests == current.canonical_file_digests
+    legacy = current.model_copy(
+        update={
+            "source_kind": "local-unstaged",
+            "canonical_digest_kind": "",
+            "canonical_file_digests": {},
+        }
+    )
+    assert source_content_equivalent(legacy, current) is True
+
+
+@pytest.mark.parametrize(
+    "fixture_kind",
+    ["regular", "executable", "symlink", "binary"],
+)
+def test_cross_source_identity_matches_committed_untracked_file(
+    tmp_path: Path,
+    fixture_kind: str,
+) -> None:
+    _init_repo(tmp_path)
+    path = tmp_path / "src" / "new-entry"
+    path.parent.mkdir(parents=True)
+    if fixture_kind == "symlink":
+        try:
+            path.symlink_to("target.py")
+        except OSError:
+            pytest.skip("symlinks are unavailable in this environment")
+    else:
+        path.write_bytes(b"\0binary\r\n" if fixture_kind == "binary" else b"VALUE\n")
+        if fixture_kind == "executable":
+            path.chmod(0o755)
+
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _git(tmp_path, "add", "src/new-entry")
+    _git(tmp_path, "commit", "-m", f"add {fixture_kind} entry")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+
+    assert source_content_equivalent(evaluated, current) is True
+
+
+def test_cross_source_identity_ignores_rename_heuristic_representation(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/old.py", "VALUE = 1\n")
+    _git(tmp_path, "add", "src/old.py")
+    _git(tmp_path, "commit", "-m", "add rename source")
+    (tmp_path / "src/old.py").rename(tmp_path / "src/new.py")
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _git(tmp_path, "add", "-A")
+    _git(tmp_path, "commit", "-m", "rename source")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+
+    assert evaluated.renamed_files == {}
+    assert current.renamed_files == {"src/new.py": "src/old.py"}
+    assert source_content_equivalent(evaluated, current) is True
+
+
+def test_cross_source_identity_treats_intent_to_add_as_absent_before(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/new.py", "VALUE = 1\n")
+    _git(tmp_path, "add", "-N", "src/new.py")
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _git(tmp_path, "add", "src/new.py")
+    _git(tmp_path, "commit", "-m", "add intent source")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+
+    assert source_content_equivalent(evaluated, current) is True
+
+
+@pytest.mark.parametrize("same_target", [True, False])
+def test_cross_source_identity_binds_gitlink_target_oid(
+    tmp_path: Path,
+    same_target: bool,
+) -> None:
+    root, c2, c3 = _gitlink_fixture(tmp_path)
+    _git(root / "vendor/sub", "checkout", c2)
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=root, source_kind="local-unstaged")
+    )
+    if not same_target:
+        _git(root / "vendor/sub", "checkout", c3)
+    _git(root, "add", "vendor/sub")
+    _git(root, "commit", "-m", "advance gitlink")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=root,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+
+    assert source_content_equivalent(evaluated, current) is same_target
+
+
+def test_dirty_gitlink_is_rejected_fail_closed(tmp_path: Path) -> None:
+    root, c2, _c3 = _gitlink_fixture(tmp_path)
+    _git(root / "vendor/sub", "checkout", c2)
+    _write(root / "vendor/sub", "version.txt", "dirty source\n")
+
+    with pytest.raises(ValueError, match="dirty gitlink"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=root, source_kind="local-unstaged")
+        )
+
+
+@pytest.mark.parametrize("identity_kind", ["source-change-v1", "future-change-v2"])
+def test_cross_source_partial_or_unknown_identity_is_unverifiable(
+    tmp_path: Path,
+    identity_kind: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add app")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+    partial = evaluated.model_copy(
+        update={"change_identity_kind": identity_kind, "raw_change_identities": {}}
+    )
+
+    matches, blocker = compare_source_content(partial, current)
+
+    assert matches is False
+    assert "identity" in blocker.lower()
+
+
+def test_same_source_freshness_detects_raw_change_hidden_by_clean_filter(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add filter target")
+    _configure_constant_clean_filter(tmp_path)
+    _write(tmp_path, "src/app.py", "print('FIRST RAW SOURCE')\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _write(tmp_path, "src/app.py", "raise SystemExit(99)\n")
+
+    freshness = revalidate_source_snapshot(tmp_path, snapshot)
+
+    assert freshness.fresh is False
+    assert freshness.reason == "diff_hash_changed"
+
+
+def test_unstaged_snapshot_does_not_execute_external_clean_filter(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add filter target")
+    marker = tmp_path / "filter-invoked.txt"
+    script = tmp_path / ".git" / "side-effect-filter.py"
+    script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(marker)!r}).write_text('invoked')\n"
+        "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+        encoding="utf-8",
+    )
+    _write(tmp_path, ".git/info/attributes", "src/app.py filter=sideeffect\n")
+    _git(
+        tmp_path,
+        "config",
+        "filter.sideeffect.clean",
+        f'"{sys.executable}" "{script}"',
+    )
+    _git(tmp_path, "config", "filter.sideeffect.required", "true")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+
+    assert snapshot.changed_files == ["src/app.py"]
+    assert not marker.exists()
+
+
+def test_cross_source_identity_rejects_semantic_clean_filter_rewrite(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add filter target")
+    _configure_constant_clean_filter(tmp_path)
+    _write(tmp_path, "src/app.py", "raise SystemExit(99)\n")
+    evaluated = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "commit filtered source")
+    current = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref="HEAD^",
+            head_ref="HEAD",
+        )
+    )
+
+    assert source_content_equivalent(evaluated, current) is False
+
+
+def test_git_content_identity_times_out_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write_bytes(tmp_path, "src/app.py", b"VALUE = 1\r\n")
+    original = source_content_identity.subprocess.run
+    observed: list[float | None] = []
+
+    def timed_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and command[:2] == ["git", "hash-object"]:
+            observed.append(kwargs.get("timeout"))  # type: ignore[arg-type]
+            raise subprocess.TimeoutExpired(command, 10)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_content_identity.subprocess, "run", timed_run)
+
+    with pytest.raises(ValueError, match="timed out"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+        )
+
+    assert observed == [10]
+
+
+def test_source_capture_git_timeout_is_normalized_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    original = source_change_capture.subprocess.run
+
+    def timed_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and "diff" in command and "--raw" in command:
+            raise subprocess.TimeoutExpired(command, 30)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_change_capture.subprocess, "run", timed_run)
+
+    with pytest.raises(ValueError, match="timed out"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+        )
+
+
+def test_optional_blob_read_timeout_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add app")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref=base,
+            head_ref="HEAD",
+        )
+    )
+    original = source_snapshot_view.subprocess.run
+
+    def timed_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and "cat-file" in command:
+            raise subprocess.TimeoutExpired(command, 30)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_snapshot_view.subprocess, "run", timed_run)
+
+    with pytest.raises(ValueError, match="timed out"):
+        file_versions(tmp_path, snapshot, "src/app.py")
+
+
+def test_blob_read_distinguishes_missing_path_from_invalid_revision(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+
+    assert source_snapshot_view._revision_blob(tmp_path, "HEAD", "missing.py") == b""
+    with pytest.raises(ValueError, match="failed"):
+        source_snapshot_view._revision_blob(
+            tmp_path,
+            "definitely-not-a-revision",
+            "README.md",
+        )
+
+
+def test_materialized_batch_blob_timeout_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _git(tmp_path, "add", "src/app.py")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-staged")
+    )
+    original = source_change_capture.subprocess.run
+
+    def timed_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and "cat-file" in command:
+            raise subprocess.TimeoutExpired(command, 30)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_change_capture.subprocess, "run", timed_run)
+
+    with (
+        pytest.raises(ValueError, match="timed out"),
+        materialized_source_view(tmp_path, snapshot),
+    ):
+        pass
+
+
+def test_unstaged_diff_timeout_is_normalized_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    original = source_snapshot_module.subprocess.run
+
+    def timed_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and "diff" in command:
+            raise subprocess.TimeoutExpired(command, 30)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_snapshot_module.subprocess, "run", timed_run)
+
+    with pytest.raises(ValueError, match="timed out"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+        )
+
+
+@pytest.mark.parametrize(
+    ("identity_kind", "retain_payload"),
+    [("future-change-v2", True), ("", True)],
+)
+def test_same_source_freshness_rejects_invalid_identity_extension(
+    tmp_path: Path,
+    identity_kind: str,
+    retain_payload: bool,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    invalid = snapshot.model_copy(
+        update={
+            "change_identity_kind": identity_kind,
+            "raw_change_identities": (
+                snapshot.raw_change_identities if retain_payload else {}
+            ),
+        }
+    )
+
+    freshness = revalidate_source_snapshot(tmp_path, invalid)
+
+    assert freshness.fresh is False
+    assert freshness.reason.startswith("source_identity_invalid:")
+
+
+def test_legacy_source_snapshot_keeps_its_original_stable_digest(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    payload = snapshot.model_dump(mode="json")
+    for field in (
+        "canonical_digest_kind",
+        "canonical_file_digests",
+        "change_identity_kind",
+        "raw_change_identities",
+        "portable_change_identities",
+        "safe_eol_paths",
+    ):
+        payload.pop(field, None)
+    legacy_digest = _legacy_stable_digest(payload)
+    legacy = SourceSnapshot.model_validate(payload)
+
+    assert stable_artifact_digest(legacy) == legacy_digest
+
+
+def _configure_constant_clean_filter(root: Path) -> None:
+    script = root / ".git" / "constant-filter.py"
+    script.write_text(
+        "import sys\nsys.stdin.buffer.read()\nsys.stdout.buffer.write(b'VALUE = 1\\n')\n",
+        encoding="utf-8",
+    )
+    _write(root, ".git/info/attributes", "src/app.py filter=constant\n")
+    _git(root, "config", "filter.constant.clean", f'"{sys.executable}" "{script}"')
+    _git(root, "config", "filter.constant.required", "true")
+
+
+def _gitlink_fixture(tmp_path: Path) -> tuple[Path, str, str]:
+    module = tmp_path / "module"
+    module.mkdir()
+    _init_repo(module)
+    root = tmp_path / "main"
+    root.mkdir()
+    _init_repo(root)
+    _git(
+        root,
+        "-c",
+        "protocol.file.allow=always",
+        "submodule",
+        "add",
+        str(module),
+        "vendor/sub",
+    )
+    _git(root, "commit", "-am", "add gitlink")
+    _write(module, "version.txt", "c2\n")
+    _git(module, "add", "version.txt")
+    _git(module, "commit", "-m", "c2")
+    c2 = _git(module, "rev-parse", "HEAD")
+    _write(module, "version.txt", "c3\n")
+    _git(module, "commit", "-am", "c3")
+    c3 = _git(module, "rev-parse", "HEAD")
+    _git(root / "vendor/sub", "fetch")
+    return root, c2, c3
+
+
+def _legacy_stable_digest(payload: dict[str, object]) -> str:
+    stable = {
+        key: value
+        for key, value in payload.items()
+        if key not in {"created_at", "ai_sdlc_version"}
+    }
+    encoded = json.dumps(
+        stable,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def _new_file_patch(marker: str) -> str:

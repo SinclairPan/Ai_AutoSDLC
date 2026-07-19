@@ -18,6 +18,7 @@ import pytest
 
 import ai_sdlc.core.lean_code_environment as lean_code_environment
 import ai_sdlc.core.lean_code_runner as lean_code_runner
+import ai_sdlc.core.source_snapshot_view as source_snapshot_view
 from ai_sdlc.core.implementation_loop import (
     close_implementation_loop,
     record_implementation_progress,
@@ -65,6 +66,56 @@ from ai_sdlc.core.lean_code_runtime import (
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
 from ai_sdlc.models.work import WorkType
+
+
+@pytest.mark.parametrize("receipt_id", ["..", "CON", "NUL", "abc."])
+def test_execution_rejects_nonportable_receipt_id(
+    tmp_path: Path,
+    receipt_id: str,
+) -> None:
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id="impl-safe",
+            purpose="targeted-verification",
+            receipt_id=receipt_id,
+            command_argv=(sys.executable, "tests/probe.py"),
+            test_source_ref="tests/probe.py",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "receipt id" in result.blocker.lower()
+    assert not (tmp_path / ".ai-sdlc").exists()
+
+
+def test_lean_check_blocks_when_metric_blob_read_times_out(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_enabled_loop(tmp_path, "impl-blob-timeout")
+    _write(tmp_path, "src/app.py", "def public_api():\n    return 1\n")
+    _git(tmp_path, "add", "src/app.py")
+    original = source_snapshot_view.subprocess.run
+
+    def timed_run(*args: object, **kwargs: object):
+        command = args[0] if args else kwargs.get("args")
+        if isinstance(command, list) and "cat-file" in command:
+            raise subprocess.TimeoutExpired(command, 30)
+        return original(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(source_snapshot_view.subprocess, "run", timed_run)
+
+    result = run_lean_check(
+        LeanCheckOptions(
+            root=tmp_path,
+            loop_id="impl-blob-timeout",
+            source_kind="local-staged",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "timed out" in result.blocker
 
 
 def test_first_required_then_targeted_fix_passes_second_round(tmp_path: Path) -> None:
@@ -181,6 +232,129 @@ def test_second_round_without_new_targeted_verification_needs_user(
     assert second.status == "needs_user"
     assert second.stop_reason.startswith("max_rounds_reached:")
     assert any(item.rule_id == "lean.targeted-verification" for item in report.findings)
+
+
+def test_second_round_rejects_pointer_consistent_previous_report_tamper(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-previous-report-tamper"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+    first = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert first.status == "needs_fix"
+    lean_dir = _lean_dir(tmp_path, loop_id)
+    report_path = lean_dir / "round-001" / "report.json"
+    report = LeanEvaluationReport.model_validate_json(report_path.read_text("utf-8"))
+    forged = report.model_copy(update={"status": "passed", "findings": []})
+    report_path.write_text(forged.model_dump_json(), encoding="utf-8")
+    current_path = lean_dir / "current.json"
+    current = json.loads(current_path.read_text("utf-8"))
+    current["report_digest"] = stable_artifact_digest(forged)
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+    _write(tmp_path, "src/app.py", "def _build_future():\n    return object()\n")
+
+    second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+
+    assert second.status == "blocked"
+    assert "previous lean" in second.blocker.lower()
+    assert not (lean_dir / "round-002").exists()
+
+
+def test_close_rejects_previous_report_changed_after_second_round(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-previous-history-close"
+    test_source = "tests/previous_history.py"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _commit_fixture(tmp_path, test_source, "print('verified')\n")
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+    first = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert first.status == "needs_fix"
+    _write(tmp_path, "src/app.py", "def _build_future():\n    return object()\n")
+    _record_targeted_verification(tmp_path, loop_id, test_source)
+    second = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert second.status == "ready"
+    lean_dir = _lean_dir(tmp_path, loop_id)
+    second_input = LeanEvaluationInput.model_validate_json(
+        (lean_dir / "round-002" / "evaluation-input.json").read_text("utf-8")
+    )
+    assert second_input.previous_report_path.endswith("round-001/report.json")
+    assert second_input.previous_report_digest
+    assert second_input.previous_actionable_signatures
+    report_path = lean_dir / "round-001" / "report.json"
+    previous = LeanEvaluationReport.model_validate_json(report_path.read_text("utf-8"))
+    report_path.write_text(
+        previous.model_copy(update={"stop_reason": "tampered"}).model_dump_json(),
+        encoding="utf-8",
+    )
+
+    blocker = validate_lean_close(tmp_path, loop_id)
+
+    assert "previous report" in blocker.lower()
+    assert "digest" in blocker.lower()
+
+
+@pytest.mark.parametrize(
+    ("field", "replacement"),
+    [
+        ("previous_report_path", "forged/report.json"),
+        ("previous_report_digest", "sha256:forged"),
+        ("previous_verification_digest", "sha256:forged"),
+        ("previous_actionable_signatures", []),
+    ],
+)
+def test_close_rejects_previous_history_input_rebinding(
+    tmp_path: Path,
+    field: str,
+    replacement: object,
+) -> None:
+    loop_id = f"impl-history-{field.replace('_', '-')}"
+    test_source = "tests/history_binding.py"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _commit_fixture(tmp_path, test_source, "print('verified')\n")
+    _write(tmp_path, "src/app.py", "def build_future():\n    return object()\n")
+    assert run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id)).status == (
+        "needs_fix"
+    )
+    _write(tmp_path, "src/app.py", "def _build_future():\n    return object()\n")
+    _record_targeted_verification(tmp_path, loop_id, test_source)
+    assert run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id)).status == (
+        "ready"
+    )
+    current_path = _lean_dir(tmp_path, loop_id) / "current.json"
+    current = json.loads(current_path.read_text("utf-8"))
+    input_path = tmp_path / current["input_path"]
+    evaluation_input = json.loads(input_path.read_text("utf-8"))
+    evaluation_input[field] = replacement
+    rebound = LeanEvaluationInput.model_validate(evaluation_input)
+    input_path.write_text(rebound.model_dump_json(), encoding="utf-8")
+    current["input_digest"] = stable_artifact_digest(rebound)
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+
+    blocker = validate_lean_close(tmp_path, loop_id)
+
+    assert "previous" in blocker.lower()
+
+
+def test_close_rejects_current_pointer_rebound_from_canonical_report(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-rebound-current-report"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(tmp_path, "src/app.py", "def _small():\n    return 1\n")
+    result = run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
+    assert result.status == "ready"
+    lean_dir = _lean_dir(tmp_path, loop_id)
+    current_path = lean_dir / "current.json"
+    current = json.loads(current_path.read_text("utf-8"))
+    rebound_path = lean_dir / "rebound-report.json"
+    rebound_path.write_bytes((tmp_path / current["report_path"]).read_bytes())
+    current["report_path"] = rebound_path.relative_to(tmp_path).as_posix()
+    current_path.write_text(json.dumps(current), encoding="utf-8")
+
+    blocker = validate_lean_close(tmp_path, loop_id)
+
+    assert "canonical artifact paths" in blocker.lower()
 
 
 def test_unexecuted_verification_command_forces_user_decision_at_second_round(

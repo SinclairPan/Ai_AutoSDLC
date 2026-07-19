@@ -410,6 +410,91 @@ def test_controlled_execution_cli_requires_explicit_loop_id(tmp_path: Path) -> N
         assert "Missing option '--loop-id'" in unstyle(result.output)
 
 
+@pytest.mark.parametrize("phase", ["red", "green"])
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("unsafe_loop_id", ["../bad", "CON", "NUL"])
+def test_lean_regression_cli_blocks_unsafe_loop_id_without_traceback(
+    tmp_path: Path,
+    phase: str,
+    json_output: bool,
+    unsafe_loop_id: str,
+) -> None:
+    command = [
+        "loop",
+        "implementation",
+        "lean-regression",
+        "--loop-id",
+        unsafe_loop_id,
+        "--phase",
+        phase,
+        "--test-id",
+        "unsafe-loop",
+        "--test-source",
+        "tests/regression_probe.py",
+        "--failure-signature",
+        "assertion:unsafe-loop",
+    ]
+    if json_output:
+        command.append("--json")
+    command.extend(["--", sys.executable, "tests/regression_probe.py"])
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(app, command)
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    if json_output:
+        payload = json.loads(result.output)
+        assert payload["status"] == "blocked"
+        assert "loop id" in payload["blocker"].lower()
+    else:
+        assert "Result: blocked" in result.output
+        assert "loop id" in result.output.lower()
+
+
+@pytest.mark.parametrize("phase", ["red", "green"])
+@pytest.mark.parametrize("json_output", [False, True])
+@pytest.mark.parametrize("unsafe_test_id", ["..", "CON", "NUL", "abc."])
+def test_lean_regression_cli_blocks_unsafe_test_id_without_path_escape(
+    tmp_path: Path,
+    phase: str,
+    json_output: bool,
+    unsafe_test_id: str,
+) -> None:
+    command = [
+        "loop",
+        "implementation",
+        "lean-regression",
+        "--loop-id",
+        "impl-safe",
+        "--phase",
+        phase,
+        "--test-id",
+        unsafe_test_id,
+        "--test-source",
+        "tests/regression_probe.py",
+        "--failure-signature",
+        "assertion:unsafe-test-id",
+    ]
+    if json_output:
+        command.append("--json")
+    command.extend(["--", sys.executable, "tests/regression_probe.py"])
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(app, command)
+
+    assert result.exit_code == 1
+    assert "Traceback" not in result.output
+    assert not (tmp_path / ".ai-sdlc" / "loops" / "implementation").exists()
+    if json_output:
+        payload = json.loads(result.output)
+        assert payload["status"] == "blocked"
+        assert "test id" in payload["blocker"].lower()
+    else:
+        assert "Result: blocked" in result.output
+        assert "test id" in result.output.lower()
+
+
 def test_lean_regression_cli_validates_selected_snapshot_test_source(
     tmp_path: Path,
 ) -> None:

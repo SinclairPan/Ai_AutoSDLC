@@ -5,14 +5,37 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from ai_sdlc.core.git_filter_safety import external_filter_overrides
 from ai_sdlc.core.loop_models import LoopArtifactModel
+from ai_sdlc.core.source_change_capture import (
+    CapturedPathChange,
+    capture_index_changes,
+    capture_path_changes,
+)
+from ai_sdlc.core.source_content_identity import (
+    CANONICAL_DIGEST_KIND,
+    CHANGE_IDENTITY_KIND,
+    build_change_identities,
+    canonical_content_digests,
+    inspect_unsafe_attribute_paths,
+)
 
 _SOURCE_KINDS = {"local-git-range", "local-staged", "local-unstaged", "patch"}
+SOURCE_SNAPSHOT_OPTIONAL_IDENTITY_FIELDS = frozenset(
+    {
+        "canonical_digest_kind",
+        "canonical_file_digests",
+        "change_identity_kind",
+        "raw_change_identities",
+        "portable_change_identities",
+        "safe_eol_paths",
+    }
+)
 
 
 class SourceSnapshot(LoopArtifactModel):
@@ -31,6 +54,12 @@ class SourceSnapshot(LoopArtifactModel):
     binary_files: list[str] = Field(default_factory=list)
     renamed_files: dict[str, str] = Field(default_factory=dict)
     file_digests: dict[str, str] = Field(default_factory=dict)
+    canonical_digest_kind: str = ""
+    canonical_file_digests: dict[str, str] = Field(default_factory=dict)
+    change_identity_kind: str = ""
+    raw_change_identities: dict[str, str] = Field(default_factory=dict)
+    portable_change_identities: dict[str, str] = Field(default_factory=dict)
+    safe_eol_paths: list[str] = Field(default_factory=list)
     index_identity: str = ""
     patch_file: str = ""
 
@@ -76,6 +105,8 @@ class _SnapshotParts:
     patch_file: str = ""
     untracked_files: tuple[str, ...] = ()
     untracked_payload: bytes = b""
+    captured_changes: dict[str, CapturedPathChange] = field(default_factory=dict)
+    git_config_args: tuple[str, ...] = ()
 
 
 def build_source_snapshot(options: SourceSnapshotOptions) -> SourceSnapshot:
@@ -103,17 +134,104 @@ def build_source_snapshot(options: SourceSnapshotOptions) -> SourceSnapshot:
         binary_files=_binary_files(root, parts, statuses),
         renamed_files={path: old for status, path, old in statuses if status == "R"},
         file_digests={},
+        canonical_digest_kind="",
+        canonical_file_digests={},
+        change_identity_kind="",
+        raw_change_identities={},
+        portable_change_identities={},
+        safe_eol_paths=[],
         index_identity=parts.index_identity,
         patch_file=parts.patch_file,
     )
-    return snapshot.model_copy(
-        update={"file_digests": _snapshot_digests(root, snapshot)}
+    return _complete_snapshot(root, snapshot, parts)
+
+
+def _complete_snapshot(
+    root: Path,
+    snapshot: SourceSnapshot,
+    parts: _SnapshotParts,
+) -> SourceSnapshot:
+    changes = parts.captured_changes or capture_path_changes(
+        root,
+        snapshot,
+        git_config_args=parts.git_config_args,
     )
+    unsafe_attributes = inspect_unsafe_attribute_paths(root, sorted(changes))
+    file_digests, canonical_digests = _snapshot_digests(
+        root,
+        snapshot,
+        changes,
+        unsafe_attributes,
+    )
+    raw_identities, portable_identities, safe_eol_paths = build_change_identities(
+        root,
+        snapshot,
+        changes,
+        unsafe_attributes,
+    )
+    completed = snapshot.model_copy(
+        update={
+            "file_digests": file_digests,
+            "canonical_digest_kind": CANONICAL_DIGEST_KIND,
+            "canonical_file_digests": canonical_digests,
+            "change_identity_kind": CHANGE_IDENTITY_KIND,
+            "raw_change_identities": raw_identities,
+            "portable_change_identities": portable_identities,
+            "safe_eol_paths": safe_eol_paths,
+        }
+    )
+    issue = source_snapshot_identity_issue(completed)
+    if issue:
+        raise ValueError(issue)
+    return completed
+
+
+def source_snapshot_identity_issue(snapshot: SourceSnapshot) -> str:
+    """Return a fail-closed issue for a partial or unknown change identity."""
+    raw = snapshot.raw_change_identities
+    portable = snapshot.portable_change_identities
+    safe_eol = snapshot.safe_eol_paths
+    has_extension = bool(raw or portable or safe_eol)
+    if not snapshot.change_identity_kind:
+        return "change identity kind is missing" if has_extension else ""
+    if snapshot.change_identity_kind != CHANGE_IDENTITY_KIND:
+        return f"unknown change identity kind: {snapshot.change_identity_kind}"
+    expected = set(snapshot.changed_files) | set(snapshot.renamed_files.values())
+    if set(raw) != expected:
+        return "change identity raw paths do not cover the affected source paths"
+    if not set(portable).issubset(raw) or not set(safe_eol).issubset(portable):
+        return "change identity portable paths are inconsistent"
+    if len(safe_eol) != len(set(safe_eol)):
+        return "change identity safe EOL paths contain duplicates"
+    if safe_eol and snapshot.source_kind != "local-unstaged":
+        return "change identity safe EOL paths require a local-unstaged source"
+    if any(
+        not _valid_identity_digest(value)
+        for value in (*raw.values(), *portable.values())
+    ):
+        return "change identity contains an invalid digest"
+    return ""
+
+
+def _valid_identity_digest(value: str) -> bool:
+    if not value.startswith("sha256:") or len(value) != 71:
+        return False
+    try:
+        int(value[7:], 16)
+    except ValueError:
+        return False
+    return True
 
 
 def revalidate_source_snapshot(root: Path, snapshot: SourceSnapshot) -> SourceFreshness:
     """Rebuild a snapshot and compare the source identity fail-closed."""
 
+    issue = source_snapshot_identity_issue(snapshot)
+    if issue:
+        return SourceFreshness(
+            fresh=False,
+            reason=f"source_identity_invalid:{issue}",
+        )
     try:
         current = build_source_snapshot(
             SourceSnapshotOptions(
@@ -126,6 +244,13 @@ def revalidate_source_snapshot(root: Path, snapshot: SourceSnapshot) -> SourceFr
         )
     except (OSError, ValueError) as exc:
         return SourceFreshness(fresh=False, reason=f"source_unavailable:{exc}")
+    return _compare_fresh_snapshot(snapshot, current)
+
+
+def _compare_fresh_snapshot(
+    snapshot: SourceSnapshot,
+    current: SourceSnapshot,
+) -> SourceFreshness:
     if current.diff_hash != snapshot.diff_hash:
         return SourceFreshness(
             fresh=False,
@@ -150,7 +275,35 @@ def revalidate_source_snapshot(root: Path, snapshot: SourceSnapshot) -> SourceFr
             reason="index_identity_changed",
             current_diff_hash=current.diff_hash,
         )
+    if not _same_source_content(snapshot, current):
+        return SourceFreshness(
+            fresh=False,
+            reason="source_content_changed",
+            current_diff_hash=current.diff_hash,
+        )
     return SourceFreshness(fresh=True, current_diff_hash=current.diff_hash)
+
+
+def _same_source_content(
+    expected: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    metadata = (
+        "changed_files",
+        "untracked_files",
+        "deleted_files",
+        "binary_files",
+        "renamed_files",
+        "file_digests",
+    )
+    if any(getattr(expected, name) != getattr(current, name) for name in metadata):
+        return False
+    if (
+        expected.change_identity_kind == CHANGE_IDENTITY_KIND
+        and current.change_identity_kind == CHANGE_IDENTITY_KIND
+    ):
+        return expected.raw_change_identities == current.raw_change_identities
+    return True
 
 
 def _build_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
@@ -190,6 +343,7 @@ def _git_range_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotPar
 
 def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
     head = _git_text(root, "rev-parse", "HEAD")
+    git_config_args: tuple[str, ...] = ()
     if staged:
         from ai_sdlc.core.source_snapshot_view import selected_git_diff
 
@@ -199,9 +353,8 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
             base_commit=head,
         )
     else:
-        diff = _git(root, "diff", "--binary", "--no-ext-diff", "--no-textconv")
-        status = _git(root, "diff", "--name-status", "-z", "-M")
-        numstat = _git(root, "diff", "--numstat", "-z", "-M")
+        git_config_args = external_filter_overrides(root)
+        diff, status, numstat = _unstaged_diff_outputs(root, git_config_args)
     discovered = (
         ()
         if staged
@@ -221,7 +374,25 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
         index_identity=_index_identity(root),
         untracked_files=untracked,
         untracked_payload=_untracked_payload(root, untracked),
+        git_config_args=git_config_args,
     )
+
+
+def _unstaged_diff_outputs(
+    root: Path,
+    git_config_args: tuple[str, ...],
+) -> tuple[bytes, bytes, bytes]:
+    prefix = (*git_config_args, "diff")
+    diff = _git(
+        root,
+        *prefix,
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+    )
+    status = _git(root, *prefix, "--name-status", "-z", "-M")
+    numstat = _git(root, *prefix, "--numstat", "-z", "-M")
+    return diff, status, numstat
 
 
 def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
@@ -238,13 +409,22 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
     patch = path.read_bytes()
     head_ref = options.head_ref.strip() or "HEAD"
     head = _git_text(root, "rev-parse", head_ref)
-    from ai_sdlc.core.source_snapshot_view import patch_diff_metadata
-
-    status, numstat = patch_diff_metadata(
-        root,
-        path.relative_to(root).as_posix(),
-        head,
+    from ai_sdlc.core.source_snapshot_view import (
+        _diff_outputs,
+        _index_worktree,
+        _patch_index,
     )
+
+    with _patch_index(root, path, head) as index_env:
+        with _index_worktree(root, index_env) as selected_env:
+            _diff_bytes, status, numstat = _diff_outputs(
+                ("--cached", head), selected_env
+            )
+        statuses = _parse_name_status(status)
+        paths = sorted(
+            {item[1] for item in statuses} | {item[2] for item in statuses if item[2]}
+        )
+        changes = capture_index_changes(root, head, paths, index_env)
 
     return _SnapshotParts(
         diff_bytes=patch,
@@ -255,6 +435,7 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
         base_commit=head,
         head_commit=head,
         patch_file=path.relative_to(root).as_posix(),
+        captured_changes=changes,
     )
 
 
@@ -343,15 +524,32 @@ def _parse_numstat(payload: bytes) -> dict[str, bool]:
     return parsed
 
 
-def _snapshot_digests(root: Path, snapshot: SourceSnapshot) -> dict[str, str]:
-    from ai_sdlc.core.source_snapshot_view import file_versions
-
-    digests: dict[str, str] = {}
-    for path in snapshot.changed_files:
-        _before, after = file_versions(root, snapshot, path)
-        if after:
-            digests[path] = _digest(after)
-    return digests
+def _snapshot_digests(
+    root: Path,
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+    unsafe_attribute_paths: set[str],
+) -> tuple[dict[str, str], dict[str, str]]:
+    after_states = {
+        path: change.after for path, change in changes.items() if change.after.mode
+    }
+    digests = {path: _digest(state.payload) for path, state in after_states.items()}
+    payloads = {
+        path: state.payload
+        for path, state in after_states.items()
+        if state.mode != "160000"
+    }
+    symlink_paths = {
+        path for path, state in after_states.items() if state.mode == "120000"
+    }
+    canonical = canonical_content_digests(
+        root,
+        snapshot.source_kind,
+        payloads,
+        symlink_paths,
+        unsafe_attribute_paths,
+    )
+    return digests, canonical
 
 
 def _untracked_payload(root: Path, paths: tuple[str, ...]) -> bytes:
@@ -404,7 +602,18 @@ def _git_text(root: Path, *args: str) -> str:
 
 
 def _git(root: Path, *args: str) -> bytes:
-    result = subprocess.run(["git", *args], cwd=root, capture_output=True, check=False)
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"git {' '.join(args)} timed out") from exc
+    except OSError as exc:
+        raise ValueError(f"git {' '.join(args)} is unavailable: {exc}") from exc
     if result.returncode:
         message = result.stderr.decode("utf-8", errors="replace").strip()
         raise ValueError(f"git {' '.join(args)} failed: {message}")
@@ -412,9 +621,11 @@ def _git(root: Path, *args: str) -> bytes:
 
 
 __all__ = [
+    "SOURCE_SNAPSHOT_OPTIONAL_IDENTITY_FIELDS",
     "SourceFreshness",
     "SourceSnapshot",
     "SourceSnapshotOptions",
     "build_source_snapshot",
     "revalidate_source_snapshot",
+    "source_snapshot_identity_issue",
 ]

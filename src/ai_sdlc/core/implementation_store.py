@@ -21,6 +21,7 @@ from ai_sdlc.core.implementation_models import (
     ImplementationTasks,
     ImplementationVerificationEvidence,
 )
+from ai_sdlc.core.lean_code_identifiers import is_safe_artifact_id
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType, utc_now_iso
 from ai_sdlc.core.loop_policy import load_loop_policy
@@ -144,10 +145,13 @@ def resolve_loop_id(loop_id: str) -> str:
 def validate_explicit_loop_id(loop_id: str) -> str:
     """Validate an explicit implementation loop id for shell-safe rendering."""
 
-    if not _SAFE_EXPLICIT_LOOP_ID.fullmatch(loop_id):
+    if not _SAFE_EXPLICIT_LOOP_ID.fullmatch(loop_id) or not is_safe_artifact_id(
+        loop_id
+    ):
         raise ValueError(
             "explicit loop id may contain only letters, digits, hyphen, and "
-            "underscore, and must start with a letter or digit"
+            "underscore, must start with a letter or digit, and must be a "
+            "portable file name"
         )
     return loop_id
 

@@ -15,10 +15,12 @@ from ai_sdlc.core.lean_code_review_scope_models import (
     ClosedLeanReviewScope,
 )
 from ai_sdlc.core.pr_review_models import ReviewPack, ReviewRun
+from ai_sdlc.core.source_content_identity import CHANGE_IDENTITY_KIND
 from ai_sdlc.core.source_snapshot import (
     SourceSnapshot,
     SourceSnapshotOptions,
     build_source_snapshot,
+    source_snapshot_identity_issue,
 )
 
 
@@ -117,6 +119,97 @@ def closed_scope_disposition_blocker(
     )
 
 
+def source_content_equivalent(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    """Return whether two snapshots prove the same source change."""
+    return compare_source_content(evaluated, current)[0]
+
+
+def compare_source_content(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> tuple[bool, str]:
+    """Compare source content and distinguish mismatch from unverifiable legacy."""
+    identity_issue = source_snapshot_identity_issue(
+        evaluated
+    ) or source_snapshot_identity_issue(current)
+    if identity_issue:
+        return (
+            False,
+            f"Closed Lean review source identity is unverifiable: {identity_issue}.",
+        )
+    if evaluated.source_kind == current.source_kind:
+        return _same_source_equivalent(evaluated, current), ""
+    if not _cross_source_structure_matches(evaluated, current):
+        return False, ""
+    if (
+        evaluated.change_identity_kind == CHANGE_IDENTITY_KIND
+        and current.change_identity_kind == CHANGE_IDENTITY_KIND
+    ):
+        return _change_identities_match(evaluated, current), ""
+    if (
+        evaluated.diff_hash == current.diff_hash
+        and evaluated.file_digests == current.file_digests
+    ):
+        return True, ""
+    return (
+        False,
+        "Closed Lean review source uses a legacy snapshot whose cross-source "
+        "content identity cannot be verified.",
+    )
+
+
+def _same_source_equivalent(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    fields = (
+        "base_commit",
+        "head_commit",
+        "diff_hash",
+        "changed_files",
+        "untracked_files",
+        "deleted_files",
+        "binary_files",
+        "renamed_files",
+        "file_digests",
+        "index_identity",
+    )
+    return all(getattr(evaluated, name) == getattr(current, name) for name in fields)
+
+
+def _cross_source_structure_matches(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    return evaluated.base_commit == current.base_commit
+
+
+def _change_identities_match(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    if set(evaluated.raw_change_identities) != set(current.raw_change_identities):
+        return False
+    safe_eol = {
+        path
+        for snapshot in (evaluated, current)
+        if snapshot.source_kind == "local-unstaged"
+        for path in snapshot.safe_eol_paths
+    }
+    for path, evaluated_raw in evaluated.raw_change_identities.items():
+        if evaluated_raw == current.raw_change_identities[path]:
+            continue
+        if path not in safe_eol or (
+            evaluated.portable_change_identities.get(path)
+            != current.portable_change_identities.get(path)
+        ):
+            return False
+    return True
+
+
 def _closed_scope_matches_review(
     root: Path,
     review_run: ReviewRun,
@@ -139,12 +232,7 @@ def _closed_scope_matches_review(
         )
     except (OSError, ValueError, ValidationError) as exc:
         return False, f"Closed Lean review source cannot be verified: {exc}"
-    matches = (
-        evaluated.diff_hash == current.diff_hash
-        and evaluated.changed_files == current.changed_files
-        and evaluated.file_digests == current.file_digests
-    )
-    return matches, ""
+    return compare_source_content(evaluated, current)
 
 
 def safe_path(root: Path, path: str) -> Path:
@@ -170,11 +258,13 @@ def valid_timestamp(value: str) -> bool:
 
 __all__ = [
     "closed_scope_disposition_blocker",
+    "compare_source_content",
     "file_digest",
     "has_stored_lean_disposition",
     "has_stored_lean_metadata",
     "read_closed_scope",
     "read_review_pack",
     "safe_path",
+    "source_content_equivalent",
     "valid_timestamp",
 ]

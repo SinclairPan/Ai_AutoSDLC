@@ -24,6 +24,7 @@ from ai_sdlc.core.lean_code_review_scope_models import (
     LEAN_CLOSED_SCOPE_NAME,
     ClosedLeanReviewScope,
 )
+from ai_sdlc.core.lean_code_review_scope_store import compare_source_content
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopPolicyProfile
 from ai_sdlc.core.loop_policy import (
@@ -593,13 +594,16 @@ def scope_lean_review_binding(
         binding.implementation_closed and blocker in _LEAN_SOURCE_IDENTITY_MISMATCHES
     ):
         return binding, blocker, {}
-    decisions = _lean_scope_decisions("closed_source_mismatch", binding)
-    decisions["lean_closed_scope_matches_review"] = _closed_source_content_matches(
+    matches_review, source_blocker = _closed_source_content_matches(
         root,
         binding,
         source,
         reviewed_files,
     )
+    if source_blocker:
+        return binding, source_blocker, {}
+    decisions = _lean_scope_decisions("closed_source_mismatch", binding)
+    decisions["lean_closed_scope_matches_review"] = matches_review
     return None, "", decisions
 
 
@@ -667,7 +671,7 @@ def _closed_source_content_matches(
     binding: LeanReviewBinding,
     source: SourceAdapterResolution,
     reviewed_files: list[str],
-) -> bool:
+) -> tuple[bool, str]:
     """Recognize the same diff after a local source is committed or restaged."""
     try:
         evaluated = SourceSnapshot.model_validate_json(
@@ -682,18 +686,15 @@ def _closed_source_content_matches(
                 patch_file=source.patch_file,
             )
         )
-    except (OSError, ValueError):
-        return False
+    except (OSError, ValueError) as exc:
+        return False, f"Closed Lean review source cannot be verified: {exc}"
     renamed_sources = set(current.renamed_files.values())
     reviewed_coverage = sorted(
         path for path in reviewed_files if path not in renamed_sources
     )
-    return (
-        evaluated.diff_hash == current.diff_hash
-        and evaluated.changed_files == current.changed_files
-        and evaluated.file_digests == current.file_digests
-        and reviewed_coverage == sorted(current.changed_files)
-    )
+    if reviewed_coverage != sorted(current.changed_files):
+        return False, ""
+    return compare_source_content(evaluated, current)
 
 
 def _git_changed_files(root: Path, base_ref: str, head_ref: str) -> list[str]:

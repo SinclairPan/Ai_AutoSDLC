@@ -51,11 +51,32 @@ def load_lean_policy(root: Path) -> LeanPolicy:
 def stable_artifact_digest(model: BaseModel) -> str:
     """Hash stable model content while excluding provenance timestamps."""
 
-    payload = _without_provenance(model.model_dump(mode="json"))
+    payload = model.model_dump(mode="json")
+    payload = _without_absent_snapshot_extensions(model, payload)
+    payload = _without_provenance(payload)
     encoded = json.dumps(
         payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+
+
+def _without_absent_snapshot_extensions(
+    model: BaseModel,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    from ai_sdlc.core.source_snapshot import (
+        SOURCE_SNAPSHOT_OPTIONAL_IDENTITY_FIELDS,
+        SourceSnapshot,
+    )
+
+    if not isinstance(model, SourceSnapshot):
+        return payload
+    return {
+        key: value
+        for key, value in payload.items()
+        if key not in SOURCE_SNAPSHOT_OPTIONAL_IDENTITY_FIELDS
+        or key in model.model_fields_set
+    }
 
 
 def _without_provenance(value: Any) -> Any:

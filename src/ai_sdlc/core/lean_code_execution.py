@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import re
 import subprocess
 import uuid
 from dataclasses import replace as dataclass_replace
@@ -29,6 +28,7 @@ from ai_sdlc.core.lean_code_execution_prepare import (
     _invoke_execution,
     _prepare_execution,
 )
+from ai_sdlc.core.lean_code_identifiers import is_safe_artifact_id
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.source_snapshot import (
@@ -41,7 +41,6 @@ from ai_sdlc.core.source_snapshot_view import materialized_source_view
 
 _PURPOSES = {"targeted-verification", "regression-red", "regression-green"}
 _REGRESSION_PURPOSES = {"regression-red", "regression-green"}
-_SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
 def run_lean_command(options: LeanExecutionOptions) -> LeanExecutionResult:
@@ -346,7 +345,7 @@ def _options_issue(root: Path, options: LeanExecutionOptions) -> str:
         return "Regression failure signature must start with 'assertion:'."
     if not options.command_argv or any(not item for item in options.command_argv):
         return "Lean execution requires a non-empty argv."
-    if options.receipt_id and not _SAFE_ID.fullmatch(options.receipt_id):
+    if options.receipt_id and not is_safe_artifact_id(options.receipt_id):
         return "Lean execution receipt id is unsafe."
     if not 1 <= options.timeout_seconds <= 1800:
         return "Lean execution timeout must be between 1 and 1800 seconds."
@@ -397,7 +396,7 @@ def _outcome_from_receipt(
 
 
 def _run_dir(root: Path, loop_id: str, receipt_id: str) -> Path:
-    if not _SAFE_ID.fullmatch(receipt_id):
+    if not is_safe_artifact_id(receipt_id):
         raise ValueError("Lean execution receipt id is unsafe.")
     return (
         implementation_artifacts(root, loop_id).loop_dir

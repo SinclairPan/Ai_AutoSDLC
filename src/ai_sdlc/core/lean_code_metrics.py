@@ -20,7 +20,7 @@ from ai_sdlc.core.lean_code_models import (
     MetricCapability,
 )
 from ai_sdlc.core.source_snapshot import SourceSnapshot
-from ai_sdlc.core.source_snapshot_view import file_versions
+from ai_sdlc.core.source_snapshot_view import lean_metric_source
 
 
 def collect_lean_metrics(
@@ -30,9 +30,32 @@ def collect_lean_metrics(
 ) -> LeanMetrics:
     """Collect repeatable metrics without treating unsupported syntax as zero risk."""
 
-    files = [_file_metric(root, snapshot, path) for path in snapshot.changed_files]
-    duplicate_candidates = _mark_duplicate_candidates(files)
-    attach_python_callers(root, snapshot, files)
+    with lean_metric_source(root, snapshot) as (versions, source_loader):
+        files = [
+            _file_metric(
+                path,
+                *versions[path],
+                is_deleted=path in snapshot.deleted_files,
+                is_binary=path in snapshot.binary_files,
+            )
+            for path in snapshot.changed_files
+        ]
+        duplicate_candidates = _mark_duplicate_candidates(files)
+        attach_python_callers(
+            root,
+            snapshot,
+            files,
+            source_loader=source_loader,
+        )
+    return _assemble_metrics(files, duplicate_candidates, snapshot, declared_scope)
+
+
+def _assemble_metrics(
+    files: list[FileMetric],
+    duplicate_candidates: list[str],
+    snapshot: SourceSnapshot,
+    declared_scope: tuple[str, ...],
+) -> LeanMetrics:
     counts = Counter(str(item.classification) for item in files)
     product = [
         item
@@ -81,13 +104,19 @@ def _unsupported_semantic_files(files: list[FileMetric]) -> list[str]:
     ]
 
 
-def _file_metric(root: Path, snapshot: SourceSnapshot, path: str) -> FileMetric:
-    before, after = file_versions(root, snapshot, path)
-    provenance = before if path in snapshot.deleted_files else after
-    classification = classify_file(path, provenance, path in snapshot.binary_files)
+def _file_metric(
+    path: str,
+    before: bytes,
+    after: bytes,
+    *,
+    is_deleted: bool,
+    is_binary: bool,
+) -> FileMetric:
+    provenance = before if is_deleted else after
+    classification = classify_file(path, provenance, is_binary)
     before_text, before_error = _decode_source(before)
     after_text, after_error = _decode_source(after)
-    added, deleted = _line_delta(before_text, after_text)
+    added_lines, deleted_lines = _line_delta(before_text, after_text)
     language = _language(path)
     functions: list[FunctionMetric] = []
     fan_out = base_fan_out = 0
@@ -116,8 +145,8 @@ def _file_metric(root: Path, snapshot: SourceSnapshot, path: str) -> FileMetric:
         capability=capability,
         base_lines=len(before_text.splitlines()),
         head_lines=len(after_text.splitlines()),
-        added_lines=added,
-        deleted_lines=deleted,
+        added_lines=added_lines,
+        deleted_lines=deleted_lines,
         import_fan_out=fan_out,
         base_import_fan_out=base_fan_out,
         functions=functions,

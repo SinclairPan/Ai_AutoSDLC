@@ -76,7 +76,7 @@ def _invoke_execution(
     execution_root: Path,
     root: Path,
     snapshot: SourceSnapshot,
-    timeout_seconds: int,
+    timeout_seconds: float,
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
     started_at = utc_now_iso()
     completed = subprocess.run(

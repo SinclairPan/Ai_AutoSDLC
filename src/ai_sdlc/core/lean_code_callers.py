@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import ast
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 
 from ai_sdlc.core.lean_code_call_finder import (
@@ -45,7 +45,10 @@ _SourceShape = tuple[
 
 
 def attach_python_callers(
-    root: Path, snapshot: SourceSnapshot, files: list[FileMetric]
+    root: Path,
+    snapshot: SourceSnapshot,
+    files: list[FileMetric],
+    source_loader: Callable[[], dict[str, bytes]] | None = None,
 ) -> None:
     """Count only symbol-resolved callers from the frozen snapshot after-view."""
 
@@ -60,7 +63,10 @@ def attach_python_callers(
         return
     callers: dict[tuple[str, str], set[str]] = {target: set() for target in targets}
     boundaries: set[tuple[str, str]] = set()
-    for path, payload in python_sources(root, snapshot).items():
+    sources = (
+        source_loader() if source_loader is not None else python_sources(root, snapshot)
+    )
+    for path, payload in sources.items():
         if (
             classify_file(path, payload, False)
             != FileClassification.HANDWRITTEN_PRODUCT

@@ -108,6 +108,9 @@ def run_lean_check(options: LeanCheckOptions) -> LeanCheckResult:
             f"Lean evaluation maximum of {policy.max_rounds} rounds has been reached.",
             loop_run.loop_id,
         )
+    previous_issue = _previous_evaluation_issue(root, loop_run, evaluation_round)
+    if previous_issue:
+        return _blocked(previous_issue, loop_run.loop_id)
     try:
         snapshot, report, evaluation_input = prepare_lean_evaluation(
             root,
@@ -170,6 +173,17 @@ def record_lean_no_go(options: LeanNoGoOptions) -> LeanCheckResult:
         "Review the No-Go evidence and decide whether to rescope or stop."
     )
     return result
+
+
+def _previous_evaluation_issue(root: Path, loop_run, evaluation_round: int) -> str:
+    if evaluation_round <= 1:
+        return ""
+    issue = validate_lean_integrity(
+        root,
+        loop_run.loop_id,
+        require_fresh_source=False,
+    )
+    return f"Previous Lean evaluation is invalid: {issue}" if issue else ""
 
 
 def _load_implementation(

@@ -11,8 +11,10 @@ from ai_sdlc.core.implementation_store import (
     implementation_artifacts,
     implementation_task_items_digest,
     read_tasks,
+    repo_relative_path,
 )
 from ai_sdlc.core.lean_code_artifacts import (
+    lean_artifact_paths,
     read_current_report,
     read_lean_exceptions,
     read_regression_evidence,
@@ -63,6 +65,14 @@ class _LoadedEvaluation:
     exception_paths: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class _PreviousEvaluation:
+    report_path: str = ""
+    report_digest: str = ""
+    verification_digest: str = ""
+    actionable_signatures: tuple[str, ...] = ()
+
+
 def prepare_lean_evaluation(
     root: Path,
     loop_run,
@@ -78,7 +88,7 @@ def prepare_lean_evaluation(
     return (
         loaded.snapshot,
         report,
-        _evaluation_input(impl_input, policy, report, loaded),
+        _evaluation_input(root, impl_input, policy, report, loaded),
     )
 
 
@@ -143,8 +153,9 @@ def _evaluate(loop_run, impl_input, policy, evaluation_round, loaded, root):
     )
 
 
-def _evaluation_input(impl_input, policy, report, loaded) -> LeanEvaluationInput:
+def _evaluation_input(root, impl_input, policy, report, loaded) -> LeanEvaluationInput:
     snapshot = loaded.snapshot
+    previous = _previous_evaluation(root, loaded.previous)
     return LeanEvaluationInput(
         loop_id=impl_input.loop_id,
         work_item_id=impl_input.work_item_id,
@@ -171,7 +182,30 @@ def _evaluation_input(impl_input, policy, report, loaded) -> LeanEvaluationInput
         ),
         exception_refs=list(loaded.exception_paths),
         exception_digests=_artifact_digests(loaded.exception_paths, loaded.exceptions),
+        previous_report_path=previous.report_path,
+        previous_report_digest=previous.report_digest,
+        previous_verification_digest=previous.verification_digest,
+        previous_actionable_signatures=list(previous.actionable_signatures),
         evaluation_round=report.evaluation_round,
+    )
+
+
+def _previous_evaluation(
+    root: Path,
+    previous: LeanEvaluationReport | None,
+) -> _PreviousEvaluation:
+    if previous is None:
+        return _PreviousEvaluation()
+    path = lean_artifact_paths(
+        Path(root), previous.loop_id, previous.evaluation_round
+    ).report_path
+    return _PreviousEvaluation(
+        report_path=repo_relative_path(Path(root), path),
+        report_digest=stable_artifact_digest(previous),
+        verification_digest=previous.verification_digest,
+        actionable_signatures=tuple(
+            sorted(item.stable_signature for item in previous.blocking_findings)
+        ),
     )
 
 

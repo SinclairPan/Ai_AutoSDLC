@@ -1128,11 +1128,29 @@ def test_lean_exception_risk_propagates_to_pr_verdict_and_attestation(
     assert attestation.lean_exception_ids == ["EX-PR"]
 
 
+@pytest.mark.parametrize(
+    ("crlf_worktree", "untracked_path", "rename_source"),
+    [
+        (False, "", False),
+        (True, "", False),
+        (False, "tests/new-untracked.py", False),
+        (False, "", True),
+    ],
+)
 def test_closed_risk_accepted_scope_preserves_disposition_for_git_range(
     tmp_path: Path,
+    crlf_worktree: bool,
+    untracked_path: str,
+    rename_source: bool,
 ) -> None:
     loop_id = "impl-risk-source-transition"
-    _close_and_commit_risk_accepted_loop(tmp_path, loop_id)
+    _close_and_commit_risk_accepted_loop(
+        tmp_path,
+        loop_id,
+        crlf_worktree=crlf_worktree,
+        untracked_path=untracked_path,
+        rename_source=rename_source,
+    )
 
     started = start_pr_review(
         PRReviewStartOptions(
@@ -1201,8 +1219,28 @@ def test_closed_risk_accepted_scope_does_not_taint_unrelated_review(
     assert review_run.lean_exception_ids == []
 
 
-def test_closed_scope_blocks_risk_disposition_tamper(tmp_path: Path) -> None:
-    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-tamper")
+@pytest.mark.parametrize(
+    ("crlf_worktree", "untracked_path", "rename_source"),
+    [
+        (False, "", False),
+        (True, "", False),
+        (False, "tests/new-untracked.py", False),
+        (False, "", True),
+    ],
+)
+def test_closed_scope_blocks_risk_disposition_tamper(
+    tmp_path: Path,
+    crlf_worktree: bool,
+    untracked_path: str,
+    rename_source: bool,
+) -> None:
+    _close_and_commit_risk_accepted_loop(
+        tmp_path,
+        "impl-risk-tamper",
+        crlf_worktree=crlf_worktree,
+        untracked_path=untracked_path,
+        rename_source=rename_source,
+    )
     started = start_pr_review(
         PRReviewStartOptions(
             root=tmp_path,
@@ -1226,10 +1264,28 @@ def test_closed_scope_blocks_risk_disposition_tamper(tmp_path: Path) -> None:
     assert "risk disposition changed" in closed.blocker
 
 
+@pytest.mark.parametrize(
+    ("crlf_worktree", "untracked_path", "rename_source"),
+    [
+        (False, "", False),
+        (True, "", False),
+        (False, "tests/new-untracked.py", False),
+        (False, "", True),
+    ],
+)
 def test_closed_scope_recomputes_matching_source_before_disposition(
     tmp_path: Path,
+    crlf_worktree: bool,
+    untracked_path: str,
+    rename_source: bool,
 ) -> None:
-    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-match-tamper")
+    _close_and_commit_risk_accepted_loop(
+        tmp_path,
+        "impl-risk-match-tamper",
+        crlf_worktree=crlf_worktree,
+        untracked_path=untracked_path,
+        rename_source=rename_source,
+    )
     started = start_pr_review(
         PRReviewStartOptions(
             root=tmp_path,
@@ -1370,6 +1426,11 @@ def _seed_lean_loop(
     rename_to: str = "",
 ) -> None:
     _init_repo(root)
+    _write(root, "specs/WI-REVIEW/spec.md", "# Acceptance\n\n- AC-1\n")
+    _write(root, "specs/WI-REVIEW/plan.md", "# Plan\n")
+    _write(root, "specs/WI-REVIEW/tasks.md", "# Tasks\n\n- T11\n")
+    _git(root, "add", "specs/WI-REVIEW")
+    _git(root, "commit", "-m", "add implementation contract")
     target_path = rename_to or "src/app.py"
     if rename_to:
         _git(root, "mv", "src/app.py", rename_to)
@@ -1428,6 +1489,21 @@ def _seed_lean_loop(
             loop_run_path=artifacts.loop_run_path.relative_to(root).as_posix(),
         ),
     )
+    store.write_json_artifact(
+        artifacts.tasks_path,
+        ImplementationTasks(
+            loop_id=loop_id,
+            work_item_id="WI-REVIEW",
+            items=[
+                ImplementationTaskItem(
+                    task_id="T11",
+                    required=True,
+                    files=[target_path],
+                    acceptance=["AC-1"],
+                )
+            ],
+        ),
+    )
     result = run_lean_check(
         LeanCheckOptions(
             root=root,
@@ -1439,9 +1515,27 @@ def _seed_lean_loop(
     assert result.status == "ready", result.blocker
 
 
-def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:
+def _seed_risk_accepted_loop(
+    root: Path,
+    loop_id: str,
+    *,
+    crlf_worktree: bool = False,
+    untracked_path: str = "",
+    rename_source: bool = False,
+) -> None:
     _init_repo(root)
-    _write(root, "src/app.py", "def _small():\n    return 1\n")
+    if crlf_worktree:
+        _git(root, "config", "core.autocrlf", "true")
+        (root / "src/app.py").write_bytes(b"def _small():\r\n    return 1\r\n")
+    else:
+        _write(root, "src/app.py", "def _small():\n    return 1\n")
+    if rename_source:
+        (root / "src/app.py").rename(root / "src/old.py")
+        _git(root, "add", "src/old.py")
+        _git(root, "commit", "-m", "add rename source")
+        (root / "src/old.py").rename(root / "src/app.py")
+    if untracked_path:
+        _write(root, untracked_path, "print('new untracked verification helper')\n")
     _write(root, "tests/risk_probe.py", "print('risk path verified')\n")
     _git(root, "add", "tests/risk_probe.py")
     _git(root, "commit", "-m", "add risk probe fixture")
@@ -1458,7 +1552,11 @@ def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:
         design_contract_loop_id="design-review",
         work_type=WorkType.PRODUCTION_ISSUE,
         quality_profiles=["lean-code"],
-        declared_scope=["src/app.py"],
+        declared_scope=[
+            "src/app.py",
+            *(["src/old.py"] if rename_source else []),
+            *([untracked_path] if untracked_path else []),
+        ],
     )
     store.write_json_artifact(artifacts.input_path, impl_input)
     store.write_json_artifact(
@@ -1548,13 +1646,30 @@ def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:
     assert second.status == "ready", second
 
 
-def _close_and_commit_risk_accepted_loop(root: Path, loop_id: str) -> None:
-    _seed_risk_accepted_loop(root, loop_id)
+def _close_and_commit_risk_accepted_loop(
+    root: Path,
+    loop_id: str,
+    *,
+    crlf_worktree: bool = False,
+    untracked_path: str = "",
+    rename_source: bool = False,
+) -> None:
+    _seed_risk_accepted_loop(
+        root,
+        loop_id,
+        crlf_worktree=crlf_worktree,
+        untracked_path=untracked_path,
+        rename_source=rename_source,
+    )
     closed = close_implementation_loop(
         ImplementationCloseOptions(root=root, loop_id=loop_id, yes=True)
     )
     assert closed.closed is True, closed.blocker
     _git(root, "add", "src/app.py")
+    if rename_source:
+        _git(root, "add", "src/old.py")
+    if untracked_path:
+        _git(root, "add", untracked_path)
     _git(root, "commit", "-m", "finish risk accepted implementation")
 
 
@@ -1629,25 +1744,6 @@ def _write_close_state(
         return
     loop_run.status = LoopStatus.NEEDS_REVIEW
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
-    _write(root, "specs/WI-REVIEW/spec.md", "# Acceptance\n\n- AC-1\n")
-    _write(root, "specs/WI-REVIEW/plan.md", "# Plan\n")
-    _write(root, "specs/WI-REVIEW/tasks.md", "# Tasks\n\n- T11\n")
-    _git(root, "add", "specs/WI-REVIEW")
-    _git(root, "commit", "-m", "add implementation contract")
-    task = ImplementationTaskItem(
-        task_id="T11",
-        required=True,
-        files=["src/app.py"],
-        acceptance=["AC-1"],
-    )
-    store.write_json_artifact(
-        artifacts.tasks_path,
-        ImplementationTasks(
-            loop_id=loop_id,
-            work_item_id="WI-REVIEW",
-            items=[task],
-        ),
-    )
     store.write_json_artifact(
         artifacts.progress_path,
         ImplementationProgress(
