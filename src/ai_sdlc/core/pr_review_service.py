@@ -1866,7 +1866,9 @@ def _is_reviewed_dirty_status(
     if source_kind == DiffSourceKind.LOCAL_STAGED:
         return index_status not in {" ", "?"} and worktree_status == " "
     if source_kind == DiffSourceKind.LOCAL_UNSTAGED:
-        return index_status == " " and worktree_status not in {" ", "?"}
+        return status_xy == "??" or (
+            index_status == " " and worktree_status not in {" ", "?"}
+        )
     return source_kind == DiffSourceKind.PATCH
 
 

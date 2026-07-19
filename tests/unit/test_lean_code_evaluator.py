@@ -309,6 +309,66 @@ def test_non_python_semantic_metrics_fail_closed_without_false_zero(
     assert report.status == LoopStatus.NEEDS_USER
 
 
+def test_accepted_manual_review_closes_unsupported_semantic_boundary(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.ts", "export function value() { return 1; }\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    first = _evaluate(tmp_path, scope=("src/app.ts",), snapshot=snapshot)
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.semantic-capability"
+    )
+    exception = _approved_manual_review_exception(
+        tmp_path, first, snapshot, finding, "EX-UNSUPPORTED"
+    )
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/app.ts",),
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
+
+    retained = next(item for item in report.findings if item.rule_id == finding.rule_id)
+    assert retained.resolution == "waived"
+    assert report.risk_accepted is True
+    assert report.status == LoopStatus.PASSED
+
+
+def test_accepted_manual_review_closes_unknown_classification_boundary(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/runtime.mystery", "opaque\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    first = _evaluate(tmp_path, scope=("src/runtime.mystery",), snapshot=snapshot)
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.classification-unknown"
+    )
+    exception = _approved_manual_review_exception(
+        tmp_path, first, snapshot, finding, "EX-UNKNOWN"
+    )
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/runtime.mystery",),
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
+
+    retained = next(item for item in report.findings if item.rule_id == finding.rule_id)
+    assert retained.resolution == "waived"
+    assert report.risk_accepted is True
+    assert report.status == LoopStatus.PASSED
+
+
 def test_exact_duplicate_function_candidates_increase_combined_risk(
     tmp_path: Path,
 ) -> None:
@@ -2179,6 +2239,29 @@ def _severities(report, rule_id: str) -> set[FindingSeverity]:
         for finding in report.findings
         if finding.rule_id == rule_id
     }
+
+
+def _approved_manual_review_exception(root, report, snapshot, finding, exception_id):
+    evidence_ref = f"evidence/{exception_id}.txt"
+    _write(root, evidence_ref, "independent manual review accepted the boundary\n")
+    return LeanException(
+        exception_id=exception_id,
+        rule_id=finding.rule_id,
+        path=finding.path,
+        stable_signature=finding.stable_signature,
+        reason="An independent reviewer accepted this bounded capability gap.",
+        owner="implementation-owner",
+        approver="quality-owner",
+        evidence_refs=[evidence_ref],
+        evidence_digests={evidence_ref: _file_digest(root / evidence_ref)},
+        scope=[finding.path],
+        policy_digest=stable_artifact_digest(LeanPolicy()),
+        base_commit=snapshot.base_commit,
+        head_commit=snapshot.head_commit,
+        diff_hash=snapshot.diff_hash,
+        evaluation_digest=stable_artifact_digest(report),
+        expires_at="2099-01-01T00:00:00Z",
+    )
 
 
 def _simple_lines(count: int) -> str:

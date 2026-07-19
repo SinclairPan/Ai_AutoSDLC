@@ -226,6 +226,35 @@ def test_pr_review_includes_untracked_files_from_matching_unstaged_source(
     assert "tests/untracked_probe.py" in diff
     assert "print('untracked')" in diff
 
+    closed = close_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.CLOSED, closed.blocker
+
+
+def test_pr_review_blocks_changed_untracked_file_after_unstaged_review(
+    tmp_path: Path,
+) -> None:
+    _seed_lean_loop(
+        tmp_path,
+        "impl-review-untracked-changed",
+        include_untracked=True,
+    )
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-untracked-changed",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    _write(tmp_path, "tests/untracked_probe.py", "print('changed')\n")
+
+    closed = close_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert "changed" in closed.blocker.lower()
+
 
 def test_review_run_detects_lean_report_tamper_at_same_path(tmp_path: Path) -> None:
     _seed_lean_loop(tmp_path, "impl-tamper")

@@ -323,7 +323,9 @@ def _evaluation_status(
     findings: list[LeanFinding],
     policy: LeanPolicy,
 ) -> LoopStatus:
-    if work_type == WorkType.UNCERTAIN or unknown_files or unsupported_files:
+    if work_type == WorkType.UNCERTAIN or _capability_boundary_needs_user(
+        unknown_files, unsupported_files, findings
+    ):
         return LoopStatus.NEEDS_USER
     unresolved = [
         item
@@ -344,6 +346,24 @@ def _evaluation_status(
         if mode == "warning":
             return LoopStatus.NEEDS_FIX
     return LoopStatus.PASSED
+
+
+def _capability_boundary_needs_user(
+    unknown_files: list[str],
+    unsupported_files: list[str],
+    findings: list[LeanFinding],
+) -> bool:
+    accepted = {
+        FindingResolutionStatus.FIXED,
+        FindingResolutionStatus.WAIVED,
+        FindingResolutionStatus.NOT_APPLICABLE,
+    }
+    dispositions = {(item.rule_id, item.path): item.resolution for item in findings}
+    boundaries = [
+        *(("lean.classification-unknown", path) for path in unknown_files),
+        *(("lean.semantic-capability", path) for path in unsupported_files),
+    ]
+    return any(dispositions.get(boundary) not in accepted for boundary in boundaries)
 
 
 def _unresolved_actionable_signatures(current: list[LeanFinding]) -> list[str]:
