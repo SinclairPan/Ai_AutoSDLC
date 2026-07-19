@@ -38,6 +38,23 @@ from ai_sdlc.core.implementation_loop import (
     record_implementation_progress,
     start_implementation_loop,
 )
+from ai_sdlc.core.lean_code_execution import (
+    LeanExecutionOptions,
+    LeanExecutionResult,
+    run_lean_command,
+)
+from ai_sdlc.core.lean_code_regression import (
+    LeanRegressionOptions,
+    LeanRegressionResult,
+    capture_regression_phase,
+)
+from ai_sdlc.core.lean_code_runtime import (
+    LeanCheckOptions,
+    LeanCheckResult,
+    LeanNoGoOptions,
+    record_lean_no_go,
+    run_lean_check,
+)
 from ai_sdlc.core.loop_status import (
     LoopListResult,
     LoopNextActionGuidance,
@@ -351,6 +368,175 @@ def implementation_record(
     )
     _emit_implementation_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != "blocked" else 1)
+
+
+@implementation_app.command(name="lean-check")
+def implementation_lean_check(
+    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
+    diff_source: str = typer.Option(
+        "local-unstaged",
+        "--diff-source",
+        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
+    ),
+    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
+    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Project-local patch file."
+    ),
+    regression_evidence: list[str] = typer.Option(
+        [],
+        "--regression-evidence",
+        help="Project-local structured RED/GREEN JSON artifact. Repeat as needed.",
+    ),
+    exception: list[str] = typer.Option(
+        [],
+        "--exception",
+        help="Project-local structured Lean exception JSON. Repeat as needed.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Run deterministic Lean evaluation without a model or code mutation."""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = run_lean_check(
+        LeanCheckOptions(
+            root=root,
+            loop_id=loop_id,
+            source_kind=diff_source,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            patch_file=patch_file,
+            regression_evidence_paths=tuple(regression_evidence),
+            exception_paths=tuple(exception),
+        )
+    )
+    _emit_lean_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status == "ready" else 1)
+
+
+@implementation_app.command(name="lean-verify")
+def implementation_lean_verify(
+    command: list[str] = typer.Argument(
+        ..., help="Verification argv; place it after -- so no shell is used."
+    ),
+    loop_id: str = typer.Option(..., "--loop-id", help="Implementation loop id."),
+    test_source: str = typer.Option(
+        ..., "--test-source", help="Project-local test or verification source path."
+    ),
+    diff_source: str = typer.Option(
+        "local-unstaged",
+        "--diff-source",
+        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
+    ),
+    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
+    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Project-local patch file."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Execute targeted verification and write a current-diff receipt."""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=tuple(command),
+            test_source_ref=test_source,
+            source_kind=diff_source,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            patch_file=patch_file,
+        )
+    )
+    _emit_controlled_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status == "ready" else 1)
+
+
+@implementation_app.command(name="lean-regression")
+def implementation_lean_regression(
+    command: list[str] = typer.Argument(
+        ..., help="Regression argv; place it after -- so no shell is used."
+    ),
+    loop_id: str = typer.Option(..., "--loop-id", help="Implementation loop id."),
+    phase: str = typer.Option(..., "--phase", help="Capture phase: red or green."),
+    test_id: str = typer.Option(..., "--test-id", help="Stable regression test id."),
+    test_source: str = typer.Option(
+        ..., "--test-source", help="Project-local executable test source."
+    ),
+    failure_signature: str = typer.Option(
+        ..., "--failure-signature", help="Exact assertion signature in RED output."
+    ),
+    test_symbol: str = typer.Option("", "--test-symbol", help="Optional test symbol."),
+    diff_source: str = typer.Option(
+        "local-unstaged",
+        "--diff-source",
+        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
+    ),
+    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
+    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Project-local patch file."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Capture the same regression command failing, then passing after the fix."""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = capture_regression_phase(
+        LeanRegressionOptions(
+            root=root,
+            loop_id=loop_id,
+            phase=phase,
+            test_id=test_id,
+            test_symbol=test_symbol,
+            command_argv=tuple(command),
+            test_source_ref=test_source,
+            failure_signature=failure_signature,
+            source_kind=diff_source,
+            base_ref=base_ref,
+            head_ref=head_ref,
+            patch_file=patch_file,
+        )
+    )
+    _emit_controlled_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status == "ready" else 1)
+
+
+@implementation_app.command(name="lean-no-go")
+def implementation_lean_no_go(
+    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
+    reason: str = typer.Option(
+        ..., "--reason", help="Why repair cost exceeds benefit."
+    ),
+    owner: str = typer.Option(..., "--owner", help="Decision owner."),
+    repair_cost: str = typer.Option(..., "--repair-cost", help="Bounded repair cost."),
+    expected_benefit: str = typer.Option(
+        ..., "--expected-benefit", help="Expected benefit being declined."
+    ),
+    evidence: list[str] = typer.Option(
+        [], "--evidence", help="Project-local evidence path. Repeat as needed."
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Record a structured No-Go without modifying application code."""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = record_lean_no_go(
+        LeanNoGoOptions(
+            root=root,
+            loop_id=loop_id,
+            reason=reason,
+            owner=owner,
+            repair_cost=repair_cost,
+            expected_benefit=expected_benefit,
+            evidence_refs=tuple(evidence),
+        )
+    )
+    _emit_lean_result(result, json_output=json_output)
+    raise typer.Exit(1 if result.status == "blocked" else 0)
 
 
 @implementation_app.command(name="status")
@@ -708,6 +894,44 @@ def _emit_implementation_result(
         for artifact in result.artifacts:
             state = "exists" if artifact.exists else "planned"
             console.print(f"- {artifact.kind}: {artifact.path} ({state})")
+
+
+def _emit_lean_result(result: LeanCheckResult, *, json_output: bool) -> None:
+    payload = result.model_dump(mode="json")
+    if json_output:
+        _emit_payload(payload, json_output=True)
+        return
+    console.print(f"Result: {payload.get('status', '')}")
+    if result.blocker:
+        console.print(f"Blocker: {result.blocker}")
+    console.print(f"Next: {result.next_action or '-'}")
+    console.print(f"Loop ID: {result.loop_id or '-'}")
+    console.print(f"Loop status: {result.loop_status or '-'}")
+    console.print(f"Evaluation round: {result.evaluation_round}")
+    console.print(
+        "Findings: "
+        f"blocker={result.blocker_count}, required={result.required_count}, "
+        f"advisory={result.advisory_count}"
+    )
+    console.print("Model call: no")
+    console.print(f"Writes artifacts: {_yes_no(result.writes_artifacts)}")
+    console.print("Writes code: no")
+    if result.report_path:
+        console.print(f"Report: {result.report_path}")
+
+
+def _emit_controlled_result(
+    result: LeanExecutionResult | LeanRegressionResult, *, json_output: bool
+) -> None:
+    payload = result.model_dump(mode="json")
+    if json_output:
+        _emit_payload(payload, json_output=True)
+        return
+    _emit_header(payload)
+    if payload.get("receipt_path"):
+        console.print(f"Receipt: {payload['receipt_path']}")
+    if payload.get("evidence_path"):
+        console.print(f"Evidence: {payload['evidence_path']}")
 
 
 def _emit_frontend_evidence_result(

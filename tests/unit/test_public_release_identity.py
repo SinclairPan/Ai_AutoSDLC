@@ -2,6 +2,8 @@ from pathlib import Path
 
 from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
+    PUBLIC_DOC_PATHS,
+    REQUIRED_SURFACES,
     scan_paths,
     validate_required_surfaces,
 )
@@ -50,7 +52,9 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
 
     findings = validate_required_surfaces(files)
 
-    assert any(finding.marker == "required-public-surface-missing" for finding in findings)
+    assert any(
+        finding.marker == "required-public-surface-missing" for finding in findings
+    )
     assert not any(finding.path == "README.md" for finding in findings)
 
 
@@ -62,3 +66,9 @@ def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> 
     }
 
     assert scan_paths(tmp_path, files) == []
+
+
+def test_public_identity_does_not_require_release_history_documents() -> None:
+    public_paths = {*PUBLIC_DOC_PATHS, *REQUIRED_SURFACES}
+
+    assert not any(path.startswith("docs/releases/") for path in public_paths)

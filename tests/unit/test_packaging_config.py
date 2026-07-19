@@ -13,7 +13,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_build_system_uses_in_tree_backend() -> None:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
 
     build_system = pyproject["build-system"]
 
@@ -23,7 +25,9 @@ def test_build_system_uses_in_tree_backend() -> None:
 
 
 def test_wheel_force_includes_workitem_markdown_templates() -> None:
-    pyproject = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
 
     force_include = pyproject["tool"]["ai_sdlc"]["packaging"]["force-include"]
 
@@ -63,4 +67,17 @@ def test_sdist_includes_browser_gate_probe_runner_source(
     assert any(
         member.endswith("/scripts/frontend_browser_gate_probe_runner.mjs")
         for member in members
+    )
+
+
+def test_sdist_includes_lean_rule_and_runtime_sources(tmp_path: Path) -> None:
+    sdist_name = packaging_backend.build_sdist(str(tmp_path))
+    sdist_path = tmp_path / sdist_name
+
+    with tarfile.open(sdist_path, "r:gz") as archive:
+        members = set(archive.getnames())
+
+    assert any(member.endswith("/src/ai_sdlc/rules/lean-code.md") for member in members)
+    assert any(
+        member.endswith("/src/ai_sdlc/core/lean_code_runtime.py") for member in members
     )

@@ -400,7 +400,7 @@ class TestRunCommand:
         assert result.exit_code == 2
         assert "Pipeline completed. Stage: close" in result.output
         assert "AgentOps report pending: Enterprise profile" in result.output
-        assert "does not exist" in result.output
+        assert re.search(r"does not ?(?:\r?\n[ ]*)?exist", result.output)
 
     def test_run_project_required_agentops_blocks_when_token_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

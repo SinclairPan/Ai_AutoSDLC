@@ -161,7 +161,9 @@ class SourceAdapterResolution(LoopArtifactModel):
                 or not self.base_commit.strip()
                 or not self.head_commit.strip()
             ):
-                raise ValueError("resolved local-git-range source requires refs and commits")
+                raise ValueError(
+                    "resolved local-git-range source requires refs and commits"
+                )
         elif not (self.blocker.strip() or self.unavailable_reason.strip()):
             raise ValueError("unresolved source requires blocker or unavailable_reason")
         return self
@@ -213,9 +215,7 @@ class ModelResolution(LoopArtifactModel):
             if not self.resolved_model.strip():
                 raise ValueError("resolved model resolution requires resolved_model")
             if self.resolution_source is None:
-                raise ValueError(
-                    "resolved model resolution requires resolution_source"
-                )
+                raise ValueError("resolved model resolution requires resolution_source")
         if self.status != ModelResolutionStatus.RESOLVED:
             if not self.blocker.strip():
                 raise ValueError("unresolved model resolution requires blocker")
@@ -242,13 +242,17 @@ class FindingResolution(LoopArtifactModel):
             or not self.operator.strip()
             or not self.resolved_at.strip()
         ):
-            raise ValueError("fixed findings require evidence_refs, operator, and resolved_at")
+            raise ValueError(
+                "fixed findings require evidence_refs, operator, and resolved_at"
+            )
         if self.status == FindingResolutionStatus.WAIVED and (
             not self.reason.strip()
             or not self.operator.strip()
             or not self.resolved_at.strip()
         ):
-            raise ValueError("waived findings require reason, operator, and resolved_at")
+            raise ValueError(
+                "waived findings require reason, operator, and resolved_at"
+            )
         if self.status == FindingResolutionStatus.NOT_APPLICABLE and (
             not self.reason.strip()
             or not self.operator.strip()
@@ -321,7 +325,9 @@ class ReviewFindings(LoopArtifactModel):
             finding.severity in {FindingSeverity.BLOCKER, FindingSeverity.REQUIRED}
             for finding in self.findings
         ):
-            raise ValueError("clean findings cannot include blocker or required findings")
+            raise ValueError(
+                "clean findings cannot include blocker or required findings"
+            )
         finding_ids = [finding.id for finding in self.findings]
         duplicate_ids = sorted(
             finding_id
@@ -368,6 +374,24 @@ class ReviewPack(LoopArtifactModel):
     code_egress: bool = False
     redaction_report_path: str = ""
     reviewer_allowlist: list[str] = Field(default_factory=list)
+    lean_report_path: str = ""
+    lean_report_digest: str = ""
+    lean_report_markdown_path: str = ""
+    lean_report_markdown_digest: str = ""
+    lean_input_path: str = ""
+    lean_input_digest: str = ""
+    lean_snapshot_path: str = ""
+    lean_snapshot_digest: str = ""
+    lean_findings_path: str = ""
+    lean_findings_digest: str = ""
+    lean_policy_path: str = ""
+    lean_policy_snapshot_digest: str = ""
+    lean_diff_hash: str = ""
+    lean_policy_digest: str = ""
+    lean_implementation_loop_id: str = ""
+    lean_work_item_id: str = ""
+    lean_risk_accepted: bool = False
+    lean_exception_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _require_commit_scope(self) -> ReviewPack:
@@ -466,6 +490,24 @@ class ReviewRun(LoopArtifactModel):
     resolution_path: str = ""
     final_report_path: str = ""
     final_report_digest: str = ""
+    lean_report_path: str = ""
+    lean_report_digest: str = ""
+    lean_report_markdown_path: str = ""
+    lean_report_markdown_digest: str = ""
+    lean_input_path: str = ""
+    lean_input_digest: str = ""
+    lean_snapshot_path: str = ""
+    lean_snapshot_digest: str = ""
+    lean_findings_path: str = ""
+    lean_findings_digest: str = ""
+    lean_policy_path: str = ""
+    lean_policy_snapshot_digest: str = ""
+    lean_diff_hash: str = ""
+    lean_policy_digest: str = ""
+    lean_implementation_loop_id: str = ""
+    lean_work_item_id: str = ""
+    lean_risk_accepted: bool = False
+    lean_exception_ids: list[str] = Field(default_factory=list)
     verdict: ReviewVerdict | None = None
     unresolved_blockers: int = 0
     unresolved_required: int = 0
@@ -513,6 +555,27 @@ class ReviewAttestation(LoopArtifactModel):
     review_pack_path: str
     findings_path: str = ""
     final_report_path: str
+    review_pack_digest: str = ""
+    findings_digest: str = ""
+    final_report_digest: str = ""
+    lean_report_path: str = ""
+    lean_report_digest: str = ""
+    lean_report_markdown_path: str = ""
+    lean_report_markdown_digest: str = ""
+    lean_input_path: str = ""
+    lean_input_digest: str = ""
+    lean_snapshot_path: str = ""
+    lean_snapshot_digest: str = ""
+    lean_findings_path: str = ""
+    lean_findings_digest: str = ""
+    lean_policy_path: str = ""
+    lean_policy_snapshot_digest: str = ""
+    lean_diff_hash: str = ""
+    lean_policy_digest: str = ""
+    lean_implementation_loop_id: str = ""
+    lean_work_item_id: str = ""
+    lean_risk_accepted: bool = False
+    lean_exception_ids: list[str] = Field(default_factory=list)
     ci_may_call_model: bool = False
 
     @field_validator(
@@ -551,12 +614,17 @@ class ReviewAttestation(LoopArtifactModel):
             and self.diff_source.patch_hash
             and self.diff_source_hash != self.diff_source.patch_hash
         ):
-            raise ValueError("review attestation diff_source_hash does not match diff_source")
+            raise ValueError(
+                "review attestation diff_source_hash does not match diff_source"
+            )
         if (
-            DiffSourceKind(self.diff_source.source_kind) != DiffSourceKind.LOCAL_GIT_RANGE
+            DiffSourceKind(self.diff_source.source_kind)
+            != DiffSourceKind.LOCAL_GIT_RANGE
             and not self.diff_source_hash.strip()
         ):
-            raise ValueError("non-git-range review attestation requires diff_source_hash")
+            raise ValueError(
+                "non-git-range review attestation requires diff_source_hash"
+            )
         return self
 
 

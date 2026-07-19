@@ -13,6 +13,7 @@ import yaml
 from pydantic import ValidationError
 
 from ai_sdlc.branch.git_client import GitClient, GitError
+from ai_sdlc.core.lean_code_review import validate_review_run_lean_binding
 from ai_sdlc.core.plan_check import resolve_plan_path_from_wi, run_plan_check
 from ai_sdlc.core.pr_review_models import ReviewFindings, ReviewPack, ReviewRun
 from ai_sdlc.core.pr_review_service import CURRENT_REVIEW_PATH
@@ -51,13 +52,19 @@ REQUIRED_LOG_MARKERS = (
     "任务/计划同步状态",
 )
 DOCS_UNIMPLEMENTED_HINTS = ("未实现前", "未来可能提供")
-COMMIT_STATUS_RE = re.compile(r"(?m)^\s*-\s*\*\*已完成 git 提交\*\*：(?P<value>.+?)\s*$")
+COMMIT_STATUS_RE = re.compile(
+    r"(?m)^\s*-\s*\*\*已完成 git 提交\*\*：(?P<value>.+?)\s*$"
+)
 COMMIT_HASH_RE = re.compile(r"(?m)^\s*-\s*\*\*提交哈希\*\*：(?P<value>.+?)\s*$")
-VERIFICATION_PROFILE_RE = re.compile(r"(?m)^\s*-\s*\*\*验证画像\*\*：(?P<value>.+?)\s*$")
+VERIFICATION_PROFILE_RE = re.compile(
+    r"(?m)^\s*-\s*\*\*验证画像\*\*：(?P<value>.+?)\s*$"
+)
 CHANGED_PATHS_RE = re.compile(r"(?m)^\s*-\s*\*\*改动范围\*\*：(?P<value>.+?)\s*$")
 PATH_TOKEN_RE = re.compile(r"`([^`]+)`|\[([^\]]+)\]\([^)]+\)")
 VerificationCommandRequirement = str | tuple[str, ...]
-VERIFICATION_PROFILE_REQUIRED_COMMANDS: dict[str, tuple[VerificationCommandRequirement, ...]] = {
+VERIFICATION_PROFILE_REQUIRED_COMMANDS: dict[
+    str, tuple[VerificationCommandRequirement, ...]
+] = {
     "docs-only": ("uv run ai-sdlc verify constraints",),
     "rules-only": ("uv run ai-sdlc verify constraints",),
     "truth-only": (
@@ -151,7 +158,9 @@ def _build_frontend_evidence_class_close_check_summary(
 
     svc = program_service or ProgramService(root, manifest_path)
     try:
-        manifest = program_manifest if program_manifest is not None else svc.load_manifest()
+        manifest = (
+            program_manifest if program_manifest is not None else svc.load_manifest()
+        )
     except Exception:
         return ProgramFrontendEvidenceClassStatus(
             has_blocker=True,
@@ -213,7 +222,9 @@ def _build_program_truth_close_check_summary(
 
     svc = program_service or ProgramService(root, manifest_path)
     try:
-        manifest = program_manifest if program_manifest is not None else svc.load_manifest()
+        manifest = (
+            program_manifest if program_manifest is not None else svc.load_manifest()
+        )
     except Exception as exc:
         return {
             "ok": False,
@@ -421,7 +432,9 @@ def _command_requirement_label(requirement: VerificationCommandRequirement) -> s
 
 def _verification_profile_violation(log_text: str) -> str | None:
     batch_text = _latest_batch_text(log_text)
-    profile = _normalize_marker_value(_last_log_marker(VERIFICATION_PROFILE_RE, batch_text))
+    profile = _normalize_marker_value(
+        _last_log_marker(VERIFICATION_PROFILE_RE, batch_text)
+    )
     if not profile:
         return "latest batch missing verification profile"
     required_commands = VERIFICATION_PROFILE_REQUIRED_COMMANDS.get(profile)
@@ -440,7 +453,9 @@ def _verification_profile_violation(log_text: str) -> str | None:
         paths = _changed_paths_from_marker(raw_paths or "")
         if not paths:
             return f"latest batch verification profile {profile} missing changed-path scope"
-        disallowed = [path for path in paths if not _path_allowed_for_docs_profile(path)]
+        disallowed = [
+            path for path in paths if not _path_allowed_for_docs_profile(path)
+        ]
         if disallowed:
             return (
                 f"latest batch verification profile {profile} includes non-doc changes: "
@@ -451,7 +466,9 @@ def _verification_profile_violation(log_text: str) -> str | None:
         paths = _changed_paths_from_marker(raw_paths or "")
         if not paths:
             return "latest batch verification profile truth-only missing changed-path scope"
-        disallowed = [path for path in paths if not _path_allowed_for_truth_profile(path)]
+        disallowed = [
+            path for path in paths if not _path_allowed_for_truth_profile(path)
+        ]
         if disallowed:
             return (
                 "latest batch verification profile truth-only includes non-truth changes: "
@@ -465,7 +482,9 @@ def _git_closure_violation(root: Path, log_text: str) -> str | None:
     commit_status = _last_log_marker(COMMIT_STATUS_RE, log_text)
     commit_hash = _last_log_marker(COMMIT_HASH_RE, log_text)
     if commit_status is None or commit_hash is None:
-        return "task-execution-log.md missing git close-out markers for the latest batch"
+        return (
+            "task-execution-log.md missing git close-out markers for the latest batch"
+        )
     if not commit_status.startswith("是"):
         return "latest batch is not marked as git committed"
     normalized_hash = commit_hash.replace("`", "").strip()
@@ -527,7 +546,10 @@ def _has_uncommitted_changes_excluding_allowed(root: Path) -> bool:
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
         normalized = path.strip().replace("\\", "/")
-        if normalized == "program-manifest.yaml" and _is_truth_snapshot_only_manifest_drift(root):
+        if (
+            normalized == "program-manifest.yaml"
+            and _is_truth_snapshot_only_manifest_drift(root)
+        ):
             continue
         if normalized not in allowed:
             return True
@@ -535,7 +557,10 @@ def _has_uncommitted_changes_excluding_allowed(root: Path) -> bool:
 
 
 def _requires_release_gate(wi_dir: Path) -> bool:
-    return wi_dir.name.startswith("003-") or (wi_dir / RELEASE_GATE_EVIDENCE_FILE).is_file()
+    return (
+        wi_dir.name.startswith("003-")
+        or (wi_dir / RELEASE_GATE_EVIDENCE_FILE).is_file()
+    )
 
 
 def _requires_formal_reviewer_gate(wi_dir: Path) -> bool:
@@ -628,7 +653,9 @@ def run_close_check(
     tasks_file = wi_dir / "tasks.md"
     if not tasks_file.is_file():
         blockers.append(f"BLOCKER: tasks.md not found: {tasks_file}")
-        checks.append({"name": "tasks_completion", "ok": False, "detail": "tasks.md missing"})
+        checks.append(
+            {"name": "tasks_completion", "ok": False, "detail": "tasks.md missing"}
+        )
     else:
         tasks_text = tasks_file.read_text(encoding="utf-8")
         unchecked = _unchecked_tasks_count(tasks_text)
@@ -637,11 +664,15 @@ def run_close_check(
             {
                 "name": "tasks_completion",
                 "ok": tasks_ok,
-                "detail": "all checklist items done" if tasks_ok else f"{unchecked} unchecked item(s)",
+                "detail": "all checklist items done"
+                if tasks_ok
+                else f"{unchecked} unchecked item(s)",
             }
         )
         if not tasks_ok:
-            blockers.append(f"BLOCKER: tasks.md has {unchecked} unchecked checklist item(s).")
+            blockers.append(
+                f"BLOCKER: tasks.md has {unchecked} unchecked checklist item(s)."
+            )
 
     related_plan_path = resolve_plan_path_from_wi(root, wi_dir)
     if related_plan_path is None:
@@ -705,20 +736,30 @@ def run_close_check(
                 + ", ".join(missing)
             )
         review_evidence_ok = "代码审查" in log_text or "review" in log_text.lower()
-        review_gate_detail = "review evidence recorded" if review_evidence_ok else "review evidence missing"
+        review_gate_detail = (
+            "review evidence recorded"
+            if review_evidence_ok
+            else "review evidence missing"
+        )
         formal_review_ok = True
         formal_review_detail = ""
         if _requires_formal_reviewer_gate(wi_dir):
-            gate = evaluate_reviewer_gate(root, wi_dir.name, WorkItemStatus.DEV_REVIEWED)
+            gate = evaluate_reviewer_gate(
+                root, wi_dir.name, WorkItemStatus.DEV_REVIEWED
+            )
             formal_review_ok = gate.outcome == ReviewerGateOutcomeKind.ALLOW
             if not formal_review_ok:
-                checkpoint_label = gate.checkpoint.value if gate.checkpoint is not None else "n/a"
+                checkpoint_label = (
+                    gate.checkpoint.value if gate.checkpoint is not None else "n/a"
+                )
                 formal_review_detail = (
                     f"formal reviewer gate {gate.outcome.value} at {checkpoint_label}: "
                     f"{gate.reason}"
                 )
             else:
-                formal_review_detail = f"formal reviewer gate approved at {gate.checkpoint.value}"
+                formal_review_detail = (
+                    f"formal reviewer gate approved at {gate.checkpoint.value}"
+                )
         review_ok = review_evidence_ok and formal_review_ok
         review_detail = review_gate_detail
         if formal_review_detail:
@@ -760,9 +801,13 @@ def run_close_check(
             }
         )
         if not git_closure_ok:
-            blockers.append(f"BLOCKER: git close-out verification failed: {git_closure_violation}")
+            blockers.append(
+                f"BLOCKER: git close-out verification failed: {git_closure_violation}"
+            )
 
-        traceability = analyze_completion_truth(tasks_text if tasks_file.is_file() else "", log_text)
+        traceability = analyze_completion_truth(
+            tasks_text if tasks_file.is_file() else "", log_text
+        )
         traceability_ok = traceability.ok
         traceability_detail = "planned work matches execution evidence"
         if not traceability_ok:
@@ -829,10 +874,11 @@ def run_close_check(
             frontend_inheritance_status = program_truth_status.get(
                 "frontend_inheritance_status", {}
             )
-            if isinstance(frontend_inheritance_status, dict) and frontend_inheritance_status:
-                check["frontend_inheritance_status"] = dict(
-                    frontend_inheritance_status
-                )
+            if (
+                isinstance(frontend_inheritance_status, dict)
+                and frontend_inheritance_status
+            ):
+                check["frontend_inheritance_status"] = dict(frontend_inheritance_status)
             checks.append(check)
             if not program_truth_ok:
                 blocker = "BLOCKER: program truth unresolved"
@@ -840,12 +886,14 @@ def run_close_check(
                     blocker = f"{blocker}: {program_truth_detail}"
                 blockers.append(blocker)
 
-        frontend_evidence_class_status = _build_frontend_evidence_class_close_check_summary(
-            root,
-            wi_dir,
-            program_service=program_service,
-            program_manifest=program_manifest,
-            program_validation_result=program_validation_result,
+        frontend_evidence_class_status = (
+            _build_frontend_evidence_class_close_check_summary(
+                root,
+                wi_dir,
+                program_service=program_service,
+                program_manifest=program_manifest,
+                program_validation_result=program_validation_result,
+            )
         )
         if frontend_evidence_class_status is not None:
             frontend_evidence_class_ok = not frontend_evidence_class_status.has_blocker
@@ -865,8 +913,7 @@ def run_close_check(
             )
             if not frontend_evidence_class_ok:
                 blockers.append(
-                    "BLOCKER: close-stage unresolved "
-                    f"{frontend_evidence_class_detail}"
+                    f"BLOCKER: close-stage unresolved {frontend_evidence_class_detail}"
                 )
 
     if _requires_release_gate(wi_dir):
@@ -874,7 +921,9 @@ def run_close_check(
         if not release_gate_path.is_file():
             detail = f"{RELEASE_GATE_EVIDENCE_FILE} missing"
             checks.append({"name": "release_gate", "ok": False, "detail": detail})
-            blockers.append(f"BLOCKER: release gate evidence missing: {release_gate_path}")
+            blockers.append(
+                f"BLOCKER: release gate evidence missing: {release_gate_path}"
+            )
         else:
             try:
                 release_gate = load_release_gate_report(release_gate_path)
@@ -903,10 +952,12 @@ def run_close_check(
                     decision_subject=f"release:{wi_dir.name}",
                     evidence_refs=(str(release_gate_path),),
                 )
-                release_governance_ok = (
-                    release_payload["source_closure_status"] == "closed"
-                    and release_payload["decision_result"] in {"allow", "warn"}
-                )
+                release_governance_ok = release_payload[
+                    "source_closure_status"
+                ] == "closed" and release_payload["decision_result"] in {
+                    "allow",
+                    "warn",
+                }
                 checks.append(
                     {
                         "name": "release_governance",
@@ -927,11 +978,13 @@ def run_close_check(
     if verification_governance is not None:
         gate_payload = verification_governance.get("gate_decision_payload", {})
         decision_result = str(gate_payload.get("decision_result", "")).strip().lower()
-        source_closure_status = str(gate_payload.get("source_closure_status", "")).strip().lower()
-        governance_ok = (
-            source_closure_status == "closed"
-            and decision_result in {"allow", "warn"}
+        source_closure_status = (
+            str(gate_payload.get("source_closure_status", "")).strip().lower()
         )
+        governance_ok = source_closure_status == "closed" and decision_result in {
+            "allow",
+            "warn",
+        }
         checks.append(
             {
                 "name": "verification_governance",
@@ -1041,7 +1094,9 @@ def _local_pr_review_close_check_summary(root: Path) -> dict[str, Any]:
 
     verdict = str(review_run.verdict or "")
     final_report = str(review_run.final_report_path or "")
-    final_report_path = _resolve_repo_path(root, final_report) if final_report else Path()
+    final_report_path = (
+        _resolve_repo_path(root, final_report) if final_report else Path()
+    )
     unresolved_blockers = review_run.unresolved_blockers
     unresolved_required = review_run.unresolved_required
     stored_head_commit = review_run.head_commit.strip()
@@ -1122,11 +1177,14 @@ def _local_pr_review_close_check_summary(root: Path) -> dict[str, Any]:
                 "verdict": verdict,
                 "head_commit": stored_head_commit,
             }
-        if current_head != stored_head_commit and not _local_pr_review_artifact_commit_only(
-            root,
-            review_run,
-            stored_head_commit,
-            current_head,
+        if (
+            current_head != stored_head_commit
+            and not _local_pr_review_artifact_commit_only(
+                root,
+                review_run,
+                stored_head_commit,
+                current_head,
+            )
         ):
             return {
                 "name": "local_pr_review",
@@ -1143,8 +1201,7 @@ def _local_pr_review_close_check_summary(root: Path) -> dict[str, Any]:
             }
     if verdict == "risk_accepted":
         detail = (
-            "local PR review risk_accepted; "
-            f"unresolved_required={unresolved_required}"
+            f"local PR review risk_accepted; unresolved_required={unresolved_required}"
         )
     elif verdict == "fully_clean":
         detail = "local PR review fully_clean"
@@ -1173,13 +1230,16 @@ def _local_pr_review_artifact_blocker(root: Path, review_run: ReviewRun) -> str:
     )
     if pack_blocker:
         return pack_blocker
-    return _local_pr_review_artifact_digest_blocker(
+    findings_blocker = _local_pr_review_artifact_digest_blocker(
         root,
         label="findings.json",
         path_text=review_run.findings_path,
         expected_digest=review_run.findings_digest,
         model=ReviewFindings,
     )
+    if findings_blocker:
+        return findings_blocker
+    return validate_review_run_lean_binding(root, review_run)
 
 
 def _local_pr_review_artifact_digest_blocker(
@@ -1232,7 +1292,10 @@ def _local_pr_review_artifact_commit_only(
     changed_paths = [path for path in changed_paths if path]
     if not changed_paths:
         return False
-    return all(_is_current_local_pr_review_artifact_path(path, review_run) for path in changed_paths)
+    return all(
+        _is_current_local_pr_review_artifact_path(path, review_run)
+        for path in changed_paths
+    )
 
 
 def _is_current_local_pr_review_artifact_path(path: str, review_run: ReviewRun) -> bool:
@@ -1240,7 +1303,9 @@ def _is_current_local_pr_review_artifact_path(path: str, review_run: ReviewRun) 
     if not review_id:
         return False
     review_prefix = f".ai-sdlc/reviews/pr/{review_id}/"
-    return path == str(CURRENT_REVIEW_PATH).replace("\\", "/") or path.startswith(review_prefix)
+    return path == str(CURRENT_REVIEW_PATH).replace("\\", "/") or path.startswith(
+        review_prefix
+    )
 
 
 def _resolve_repo_path(root: Path, path_text: str) -> Path:

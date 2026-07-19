@@ -20,6 +20,8 @@ on:
       - "packaging/install_online.ps1"
       - "packaging/offline/**"
       - "scripts/windows_clean_user_e2e.py"
+      - "scripts/windows_lean_code_e2e.py"
+      - "scripts/windows_lean_code_e2e_support.py"
       - "tests/integration/test_github_workflows.py"
 
 permissions:
@@ -426,6 +428,20 @@ jobs:
             --evidence-root $evidenceRoot
           if ($LASTEXITCODE -ne 0) {
             throw "The ConPTY ordinary-user journey failed with exit code $LASTEXITCODE."
+          }
+
+      - name: Run the installed Lean Code user journey
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $projectRoot = Join-Path $env:RUNNER_TEMP "lean-code-unicode-project"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_lean_code_e2e.py" `
+            --cli $env:AI_SDLC_E2E_CLI `
+            --project-root $projectRoot `
+            --evidence-root $evidenceRoot
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installed Lean Code user journey failed with exit code $LASTEXITCODE."
           }
 
       - name: Upload clean online ordinary-user evidence

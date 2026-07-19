@@ -80,6 +80,7 @@ class LoopRound(LoopArtifactModel):
 
     artifact_kind: str = "loop-round"
     round_number: int = Field(ge=1)
+    round_kind: str = "execution"
     input_artifacts: list[str] = Field(default_factory=list)
     output_artifacts: list[str] = Field(default_factory=list)
     command: list[str] = Field(default_factory=list)
@@ -102,6 +103,7 @@ class LoopRun(LoopArtifactModel):
     base_commit: str = ""
     head_commit: str = ""
     work_item_id: str = ""
+    input_digest: str = ""
     current_round: int = 0
     rounds: list[LoopRound] = Field(default_factory=list)
     next_action: str = ""
@@ -109,8 +111,7 @@ class LoopRun(LoopArtifactModel):
     @model_validator(mode="after")
     def _current_round_must_exist(self) -> LoopRun:
         if self.current_round and not any(
-            loop_round.round_number == self.current_round
-            for loop_round in self.rounds
+            loop_round.round_number == self.current_round for loop_round in self.rounds
         ):
             raise ValueError("current_round must reference an existing round")
         return self
@@ -130,6 +131,20 @@ class LoopPolicyProfile(LoopArtifactModel):
     default_close_mode: str = "strict"
     redaction_strictness: str = "fail-closed"
     allowed_omitted_file_policy: str = "needs_user"
+    lean_code_enabled: bool = True
+    lean_enforcement_mode: str = "warning"
+    lean_max_rounds: int = Field(default=2, ge=1, le=2)
+    lean_file_line_budget: int = Field(default=400, ge=1)
+    lean_function_line_budget: int = Field(default=50, ge=1)
+    lean_complexity_budget: int = Field(default=11, ge=1)
+    lean_complexity_delta: int = Field(default=2, ge=1)
+    lean_nesting_budget: int = Field(default=5, ge=1)
+    lean_fan_out_budget: int = Field(default=12, ge=1)
+    lean_fan_out_delta: int = Field(default=3, ge=1)
+    lean_public_caller_minimum: int = Field(default=3, ge=1)
+    lean_generated_files_per_task_budget: int = Field(default=5, ge=1)
+    lean_significant_changed_lines: int = Field(default=20, ge=1)
+    lean_significant_changed_ratio: float = Field(default=0.25, gt=0, le=1)
 
     @field_validator(
         "default_close_mode",
@@ -137,6 +152,7 @@ class LoopPolicyProfile(LoopArtifactModel):
         "allowed_omitted_file_policy",
         "remote_model_policy",
         "high_risk_secret_policy",
+        "lean_enforcement_mode",
     )
     @classmethod
     def _require_policy_values(cls, value: str, info: ValidationInfo) -> str:
@@ -150,6 +166,7 @@ class LoopPolicyProfile(LoopArtifactModel):
                 "allow-with-waiver",
                 "forbid",
             },
+            "lean_enforcement_mode": {"report", "warning", "blocking"},
         }
         allowed = allowed_by_field[info.field_name]
         if value not in allowed:

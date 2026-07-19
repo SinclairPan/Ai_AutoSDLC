@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -16,11 +17,16 @@ from ai_sdlc.core.implementation_models import (
     ImplementationInput,
     ImplementationProgress,
     ImplementationReport,
+    ImplementationTaskItem,
     ImplementationTasks,
     ImplementationVerificationEvidence,
 )
+from ai_sdlc.core.lean_code_identifiers import is_safe_artifact_id
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType, utc_now_iso
+from ai_sdlc.core.loop_policy import load_loop_policy
+from ai_sdlc.core.state_machine import load_work_item, work_item_path
+from ai_sdlc.models.work import WorkType
 
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
@@ -69,9 +75,17 @@ def build_implementation_input(
     work_item_dir: Path,
     design_contract_loop_id: str,
     design_contract_report_path: str,
+    task_items: list[ImplementationTaskItem] | None = None,
 ) -> ImplementationInput:
     """Build a persisted input model from resolved paths."""
 
+    items = list(task_items or [])
+    work_type, quality_profiles = _implementation_quality_profile(
+        root,
+        work_item_dir.name,
+    )
+    scope = list(dict.fromkeys(path for item in items for path in item.files))
+    acceptance = [value for item in items for value in item.acceptance]
     return ImplementationInput(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
@@ -81,7 +95,41 @@ def build_implementation_input(
         tasks_path=repo_relative_path(root, work_item_dir / "tasks.md"),
         design_contract_loop_id=design_contract_loop_id,
         design_contract_report_path=design_contract_report_path,
+        work_type=work_type,
+        quality_profiles=quality_profiles,
+        declared_scope=scope,
+        tasks_digest=implementation_task_items_digest(items),
+        acceptance_digest=_stable_digest(acceptance),
     )
+
+
+def _implementation_quality_profile(
+    root: Path,
+    work_item_id: str,
+) -> tuple[WorkType, list[str]]:
+    path = work_item_path(root, work_item_id)
+    if not path.is_file():
+        return WorkType.UNCERTAIN, []
+    work_item = load_work_item(root, work_item_id)
+    policy = load_loop_policy(root)
+    enabled = policy.lean_code_enabled and work_item.work_type != WorkType.UNCERTAIN
+    return work_item.work_type, ["lean-code"] if enabled else []
+
+
+def _stable_digest(payload: object) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def implementation_task_items_digest(items: list[ImplementationTaskItem]) -> str:
+    """Hash the task content frozen into one Implementation input."""
+
+    return _stable_digest([item.model_dump(mode="json") for item in items])
 
 
 def resolve_loop_id(loop_id: str) -> str:
@@ -97,10 +145,13 @@ def resolve_loop_id(loop_id: str) -> str:
 def validate_explicit_loop_id(loop_id: str) -> str:
     """Validate an explicit implementation loop id for shell-safe rendering."""
 
-    if not _SAFE_EXPLICIT_LOOP_ID.fullmatch(loop_id):
+    if not _SAFE_EXPLICIT_LOOP_ID.fullmatch(loop_id) or not is_safe_artifact_id(
+        loop_id
+    ):
         raise ValueError(
             "explicit loop id may contain only letters, digits, hyphen, and "
-            "underscore, and must start with a letter or digit"
+            "underscore, must start with a letter or digit, and must be a "
+            "portable file name"
         )
     return loop_id
 
@@ -135,7 +186,10 @@ def resolve_implementation_loop_run_path(
         try:
             safe_loop_id = validate_explicit_loop_id(text)
         except ValueError as exc:
-            return root / CURRENT_IMPLEMENTATION_PATH, f"Invalid implementation loop id: {exc}"
+            return (
+                root / CURRENT_IMPLEMENTATION_PATH,
+                f"Invalid implementation loop id: {exc}",
+            )
         return implementation_artifacts(root, safe_loop_id).loop_run_path, ""
     return _current_implementation_loop_run_path(root)
 
@@ -146,7 +200,9 @@ def read_loop_run(path: Path) -> LoopRun:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise ValueError(f"Implementation loop-run.json is not readable: {exc}") from exc
+        raise ValueError(
+            f"Implementation loop-run.json is not readable: {exc}"
+        ) from exc
     try:
         loop_run = LoopRun.model_validate(payload)
     except ValidationError as exc:
@@ -188,7 +244,9 @@ def read_progress(path: Path) -> ImplementationProgress:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise ValueError(f"implementation-progress.json is not readable: {exc}") from exc
+        raise ValueError(
+            f"implementation-progress.json is not readable: {exc}"
+        ) from exc
     try:
         return ImplementationProgress.model_validate(payload)
     except ValidationError as exc:
@@ -235,7 +293,11 @@ def repo_relative_path(root: Path, path: Path) -> str:
     """Render a path relative to the repository root when possible."""
 
     try:
-        return path.resolve(strict=False).relative_to(root.resolve(strict=False)).as_posix()
+        return (
+            path.resolve(strict=False)
+            .relative_to(root.resolve(strict=False))
+            .as_posix()
+        )
     except ValueError:
         return path.as_posix()
 
@@ -257,7 +319,10 @@ def _current_implementation_loop_run_path(root: Path) -> tuple[Path, str]:
     except (json.JSONDecodeError, OSError) as exc:
         return pointer_path, f"Current implementation pointer is malformed: {exc}"
     if not isinstance(payload, dict):
-        return pointer_path, "Current implementation pointer is malformed: root must be an object."
+        return (
+            pointer_path,
+            "Current implementation pointer is malformed: root must be an object.",
+        )
     loop_id = payload.get("loop_id")
     if not isinstance(loop_id, str) or not loop_id.strip():
         return pointer_path, "Current implementation pointer is missing loop_id."
@@ -266,12 +331,18 @@ def _current_implementation_loop_run_path(root: Path) -> tuple[Path, str]:
         return pointer_path, "Current implementation pointer is missing loop_run_path."
     path = Path(path_text)
     if path.is_absolute() or ".." in path.parts:
-        return pointer_path, "Current implementation pointer path must be project-relative."
+        return (
+            pointer_path,
+            "Current implementation pointer path must be project-relative.",
+        )
     candidate = (root / path).resolve(strict=False)
     try:
         candidate.relative_to(root.resolve(strict=False))
     except ValueError:
-        return pointer_path, "Current implementation pointer path must stay within project."
+        return (
+            pointer_path,
+            "Current implementation pointer path must stay within project.",
+        )
     return candidate, ""
 
 
@@ -281,6 +352,7 @@ __all__ = [
     "artifact_ref",
     "build_implementation_input",
     "implementation_artifacts",
+    "implementation_task_items_digest",
     "read_evidence",
     "read_input",
     "read_loop_run",

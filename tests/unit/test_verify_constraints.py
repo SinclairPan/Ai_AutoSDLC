@@ -2264,7 +2264,6 @@ def _copy_release_contract_surfaces(root: Path) -> None:
         "README.md",
         "USER_GUIDE.zh-CN.md",
         "packaging/offline/README.md",
-        "docs/releases/v1.0.0.md",
         "docs/框架自迭代开发与发布约定.md",
         "docs/pull-request-checklist.zh.md",
         ".github/workflows/release-build.yml",
