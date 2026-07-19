@@ -967,7 +967,7 @@ def test_close_blocks_tampered_reviewer_findings(tmp_path) -> None:
     assert result.status == PRReviewCommandStatus.BLOCKED
     assert result.verdict == "blocked"
     assert "findings.json changed" in result.blocker
-    assert "Rerun PR review" in result.next_action
+    assert result.next_action == "Rerun PR review before closing."
 
 
 def test_close_downgrades_incomplete_review_waiver_from_fully_clean(tmp_path) -> None:
@@ -1000,7 +1000,7 @@ def test_close_blocks_tampered_review_pack_policy_decision(tmp_path) -> None:
     assert result.status == PRReviewCommandStatus.BLOCKED
     assert result.verdict == "blocked"
     assert "review-pack.json changed" in result.blocker
-    assert "Rerun PR review" in result.next_action
+    assert result.next_action == "Rerun PR review before closing."
 
 
 def test_close_blocks_when_provider_verdict_is_blocked(tmp_path) -> None:
@@ -2027,7 +2027,9 @@ def test_rerun_blocks_tampered_findings_before_reset(tmp_path) -> None:
 
     assert result.status == PRReviewCommandStatus.BLOCKED
     assert "findings.json changed" in result.blocker
-    assert "Rerun PR review" in result.next_action
+    assert (
+        result.next_action == "Rerun PR review before resetting resolution artifacts."
+    )
 
 
 def test_rerun_blocks_malformed_review_pack(tmp_path) -> None:

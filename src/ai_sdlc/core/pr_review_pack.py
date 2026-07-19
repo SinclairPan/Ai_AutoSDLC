@@ -7,7 +7,7 @@ import hashlib
 import os
 import shlex
 import subprocess
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
 
@@ -15,6 +15,11 @@ from pydantic import BaseModel, ConfigDict
 
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.core.lean_code_review import LeanReviewBinding
+from ai_sdlc.core.lean_code_review_scope import (
+    closed_scope_for_binding,
+    validate_closed_lean_binding,
+)
+from ai_sdlc.core.lean_code_review_scope_models import LEAN_CLOSED_SCOPE_NAME
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopPolicyProfile
 from ai_sdlc.core.loop_policy import (
@@ -243,7 +248,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             next_action="Fix the diff source and rerun local PR review.",
             source_resolution=source_resolution,
         )
-    lean_source_blocker = lean_source_mismatch(
+    lean_binding, lean_source_blocker, lean_scope_decisions = scope_lean_review_binding(
         root,
         options.lean_binding,
         source_resolution,
@@ -259,6 +264,21 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             next_action="Run Lean evaluation for the exact PR review diff source.",
             source_resolution=source_resolution,
         )
+    lean_closed_scope = lean_scope_decisions.pop("lean_closed_scope", None)
+    if lean_closed_scope is not None:
+        scope_path = store.write_json_artifact(
+            review_dir / LEAN_CLOSED_SCOPE_NAME,
+            lean_closed_scope,
+        )
+        lean_scope_decisions.update(
+            {
+                "lean_closed_scope_path": _repo_relative(root, scope_path),
+                "lean_closed_scope_digest": (
+                    f"sha256:{hashlib.sha256(scope_path.read_bytes()).hexdigest()}"
+                ),
+            }
+        )
+    options = replace(options, lean_binding=lean_binding)
     base_commit = source_resolution.base_commit
     head_commit = source_resolution.head_commit
     changed_files = review_input.changed_files
@@ -441,6 +461,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             "allowed_omitted_file_policy": policy.allowed_omitted_file_policy,
             "incomplete_review_waiver": incomplete_decision.waiver_allowed,
             "lean_binding_required": options.lean_binding is not None,
+            **lean_scope_decisions,
             "default_close_mode": policy.default_close_mode,
             "code_egress": options.code_egress,
         },
@@ -508,7 +529,6 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         review_dir / "review-pack.json",
         review_pack,
     )
-
     return _build_result(
         options=options,
         review_dir=review_dir,
@@ -527,6 +547,51 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         model_resolution=model_resolution,
         source_resolution=source_resolution,
     )
+
+
+_LEAN_SOURCE_IDENTITY_MISMATCHES = frozenset(
+    {
+        "Lean source snapshot does not match the PR review diff source kind.",
+        "Lean source snapshot does not match the resolved PR review diff source.",
+        "Lean source snapshot file coverage does not match the PR review diff source.",
+    }
+)
+
+
+def scope_lean_review_binding(
+    root: Path,
+    binding: LeanReviewBinding | None,
+    source: SourceAdapterResolution,
+    reviewed_files: list[str],
+) -> tuple[LeanReviewBinding | None, str, dict[str, object]]:
+    """Bind matching Lean evidence or audit a closed historical mismatch."""
+    if binding is None:
+        return None, "", {"lean_binding_resolution": "not_required"}
+    if binding.implementation_closed:
+        close_blocker = validate_closed_lean_binding(root, binding)
+        if close_blocker:
+            return binding, close_blocker, {}
+    blocker = lean_source_mismatch(root, binding, source, reviewed_files)
+    if not blocker:
+        return binding, "", _lean_scope_decisions("required", binding)
+    if not (
+        binding.implementation_closed and blocker in _LEAN_SOURCE_IDENTITY_MISMATCHES
+    ):
+        return binding, blocker, {}
+    return None, "", _lean_scope_decisions("closed_source_mismatch", binding)
+
+
+def _lean_scope_decisions(
+    resolution: str,
+    binding: LeanReviewBinding,
+) -> dict[str, object]:
+    decisions: dict[str, object] = {"lean_binding_resolution": resolution}
+    if not binding.implementation_closed:
+        decisions["lean_closed_scope_required"] = False
+        return decisions
+    decisions["lean_closed_scope_required"] = True
+    decisions["lean_closed_scope"] = closed_scope_for_binding(binding)
+    return decisions
 
 
 def lean_source_mismatch(
@@ -1060,7 +1125,12 @@ def _clear_stale_run_artifacts(
     *,
     preserve_resolution_history: bool,
 ) -> None:
-    artifact_names = ["resolution.yaml", "fix-plan.md", "final-report.md"]
+    artifact_names = [
+        "resolution.yaml",
+        "fix-plan.md",
+        "final-report.md",
+        LEAN_CLOSED_SCOPE_NAME,
+    ]
     if not preserve_resolution_history:
         artifact_names.append("resolution-history.yaml")
     for name in artifact_names:
@@ -1130,4 +1200,5 @@ __all__ = [
     "decide_incomplete_review_pack",
     "lean_source_mismatch",
     "resolve_review_input_for_source",
+    "scope_lean_review_binding",
 ]

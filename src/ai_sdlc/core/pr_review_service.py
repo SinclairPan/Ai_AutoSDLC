@@ -53,8 +53,8 @@ from ai_sdlc.core.pr_review_pack import (
     analyze_pr_review_redaction,
     build_review_pack,
     decide_incomplete_review_pack,
-    lean_source_mismatch,
     resolve_review_input_for_source,
+    scope_lean_review_binding,
 )
 from ai_sdlc.core.pr_review_provider import (
     MockReviewerFixture,
@@ -435,7 +435,10 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
     )
     review_id = _resolve_review_id(provider_options)
     loop_id = _resolve_loop_id(provider_options)
-    lean_binding, lean_blocker = resolve_lean_review_binding(root)
+    lean_binding, lean_blocker = resolve_lean_review_binding(
+        root,
+        allow_closed_source_mismatch=True,
+    )
     if lean_blocker:
         return PRReviewStartResult(
             status=PRReviewCommandStatus.BLOCKED,
@@ -444,7 +447,7 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
             loop_id=loop_id,
             review_dir=str(LoopArtifactStore(root).review_run_dir(review_id)),
             blocker=lean_blocker,
-            next_action="Run a fresh passed Lean evaluation before local PR review.",
+            next_action=_lean_binding_next_action(lean_blocker),
         )
     provider_blocker = _unsupported_provider_blocker(provider_options.provider_id)
     if provider_blocker:
@@ -633,8 +636,22 @@ def status_pr_review(root: Path) -> PRReviewStatusResult:
             blocker=f"Current review-run.json is malformed: {exc}",
             next_action="Rerun ai-sdlc pr-review start.",
         )
+    lean_blocker = validate_review_run_lean_binding(root.resolve(), review_run)
+    return _status_result(root, review_run_path, review_run, lean_blocker)
+
+
+def _status_result(
+    root: Path,
+    review_run_path: Path,
+    review_run: ReviewRun,
+    blocker: str,
+) -> PRReviewStatusResult:
     return PRReviewStatusResult(
-        status=_status_from_loop_status(review_run.status),
+        status=(
+            PRReviewCommandStatus.BLOCKED
+            if blocker
+            else _status_from_loop_status(review_run.status)
+        ),
         review_id=review_run.review_id,
         loop_id=review_run.loop_id,
         review_run_path=str(review_run_path),
@@ -648,8 +665,24 @@ def status_pr_review(root: Path) -> PRReviewStatusResult:
         unresolved_blockers=review_run.unresolved_blockers,
         unresolved_required=review_run.unresolved_required,
         unresolved_advisory=review_run.unresolved_advisory,
-        next_action=review_run.next_action,
+        blocker=blocker,
+        next_action=_lean_binding_next_action(blocker)
+        if blocker
+        else review_run.next_action,
     )
+
+
+def _lean_binding_next_action(
+    blocker: str,
+    fallback: str = "Run a fresh passed Lean evaluation before local PR review.",
+) -> str:
+    if "Closed Lean review scope" in blocker:
+        return "Rerun PR review to rebuild the frozen review scope."
+    if "Implementation close" in blocker:
+        return "Restore the frozen Implementation close artifacts before PR review."
+    if "lean" in blocker.lower():
+        return "Run a fresh passed Lean evaluation before local PR review."
+    return fallback
 
 
 def fix_pr_review(
@@ -881,7 +914,10 @@ def rerun_pr_review(
             provider_id=review_run.provider_id,
             review_id=review_run.review_id,
             blocker=tamper_blocker,
-            next_action="Rerun PR review before resetting resolution artifacts.",
+            next_action=_lean_binding_next_action(
+                tamper_blocker,
+                "Rerun PR review before resetting resolution artifacts.",
+            ),
         )
 
     try:
@@ -1182,7 +1218,10 @@ def close_pr_review(
             unresolved_required=review_run.unresolved_required,
             unresolved_advisory=review_run.unresolved_advisory,
             blocker=tamper_blocker,
-            next_action="Rerun PR review before closing.",
+            next_action=_lean_binding_next_action(
+                tamper_blocker,
+                "Rerun PR review before closing.",
+            ),
         )
 
     if (
@@ -1451,7 +1490,10 @@ def attest_pr_review(root: Path) -> PRReviewAttestResult:
             review_id=review_run.review_id,
             loop_id=review_run.loop_id,
             blocker=tamper_blocker,
-            next_action="Rerun local PR review before writing review attestation.",
+            next_action=_lean_binding_next_action(
+                tamper_blocker,
+                "Rerun local PR review before writing review attestation.",
+            ),
         )
     try:
         current_head = _resolved_reviewed_head_commit(resolved_root, review_run)
@@ -2036,9 +2078,12 @@ def _preview(
     provider_options = _normalize_provider_options(
         _apply_policy_provider_default(options, policy)
     )
-    lean_binding, lean_blocker = resolve_lean_review_binding(root)
+    lean_binding, lean_blocker = resolve_lean_review_binding(
+        root,
+        allow_closed_source_mismatch=True,
+    )
     if not lean_blocker:
-        lean_blocker = lean_source_mismatch(
+        lean_binding, lean_blocker, _scope_decisions = scope_lean_review_binding(
             root,
             lean_binding,
             source_resolution,
@@ -2056,7 +2101,7 @@ def _preview(
             checks,
             PRReviewCommandStatus.BLOCKED,
             lean_blocker,
-            "Run a fresh passed Lean evaluation for the exact PR review diff source.",
+            _lean_binding_next_action(lean_blocker),
             None,
             None,
             source_resolution,

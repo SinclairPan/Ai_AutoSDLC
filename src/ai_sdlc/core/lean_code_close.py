@@ -54,10 +54,19 @@ class _LeanChain:
     evaluation_input: LeanEvaluationInput
 
 
-def validate_lean_close(root: Path, loop_id: str) -> str:
+def validate_lean_close(
+    root: Path,
+    loop_id: str,
+    *,
+    require_fresh_source: bool = True,
+) -> str:
     """Return empty only when the complete Lean chain is fresh and closable."""
 
-    chain, issue = _validated_chain(root.resolve(), loop_id)
+    chain, issue = _validated_chain(
+        root.resolve(),
+        loop_id,
+        require_fresh_source=require_fresh_source,
+    )
     if issue or chain is None:
         return issue
     report = chain.report
@@ -77,7 +86,12 @@ def validate_lean_integrity(root: Path, loop_id: str) -> str:
     return issue
 
 
-def _validated_chain(root: Path, loop_id: str) -> tuple[_LeanChain | None, str]:
+def _validated_chain(
+    root: Path,
+    loop_id: str,
+    *,
+    require_fresh_source: bool = True,
+) -> tuple[_LeanChain | None, str]:
     loaded = _implementation_input(root, loop_id)
     if isinstance(loaded, str):
         return None, loaded
@@ -110,9 +124,10 @@ def _validated_chain(root: Path, loop_id: str) -> tuple[_LeanChain | None, str]:
             return None, issue
     if stable_artifact_digest(current_policy) != chain.report.policy_digest:
         return None, "Lean report is stale: policy digest changed."
-    freshness = revalidate_source_snapshot(root, chain.snapshot)
-    if not freshness.fresh:
-        return None, f"Lean report is stale: {freshness.reason}."
+    if require_fresh_source:
+        freshness = revalidate_source_snapshot(root, chain.snapshot)
+        if not freshness.fresh:
+            return None, f"Lean report is stale: {freshness.reason}."
     return chain, ""
 
 
@@ -176,9 +191,12 @@ def _binding_issue(root: Path, chain: _LeanChain) -> str:
 
 def _identity_binding_issue(root: Path, chain: _LeanChain) -> str:
     report, value = chain.report, chain.evaluation_input
+    if chain.pointer.artifact_kind != "lean-code-current-pointer":
+        return "Lean current pointer artifact kind is invalid."
     if (
         len(
             {
+                chain.pointer.loop_id,
                 report.loop_id,
                 value.loop_id,
                 chain.findings.loop_id,
@@ -201,7 +219,8 @@ def _identity_binding_issue(root: Path, chain: _LeanChain) -> str:
     if report.evaluation_profile != value.evaluation_profile:
         return "Lean evaluation profile does not match the input."
     if (
-        report.evaluation_round != value.evaluation_round
+        chain.pointer.evaluation_round != report.evaluation_round
+        or report.evaluation_round != value.evaluation_round
         or report.evaluation_round != chain.findings.evaluation_round
     ):
         return "Lean evaluation round does not match across the artifact chain."
@@ -224,7 +243,11 @@ def _source_binding_issue(chain: _LeanChain) -> str:
     report, value, snapshot = chain.report, chain.evaluation_input, chain.snapshot
     if stable_artifact_digest(snapshot) != report.source_snapshot_digest:
         return "Lean source snapshot digest does not match the report."
-    if report.diff_hash != snapshot.diff_hash or report.diff_hash != value.diff_hash:
+    if (
+        chain.pointer.diff_hash != report.diff_hash
+        or report.diff_hash != snapshot.diff_hash
+        or report.diff_hash != value.diff_hash
+    ):
         return "Lean diff hash does not match the artifact chain."
     identities = (
         (value.base_ref, snapshot.base_ref),

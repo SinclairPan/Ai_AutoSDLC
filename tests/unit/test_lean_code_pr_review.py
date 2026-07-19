@@ -8,13 +8,20 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from ai_sdlc.core.close_check import _local_pr_review_artifact_blocker
+from ai_sdlc.core.implementation_loop import close_implementation_loop
 from ai_sdlc.core.implementation_models import (
     CURRENT_IMPLEMENTATION_PATH,
+    ImplementationClose,
+    ImplementationCloseOptions,
     ImplementationCurrentPointer,
     ImplementationInput,
     ImplementationProgress,
+    ImplementationTaskItem,
     ImplementationTaskProgress,
+    ImplementationTasks,
     ImplementationTaskStatus,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
@@ -25,10 +32,15 @@ from ai_sdlc.core.lean_code_review import (
     resolve_lean_review_binding,
     validate_review_run_lean_binding,
 )
+from ai_sdlc.core.lean_code_review_scope_models import (
+    IMPLEMENTATION_CLOSE_PROOF_NAME,
+    LEAN_CLOSED_SCOPE_NAME,
+    ClosedLeanReviewScope,
+)
 from ai_sdlc.core.lean_code_runtime import LeanCheckOptions, run_lean_check
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
-from ai_sdlc.core.pr_review_models import ReviewAttestation, ReviewRun
+from ai_sdlc.core.pr_review_models import ReviewAttestation, ReviewPack, ReviewRun
 from ai_sdlc.core.pr_review_pack import ReviewPackBuildOptions, build_review_pack
 from ai_sdlc.core.pr_review_provider import MockReviewerFixture
 from ai_sdlc.core.pr_review_service import (
@@ -38,6 +50,7 @@ from ai_sdlc.core.pr_review_service import (
     close_pr_review,
     doctor_pr_review,
     start_pr_review,
+    status_pr_review,
 )
 from ai_sdlc.models.work import WorkType
 
@@ -128,6 +141,545 @@ def test_pr_review_preview_blocks_stale_lean_report(tmp_path: Path) -> None:
     assert doctor.status == PRReviewCommandStatus.BLOCKED
     assert "lean" in dry_run.blocker.lower()
     assert doctor.blocker == dry_run.blocker
+
+
+def test_closed_implementation_does_not_bind_later_pr_review(tmp_path: Path) -> None:
+    loop_id = "impl-closed-before-later-review"
+    _seed_lean_loop(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    loop_run = LoopRun.model_validate_json(
+        artifacts.loop_run_path.read_text(encoding="utf-8")
+    )
+    loop_run.status = LoopStatus.CLOSED
+    LoopArtifactStore(tmp_path).write_json_artifact(
+        artifacts.loop_run_path,
+        loop_run,
+    )
+    missing_binding, missing_close_blocker = resolve_lean_review_binding(
+        tmp_path,
+        allow_closed_source_mismatch=True,
+    )
+    assert missing_binding is None
+    assert "closed state" in missing_close_blocker
+
+    _write_close_state(tmp_path, loop_id)
+    matching_binding, blocker = resolve_lean_review_binding(
+        tmp_path,
+        allow_closed_source_mismatch=True,
+    )
+    matching_pack = build_review_pack(
+        ReviewPackBuildOptions(
+            root=tmp_path,
+            base_ref="",
+            diff_source="local-unstaged",
+            review_id="review-closed-implementation",
+            loop_id="pr-loop-closed-implementation",
+            requested_provider="local-agent",
+            current_model="gpt-test",
+            lean_binding=matching_binding,
+        )
+    )
+    assert blocker == ""
+    assert matching_binding is not None
+    assert matching_pack.status == "ready"
+    assert matching_pack.review_pack is not None
+    assert matching_pack.review_pack.lean_report_path == matching_binding.report_path
+
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "finish implementation")
+    _write(tmp_path, "README.md", "# Later documentation change\n")
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-after-closed-implementation",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    review_run = ReviewRun.model_validate_json(
+        (Path(started.review_dir) / "review-run.json").read_text(encoding="utf-8")
+    )
+    assert review_run.lean_report_path == ""
+    pack = ReviewPack.model_validate_json(
+        (tmp_path / review_run.review_pack_path).read_text(encoding="utf-8")
+    )
+    assert pack.policy_decisions["lean_binding_resolution"] == (
+        "closed_source_mismatch"
+    )
+    closed_scope = ClosedLeanReviewScope.model_validate_json(
+        (tmp_path / review_run.review_pack_path)
+        .with_name(LEAN_CLOSED_SCOPE_NAME)
+        .read_text(encoding="utf-8")
+    )
+    assert closed_scope.close.digest
+    assert closed_scope.implementation_report.digest
+    assert closed_scope.lean_pointer.digest
+    assert validate_review_run_lean_binding(tmp_path, review_run) == ""
+
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.CLOSED, closed.blocker
+    assert attested.status == PRReviewCommandStatus.READY, attested.blocker
+
+
+def test_closed_scope_rejects_noncanonical_close_report(tmp_path: Path) -> None:
+    loop_id = "impl-forged-close-report"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id, report_path="README.md")
+
+    binding, blocker = resolve_lean_review_binding(
+        tmp_path,
+        allow_closed_source_mismatch=True,
+    )
+
+    assert binding is None
+    assert "report_path" in blocker
+
+
+def test_closed_scope_keeps_snapshot_integrity_errors_blocking(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-closed-snapshot-tamper"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    binding, blocker = resolve_lean_review_binding(
+        tmp_path,
+        allow_closed_source_mismatch=True,
+    )
+    assert blocker == ""
+    assert binding is not None
+    snapshot = tmp_path / binding.snapshot_path
+    snapshot.write_text(snapshot.read_text("utf-8") + "\n", encoding="utf-8")
+
+    result = build_review_pack(
+        ReviewPackBuildOptions(
+            root=tmp_path,
+            base_ref="",
+            diff_source="local-unstaged",
+            review_id="review-closed-snapshot-tamper",
+            loop_id="pr-loop-closed-snapshot-tamper",
+            requested_provider="local-agent",
+            current_model="gpt-test",
+            lean_binding=binding,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "digest" in result.blocker.lower()
+
+
+def test_matching_closed_review_rechecks_frozen_close_digest(tmp_path: Path) -> None:
+    loop_id = "impl-matching-close-digest"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-matching-close-digest",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    first_closed = close_pr_review(tmp_path)
+    first_attested = attest_pr_review(tmp_path)
+    assert first_closed.status == PRReviewCommandStatus.CLOSED
+    assert first_attested.status == PRReviewCommandStatus.READY
+    review_run = ReviewRun.model_validate_json(
+        (Path(started.review_dir) / "review-run.json").read_text(encoding="utf-8")
+    )
+    assert review_run.lean_report_path
+    close_path = implementation_artifacts(tmp_path, loop_id).close_path
+    close_payload = json.loads(close_path.read_text(encoding="utf-8"))
+    close_payload["closed_by"] = "changed-after-review"
+    close_path.write_text(json.dumps(close_payload), encoding="utf-8")
+
+    status = status_pr_review(tmp_path)
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert status.status == PRReviewCommandStatus.BLOCKED
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert attested.status == PRReviewCommandStatus.BLOCKED
+    assert "close" in closed.blocker.lower()
+    assert "digest" in closed.blocker.lower()
+    assert "restore" in status.next_action.lower()
+    assert status.next_action == closed.next_action == attested.next_action
+
+
+def test_matching_closed_review_rechecks_implementation_report_digest(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-matching-implementation-report"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-matching-implementation-report",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    report_path = implementation_artifacts(tmp_path, loop_id).report_json_path
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["next_action"] = "changed after review"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    closed = close_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert "implementation report" in closed.blocker.lower()
+    assert "digest" in closed.blocker.lower()
+
+
+def test_historical_review_rechecks_complete_closed_evidence_chain(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-historical-complete-chain"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    binding, blocker = resolve_lean_review_binding(
+        tmp_path,
+        allow_closed_source_mismatch=True,
+    )
+    assert blocker == ""
+    assert binding is not None
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "finish implementation")
+    _write(tmp_path, "README.md", "# Later documentation change\n")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-historical-complete-chain",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    markdown_report = tmp_path / binding.report_markdown_path
+    markdown_report.write_text(
+        markdown_report.read_text(encoding="utf-8") + "\nchanged after review\n",
+        encoding="utf-8",
+    )
+
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert attested.status == PRReviewCommandStatus.BLOCKED
+    assert "markdown report" in closed.blocker.lower()
+    assert "digest" in closed.blocker.lower()
+
+
+def test_historical_review_rechecks_implementation_report_digest(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-historical-implementation-report"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "finish implementation")
+    _write(tmp_path, "README.md", "# Later documentation change\n")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-historical-implementation-report",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    report_path = implementation_artifacts(tmp_path, loop_id).report_json_path
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["next_action"] = "changed after review"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert attested.status == PRReviewCommandStatus.BLOCKED
+    assert "implementation report" in closed.blocker.lower()
+    assert "digest" in closed.blocker.lower()
+
+
+def test_legacy_closed_implementation_is_scoped_on_first_later_review(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-legacy-close-scope"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    _downgrade_close_to_legacy(tmp_path, loop_id)
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "finish implementation")
+    _write(tmp_path, "README.md", "# Later documentation change\n")
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-legacy-close-scope",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    review_run = ReviewRun.model_validate_json(
+        (Path(started.review_dir) / "review-run.json").read_text(encoding="utf-8")
+    )
+    scope_path = (tmp_path / review_run.review_pack_path).with_name(
+        LEAN_CLOSED_SCOPE_NAME
+    )
+    assert ClosedLeanReviewScope.model_validate_json(scope_path.read_text("utf-8"))
+    report = json.loads(artifacts.report_json_path.read_text(encoding="utf-8"))
+    report["next_action"] = "changed after review"
+    artifacts.report_json_path.write_text(json.dumps(report), encoding="utf-8")
+
+    closed = close_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert "implementation report" in closed.blocker.lower()
+    assert "digest" in closed.blocker.lower()
+
+
+def test_legacy_close_rejects_report_for_a_different_work_item(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-legacy-work-item-mismatch"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    _downgrade_close_to_legacy(tmp_path, loop_id)
+    report = json.loads(artifacts.report_json_path.read_text(encoding="utf-8"))
+    report["work_item_id"] = "WI-DIFFERENT"
+    artifacts.report_json_path.write_text(json.dumps(report), encoding="utf-8")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "finish implementation")
+    _write(tmp_path, "README.md", "# Later documentation change\n")
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-legacy-work-item-mismatch",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.BLOCKED
+    assert "work item" in started.blocker.lower()
+
+
+def test_legacy_close_drift_recommends_restoring_close_artifacts(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-legacy-close-drift"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    _downgrade_close_to_legacy(tmp_path, loop_id)
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "finish implementation")
+    _write(tmp_path, "README.md", "# Later documentation change\n")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-legacy-close-drift",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    assert close_pr_review(tmp_path).status == PRReviewCommandStatus.CLOSED
+    assert attest_pr_review(tmp_path).status == PRReviewCommandStatus.READY
+    close = json.loads(artifacts.close_path.read_text(encoding="utf-8"))
+    close["closed_by"] = "changed after review"
+    artifacts.close_path.write_text(json.dumps(close), encoding="utf-8")
+
+    status = status_pr_review(tmp_path)
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert status.status == PRReviewCommandStatus.BLOCKED
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert attested.status == PRReviewCommandStatus.BLOCKED
+    assert "implementation close" in status.blocker.lower()
+    assert "restore" in status.next_action.lower()
+    assert status.next_action == closed.next_action == attested.next_action
+
+
+def test_current_close_requires_its_recorded_proof(tmp_path: Path) -> None:
+    loop_id = "impl-current-close-proof-required"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME).unlink()
+    _remove_close_proof_marker(tmp_path, loop_id)
+    report = json.loads(artifacts.report_json_path.read_text(encoding="utf-8"))
+    report["evidence_count"] = 999
+    artifacts.report_json_path.write_text(json.dumps(report), encoding="utf-8")
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-current-close-proof-required",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.BLOCKED
+    assert "close proof" in started.blocker.lower()
+    assert "missing" in started.blocker.lower()
+    assert "restore" in started.next_action.lower()
+
+
+def test_closed_scope_rejects_pointer_identity_mismatch(tmp_path: Path) -> None:
+    loop_id = "impl-pointer-identity-mismatch"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    pointer_path = (
+        implementation_artifacts(tmp_path, loop_id).loop_dir / "lean/current.json"
+    )
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["diff_hash"] = f"sha256:{'0' * 64}"
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-pointer-identity-mismatch",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.BLOCKED
+    assert "diff hash" in started.blocker.lower()
+
+
+def test_closed_scope_uses_sidecars_without_changing_schema_v1_shapes(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-schema-v1-sidecars"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    artifacts = implementation_artifacts(tmp_path, loop_id)
+    close = json.loads(artifacts.close_path.read_text(encoding="utf-8"))
+    assert "report_digest" not in close
+    assert "work_item_id" not in close
+    assert close["created_by"] == "ai-sdlc+implementation-close-proof-v1"
+    proof_path = artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME)
+    assert proof_path.exists()
+    loop_run = LoopRun.model_validate_json(
+        artifacts.loop_run_path.read_text(encoding="utf-8")
+    )
+    execution_round = next(
+        item for item in loop_run.rounds if item.round_kind == "execution"
+    )
+    assert (
+        proof_path.relative_to(tmp_path).as_posix() in execution_round.output_artifacts
+    )
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-schema-v1-sidecars",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    pack_path = Path(started.review_dir) / "review-pack.json"
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    assert "lean_closed_scope" not in pack
+    assert pack_path.with_name(LEAN_CLOSED_SCOPE_NAME).exists()
+    assert pack["policy_decisions"]["lean_closed_scope_path"].endswith(
+        LEAN_CLOSED_SCOPE_NAME
+    )
+    assert pack["policy_decisions"]["lean_closed_scope_digest"].startswith("sha256:")
+
+
+def test_closed_review_rechecks_scope_sidecar_digest(tmp_path: Path) -> None:
+    loop_id = "impl-scope-sidecar-digest"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-scope-sidecar-digest",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    scope_path = Path(started.review_dir) / LEAN_CLOSED_SCOPE_NAME
+    scope_path.write_text(
+        scope_path.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+
+    status = status_pr_review(tmp_path)
+    closed = close_pr_review(tmp_path)
+
+    assert status.status == PRReviewCommandStatus.BLOCKED
+    assert "scope digest" in status.blocker.lower()
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert "scope digest" in closed.blocker.lower()
+    assert "rerun" in status.next_action.lower()
+    assert status.next_action == closed.next_action
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "expected"),
+    [
+        ("artifact_kind", "wrong-close-kind", "artifact kind"),
+        ("closed_at", "", "closed_at"),
+        ("closed_by", "", "closed_by"),
+        ("next_loop_type", "requirement", "next loop"),
+    ],
+)
+def test_closed_scope_rejects_invalid_close_semantics(
+    tmp_path: Path,
+    field: str,
+    value: str,
+    expected: str,
+) -> None:
+    loop_id = f"impl-invalid-close-{field.replace('_', '-')}"
+    _seed_lean_loop(tmp_path, loop_id)
+    _write_close_state(tmp_path, loop_id)
+    close_path = implementation_artifacts(tmp_path, loop_id).close_path
+    _downgrade_close_to_legacy(tmp_path, loop_id)
+    close = json.loads(close_path.read_text(encoding="utf-8"))
+    close[field] = value
+    close_path.write_text(json.dumps(close), encoding="utf-8")
+
+    binding, blocker = resolve_lean_review_binding(
+        tmp_path,
+        allow_closed_source_mismatch=True,
+    )
+
+    assert binding is None
+    assert expected in blocker.lower()
 
 
 def test_pr_review_preview_blocks_different_lean_diff_source(tmp_path: Path) -> None:
@@ -761,6 +1313,100 @@ def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:
         LeanCheckOptions(root=root, loop_id=loop_id, exception_paths=(exception_ref,))
     )
     assert second.status == "ready", second
+
+
+def _write_close_state(
+    root: Path,
+    loop_id: str,
+    *,
+    report_path: str = "",
+) -> None:
+    artifacts = implementation_artifacts(root, loop_id)
+    loop_run = LoopRun.model_validate_json(
+        artifacts.loop_run_path.read_text(encoding="utf-8")
+    )
+    store = LoopArtifactStore(root)
+    if report_path:
+        loop_run.status = LoopStatus.CLOSED
+        store.write_json_artifact(artifacts.loop_run_path, loop_run)
+        store.write_json_artifact(
+            artifacts.close_path,
+            ImplementationClose(loop_id=loop_id, report_path=report_path),
+        )
+        return
+    loop_run.status = LoopStatus.NEEDS_REVIEW
+    store.write_json_artifact(artifacts.loop_run_path, loop_run)
+    _write(root, "specs/WI-REVIEW/spec.md", "# Acceptance\n\n- AC-1\n")
+    _write(root, "specs/WI-REVIEW/plan.md", "# Plan\n")
+    _write(root, "specs/WI-REVIEW/tasks.md", "# Tasks\n\n- T11\n")
+    _git(root, "add", "specs/WI-REVIEW")
+    _git(root, "commit", "-m", "add implementation contract")
+    task = ImplementationTaskItem(
+        task_id="T11",
+        required=True,
+        files=["src/app.py"],
+        acceptance=["AC-1"],
+    )
+    store.write_json_artifact(
+        artifacts.tasks_path,
+        ImplementationTasks(
+            loop_id=loop_id,
+            work_item_id="WI-REVIEW",
+            items=[task],
+        ),
+    )
+    store.write_json_artifact(
+        artifacts.progress_path,
+        ImplementationProgress(
+            loop_id=loop_id,
+            work_item_id="WI-REVIEW",
+            tasks=[
+                ImplementationTaskProgress(
+                    task_id="T11",
+                    status=ImplementationTaskStatus.DONE,
+                    evidence=["src/app.py"],
+                )
+            ],
+        ),
+    )
+    refreshed = run_lean_check(LeanCheckOptions(root=root, loop_id=loop_id))
+    assert refreshed.status == "ready", refreshed.blocker
+    closed = close_implementation_loop(
+        ImplementationCloseOptions(root=root, loop_id=loop_id, yes=True)
+    )
+    assert closed.closed is True, closed.blocker
+
+
+def _downgrade_close_to_legacy(root: Path, loop_id: str) -> None:
+    artifacts = implementation_artifacts(root, loop_id)
+    proof_path = artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME)
+    proof_path.unlink()
+    loop_run = LoopRun.model_validate_json(
+        artifacts.loop_run_path.read_text(encoding="utf-8")
+    )
+    proof_ref = proof_path.relative_to(root).as_posix()
+    execution_round = next(
+        item for item in loop_run.rounds if item.round_kind == "execution"
+    )
+    execution_round.output_artifacts.remove(proof_ref)
+    LoopArtifactStore(root).write_json_artifact(artifacts.loop_run_path, loop_run)
+    close = json.loads(artifacts.close_path.read_text(encoding="utf-8"))
+    close["created_by"] = "ai-sdlc"
+    artifacts.close_path.write_text(json.dumps(close), encoding="utf-8")
+
+
+def _remove_close_proof_marker(root: Path, loop_id: str) -> None:
+    artifacts = implementation_artifacts(root, loop_id)
+    proof_path = artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME)
+    loop_run = LoopRun.model_validate_json(
+        artifacts.loop_run_path.read_text(encoding="utf-8")
+    )
+    proof_ref = proof_path.relative_to(root).as_posix()
+    execution_round = next(
+        item for item in loop_run.rounds if item.round_kind == "execution"
+    )
+    execution_round.output_artifacts.remove(proof_ref)
+    LoopArtifactStore(root).write_json_artifact(artifacts.loop_run_path, loop_run)
 
 
 def _init_repo(root: Path) -> None:

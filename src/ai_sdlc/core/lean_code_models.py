@@ -340,7 +340,7 @@ class LeanNoGoDecision(LoopArtifactModel):
         "evidence_refs",
     )
     @classmethod
-    def _require_no_go_value(cls, value):
+    def _require_no_go_value(cls, value: object) -> object:
         if not value or (isinstance(value, str) and not value.strip()):
             raise ValueError("Lean No-Go field must not be empty")
         return value

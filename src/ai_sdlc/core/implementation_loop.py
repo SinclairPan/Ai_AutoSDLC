@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from pathlib import Path
 
@@ -60,6 +61,12 @@ from ai_sdlc.core.implementation_store import (
     read_report as read_implementation_report,
 )
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
+from ai_sdlc.core.lean_code_review_scope_models import (
+    IMPLEMENTATION_CLOSE_PROOF_CREATOR,
+    IMPLEMENTATION_CLOSE_PROOF_NAME,
+    FrozenArtifact,
+    ImplementationCloseProof,
+)
 from ai_sdlc.core.lean_code_runtime import validate_lean_close
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import (
@@ -462,6 +469,7 @@ def _write_close(
     )
     close = ImplementationClose(
         loop_id=loop_run.loop_id,
+        created_by=IMPLEMENTATION_CLOSE_PROOF_CREATOR,
         closed_by=closed_by.strip() or "local-user",
         report_path=repo_relative_path(root, artifacts.report_json_path),
         required_task_count=report.required_task_count,
@@ -473,10 +481,7 @@ def _write_close(
     execution_round = _execution_round(loop_run)
     if execution_round is not None:
         execution_round.status = LoopStatus.CLOSED
-        execution_round.output_artifacts = append_unique(
-            execution_round.output_artifacts,
-            repo_relative_path(root, artifacts.close_path),
-        )
+        _record_close_outputs(root, execution_round, artifacts)
         execution_round.next_action = loop_run.next_action
     _persist_close_artifacts(root, artifacts, report, close, loop_run)
     return _result_from_report(
@@ -487,6 +492,22 @@ def _write_close(
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
     )
+
+
+def _record_close_outputs(
+    root: Path,
+    execution_round: LoopRound,
+    artifacts: ImplementationArtifacts,
+) -> None:
+    paths = (
+        artifacts.close_path,
+        artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME),
+    )
+    for path in paths:
+        execution_round.output_artifacts = append_unique(
+            execution_round.output_artifacts,
+            repo_relative_path(root, path),
+        )
 
 
 def _persist_close_artifacts(
@@ -502,7 +523,34 @@ def _persist_close_artifacts(
         artifacts.report_md_path, _render_report_markdown(report)
     )
     store.write_json_artifact(artifacts.close_path, close)
+    store.write_json_artifact(
+        artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME),
+        _close_proof(root, artifacts, report),
+    )
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
+
+
+def _close_proof(
+    root: Path,
+    artifacts: ImplementationArtifacts,
+    report: ImplementationReport,
+) -> ImplementationCloseProof:
+    return ImplementationCloseProof(
+        implementation_loop_id=report.loop_id,
+        work_item_id=report.work_item_id,
+        close=FrozenArtifact(
+            path=repo_relative_path(root, artifacts.close_path),
+            digest=_raw_file_digest(artifacts.close_path),
+        ),
+        implementation_report=FrozenArtifact(
+            path=repo_relative_path(root, artifacts.report_json_path),
+            digest=_raw_file_digest(artifacts.report_json_path),
+        ),
+    )
+
+
+def _raw_file_digest(path: Path) -> str:
+    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
 
 def _write_artifacts(

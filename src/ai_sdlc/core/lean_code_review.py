@@ -18,6 +18,18 @@ from ai_sdlc.core.implementation_store import (
 from ai_sdlc.core.lean_code_artifacts import LeanCurrentPointer
 from ai_sdlc.core.lean_code_models import LeanEvaluationInput, LeanEvaluationReport
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
+from ai_sdlc.core.lean_code_review_scope import (
+    historical_scope_blocker,
+    validate_implementation_close,
+)
+from ai_sdlc.core.lean_code_review_scope_models import (
+    IMPLEMENTATION_CLOSE_PROOF_NAME,
+)
+from ai_sdlc.core.lean_code_review_scope_store import (
+    has_stored_lean_metadata,
+    read_closed_scope,
+    read_review_pack,
+)
 from ai_sdlc.core.lean_code_runtime import validate_lean_close
 from ai_sdlc.core.pr_review_models import ReviewPack, ReviewRun
 
@@ -45,9 +57,22 @@ class LeanReviewBinding(BaseModel):
     policy_digest: str
     risk_accepted: bool = False
     exception_ids: list[str] = Field(default_factory=list)
+    implementation_closed: bool = Field(default=False, exclude=True)
+    implementation_close_path: str = Field(default="", exclude=True)
+    implementation_close_digest: str = Field(default="", exclude=True)
+    implementation_close_proof_path: str = Field(default="", exclude=True)
+    implementation_close_proof_digest: str = Field(default="", exclude=True)
+    implementation_report_path: str = Field(default="", exclude=True)
+    implementation_report_digest: str = Field(default="", exclude=True)
+    pointer_path: str = Field(default="", exclude=True)
+    pointer_digest: str = Field(default="", exclude=True)
 
 
-def resolve_lean_review_binding(root: Path) -> tuple[LeanReviewBinding | None, str]:
+def resolve_lean_review_binding(
+    root: Path,
+    *,
+    allow_closed_source_mismatch: bool = False,
+) -> tuple[LeanReviewBinding | None, str]:
     """Resolve the current enabled Implementation report or return a blocker."""
     resolved_root = root.resolve()
     loop_path, pointer_blocker = resolve_implementation_loop_run_path(resolved_root, "")
@@ -63,11 +88,42 @@ def resolve_lean_review_binding(root: Path) -> tuple[LeanReviewBinding | None, s
         return None, f"Implementation Lean binding is malformed: {exc}"
     if "lean-code" not in impl_input.quality_profiles:
         return None, ""
-    close_blocker = validate_lean_close(resolved_root, loop_run.loop_id)
+    implementation_close, closed_state_blocker = validate_implementation_close(
+        resolved_root,
+        loop_run,
+        paths,
+        expected_work_item_id=impl_input.work_item_id,
+    )
+    if closed_state_blocker:
+        return None, closed_state_blocker
+    implementation_closed = implementation_close is not None
+    close_blocker = validate_lean_close(
+        resolved_root,
+        loop_run.loop_id,
+        require_fresh_source=not (
+            implementation_closed and allow_closed_source_mismatch
+        ),
+    )
     if close_blocker:
         return (None, close_blocker)
+    return _binding_for_context(
+        resolved_root,
+        loop_run.loop_id,
+        impl_input.work_item_id,
+        paths,
+        implementation_close is not None,
+    )
+
+
+def _binding_for_context(
+    root: Path,
+    loop_id: str,
+    work_item_id: str,
+    paths: ImplementationArtifacts,
+    implementation_closed: bool,
+) -> tuple[LeanReviewBinding | None, str]:
     try:
-        binding_files = _read_binding_files(resolved_root, paths)
+        binding_files = _read_binding_files(root, paths)
     except (OSError, ValueError, ValidationError) as exc:
         return None, f"Implementation Lean binding is malformed: {exc}"
     (
@@ -86,9 +142,10 @@ def resolve_lean_review_binding(root: Path) -> tuple[LeanReviewBinding | None, s
     if stable_artifact_digest(evaluation_input) != pointer.input_digest:
         return None, "Implementation Lean input digest does not match its pointer."
     return _binding_from_paths(
-        resolved_root,
-        loop_run.loop_id,
-        impl_input.work_item_id,
+        root,
+        loop_id,
+        work_item_id,
+        paths,
         report_path,
         markdown_path,
         input_path,
@@ -96,6 +153,7 @@ def resolve_lean_review_binding(root: Path) -> tuple[LeanReviewBinding | None, s
         findings_path,
         policy_path,
         report,
+        implementation_closed,
     ), ""
 
 
@@ -138,13 +196,15 @@ def validate_review_run_lean_binding(root: Path, review_run: ReviewRun) -> str:
     """Revalidate every persisted Lean byte digest against the current binding."""
 
     if not getattr(review_run, "lean_report_path", ""):
-        if _has_stored_lean_metadata(review_run):
+        if has_stored_lean_metadata(review_run):
             return "Stored Lean binding is incomplete."
-        pack_requires_lean, pack_blocker = _review_pack_requires_lean(root, review_run)
+        pack, pack_blocker = read_review_pack(root, review_run.review_pack_path)
         if pack_blocker:
             return pack_blocker
-        if pack_requires_lean:
-            return "Stored Lean binding is incomplete relative to its review pack."
+        if pack is not None:
+            unbound_blocker = _unbound_pack_blocker(root, review_run, pack)
+            if unbound_blocker is not None:
+                return unbound_blocker
         current, blocker = resolve_lean_review_binding(root)
         if blocker:
             return blocker
@@ -159,6 +219,9 @@ def validate_review_run_lean_binding(root: Path, review_run: ReviewRun) -> str:
             return f"Lean {label} cannot be verified: {exc}"
         if actual != expected:
             return f"Lean {label} changed after the reviewer run."
+    close_proof_blocker = _stored_close_proof_blocker(root, review_run)
+    if close_proof_blocker:
+        return close_proof_blocker
     current, blocker = resolve_lean_review_binding(root)
     if blocker:
         return blocker
@@ -169,31 +232,51 @@ def validate_review_run_lean_binding(root: Path, review_run: ReviewRun) -> str:
     return ""
 
 
-def _has_stored_lean_metadata(binding: ReviewRun | ReviewPack) -> bool:
-    return any(
-        bool(value)
-        for name, value in binding.model_dump().items()
-        if name.startswith("lean_")
-    )
-
-
-def _review_pack_requires_lean(root: Path, review_run: ReviewRun) -> tuple[bool, str]:
-    if not review_run.review_pack_path:
-        return False, ""
-    try:
-        pack = ReviewPack.model_validate_json(
-            _safe_path(root, review_run.review_pack_path).read_text(encoding="utf-8")
+def _unbound_pack_blocker(
+    root: Path,
+    review_run: ReviewRun,
+    pack: ReviewPack,
+) -> str | None:
+    required = pack.policy_decisions.get("lean_binding_required") is True
+    if required or has_stored_lean_metadata(pack):
+        return "Stored Lean binding is incomplete relative to its review pack."
+    resolution = pack.policy_decisions.get("lean_binding_resolution")
+    if resolution == "closed_source_mismatch":
+        scope, blocker = read_closed_scope(
+            root,
+            review_run.review_pack_path,
+            pack.policy_decisions,
         )
-    except (OSError, ValueError, ValidationError) as exc:
-        return False, f"Lean review pack cannot be verified: {exc}"
-    required_by_profile = pack.policy_decisions.get("lean_binding_required") is True
-    return required_by_profile or _has_stored_lean_metadata(pack), ""
+        return blocker or historical_scope_blocker(root, scope)
+    if resolution == "not_required":
+        return ""
+    return "Stored Lean binding resolution is unsupported." if resolution else None
+
+
+def _stored_close_proof_blocker(root: Path, review_run: ReviewRun) -> str:
+    pack, pack_blocker = read_review_pack(root, review_run.review_pack_path)
+    if pack_blocker or pack is None:
+        return pack_blocker
+    decisions = pack.policy_decisions
+    if decisions.get("lean_binding_resolution") != "required":
+        return ""
+    if decisions.get("lean_closed_scope_required") is not True:
+        return ""
+    scope, scope_blocker = read_closed_scope(
+        root,
+        review_run.review_pack_path,
+        pack.policy_decisions,
+    )
+    if scope_blocker:
+        return scope_blocker
+    return historical_scope_blocker(root, scope)
 
 
 def _binding_from_paths(
     root: Path,
     loop_id: str,
     work_item_id: str,
+    paths: ImplementationArtifacts,
     report_path: Path,
     markdown_path: Path,
     input_path: Path,
@@ -201,8 +284,9 @@ def _binding_from_paths(
     findings_path: Path,
     policy_path: Path,
     report: LeanEvaluationReport,
+    implementation_closed: bool,
 ) -> LeanReviewBinding:
-    return LeanReviewBinding(
+    binding = LeanReviewBinding(
         implementation_loop_id=loop_id,
         work_item_id=work_item_id,
         report_path=repo_relative_path(root, report_path),
@@ -221,7 +305,35 @@ def _binding_from_paths(
         policy_digest=report.policy_digest,
         risk_accepted=report.risk_accepted,
         exception_ids=report.exception_ids,
+        implementation_closed=implementation_closed,
     )
+    if not implementation_closed:
+        return binding
+    return binding.model_copy(update=_closed_binding_fields(root, paths))
+
+
+def _closed_binding_fields(
+    root: Path,
+    paths: ImplementationArtifacts,
+) -> dict[str, object]:
+    pointer_path = paths.loop_dir / "lean" / "current.json"
+    proof_path = paths.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME)
+    fields: dict[str, object] = {
+        "implementation_close_path": repo_relative_path(root, paths.close_path),
+        "implementation_close_digest": _file_digest(paths.close_path),
+        "implementation_report_path": repo_relative_path(root, paths.report_json_path),
+        "implementation_report_digest": _file_digest(paths.report_json_path),
+        "pointer_path": repo_relative_path(root, pointer_path),
+        "pointer_digest": _file_digest(pointer_path),
+    }
+    if proof_path.exists():
+        fields.update(
+            {
+                "implementation_close_proof_path": repo_relative_path(root, proof_path),
+                "implementation_close_proof_digest": _file_digest(proof_path),
+            }
+        )
+    return fields
 
 
 def _stored_binding(review_run: ReviewRun) -> LeanReviewBinding:
