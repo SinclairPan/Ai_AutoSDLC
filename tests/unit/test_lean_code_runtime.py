@@ -9,11 +9,14 @@ import os
 import shutil
 import subprocess
 import sys
+import sysconfig
 import venv
+import zipfile
 from pathlib import Path
 
 import pytest
 
+import ai_sdlc.core.lean_code_environment as lean_code_environment
 import ai_sdlc.core.lean_code_runner as lean_code_runner
 from ai_sdlc.core.implementation_loop import (
     close_implementation_loop,
@@ -373,6 +376,8 @@ def test_documented_whole_file_pytest_targets_execute(tmp_path: Path) -> None:
 
     commands = (
         (sys.executable, "-m", "pytest", test_source, "-q"),
+        (sys.executable, "-S", "-m", "pytest", test_source, "-q"),
+        (sys.executable, "-S", test_source),
         (pytest_executable, test_source, "-q"),
     )
     for command in commands:
@@ -386,8 +391,9 @@ def test_documented_whole_file_pytest_targets_execute(tmp_path: Path) -> None:
             )
         )
         assert result.status == "ready", result
+        assert result.command_argv.count("-S") == 1
         if Path(command[0]).name.lower().startswith(("pytest", "py.test")):
-            assert result.command_argv[1:3] == ["-m", "pytest"]
+            assert result.command_argv[1:4] == ["-S", "-m", "pytest"]
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX runner shim regression")
@@ -510,6 +516,482 @@ def test_controlled_execution_ignores_external_python_import_paths(
     assert result.status == "ready", result
 
 
+def test_patch_execution_precedes_editable_src_mapping(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    loop_id = "impl-editable-src-isolation"
+    _seed_enabled_loop(tmp_path, loop_id)
+    package = "src/example_subject/__init__.py"
+    test_source = "tests/editable_import_probe.py"
+    _write(tmp_path, package, "VALUE = 'base'\n")
+    _write(
+        tmp_path,
+        test_source,
+        "from example_subject import VALUE\nassert VALUE == 'selected-patch', VALUE\n",
+    )
+    _git(tmp_path, "add", package, test_source)
+    _git(tmp_path, "commit", "-m", "add editable import probe")
+    _write(tmp_path, package, "VALUE = 'selected-patch'\n")
+    patch_file = "selected-source.patch"
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    (tmp_path / patch_file).write_bytes(patch)
+    _write(tmp_path, package, "VALUE = 'live-worktree'\n")
+    runner = _editable_runner(tmp_path)
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+            source_kind="patch",
+            patch_file=patch_file,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert result.exit_code == 0, result
+
+
+def test_patch_execution_does_not_fallback_after_selected_module_deletion(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    loop_id = "impl-editable-deletion-isolation"
+    _seed_enabled_loop(tmp_path, loop_id)
+    package = tmp_path / "src/example_subject/__init__.py"
+    test_source = "tests/editable_deletion_probe.py"
+    _write(tmp_path, str(package.relative_to(tmp_path)), "VALUE = 'base'\n")
+    _write(
+        tmp_path,
+        test_source,
+        "try:\n"
+        "    from example_subject import VALUE\n"
+        "except ModuleNotFoundError:\n"
+        "    print('SELECTED_DELETION_RESPECTED')\n"
+        "else:\n"
+        "    raise AssertionError(VALUE)\n",
+    )
+    _git(tmp_path, "add", "src/example_subject/__init__.py", test_source)
+    _git(tmp_path, "commit", "-m", "add editable deletion probe")
+    package.unlink()
+    patch_file = "selected-deletion.patch"
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    (tmp_path / patch_file).write_bytes(patch)
+    _write(tmp_path, str(package.relative_to(tmp_path)), "VALUE = 'live-worktree'\n")
+    runner = _editable_runner(tmp_path)
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+            source_kind="patch",
+            patch_file=patch_file,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert "SELECTED_DELETION_RESPECTED" in (tmp_path / result.output_path).read_text(
+        "utf-8"
+    )
+
+
+def test_patch_deletion_blocks_runner_site_installed_project_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    loop_id = "impl-installed-copy-isolation"
+    _seed_enabled_loop(tmp_path, loop_id)
+    package = tmp_path / "src/example_subject/__init__.py"
+    test_source = "tests/installed_copy_deletion_probe.py"
+    _write(tmp_path, str(package.relative_to(tmp_path)), "VALUE = 'base'\n")
+    _write(
+        tmp_path,
+        test_source,
+        "try:\n"
+        "    from example_subject import VALUE\n"
+        "except ModuleNotFoundError:\n"
+        "    print('INSTALLED_COPY_BLOCKED')\n"
+        "else:\n"
+        "    raise AssertionError(VALUE)\n",
+    )
+    _git(tmp_path, "add", "src/example_subject/__init__.py", test_source)
+    _git(tmp_path, "commit", "-m", "add installed copy deletion probe")
+    package.unlink()
+    patch_file = "selected-installed-deletion.patch"
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    (tmp_path / patch_file).write_bytes(patch)
+    runner, purelib = _runner_venv(tmp_path / "installed-runner")
+    installed = purelib / "example_subject/__init__.py"
+    installed.parent.mkdir()
+    installed.write_text("VALUE = 'installed-runner-copy'\n", encoding="utf-8")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+            source_kind="patch",
+            patch_file=patch_file,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert "INSTALLED_COPY_BLOCKED" in (tmp_path / result.output_path).read_text(
+        "utf-8"
+    )
+
+
+def test_patch_deletion_blocks_runner_namespace_package_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    loop_id = "impl-installed-namespace-isolation"
+    _seed_enabled_loop(tmp_path, loop_id)
+    kept = "src/example_subject/kept.py"
+    removed = "src/example_subject/removed.py"
+    test_source = "tests/installed_namespace_deletion_probe.py"
+    _write(tmp_path, kept, "VALUE = 'selected-namespace'\n")
+    _write(tmp_path, removed, "VALUE = 'base'\n")
+    _write(
+        tmp_path,
+        test_source,
+        "from example_subject.kept import VALUE\n"
+        "assert VALUE == 'selected-namespace', VALUE\n"
+        "try:\n"
+        "    from example_subject.removed import VALUE as removed_value\n"
+        "except ModuleNotFoundError:\n"
+        "    print('SELECTED_NAMESPACE_DELETION_RESPECTED')\n"
+        "else:\n"
+        "    raise AssertionError(removed_value)\n",
+    )
+    _git(tmp_path, "add", kept, removed, test_source)
+    _git(tmp_path, "commit", "-m", "add namespace deletion probe")
+    (tmp_path / removed).unlink()
+    patch_file = "selected-namespace-deletion.patch"
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    (tmp_path / patch_file).write_bytes(patch)
+    runner, purelib = _runner_venv(tmp_path / "namespace-runner")
+    installed = purelib / "example_subject/removed.py"
+    installed.parent.mkdir()
+    installed.write_text("VALUE = 'installed-runner-copy'\n", encoding="utf-8")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+            source_kind="patch",
+            patch_file=patch_file,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert "SELECTED_NAMESPACE_DELETION_RESPECTED" in (
+        tmp_path / result.output_path
+    ).read_text("utf-8")
+
+
+def test_namespace_dependency_sibling_survives_while_removed_member_is_blocked(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    loop_id = "impl-namespace-dependency"
+    _seed_enabled_loop(tmp_path, loop_id)
+    project_part = "src/shared_namespace/project_part.py"
+    removed = "src/shared_namespace/removed.py"
+    test_source = "tests/namespace_dependency_probe.py"
+    _write(tmp_path, project_part, "VALUE = 'project-part'\n")
+    _write(tmp_path, removed, "VALUE = 'base'\n")
+    _write(
+        tmp_path,
+        test_source,
+        "from shared_namespace.project_part import VALUE as project_value\n"
+        "from shared_namespace.dependency_part import VALUE as dependency_value\n"
+        "assert project_value == 'project-part', project_value\n"
+        "assert dependency_value == 'dependency-part', dependency_value\n"
+        "try:\n"
+        "    from shared_namespace.removed import VALUE as removed_value\n"
+        "except ModuleNotFoundError:\n"
+        "    print('NAMESPACE_DEPENDENCY_AND_DELETION_VALID')\n"
+        "else:\n"
+        "    raise AssertionError(removed_value)\n",
+    )
+    _git(tmp_path, "add", project_part, removed, test_source)
+    _git(tmp_path, "commit", "-m", "add namespace dependency probe")
+    (tmp_path / removed).unlink()
+    patch_file = "selected-namespace-dependency.patch"
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    (tmp_path / patch_file).write_bytes(patch)
+    runner, purelib = _runner_venv(tmp_path / "namespace-dependency-runner")
+    installed = purelib / "shared_namespace"
+    installed.mkdir()
+    (installed / "dependency_part.py").write_text(
+        "VALUE = 'dependency-part'\n", encoding="utf-8"
+    )
+    (installed / "removed.py").write_text(
+        "VALUE = 'installed-fallback'\n", encoding="utf-8"
+    )
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+            source_kind="patch",
+            patch_file=patch_file,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert "NAMESPACE_DEPENDENCY_AND_DELETION_VALID" in (
+        tmp_path / result.output_path
+    ).read_text("utf-8")
+
+
+def test_patch_deletion_blocks_runner_copy_of_native_extension(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("PYTHONPATH", raising=False)
+    loop_id = "impl-native-extension-isolation"
+    _seed_enabled_loop(tmp_path, loop_id)
+    suffix = sysconfig.get_config_var("EXT_SUFFIX") or ".so"
+    native_module = f"src/example_native{suffix}"
+    test_source = "tests/native_extension_deletion_probe.py"
+    _write(tmp_path, native_module, "base-native-placeholder\n")
+    _write(
+        tmp_path,
+        test_source,
+        "try:\n"
+        "    from example_native import VALUE\n"
+        "except ModuleNotFoundError:\n"
+        "    print('NATIVE_EXTENSION_DELETION_RESPECTED')\n"
+        "else:\n"
+        "    raise AssertionError(VALUE)\n",
+    )
+    _git(tmp_path, "add", native_module, test_source)
+    _git(tmp_path, "commit", "-m", "add native extension deletion probe")
+    (tmp_path / native_module).unlink()
+    patch_file = "selected-native-deletion.patch"
+    patch = subprocess.run(
+        ["git", "diff", "--binary", "--no-ext-diff", "--no-textconv"],
+        cwd=tmp_path,
+        capture_output=True,
+        check=True,
+    ).stdout
+    (tmp_path / patch_file).write_bytes(patch)
+    runner, purelib = _runner_venv(tmp_path / "native-runner")
+    (purelib / "example_native.py").write_text(
+        "VALUE = 'installed-fallback'\n",
+        encoding="utf-8",
+    )
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+            source_kind="patch",
+            patch_file=patch_file,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert "NATIVE_EXTENSION_DELETION_RESPECTED" in (
+        tmp_path / result.output_path
+    ).read_text("utf-8")
+
+
+def test_path_pth_dependency_is_preserved_by_controlled_execution(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    dependency_root = tmp_path / "path-dependency"
+    root.mkdir()
+    _write(dependency_root, "review_path_dep/__init__.py", "VALUE = 'path-pth'\n")
+    loop_id = "impl-path-pth-dependency"
+    _seed_enabled_loop(root, loop_id)
+    test_source = "tests/path_pth_probe.py"
+    _write(root, test_source, "from review_path_dep import VALUE\nprint(VALUE)\n")
+    runner, purelib = _runner_venv(tmp_path / "path-pth-runner")
+    (purelib / "review-path-dep.pth").write_text(
+        str(dependency_root) + "\n",
+        encoding="utf-8",
+    )
+    normal = subprocess.run(
+        [str(runner), "-c", "from review_path_dep import VALUE; print(VALUE)"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert normal.stdout.strip() == "path-pth"
+    assert result.status == "ready", result
+
+
+def test_pep660_editable_dependency_is_preserved_by_controlled_execution(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    dependency_root = tmp_path / "editable-dependency"
+    root.mkdir()
+    _write(dependency_root, "review_editable_dep/__init__.py", "VALUE = 'pep660'\n")
+    loop_id = "impl-pep660-dependency"
+    _seed_enabled_loop(root, loop_id)
+    test_source = "tests/pep660_probe.py"
+    _write(root, test_source, "from review_editable_dep import VALUE\nprint(VALUE)\n")
+    runner, purelib = _runner_venv(tmp_path / "pep660-runner")
+    _install_pep660_fixture(purelib, dependency_root)
+    normal = subprocess.run(
+        [str(runner), "-c", "from review_editable_dep import VALUE; print(VALUE)"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert normal.stdout.strip() == "pep660"
+    assert result.status == "ready", result
+
+
+@pytest.mark.parametrize("binding", ["path-pth", "pep660"])
+def test_project_local_venv_editable_dependency_is_preserved(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    loop_id = f"impl-local-venv-{binding}"
+    _seed_enabled_loop(root, loop_id)
+    _write(root, ".gitignore", ".venv/\n")
+    _git(root, "add", ".gitignore")
+    _git(root, "commit", "-m", "ignore local environment")
+    test_source = "tests/local_venv_dependency_probe.py"
+    _write(root, test_source, "from review_editable_dep import VALUE\nprint(VALUE)\n")
+    runner, purelib = _runner_venv(root / ".venv")
+    dependency_root = root / ".venv/src/editable-dependency"
+    _write(dependency_root, "review_editable_dep/__init__.py", "VALUE = 'local'\n")
+    if binding == "path-pth":
+        (purelib / "review-local-dep.pth").write_text(
+            str(dependency_root) + "\n", encoding="utf-8"
+        )
+    else:
+        _install_pep660_fixture(purelib, dependency_root)
+    normal = subprocess.run(
+        [str(runner), "-c", "from review_editable_dep import VALUE; print(VALUE)"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert normal.stdout.strip() == "local"
+    assert result.status == "ready", result
+
+
+def test_system_site_venv_preserves_base_dependencies(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    runner_root = tmp_path / "system-site-runner"
+    root.mkdir()
+    loop_id = "impl-system-site-runner"
+    _seed_enabled_loop(root, loop_id)
+    test_source = "tests/system_site_probe.py"
+    _write(root, test_source, "import pip\nprint(pip.__version__)\n")
+    runner, _ = _runner_venv(runner_root, system_site_packages=True)
+    normal = subprocess.run(
+        [str(runner), "-c", "import pip; print(pip.__version__)"],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert normal.stdout.strip()
+    assert result.status == "ready", result
+    assert len(lean_code_runner._runner_site_packages(runner)) >= 2
+
+
 def test_controlled_execution_captures_utf8_stdout(tmp_path: Path) -> None:
     loop_id = "impl-unicode-output"
     _seed_enabled_loop(tmp_path, loop_id)
@@ -588,6 +1070,472 @@ def test_controlled_environment_maps_project_pythonpath_to_selected_view(
         str(execution_root / "src"),
         str(execution_root),
     ]
+
+
+def test_controlled_environment_rejects_external_src_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    external = tmp_path / "external-src"
+    execution_root.mkdir()
+    external.mkdir()
+    try:
+        (execution_root / "src").symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="escapes the selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+def test_controlled_environment_rejects_external_module_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    source_root = execution_root / "src"
+    external = tmp_path / "external-module.py"
+    source_root.mkdir(parents=True)
+    external.write_text("VALUE = 'external'\n", encoding="utf-8")
+    try:
+        (source_root / "subject.py").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="escapes the selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+def test_execution_rejects_external_data_symlink_without_receipt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    external = tmp_path / "external-config.json"
+    root.mkdir()
+    external.write_text('{"source": "outside"}\n', encoding="utf-8")
+    loop_id = "impl-external-data-link"
+    _seed_enabled_loop(root, loop_id)
+    test_source = "tests/data_link_probe.py"
+    _write(
+        root,
+        test_source,
+        "from pathlib import Path\n"
+        "print(Path('data/config.json').read_text(encoding='utf-8'))\n",
+    )
+    _git(root, "add", test_source)
+    _git(root, "commit", "-m", "add data link probe")
+    (root / "data").mkdir()
+    try:
+        (root / "data/config.json").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "selected source view" in result.blocker
+    assert result.receipt_path == ""
+
+
+def test_controlled_environment_converts_symlink_loop_to_blocker(
+    tmp_path: Path,
+) -> None:
+    source_root = tmp_path / "selected-view/src"
+    source_root.mkdir(parents=True)
+    try:
+        (source_root / "a.py").symlink_to("b.py")
+        (source_root / "b.py").symlink_to("a.py")
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            tmp_path / "selected-view",
+            tmp_path / "project",
+        )
+
+
+def test_execution_blocks_symlink_loop_without_receipt(tmp_path: Path) -> None:
+    loop_id = "impl-symlink-loop"
+    _seed_enabled_loop(tmp_path, loop_id)
+    test_source = "tests/symlink_loop_probe.py"
+    _write(tmp_path, test_source, "print('must not execute')\n")
+    _git(tmp_path, "add", test_source)
+    _git(tmp_path, "commit", "-m", "add symlink loop probe")
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    try:
+        (source_root / "a.py").symlink_to("b.py")
+        (source_root / "b.py").symlink_to("a.py")
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "selected source view" in result.blocker
+    assert result.receipt_path == ""
+
+
+def test_controlled_environment_rejects_external_root_module_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    external = tmp_path / "external-root-module.py"
+    execution_root.mkdir()
+    external.write_text("VALUE = 'external'\n", encoding="utf-8")
+    try:
+        (execution_root / "subject.py").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+def test_controlled_environment_rejects_external_custom_import_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    execution_root = tmp_path / "selected-view"
+    custom_root = execution_root / "lib"
+    external = tmp_path / "external-custom-module.py"
+    custom_root.mkdir(parents=True)
+    external.write_text("VALUE = 'external'\n", encoding="utf-8")
+    try:
+        (custom_root / "subject.py").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    monkeypatch.setenv("PYTHONPATH", str(project_root / "lib"))
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            project_root,
+        )
+
+
+def test_controlled_environment_rejects_uppercase_python_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    external = tmp_path / "external-uppercase.py"
+    execution_root.mkdir()
+    external.write_text("VALUE = 'external'\n", encoding="utf-8")
+    try:
+        (execution_root / "subject.PY").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+def test_controlled_environment_allows_dangling_internal_python_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    source_root = execution_root / "src"
+    source_root.mkdir(parents=True)
+    try:
+        (source_root / "generated_binding.py").symlink_to("generated_binding_impl.py")
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    environment = controlled_execution_environment(
+        "python-script",
+        execution_root,
+        tmp_path / "project",
+    )
+
+    assert environment["PYTHONPATH"].split(os.pathsep)[0] == str(source_root)
+
+
+def test_controlled_environment_rejects_dangling_external_python_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    source_root = execution_root / "src"
+    source_root.mkdir(parents=True)
+    external = tmp_path / "missing-external.py"
+    try:
+        (source_root / "external_binding.py").symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+def test_controlled_environment_allows_dangling_internal_package_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    source_root = execution_root / "src"
+    source_root.mkdir(parents=True)
+    package_link = source_root / "generated_pkg"
+    try:
+        package_link.symlink_to("generated_pkg_impl", target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    environment = controlled_execution_environment(
+        "python-script",
+        execution_root,
+        tmp_path / "project",
+    )
+    package_target = source_root / "generated_pkg_impl"
+    package_target.mkdir()
+    (package_target / "__init__.py").write_text(
+        "VALUE = 'selected-view'\n",
+        encoding="utf-8",
+    )
+    imported = subprocess.run(
+        [sys.executable, "-c", "import generated_pkg; print(generated_pkg.VALUE)"],
+        capture_output=True,
+        check=True,
+        cwd=execution_root,
+        env=environment,
+        text=True,
+    )
+
+    assert imported.stdout.strip() == "selected-view"
+
+
+def test_controlled_environment_rejects_dangling_external_package_symlink(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    source_root = execution_root / "src"
+    source_root.mkdir(parents=True)
+    external = tmp_path / "missing-external-package"
+    try:
+        (source_root / "escaped_pkg").symlink_to(external, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+def test_execution_blocks_dangling_external_package_without_receipt(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-dangling-package"
+    _seed_enabled_loop(tmp_path, loop_id)
+    test_source = "tests/dangling_package_probe.py"
+    _write(tmp_path, test_source, "print('must not execute')\n")
+    _git(tmp_path, "add", test_source)
+    _git(tmp_path, "commit", "-m", "add dangling package probe")
+    source_root = tmp_path / "src"
+    source_root.mkdir()
+    try:
+        (source_root / "escaped_pkg").symlink_to(
+            tmp_path.parent / "missing-external-package",
+            target_is_directory=True,
+        )
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "selected source view" in result.blocker
+    assert result.receipt_path == ""
+
+
+def test_controlled_environment_rejects_external_file_import_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    execution_root = tmp_path / "selected-view"
+    external_archive = tmp_path / "external-modules.zip"
+    project_root.mkdir()
+    execution_root.mkdir()
+    (project_root / "vendor-import").write_bytes(b"live project import root")
+    with zipfile.ZipFile(external_archive, "w") as archive:
+        archive.writestr("outside_probe.py", "VALUE = 'outside'\n")
+    try:
+        (execution_root / "vendor-import").symlink_to(external_archive)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    monkeypatch.setenv("PYTHONPATH", str(project_root / "vendor-import"))
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            project_root,
+        )
+
+
+def test_controlled_environment_allows_internal_file_import_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    execution_root = tmp_path / "selected-view"
+    archive_path = execution_root / "archives/modules.zip"
+    project_root.mkdir()
+    archive_path.parent.mkdir(parents=True)
+    (project_root / "vendor-import").write_bytes(b"live project import root")
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("inside_probe.py", "VALUE = 'selected-view'\n")
+    try:
+        (execution_root / "vendor-import").symlink_to(archive_path)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    monkeypatch.setenv("PYTHONPATH", str(project_root / "vendor-import"))
+
+    environment = controlled_execution_environment(
+        "python-script",
+        execution_root,
+        project_root,
+    )
+    imported = subprocess.run(
+        [sys.executable, "-c", "import inside_probe; print(inside_probe.VALUE)"],
+        capture_output=True,
+        check=True,
+        cwd=execution_root,
+        env=environment,
+        text=True,
+    )
+
+    assert imported.stdout.strip() == "selected-view"
+
+
+def test_import_tree_prunes_resolved_directory_aliases(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    execution_root = (tmp_path / "selected-view").resolve()
+    inside = execution_root / "inside"
+    regular = execution_root / "regular"
+    inside.mkdir(parents=True)
+    regular.mkdir()
+    try:
+        (execution_root / "alias").symlink_to(inside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+    observed: list[tuple[str, ...]] = []
+
+    def _walk(current, *, followlinks):
+        assert followlinks is False
+        current = Path(current).resolve()
+        if current == execution_root:
+            directories = ["inside", "alias", "regular"]
+            yield str(current), directories, []
+            observed.append(tuple(directories))
+        else:
+            yield str(current), [], []
+
+    monkeypatch.setattr(lean_code_environment.os, "walk", _walk)
+
+    controlled_execution_environment(
+        "python-script",
+        execution_root,
+        tmp_path / "project",
+    )
+
+    assert observed == [("inside", "regular")]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_controlled_environment_rejects_external_windows_junction(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    external = tmp_path / "external-src"
+    execution_root.mkdir()
+    external.mkdir()
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(execution_root / "src"), str(external)],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    with pytest.raises(ValueError, match="selected source view"):
+        controlled_execution_environment(
+            "python-script",
+            execution_root,
+            tmp_path / "project",
+        )
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction regression")
+def test_controlled_environment_bounds_internal_windows_junction_loop(
+    tmp_path: Path,
+) -> None:
+    execution_root = tmp_path / "selected-view"
+    source_root = execution_root / "src"
+    package_root = source_root / "package"
+    package_root.mkdir(parents=True)
+    subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(package_root / "back"), str(source_root)],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+
+    environment = controlled_execution_environment(
+        "python-script",
+        execution_root,
+        tmp_path / "project",
+    )
+
+    assert environment["PYTHONPATH"].split(os.pathsep)[0] == str(source_root)
 
 
 def test_toolchain_fingerprint_changes_with_installed_distribution(
@@ -787,6 +1735,36 @@ def test_distribution_probe_timeout_fails_closed_without_escaping(
 
     assert validated is None
     assert "dependency environment is unavailable" in issue
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX relative runner regression")
+def test_relative_runner_link_keeps_stable_receipt_identity(tmp_path: Path) -> None:
+    runner = tmp_path / "python-alternate"
+    runner.symlink_to(sys.executable)
+    loop_id = "impl-relative-runner"
+    _seed_enabled_loop(tmp_path, loop_id)
+    test_source = "tests/relative_runner.py"
+    _write(tmp_path, test_source, "print('relative-runner-verified')\n")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=("./python-alternate", test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "ready", result
+    validated, issue = validate_execution_receipt(
+        tmp_path,
+        result.receipt_path,
+        expected_digest=result.receipt_digest,
+    )
+    assert validated is not None, issue
+    assert issue == ""
+    assert validated.command_argv[0] == str(runner)
 
 
 def test_pytest_option_shaped_path_cannot_impersonate_test_source(
@@ -1607,6 +2585,83 @@ def test_complete_lean_artifact_chain_tamper_blocks_close(tmp_path: Path) -> Non
         blocker = validate_lean_close(root, loop_id)
 
         assert "digest" in blocker.lower(), (artifact_name, blocker)
+
+
+def _editable_runner(root: Path) -> Path:
+    runner, purelib = _runner_venv(root / "editable-runner")
+    Path(purelib, "example-subject-editable.pth").write_text(
+        str(root / "src") + "\n",
+        encoding="utf-8",
+    )
+    return runner
+
+
+def _install_pep660_fixture(purelib: Path, dependency_root: Path) -> None:
+    package = "review_editable_dep"
+    finder = purelib / "__editable___review_editable_dep_finder.py"
+    finder.write_text(
+        "from importlib.util import spec_from_file_location\n"
+        "from pathlib import Path\n"
+        "import sys\n"
+        f"MAPPING = {{{package!r}: {str(dependency_root / package)!r}}}\n"
+        "class Finder:\n"
+        "    @classmethod\n"
+        "    def find_spec(cls, fullname, path=None, target=None):\n"
+        "        location = MAPPING.get(fullname)\n"
+        "        if location is None:\n"
+        "            return None\n"
+        "        package_path = Path(location)\n"
+        "        return spec_from_file_location(\n"
+        "            fullname,\n"
+        "            package_path / '__init__.py',\n"
+        "            submodule_search_locations=[str(package_path)],\n"
+        "        )\n"
+        "def install():\n"
+        "    if Finder not in sys.meta_path:\n"
+        "        sys.meta_path.append(Finder)\n",
+        encoding="utf-8",
+    )
+    (purelib / "review-editable-dep.pth").write_text(
+        "import __editable___review_editable_dep_finder; "
+        "__editable___review_editable_dep_finder.install()\n",
+        encoding="utf-8",
+    )
+    dist_info = purelib / "review_editable_dep-1.0.dist-info"
+    dist_info.mkdir()
+    (dist_info / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: review-editable-dep\nVersion: 1.0\n",
+        encoding="utf-8",
+    )
+    (dist_info / "top_level.txt").write_text(package + "\n", encoding="utf-8")
+
+
+def _runner_venv(
+    runner_root: Path,
+    *,
+    system_site_packages: bool = False,
+) -> tuple[Path, Path]:
+    venv.EnvBuilder(
+        with_pip=False,
+        symlinks=os.name != "nt",
+        system_site_packages=system_site_packages,
+    ).create(runner_root)
+    runner = (
+        runner_root / "Scripts/python.exe"
+        if os.name == "nt"
+        else runner_root / "bin/python"
+    )
+    purelib = subprocess.run(
+        [
+            str(runner),
+            "-I",
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    ).stdout.strip()
+    return runner, Path(purelib)
 
 
 def _seed_enabled_loop(

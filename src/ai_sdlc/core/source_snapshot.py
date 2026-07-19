@@ -295,7 +295,11 @@ def _binary_files(
     binary = {path for path, is_binary in numstat.items() if is_binary}
     for path in parts.untracked_files:
         target = root / path
-        if target.is_file() and b"\0" in target.read_bytes()[:8192]:
+        if (
+            not target.is_symlink()
+            and target.is_file()
+            and b"\0" in target.read_bytes()[:8192]
+        ):
             binary.add(path)
     return sorted(binary)
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import os
 import shlex
 import subprocess
 from dataclasses import dataclass, field
@@ -565,8 +566,10 @@ def lean_source_mismatch(
     )
     if any(getattr(evaluated, field) != getattr(current, field) for field in identity):
         return "Lean source snapshot does not match the resolved PR review diff source."
+    renamed_sources = set(current.renamed_files.values())
+    reviewed_coverage = [path for path in reviewed_files if path not in renamed_sources]
     if evaluated.changed_files != current.changed_files or sorted(
-        reviewed_files
+        reviewed_coverage
     ) != sorted(current.changed_files):
         return "Lean source snapshot file coverage does not match the PR review diff source."
     return ""
@@ -695,8 +698,11 @@ def _read_patch_text(root: Path, patch_file: str) -> str:
 def _untracked_file_diff(root: Path, path: str) -> str:
     if "\n" in path or "\r" in path:
         raise GitError("Untracked file paths containing newlines cannot be reviewed.")
-    payload = (root / path).read_bytes()
-    header = f"diff --git a/{path} b/{path}\nnew file mode 100644\n"
+    source = root / path
+    is_symlink = source.is_symlink()
+    payload = os.fsencode(os.readlink(source)) if is_symlink else source.read_bytes()
+    mode = "120000" if is_symlink else "100644"
+    header = f"diff --git a/{path} b/{path}\nnew file mode {mode}\n"
     try:
         lines = payload.decode("utf-8").splitlines()
     except UnicodeDecodeError:
@@ -805,11 +811,16 @@ def _worktree_file_blobs(root: Path, paths: list[str]) -> dict[str, bytes]:
         normalized = _normalize_repo_path(path)
         if not normalized:
             continue
-        file_path = (root / normalized).resolve()
+        candidate = root / normalized
         try:
+            if candidate.is_symlink():
+                blobs[normalized] = os.fsencode(os.readlink(candidate))
+                continue
+            file_path = candidate.resolve()
+            file_path.relative_to(root.resolve())
             if file_path.is_file():
                 blobs[normalized] = file_path.read_bytes()
-        except OSError:
+        except (OSError, ValueError):
             continue
     return blobs
 

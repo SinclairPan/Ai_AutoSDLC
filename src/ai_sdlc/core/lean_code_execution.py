@@ -136,6 +136,7 @@ def _execute_and_persist(
         adapter,
         execution_root,
         root,
+        snapshot,
         options.timeout_seconds,
     )
     output = _combined_output(completed.stdout, completed.stderr)

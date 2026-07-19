@@ -54,7 +54,11 @@ def _prepare_execution(
         raise ValueError(
             "supported runner command target must resolve inside the selected source view"
         )
-    command_argv = effective_command_argv(adapter, options.command_argv, execution_root)
+    command_argv = effective_command_argv(
+        adapter,
+        options.command_argv,
+        options.root.resolve(),
+    )
     adapter = resolve_execution_adapter(
         execution_root,
         command_argv,
@@ -71,13 +75,20 @@ def _invoke_execution(
     adapter: str,
     execution_root: Path,
     root: Path,
+    snapshot: SourceSnapshot,
     timeout_seconds: int,
 ) -> tuple[subprocess.CompletedProcess[str], str, str]:
     started_at = utc_now_iso()
     completed = subprocess.run(
         list(command_argv),
         cwd=run_cwd,
-        env=controlled_execution_environment(adapter, execution_root, root),
+        env=controlled_execution_environment(
+            adapter,
+            execution_root,
+            root,
+            Path(command_argv[0]),
+            tuple(snapshot.deleted_files) + tuple(snapshot.renamed_files.values()),
+        ),
         capture_output=True,
         check=False,
         text=True,

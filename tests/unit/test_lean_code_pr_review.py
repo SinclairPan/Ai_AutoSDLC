@@ -202,6 +202,30 @@ def test_pr_review_blocks_patch_binding_for_different_head(tmp_path: Path) -> No
     assert "diff source" in started.blocker
 
 
+def test_pr_review_accepts_matching_patch_rename_binding(tmp_path: Path) -> None:
+    patch_file = ".ai-sdlc/reviews/lean-rename.patch"
+    _seed_lean_loop(
+        tmp_path,
+        "impl-patch-rename",
+        source_kind="patch",
+        patch_file=patch_file,
+        rename_to="src/renamed.py",
+    )
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file=patch_file,
+            provider_id="mock-reviewer",
+            review_id="review-patch-rename",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+
+
 def test_pr_review_includes_untracked_files_from_matching_unstaged_source(
     tmp_path: Path,
 ) -> None:
@@ -559,9 +583,14 @@ def _seed_lean_loop(
     source_kind: str = "local-unstaged",
     patch_file: str = "",
     include_untracked: bool = False,
+    rename_to: str = "",
 ) -> None:
     _init_repo(root)
-    _write(root, "src/app.py", "def _small():\n    return 1\n")
+    target_path = rename_to or "src/app.py"
+    if rename_to:
+        _git(root, "mv", "src/app.py", rename_to)
+    else:
+        _write(root, target_path, "def _small():\n    return 1\n")
     if include_untracked:
         _write(root, "tests/untracked_probe.py", "print('untracked')\n")
     if source_kind == "patch":
@@ -571,6 +600,7 @@ def _seed_lean_loop(
             _git_output(
                 root,
                 "diff",
+                *(("HEAD",) if rename_to else ()),
                 "--binary",
                 "--no-ext-diff",
                 "--no-textconv",
@@ -592,7 +622,7 @@ def _seed_lean_loop(
             work_type=WorkType.NEW_REQUIREMENT,
             quality_profiles=["lean-code"],
             declared_scope=[
-                "src/app.py",
+                target_path,
                 *(["tests/untracked_probe.py"] if include_untracked else []),
             ],
         ),
@@ -622,7 +652,7 @@ def _seed_lean_loop(
             patch_file=patch_file,
         )
     )
-    assert result.status == "ready"
+    assert result.status == "ready", result.blocker
 
 
 def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:

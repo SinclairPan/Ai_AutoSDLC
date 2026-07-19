@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from pathlib import Path
+
+import pytest
 
 from ai_sdlc.core.pr_review_pack import (
     ReviewPackBuildOptions,
@@ -66,9 +69,7 @@ def test_build_review_pack_writes_required_artifacts(tmp_path) -> None:
     assert not Path(review_payload["diff_path"]).is_absolute()
     assert review_payload["work_item_refs"] == ["specs/189/tasks.md"]
     assert review_payload["test_results_refs"] == ["pytest.log"]
-    assert review_payload["policy_refs"] == [
-        ".ai-sdlc/project/config/loop-policy.yaml"
-    ]
+    assert review_payload["policy_refs"] == [".ai-sdlc/project/config/loop-policy.yaml"]
     assert review_payload["redaction_report_path"].endswith(
         ".ai-sdlc/reviews/pr/review-001/redaction-report.json"
     )
@@ -90,7 +91,10 @@ def test_build_review_pack_stops_when_model_current_cannot_resolve(tmp_path) -> 
     )
 
     assert result.status == ReviewPackBuildStatus.NEEDS_USER
-    assert "Unable to resolve the current session/current CLI agent model" in result.blocker
+    assert (
+        "Unable to resolve the current session/current CLI agent model"
+        in result.blocker
+    )
     assert result.review_pack_path == ""
     assert Path(result.changed_files_path).is_file()
     assert Path(result.redaction_report_path).is_file()
@@ -730,6 +734,36 @@ def test_build_review_pack_from_local_unstaged_source(tmp_path) -> None:
     assert "+print('unstaged')" in diff_text
 
 
+def test_build_review_pack_reads_untracked_symlink_as_link_bytes(tmp_path) -> None:
+    _init_repo_with_base_commit(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}-outside-secret.py"
+    outside.write_text("DO_NOT_EXPOSE = 'outside-secret-content'\n", encoding="utf-8")
+    link = tmp_path / "src/config.py"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    target = os.path.relpath(outside, link.parent)
+    try:
+        link.symlink_to(target)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = build_review_pack(
+        ReviewPackBuildOptions(
+            root=tmp_path,
+            base_ref="",
+            review_id="review-unstaged-symlink",
+            loop_id="loop-unstaged-symlink",
+            diff_source="local-unstaged",
+            current_model="gpt-5",
+        )
+    )
+
+    assert result.status == ReviewPackBuildStatus.READY
+    diff_text = Path(result.diff_path).read_text(encoding="utf-8")
+    assert "new file mode 120000" in diff_text
+    assert target in diff_text
+    assert "outside-secret-content" not in diff_text
+
+
 def test_build_review_pack_omits_unstaged_binary_blob(tmp_path) -> None:
     _init_repo_with_base_commit(tmp_path)
     target = tmp_path / "assets/image.bin"
@@ -823,7 +857,5 @@ def _git(path: Path, *args: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()

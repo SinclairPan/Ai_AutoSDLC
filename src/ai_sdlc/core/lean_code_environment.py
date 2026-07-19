@@ -10,7 +10,21 @@ import shutil
 import sys
 from pathlib import Path
 
-from ai_sdlc.core.lean_code_runner import _probe_distributions, _runner_python
+from ai_sdlc.core.lean_code_import_boundary import (
+    _import_shield,
+    _missing_project_imports,
+    _project_python_path,
+    _removed_namespace_members,
+    _selected_namespace_imports,
+    _selected_python_path,
+    _validate_selected_python_path,
+    _validated_source_root,
+)
+from ai_sdlc.core.lean_code_runner import (
+    _probe_distributions,
+    _runner_import_paths,
+    _runner_python,
+)
 
 
 def safe_project_path(root: Path, reference: str) -> Path:
@@ -102,14 +116,15 @@ def _lexical_project_path(root: Path, reference: str) -> str:
 
 
 def _python_adapter(argv: tuple[str, ...], targets: set[int]) -> str:
-    if 1 in targets:
+    start = 2 if len(argv) > 1 and argv[1] == "-S" else 1
+    if start in targets:
         return "python-script"
-    if len(argv) > 3 and argv[1] == "-m":
-        module = argv[2].lower()
+    if len(argv) > start + 2 and argv[start] == "-m":
+        module = argv[start + 1].lower()
         valid_target = (
-            _pytest_target(argv, targets, 3)
+            _pytest_target(argv, targets, start + 2)
             if module == "pytest"
-            else _positional_target(argv, targets, 3)
+            else _positional_target(argv, targets, start + 2)
         )
         if module in _PYTHON_MODULE_RUNNERS and valid_target:
             return f"python-module:{module}"
@@ -147,10 +162,11 @@ def effective_command_argv(
 
     executable = _resolved_executable((root or Path.cwd()).resolve(), argv[0])
     runner = _runner_python(executable)
+    arguments = argv[2:] if argv[1:2] == ("-S",) else argv[1:]
     command = (
-        (str(runner), "-m", "pytest", *argv[1:])
+        (str(runner), "-S", "-m", "pytest", *arguments)
         if adapter.startswith("target-runner:")
-        else (str(runner), *argv[1:])
+        else (str(runner), "-S", *arguments)
     )
     return (*command, *_PYTEST_OVERRIDE) if "pytest" in adapter else command
 
@@ -159,19 +175,32 @@ def controlled_execution_environment(
     adapter: str,
     execution_root: Path | None = None,
     project_root: Path | None = None,
+    runner: Path | None = None,
+    removed_files: tuple[str, ...] = (),
 ) -> dict[str, str]:
     """Bind Python imports to the selected source view and normalize runner inputs."""
 
+    validate_selected_view = execution_root is not None
     execution_root = (execution_root or Path.cwd()).resolve()
+    project_root = (project_root or execution_root).resolve()
     environment = os.environ.copy()
     inherited_python_path = environment.get("PYTHONPATH", "")
     for name in tuple(environment):
         if name.upper().startswith("PYTHON"):
             environment.pop(name)
-    environment["PYTHONPATH"] = _selected_python_path(
+    if validate_selected_view:
+        _validated_source_root(
+            execution_root,
+            Path("."),
+            _runner_view_links(runner, project_root, execution_root),
+        )
+    environment["PYTHONPATH"] = _controlled_python_path(
         inherited_python_path,
-        (project_root or execution_root).resolve(),
+        project_root,
         execution_root,
+        runner,
+        removed_files,
+        validate_selected_view,
     )
     environment["PYTHONNOUSERSITE"] = "1"
     environment["PYTHONUTF8"] = "1"
@@ -182,30 +211,71 @@ def controlled_execution_environment(
     return environment
 
 
-def _selected_python_path(
+def _runner_view_links(
+    runner: Path | None,
+    project_root: Path,
+    execution_root: Path,
+) -> set[str]:
+    if runner is None:
+        return set()
+    try:
+        relative = Path(os.path.abspath(runner)).relative_to(project_root)
+    except ValueError:
+        return set()
+    candidate = execution_root / relative
+    if not candidate.is_symlink():
+        return set()
+    # 显式 runner 已由 toolchain 摘要约束，不再把同一链接当作源码逃逸。
+    return {os.path.normcase(os.path.abspath(candidate))}
+
+
+def _controlled_python_path(
     inherited: str,
     project_root: Path,
     execution_root: Path,
+    runner: Path | None,
+    removed_files: tuple[str, ...],
+    validate_selected_view: bool,
 ) -> str:
-    selected = [
-        execution_root / item for item in _project_python_path(inherited, project_root)
-    ]
-    return os.pathsep.join(dict.fromkeys(str(item) for item in selected))
-
-
-def _project_python_path(inherited: str, project_root: Path) -> list[Path]:
-    project_root = project_root.resolve()
-    selected: list[Path] = []
-    for raw in inherited.split(os.pathsep):
-        if not raw:
-            continue
-        source = Path(raw) if Path(raw).is_absolute() else project_root / raw
-        try:
-            selected.append(source.resolve().relative_to(project_root))
-        except ValueError:
-            continue
-    selected.append(Path("."))
-    return list(dict.fromkeys(selected))
+    selected = _selected_python_path(inherited, project_root, execution_root)
+    if validate_selected_view:
+        _validate_selected_python_path(execution_root, selected)
+    if runner is None:
+        return selected
+    dependencies = _runner_import_paths(runner, project_root)
+    namespaces = _selected_namespace_imports(
+        execution_root,
+        project_root,
+        inherited,
+        removed_files,
+        dependencies,
+    )
+    shield = _import_shield(
+        execution_root,
+        _missing_project_imports(
+            execution_root,
+            project_root,
+            inherited,
+            removed_files,
+        ),
+        namespaces,
+        _removed_namespace_members(
+            execution_root,
+            project_root,
+            inherited,
+            removed_files,
+            namespaces,
+        ),
+    )
+    return os.pathsep.join(
+        dict.fromkeys(
+            (
+                selected,
+                *(str(path) for path in (shield,) if path is not None),
+                *(str(path) for path in dependencies),
+            )
+        )
+    )
 
 
 def _positional_target(
