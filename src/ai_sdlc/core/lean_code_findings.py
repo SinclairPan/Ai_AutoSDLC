@@ -16,6 +16,7 @@ from ai_sdlc.core.lean_code_models import (
     RegressionEvidence,
     stable_finding_signature,
 )
+from ai_sdlc.core.lean_code_policy import STRUCTURED_EXCEPTION_RULES
 from ai_sdlc.core.pr_review_models import FindingResolutionStatus, FindingSeverity
 from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.models.work import WorkType
@@ -259,6 +260,8 @@ def exception_issue(
         return "decision is not approved"
     if target is None or target.rule_id != exception.rule_id:
         return "stable signature does not identify the declared rule finding"
+    if target.rule_id not in STRUCTURED_EXCEPTION_RULES:
+        return "rule does not permit a structured exception"
     if target.path != exception.path or (
         exception.symbol and target.symbol != exception.symbol
     ):

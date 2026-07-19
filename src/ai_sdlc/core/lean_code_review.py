@@ -26,6 +26,8 @@ from ai_sdlc.core.lean_code_review_scope_models import (
     IMPLEMENTATION_CLOSE_PROOF_NAME,
 )
 from ai_sdlc.core.lean_code_review_scope_store import (
+    closed_scope_disposition_blocker,
+    has_stored_lean_disposition,
     has_stored_lean_metadata,
     read_closed_scope,
     read_review_pack,
@@ -205,6 +207,8 @@ def validate_review_run_lean_binding(root: Path, review_run: ReviewRun) -> str:
             unbound_blocker = _unbound_pack_blocker(root, review_run, pack)
             if unbound_blocker is not None:
                 return unbound_blocker
+        elif has_stored_lean_disposition(review_run):
+            return "Stored Lean disposition is incomplete."
         current, blocker = resolve_lean_review_binding(root)
         if blocker:
             return blocker
@@ -247,7 +251,12 @@ def _unbound_pack_blocker(
             review_run.review_pack_path,
             pack.policy_decisions,
         )
-        return blocker or historical_scope_blocker(root, scope)
+        blocker = blocker or historical_scope_blocker(root, scope)
+        if blocker or scope is None:
+            return blocker
+        return closed_scope_disposition_blocker(root, review_run, pack, scope)
+    if has_stored_lean_disposition(review_run) or has_stored_lean_disposition(pack):
+        return "Stored Lean disposition is incomplete relative to its review pack."
     if resolution == "not_required":
         return ""
     return "Stored Lean binding resolution is unsupported." if resolution else None

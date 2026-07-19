@@ -15,6 +15,10 @@ from ai_sdlc.core.lean_code_evaluator import (
     LeanEvaluationOptions,
     evaluate_lean_code,
 )
+from ai_sdlc.core.lean_code_findings import (
+    apply_structured_exceptions,
+    make_finding,
+)
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     LeanException,
@@ -478,6 +482,47 @@ def test_scope_drift_is_blocker(tmp_path: Path) -> None:
     assert report.status == LoopStatus.NEEDS_FIX
 
 
+def test_structured_exception_cannot_waive_scope_integrity_blocker(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/accepted.py", "VALUE = 1\n")
+    _write(tmp_path, "src/unrelated.py", "VALUE = 2\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    first = _evaluate(
+        tmp_path,
+        scope=("src/accepted.py",),
+        snapshot=snapshot,
+    )
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.scope-drift"
+    )
+    exception = _approved_manual_review_exception(
+        tmp_path,
+        first,
+        snapshot,
+        finding,
+        "EX-SCOPE-DRIFT",
+    )
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/accepted.py",),
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
+
+    retained = next(item for item in report.findings if item.rule_id == finding.rule_id)
+    assert retained.resolution == "unresolved"
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
+    assert report.exception_ids == []
+    assert report.risk_accepted is False
+    assert report.status == LoopStatus.NEEDS_FIX
+
+
 def test_bugfix_without_regression_evidence_needs_fix(tmp_path: Path) -> None:
     _init_repo(tmp_path, {"src/bug.py": "def _value():\n    return 0\n"})
     _write(tmp_path, "src/bug.py", "def _value():\n    return 1\n")
@@ -565,6 +610,53 @@ def test_self_reported_bugfix_evidence_without_bound_outputs_is_blocker(
     assert _severities(report, "lean.bugfix-evidence-invalid") == {
         FindingSeverity.BLOCKER
     }
+
+
+def test_structured_exception_cannot_waive_invalid_bugfix_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/bug.py", "def _value():\n    return 1\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    finding = make_finding(
+        "lean.bugfix-evidence-invalid",
+        FindingSeverity.BLOCKER,
+        "src/bug.py",
+        "Regression evidence is invalid.",
+        "invalid",
+        "digest-bound-local-artifacts",
+        "Unverified evidence cannot authorize closure.",
+        "Record genuine RED/GREEN evidence.",
+        "Re-read every evidence digest.",
+        2,
+    )
+    previous_digest = "sha256:" + "1" * 64
+    exception = _exception_for_finding(
+        tmp_path,
+        snapshot,
+        finding,
+        "EX-INVALID-BUGFIX-EVIDENCE",
+        previous_digest,
+    )
+
+    retained, accepted = apply_structured_exceptions(
+        root=tmp_path,
+        exceptions=(exception,),
+        findings=[finding],
+        policy_digest=stable_artifact_digest(LeanPolicy()),
+        snapshot=snapshot,
+        round_number=2,
+        previous_report_digest=previous_digest,
+    )
+
+    assert accepted == []
+    assert retained[0].resolution == "unresolved"
+    assert _severities(
+        type("Report", (), {"findings": retained})(),
+        "lean.exception-invalid",
+    ) == {FindingSeverity.BLOCKER}
 
 
 def test_non_python_semantic_metrics_fail_closed_without_false_zero(
@@ -2517,6 +2609,22 @@ def _severities(report, rule_id: str) -> set[FindingSeverity]:
 
 
 def _approved_manual_review_exception(root, report, snapshot, finding, exception_id):
+    return _exception_for_finding(
+        root,
+        snapshot,
+        finding,
+        exception_id,
+        stable_artifact_digest(report),
+    )
+
+
+def _exception_for_finding(
+    root,
+    snapshot,
+    finding,
+    exception_id,
+    evaluation_digest,
+):
     evidence_ref = f"evidence/{exception_id}.txt"
     _write(root, evidence_ref, "independent manual review accepted the boundary\n")
     return LeanException(
@@ -2534,7 +2642,7 @@ def _approved_manual_review_exception(root, report, snapshot, finding, exception
         base_commit=snapshot.base_commit,
         head_commit=snapshot.head_commit,
         diff_hash=snapshot.diff_hash,
-        evaluation_digest=stable_artifact_digest(report),
+        evaluation_digest=evaluation_digest,
         expires_at="2099-01-01T00:00:00Z",
     )
 

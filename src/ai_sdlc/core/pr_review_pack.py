@@ -10,6 +10,7 @@ import subprocess
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from pathlib import Path
+from typing import cast
 
 from pydantic import BaseModel, ConfigDict
 
@@ -19,7 +20,10 @@ from ai_sdlc.core.lean_code_review_scope import (
     closed_scope_for_binding,
     validate_closed_lean_binding,
 )
-from ai_sdlc.core.lean_code_review_scope_models import LEAN_CLOSED_SCOPE_NAME
+from ai_sdlc.core.lean_code_review_scope_models import (
+    LEAN_CLOSED_SCOPE_NAME,
+    ClosedLeanReviewScope,
+)
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopPolicyProfile
 from ai_sdlc.core.loop_policy import (
@@ -264,7 +268,16 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             next_action="Run Lean evaluation for the exact PR review diff source.",
             source_resolution=source_resolution,
         )
-    lean_closed_scope = lean_scope_decisions.pop("lean_closed_scope", None)
+    lean_disposition = lean_binding
+    if (
+        lean_disposition is None
+        and lean_scope_decisions.get("lean_closed_scope_matches_review") is True
+    ):
+        lean_disposition = options.lean_binding
+    lean_closed_scope = cast(
+        ClosedLeanReviewScope | None,
+        lean_scope_decisions.pop("lean_closed_scope", None),
+    )
     if lean_closed_scope is not None:
         scope_path = store.write_json_artifact(
             review_dir / LEAN_CLOSED_SCOPE_NAME,
@@ -279,6 +292,10 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             }
         )
     options = replace(options, lean_binding=lean_binding)
+    lean_policy_decisions = cast(
+        dict[str, str | bool | int | float],
+        lean_scope_decisions,
+    )
     base_commit = source_resolution.base_commit
     head_commit = source_resolution.head_commit
     changed_files = review_input.changed_files
@@ -461,7 +478,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             "allowed_omitted_file_policy": policy.allowed_omitted_file_policy,
             "incomplete_review_waiver": incomplete_decision.waiver_allowed,
             "lean_binding_required": options.lean_binding is not None,
-            **lean_scope_decisions,
+            **lean_policy_decisions,
             "default_close_mode": policy.default_close_mode,
             "code_egress": options.code_egress,
         },
@@ -518,12 +535,10 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         lean_work_item_id=options.lean_binding.work_item_id
         if options.lean_binding
         else "",
-        lean_risk_accepted=options.lean_binding.risk_accepted
-        if options.lean_binding
+        lean_risk_accepted=lean_disposition.risk_accepted
+        if lean_disposition
         else False,
-        lean_exception_ids=options.lean_binding.exception_ids
-        if options.lean_binding
-        else [],
+        lean_exception_ids=lean_disposition.exception_ids if lean_disposition else [],
     )
     review_pack_path = store.write_json_artifact(
         review_dir / "review-pack.json",
@@ -578,7 +593,14 @@ def scope_lean_review_binding(
         binding.implementation_closed and blocker in _LEAN_SOURCE_IDENTITY_MISMATCHES
     ):
         return binding, blocker, {}
-    return None, "", _lean_scope_decisions("closed_source_mismatch", binding)
+    decisions = _lean_scope_decisions("closed_source_mismatch", binding)
+    decisions["lean_closed_scope_matches_review"] = _closed_source_content_matches(
+        root,
+        binding,
+        source,
+        reviewed_files,
+    )
+    return None, "", decisions
 
 
 def _lean_scope_decisions(
@@ -638,6 +660,40 @@ def lean_source_mismatch(
     ) != sorted(current.changed_files):
         return "Lean source snapshot file coverage does not match the PR review diff source."
     return ""
+
+
+def _closed_source_content_matches(
+    root: Path,
+    binding: LeanReviewBinding,
+    source: SourceAdapterResolution,
+    reviewed_files: list[str],
+) -> bool:
+    """Recognize the same diff after a local source is committed or restaged."""
+    try:
+        evaluated = SourceSnapshot.model_validate_json(
+            (root / binding.snapshot_path).read_bytes()
+        )
+        current = build_source_snapshot(
+            SourceSnapshotOptions(
+                root=root,
+                source_kind=str(source.source_kind),
+                base_ref=source.base_ref,
+                head_ref=source.head_ref,
+                patch_file=source.patch_file,
+            )
+        )
+    except (OSError, ValueError):
+        return False
+    renamed_sources = set(current.renamed_files.values())
+    reviewed_coverage = sorted(
+        path for path in reviewed_files if path not in renamed_sources
+    )
+    return (
+        evaluated.diff_hash == current.diff_hash
+        and evaluated.changed_files == current.changed_files
+        and evaluated.file_digests == current.file_digests
+        and reviewed_coverage == sorted(current.changed_files)
+    )
 
 
 def _git_changed_files(root: Path, base_ref: str, head_ref: str) -> list[str]:

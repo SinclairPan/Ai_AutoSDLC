@@ -1128,6 +1128,238 @@ def test_lean_exception_risk_propagates_to_pr_verdict_and_attestation(
     assert attestation.lean_exception_ids == ["EX-PR"]
 
 
+def test_closed_risk_accepted_scope_preserves_disposition_for_git_range(
+    tmp_path: Path,
+) -> None:
+    loop_id = "impl-risk-source-transition"
+    _close_and_commit_risk_accepted_loop(tmp_path, loop_id)
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="HEAD^",
+            diff_source="local-git-range",
+            provider_id="mock-reviewer",
+            review_id="review-risk-source-transition",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    assert closed.status == PRReviewCommandStatus.CLOSED, closed.blocker
+    assert closed.verdict == "risk_accepted"
+    review_run = ReviewRun.model_validate_json(
+        (Path(started.review_dir) / "review-run.json").read_text(encoding="utf-8")
+    )
+    pack = ReviewPack.model_validate_json(
+        (tmp_path / review_run.review_pack_path).read_text(encoding="utf-8")
+    )
+    assert pack.policy_decisions["lean_binding_resolution"] == (
+        "closed_source_mismatch"
+    )
+    assert pack.policy_decisions["lean_closed_scope_matches_review"] is True
+    assert review_run.lean_report_path == ""
+    assert review_run.lean_risk_accepted is True
+    assert review_run.lean_exception_ids == ["EX-PR"]
+    attestation = ReviewAttestation.model_validate_json(
+        Path(attested.attestation_path).read_text(encoding="utf-8")
+    )
+    assert attestation.lean_risk_accepted is True
+    assert attestation.lean_exception_ids == ["EX-PR"]
+
+
+def test_closed_risk_accepted_scope_does_not_taint_unrelated_review(
+    tmp_path: Path,
+) -> None:
+    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-unrelated")
+    _write(tmp_path, "README.md", "# Unrelated documentation\n")
+
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-risk-unrelated",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    closed = close_pr_review(tmp_path)
+
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    assert closed.status == PRReviewCommandStatus.CLOSED, closed.blocker
+    assert closed.verdict == "fully_clean"
+    review_run = ReviewRun.model_validate_json(
+        (Path(started.review_dir) / "review-run.json").read_text(encoding="utf-8")
+    )
+    pack = ReviewPack.model_validate_json(
+        (tmp_path / review_run.review_pack_path).read_text(encoding="utf-8")
+    )
+    assert pack.policy_decisions["lean_closed_scope_matches_review"] is False
+    assert review_run.lean_risk_accepted is False
+    assert review_run.lean_exception_ids == []
+
+
+def test_closed_scope_blocks_risk_disposition_tamper(tmp_path: Path) -> None:
+    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-tamper")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="HEAD^",
+            diff_source="local-git-range",
+            provider_id="mock-reviewer",
+            review_id="review-risk-tamper",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    review_run_path = Path(started.review_dir) / "review-run.json"
+    review_run = json.loads(review_run_path.read_text(encoding="utf-8"))
+    review_run["lean_risk_accepted"] = False
+    review_run["lean_exception_ids"] = []
+    review_run_path.write_text(json.dumps(review_run), encoding="utf-8")
+
+    closed = close_pr_review(tmp_path)
+
+    assert closed.status == PRReviewCommandStatus.BLOCKED
+    assert "risk disposition changed" in closed.blocker
+
+
+def test_closed_scope_recomputes_matching_source_before_disposition(
+    tmp_path: Path,
+) -> None:
+    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-match-tamper")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="HEAD^",
+            diff_source="local-git-range",
+            provider_id="mock-reviewer",
+            review_id="review-risk-match-tamper",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    _rewrite_closed_disposition(
+        tmp_path,
+        Path(started.review_dir),
+        matches_review=False,
+        risk_accepted=False,
+        exception_ids=[],
+    )
+
+    results = (
+        status_pr_review(tmp_path),
+        close_pr_review(tmp_path),
+        attest_pr_review(tmp_path),
+    )
+
+    assert all(result.status == PRReviewCommandStatus.BLOCKED for result in results)
+    assert all("source-match" in result.blocker for result in results[:2])
+
+
+def test_closed_scope_recomputes_unrelated_source_before_disposition(
+    tmp_path: Path,
+) -> None:
+    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-unrelated-tamper")
+    _write(tmp_path, "README.md", "# Unrelated documentation\n")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-risk-unrelated-tamper",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    _rewrite_closed_disposition(
+        tmp_path,
+        Path(started.review_dir),
+        matches_review=True,
+        risk_accepted=True,
+        exception_ids=["EX-PR"],
+    )
+
+    results = (
+        status_pr_review(tmp_path),
+        close_pr_review(tmp_path),
+        attest_pr_review(tmp_path),
+    )
+
+    assert all(result.status == PRReviewCommandStatus.BLOCKED for result in results)
+    assert all("source-match" in result.blocker for result in results[:2])
+
+
+def test_legacy_closed_scope_without_source_match_decision_remains_usable(
+    tmp_path: Path,
+) -> None:
+    _close_and_commit_risk_accepted_loop(tmp_path, "impl-risk-legacy-pack")
+    _write(tmp_path, "README.md", "# Unrelated documentation\n")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-risk-legacy-pack",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    _rewrite_closed_disposition(
+        tmp_path,
+        Path(started.review_dir),
+        matches_review=None,
+        risk_accepted=False,
+        exception_ids=[],
+    )
+
+    status = status_pr_review(tmp_path)
+    closed = close_pr_review(tmp_path)
+    attested = attest_pr_review(tmp_path)
+
+    assert status.status == PRReviewCommandStatus.STARTED, status.blocker
+    assert closed.status == PRReviewCommandStatus.CLOSED, closed.blocker
+    assert closed.verdict == "fully_clean"
+    assert attested.status == PRReviewCommandStatus.READY, attested.blocker
+
+
+def test_not_required_review_rejects_orphan_lean_disposition(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "README.md", "# Ordinary documentation change\n")
+    started = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="local-unstaged",
+            provider_id="mock-reviewer",
+            review_id="review-orphan-disposition",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert started.status == PRReviewCommandStatus.STARTED, started.blocker
+    review_run_path = Path(started.review_dir) / "review-run.json"
+    review_run = json.loads(review_run_path.read_text(encoding="utf-8"))
+    pack_path = tmp_path / review_run["review_pack_path"]
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    for payload in (pack, review_run):
+        payload["lean_exception_ids"] = ["EX-ORPHAN"]
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+    review_run["review_pack_digest"] = hashlib.sha256(
+        pack_path.read_bytes()
+    ).hexdigest()
+    review_run_path.write_text(json.dumps(review_run), encoding="utf-8")
+
+    results = (
+        status_pr_review(tmp_path),
+        close_pr_review(tmp_path),
+        attest_pr_review(tmp_path),
+    )
+
+    assert all(result.status == PRReviewCommandStatus.BLOCKED for result in results)
+    assert all("incomplete" in result.blocker.lower() for result in results[:2])
+
+
 def _seed_lean_loop(
     root: Path,
     loop_id: str,
@@ -1213,6 +1445,7 @@ def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:
     _write(root, "tests/risk_probe.py", "print('risk path verified')\n")
     _git(root, "add", "tests/risk_probe.py")
     _git(root, "commit", "-m", "add risk probe fixture")
+    _seed_risk_contract(root, loop_id)
     artifacts = implementation_artifacts(root, loop_id)
     store = LoopArtifactStore(root)
     impl_input = ImplementationInput(
@@ -1313,6 +1546,66 @@ def _seed_risk_accepted_loop(root: Path, loop_id: str) -> None:
         LeanCheckOptions(root=root, loop_id=loop_id, exception_paths=(exception_ref,))
     )
     assert second.status == "ready", second
+
+
+def _close_and_commit_risk_accepted_loop(root: Path, loop_id: str) -> None:
+    _seed_risk_accepted_loop(root, loop_id)
+    closed = close_implementation_loop(
+        ImplementationCloseOptions(root=root, loop_id=loop_id, yes=True)
+    )
+    assert closed.closed is True, closed.blocker
+    _git(root, "add", "src/app.py")
+    _git(root, "commit", "-m", "finish risk accepted implementation")
+
+
+def _rewrite_closed_disposition(
+    root: Path,
+    review_dir: Path,
+    *,
+    matches_review: bool | None,
+    risk_accepted: bool,
+    exception_ids: list[str],
+) -> None:
+    review_run_path = review_dir / "review-run.json"
+    review_run = json.loads(review_run_path.read_text(encoding="utf-8"))
+    pack_path = root / review_run["review_pack_path"]
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    if matches_review is None:
+        pack["policy_decisions"].pop("lean_closed_scope_matches_review")
+    else:
+        pack["policy_decisions"]["lean_closed_scope_matches_review"] = matches_review
+    for payload in (pack, review_run):
+        payload["lean_risk_accepted"] = risk_accepted
+        payload["lean_exception_ids"] = exception_ids
+    pack_path.write_text(json.dumps(pack), encoding="utf-8")
+    review_run["review_pack_digest"] = hashlib.sha256(
+        pack_path.read_bytes()
+    ).hexdigest()
+    review_run_path.write_text(json.dumps(review_run), encoding="utf-8")
+
+
+def _seed_risk_contract(root: Path, loop_id: str) -> None:
+    _write(root, "specs/WI-REVIEW/spec.md", "# Acceptance\n\n- AC-1\n")
+    _write(root, "specs/WI-REVIEW/plan.md", "# Plan\n")
+    _write(root, "specs/WI-REVIEW/tasks.md", "# Tasks\n\n- T11\n")
+    _git(root, "add", "specs/WI-REVIEW")
+    _git(root, "commit", "-m", "add implementation contract")
+    artifacts = implementation_artifacts(root, loop_id)
+    LoopArtifactStore(root).write_json_artifact(
+        artifacts.tasks_path,
+        ImplementationTasks(
+            loop_id=loop_id,
+            work_item_id="WI-REVIEW",
+            items=[
+                ImplementationTaskItem(
+                    task_id="T11",
+                    required=True,
+                    files=["src/app.py"],
+                    acceptance=["AC-1"],
+                )
+            ],
+        ),
+    )
 
 
 def _write_close_state(

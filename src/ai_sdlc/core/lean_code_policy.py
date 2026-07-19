@@ -5,11 +5,26 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
 
 from pydantic import BaseModel
 
-from ai_sdlc.core.lean_code_models import LeanPolicy
+from ai_sdlc.core.lean_code_models import LeanEnforcementMode, LeanPolicy
 from ai_sdlc.core.loop_policy import load_loop_policy
+
+STRUCTURED_EXCEPTION_RULES = frozenset(
+    {
+        "lean.bugfix-regression",
+        "lean.classification-unknown",
+        "lean.file-budget",
+        "lean.function-budget",
+        "lean.function-risk",
+        "lean.generated-scope",
+        "lean.invocation-boundary",
+        "lean.public-callers",
+        "lean.semantic-capability",
+    }
+)
 
 
 def load_lean_policy(root: Path) -> LeanPolicy:
@@ -17,7 +32,7 @@ def load_lean_policy(root: Path) -> LeanPolicy:
 
     source = load_loop_policy(root)
     return LeanPolicy(
-        enforcement_mode=source.lean_enforcement_mode,
+        enforcement_mode=LeanEnforcementMode(source.lean_enforcement_mode),
         max_rounds=source.lean_max_rounds,
         file_line_budget=source.lean_file_line_budget,
         function_line_budget=source.lean_function_line_budget,
@@ -43,7 +58,7 @@ def stable_artifact_digest(model: BaseModel) -> str:
     return f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
 
 
-def _without_provenance(value):
+def _without_provenance(value: Any) -> Any:
     if isinstance(value, dict):
         return {
             key: _without_provenance(item)
@@ -55,4 +70,8 @@ def _without_provenance(value):
     return value
 
 
-__all__ = ["load_lean_policy", "stable_artifact_digest"]
+__all__ = [
+    "STRUCTURED_EXCEPTION_RULES",
+    "load_lean_policy",
+    "stable_artifact_digest",
+]
