@@ -471,6 +471,22 @@ def test_unstaged_symlink_digest_and_python_source_use_link_target_bytes(
     assert second.file_digests["data/link.py"] == expected_digest
 
 
+def test_unstaged_broken_python_symlink_remains_source_entry(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    link = tmp_path / "data" / "link.py"
+    link.parent.mkdir(parents=True)
+    try:
+        link.symlink_to("../missing.py")
+    except OSError:
+        pytest.skip("symlinks are unavailable in this environment")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+
+    assert python_sources(tmp_path, snapshot)["data/link.py"] == b"../missing.py"
+
+
 def test_staged_snapshot_ignores_default_user_global_attributes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -525,7 +541,9 @@ def test_patch_snapshot_reads_diff_attributes_from_selected_patch(
     _write(tmp_path, "src/app.py", "print('ordinary source')\n")
     _git(tmp_path, "add", ".gitattributes", "assets/payload.dat", "src/app.py")
     patch = _git(tmp_path, "diff", "--cached", "--binary", "--no-ext-diff")
-    _write(tmp_path, "change.patch", patch + "\n")
+    (tmp_path / "change.patch").write_bytes(
+        (patch + "\n").replace("\n", "\r\n").encode("utf-8")
+    )
     _write(tmp_path, ".gitattributes", "# live worktree override\n")
     _write(tmp_path, ".git/info/attributes", "*.dat diff\n")
 

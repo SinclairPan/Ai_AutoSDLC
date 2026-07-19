@@ -59,7 +59,8 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
     return {
         path: _worktree_blob(root, path)
         for path in sorted(paths)
-        if path.endswith(".py") and (root / path).is_file()
+        if path.endswith(".py")
+        and ((root / path).is_symlink() or (root / path).is_file())
     }
 
 
@@ -510,17 +511,33 @@ def _patch_index(
 ) -> Iterator[dict[str, str]]:
     with tempfile.TemporaryDirectory(prefix="ai-sdlc-patch-") as directory:
         env = {**os.environ, "GIT_INDEX_FILE": str(Path(directory) / "index")}
-        _git(root, "read-tree", base_commit or "HEAD", env=env)
-        _git(
-            root,
-            "apply",
-            "--cached",
-            "--binary",
-            "--whitespace=nowarn",
-            str(patch_path),
-            env=env,
-        )
+        base = base_commit or "HEAD"
+        _git(root, "read-tree", base, env=env)
+        try:
+            _apply_patch(root, patch_path, env)
+        except ValueError:
+            payload = patch_path.read_bytes()
+            normalized = payload.replace(b"\r\n", b"\n")
+            if normalized == payload:
+                raise
+            # Windows 文本传输可能只改变 patch 载体换行；索引内容仍按 Git patch 语义生成。
+            normalized_path = Path(directory) / "normalized.patch"
+            normalized_path.write_bytes(normalized)
+            _git(root, "read-tree", base, env=env)
+            _apply_patch(root, normalized_path, env)
         yield env
+
+
+def _apply_patch(root: Path, path: Path, env: dict[str, str]) -> None:
+    _git(
+        root,
+        "apply",
+        "--cached",
+        "--binary",
+        "--whitespace=nowarn",
+        str(path),
+        env=env,
+    )
 
 
 def _revision_blob(root: Path, revision: str, path: str) -> bytes:

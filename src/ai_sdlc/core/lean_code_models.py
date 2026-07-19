@@ -219,6 +219,7 @@ class FunctionMetric(BaseModel):
     public: bool = False
     is_new: bool = False
     capability: MetricCapability = MetricCapability.UNSUPPORTED
+    invocation_boundary: str = ""
     fingerprint: str = ""
     duplicate_count: int = Field(default=1, ge=1)
 

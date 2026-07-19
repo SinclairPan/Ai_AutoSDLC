@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import os
 import platform
 import shutil
 import sys
 from pathlib import Path
+
+from ai_sdlc.core.lean_code_runner import _probe_distributions, _runner_python
 
 
 def safe_project_path(root: Path, reference: str) -> Path:
@@ -73,7 +76,7 @@ def resolve_execution_adapter(
     targets = _target_indexes(root, argv, reference)
     if not targets:
         return ""
-    executable = Path(argv[0]).name.lower().removesuffix(".exe")
+    executable = _command_name(argv[0])
     if executable.startswith(("python", "pypy")):
         return _python_adapter(argv, targets)
     if executable in _TARGET_RUNNERS and _pytest_target(argv, targets, 1):
@@ -135,20 +138,74 @@ def _pytest_target(argv: tuple[str, ...], targets: set[int], start: int) -> bool
     return sum(index in targets for index in range(start, len(argv))) == 1
 
 
-def effective_command_argv(adapter: str, argv: tuple[str, ...]) -> tuple[str, ...]:
-    """Add a recorded override that neutralizes implicit pytest addopts."""
+def effective_command_argv(
+    adapter: str,
+    argv: tuple[str, ...],
+    root: Path | None = None,
+) -> tuple[str, ...]:
+    """Execute through the selected Python and neutralize implicit pytest addopts."""
 
-    return (*argv, *_PYTEST_OVERRIDE) if "pytest" in adapter else argv
+    executable = _resolved_executable((root or Path.cwd()).resolve(), argv[0])
+    runner = _runner_python(executable)
+    command = (
+        (str(runner), "-m", "pytest", *argv[1:])
+        if adapter.startswith("target-runner:")
+        else (str(runner), *argv[1:])
+    )
+    return (*command, *_PYTEST_OVERRIDE) if "pytest" in adapter else command
 
 
-def controlled_execution_environment(adapter: str) -> dict[str, str]:
-    """Return the inherited environment with implicit pytest selectors disabled."""
+def controlled_execution_environment(
+    adapter: str,
+    execution_root: Path | None = None,
+    project_root: Path | None = None,
+) -> dict[str, str]:
+    """Bind Python imports to the selected source view and normalize runner inputs."""
 
+    execution_root = (execution_root or Path.cwd()).resolve()
     environment = os.environ.copy()
+    inherited_python_path = environment.get("PYTHONPATH", "")
+    for name in tuple(environment):
+        if name.upper().startswith("PYTHON"):
+            environment.pop(name)
+    environment["PYTHONPATH"] = _selected_python_path(
+        inherited_python_path,
+        (project_root or execution_root).resolve(),
+        execution_root,
+    )
+    environment["PYTHONNOUSERSITE"] = "1"
+    environment["PYTHONUTF8"] = "1"
+    environment["PYTHONIOENCODING"] = "utf-8"
     if "pytest" in adapter:
         environment["PYTEST_ADDOPTS"] = ""
         environment["PYTEST_PLUGINS"] = ""
     return environment
+
+
+def _selected_python_path(
+    inherited: str,
+    project_root: Path,
+    execution_root: Path,
+) -> str:
+    selected = [
+        execution_root / item for item in _project_python_path(inherited, project_root)
+    ]
+    return os.pathsep.join(dict.fromkeys(str(item) for item in selected))
+
+
+def _project_python_path(inherited: str, project_root: Path) -> list[Path]:
+    project_root = project_root.resolve()
+    selected: list[Path] = []
+    for raw in inherited.split(os.pathsep):
+        if not raw:
+            continue
+        source = Path(raw) if Path(raw).is_absolute() else project_root / raw
+        try:
+            selected.append(source.resolve().relative_to(project_root))
+        except ValueError:
+            continue
+    selected.append(Path("."))
+    return list(dict.fromkeys(selected))
 
 
 def _positional_target(
@@ -171,12 +228,12 @@ def _positional_target(
 def execution_toolchain(root: Path, command: str) -> tuple[str, str, str, str]:
     """Fingerprint the executable bytes and common dependency lock inputs."""
 
-    resolved = str(Path(shutil.which(command) or command).resolve())
-    executable = Path(resolved)
+    executable = _resolved_executable(root, command)
+    resolved = str(executable)
     executable_digest = (
         payload_digest(executable.read_bytes()) if executable.is_file() else ""
     )
-    environment = _environment_fingerprint(root)
+    environment = _environment_fingerprint(root, executable)
     payload = "|".join(
         (platform.platform(), sys.version, resolved, executable_digest, environment)
     )
@@ -188,7 +245,8 @@ def execution_toolchain(root: Path, command: str) -> tuple[str, str, str, str]:
     )
 
 
-def _environment_fingerprint(root: Path) -> str:
+def _environment_fingerprint(root: Path, executable: Path) -> str:
+    root = root.resolve()
     names = (
         "uv.lock",
         "poetry.lock",
@@ -206,7 +264,50 @@ def _environment_fingerprint(root: Path) -> str:
         for name in names
         if (root / name).is_file()
     ]
+    project_path = ",".join(
+        item.as_posix()
+        for item in _project_python_path(os.environ.get("PYTHONPATH", ""), root)
+    )
+    tokens.append(f"pythonpath:{project_path}")
+    tokens.append(f"installed:{_installed_distributions_fingerprint(executable)}")
     return payload_digest("|".join(tokens).encode("utf-8"))
+
+
+def _installed_distributions_fingerprint(executable: Path) -> str:
+    runner = _runner_python(executable)
+    if os.path.normcase(os.path.abspath(runner)) != os.path.normcase(
+        os.path.abspath(sys.executable)
+    ):
+        return _probe_distributions(runner)
+    tokens = sorted(
+        _distribution_token(item) for item in importlib.metadata.distributions()
+    )
+    payload = "|".join((sys.executable, sys.prefix, sys.base_prefix, *tokens))
+    return payload_digest(payload.encode("utf-8"))
+
+
+def _distribution_token(distribution: importlib.metadata.Distribution) -> str:
+    raw_name = distribution.metadata["Name"]
+    name = raw_name.casefold() if raw_name else ""
+    version = distribution.version
+    record = distribution.read_text("RECORD") or ""
+    direct_url = distribution.read_text("direct_url.json") or ""
+    metadata = distribution.read_text("METADATA") or ""
+    binding = payload_digest("|".join((record, direct_url, metadata)).encode("utf-8"))
+    return f"{name}=={version}:{binding}"
+
+
+def _resolved_executable(root: Path, command: str) -> Path:
+    located = shutil.which(command)
+    candidate = Path(located) if located else Path(command)
+    if not candidate.is_absolute():
+        candidate = root / candidate
+    return Path(os.path.abspath(candidate))
+
+
+def _command_name(command: str) -> str:
+    name = Path(command).name.lower()
+    return Path(name).stem if Path(name).suffix in {".bat", ".cmd", ".exe"} else name
 
 
 __all__ = [

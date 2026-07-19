@@ -11,12 +11,14 @@ from ai_sdlc.core.lean_code_call_finder import (
     _function_calls_target,
 )
 from ai_sdlc.core.lean_code_classification import classify_file
+from ai_sdlc.core.lean_code_dynamic_refs import _potential_dynamic_reference_names
 from ai_sdlc.core.lean_code_flow import (
     ReferenceState,
     _merge_reference_states,
     _pattern_bound_names,
     _references_target_class,
 )
+from ai_sdlc.core.lean_code_imports import _target_import_names
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     FileMetric,
@@ -33,6 +35,13 @@ from ai_sdlc.core.source_snapshot_view import python_sources
 
 _ModuleTarget = tuple[str, str, str, str]
 _ExceptionStateStacks = tuple[list[ReferenceState], ...]
+_FunctionNode = ast.FunctionDef | ast.AsyncFunctionDef
+_SourceShape = tuple[
+    dict[ast.AST, ast.AST],
+    tuple[_FunctionNode, ...],
+    dict[int, tuple[ast.Import | ast.ImportFrom, ...]],
+    set[str],
+]
 
 
 def attach_python_callers(
@@ -50,6 +59,7 @@ def attach_python_callers(
     if not targets:
         return
     callers: dict[tuple[str, str], set[str]] = {target: set() for target in targets}
+    boundaries: set[tuple[str, str]] = set()
     for path, payload in python_sources(root, snapshot).items():
         if (
             classify_file(path, payload, False)
@@ -60,32 +70,71 @@ def attach_python_callers(
             tree = ast.parse(payload.decode("utf-8", errors="strict"), filename=path)
         except (SyntaxError, UnicodeDecodeError):
             continue
+        shape = _source_shape(tree)
         for target in targets:
-            _collect_target_callers(path, tree, target, callers[target])
+            if _collect_target_callers(path, tree, shape, target, callers[target]):
+                boundaries.add(target)
     for target, function in targets.items():
         function.caller_count = len(callers[target])
+        if target in boundaries and not function.invocation_boundary:
+            function.invocation_boundary = "dynamic-reference"
 
 
 def _collect_target_callers(
     path: str,
     tree: ast.Module,
+    shape: _SourceShape,
     target: tuple[str, str],
     callers: set[str],
-) -> None:
+) -> bool:
     target_path, target_symbol = target
     target_class, _, target_name = target_symbol.rpartition(".")
     direct_names, module_names, class_names = _target_module_names(
         tree.body, path, target_path, target_class, target_name
     )
+    parents, functions, scope_imports, dynamic_names = shape
+    _collect_function_callers(
+        parents,
+        functions,
+        scope_imports,
+        (path, target_path, target_class, target_name),
+        direct_names,
+        module_names,
+        class_names,
+        callers,
+    )
+    return target_name in dynamic_names
+
+
+def _source_shape(tree: ast.Module) -> _SourceShape:
     parents = {
         child: parent
         for parent in ast.walk(tree)
         for child in ast.iter_child_nodes(parent)
     }
+    functions = tuple(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    )
+    scope_imports = {id(node): tuple(_scope_imports(node)) for node in functions}
+    dynamic_names = _potential_dynamic_reference_names(tree, parents)
+    return parents, functions, scope_imports, dynamic_names
+
+
+def _collect_function_callers(
+    parents: dict[ast.AST, ast.AST],
+    functions: tuple[_FunctionNode, ...],
+    scope_imports: dict[int, tuple[ast.Import | ast.ImportFrom, ...]],
+    target: _ModuleTarget,
+    direct_names: set[str],
+    module_names: set[str],
+    class_names: set[str],
+    callers: set[str],
+) -> None:
+    path, target_path, target_class, target_name = target
     # 嵌套函数作为独立 caller 评估，避免把同一次调用重复计入外层函数。
-    for node in ast.walk(tree):
-        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            continue
+    for node in functions:
         owner_class = _enclosing_class(node, parents)
         inherited_instances = _enclosing_target_instances(
             node, parents, class_names, target_class
@@ -94,9 +143,8 @@ def _collect_target_callers(
             id(import_node): _target_import_names(
                 [import_node], path, target_path, target_class, target_name
             )
-            for import_node in _scope_imports(node)
+            for import_node in scope_imports[id(node)]
         }
-        caller = f"{path}:{node.name}:{node.lineno}"
         if _function_calls_target(
             node,
             direct_names,
@@ -109,7 +157,7 @@ def _collect_target_callers(
         ) and not _is_target_definition(
             path, target_path, node.name, target_name, owner_class, target_class
         ):
-            callers.add(caller)
+            callers.add(f"{path}:{node.name}:{node.lineno}")
 
 
 def _target_module_names(
@@ -276,80 +324,6 @@ def _add_target_definition(
         and node.name == target_name
     ):
         direct.add(node.name)
-
-
-def _target_import_names(
-    nodes: Sequence[ast.stmt],
-    caller_path: str,
-    target_path: str,
-    target_class: str,
-    target_name: str,
-) -> tuple[set[str], set[str], set[str]]:
-    modules_for_target = _module_names(target_path)
-    direct: set[str] = set()
-    modules: set[str] = set()
-    classes: set[str] = set()
-    for node in nodes:
-        if isinstance(node, ast.ImportFrom):
-            imported_from = _import_from_modules(caller_path, node)
-            if imported_from & modules_for_target:
-                direct.update(
-                    alias.asname or alias.name
-                    for alias in node.names
-                    if not target_class and alias.name == target_name
-                )
-                classes.update(
-                    alias.asname or alias.name
-                    for alias in node.names
-                    if target_class and alias.name == target_class
-                )
-            modules.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if any(
-                    f"{module}.{alias.name}" in modules_for_target
-                    for module in imported_from
-                )
-            )
-        elif isinstance(node, ast.Import):
-            modules.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if alias.name in modules_for_target
-            )
-    if target_class:
-        classes.update(f"{module}.{target_class}" for module in modules)
-    call_modules = modules if not target_class else set()
-    return direct, call_modules, classes
-
-
-def _import_from_modules(path: str, node: ast.ImportFrom) -> set[str]:
-    if node.level == 0:
-        return {node.module or ""}
-    resolved: set[str] = set()
-    for caller_module in _module_names(path):
-        package = caller_module.split(".")
-        if not path.replace("\\", "/").endswith("/__init__.py"):
-            package = package[:-1]
-        keep = max(0, len(package) - node.level + 1)
-        parts = [*package[:keep]]
-        if node.module:
-            parts.extend(node.module.split("."))
-        resolved.add(".".join(parts))
-    return resolved
-
-
-def _module_names(path: str) -> set[str]:
-    normalized = path.replace("\\", "/")
-    if normalized.endswith("/__init__.py"):
-        normalized = normalized[: -len("/__init__.py")]
-    elif normalized.endswith(".py"):
-        normalized = normalized[:-3]
-    module = normalized.strip("/").replace("/", ".")
-    names = {module}
-    if module.startswith("src."):
-        names.add(module.removeprefix("src."))
-    return names
 
 
 def _is_target_definition(

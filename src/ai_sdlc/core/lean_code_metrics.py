@@ -11,6 +11,7 @@ from pathlib import Path
 
 from ai_sdlc.core.lean_code_callers import attach_python_callers
 from ai_sdlc.core.lean_code_classification import classify_file
+from ai_sdlc.core.lean_code_dynamic_refs import _invocation_boundary
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     FileMetric,
@@ -174,6 +175,7 @@ def _function_metric(
         public=not symbol.split(".")[-1].startswith("_"),
         is_new=base is None,
         capability=MetricCapability.EXACT,
+        invocation_boundary=_invocation_boundary(node),
         fingerprint=_function_fingerprint(node),
     )
 

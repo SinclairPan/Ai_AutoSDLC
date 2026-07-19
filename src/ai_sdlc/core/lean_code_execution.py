@@ -15,10 +15,7 @@ from ai_sdlc.core.implementation_store import (
     repo_relative_path,
 )
 from ai_sdlc.core.lean_code_environment import (
-    controlled_execution_environment,
-    effective_command_argv,
     execution_toolchain,
-    optional_file_digest,
     payload_digest,
     resolve_execution_adapter,
     safe_project_path,
@@ -28,9 +25,12 @@ from ai_sdlc.core.lean_code_execution_models import (
     LeanExecutionOptions,
     LeanExecutionResult,
 )
+from ai_sdlc.core.lean_code_execution_prepare import (
+    _invoke_execution,
+    _prepare_execution,
+)
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
-from ai_sdlc.core.loop_models import utc_now_iso
 from ai_sdlc.core.source_snapshot import (
     SourceSnapshot,
     SourceSnapshotOptions,
@@ -100,6 +100,7 @@ def validate_execution_receipt(
 ) -> tuple[LeanCommandExecutionReceipt | None, str]:
     """Re-read a receipt and every referenced byte artifact fail-closed."""
 
+    root = root.resolve()
     try:
         path = safe_project_path(root, reference)
         raw = path.read_bytes()
@@ -123,50 +124,20 @@ def _execute_and_persist(
     receipt_id: str,
     run_dir: Path,
 ) -> LeanExecutionResult:
-    run_cwd = safe_project_path(execution_root, options.cwd)
-    test_candidate = execution_root / options.test_source_ref
-    if test_candidate.is_symlink():
-        raise ValueError(
-            "test source must be a regular file in the selected source view"
-        )
-    test_source = safe_project_path(execution_root, options.test_source_ref)
-    if not test_source.is_file():
-        raise ValueError("test source is unavailable in the selected source view")
-    test_source_digest = optional_file_digest(
+    run_cwd, snapshot, adapter, command_argv, test_source_digest = _prepare_execution(
         execution_root,
-        options.test_source_ref,
+        options,
+        # 准备阶段同时冻结测试源码摘要，避免执行后替换证据文件。
+        snapshot,
     )
-    snapshot = snapshot.model_copy(
-        update={
-            "file_digests": {
-                **snapshot.file_digests,
-                options.test_source_ref: test_source_digest,
-            }
-        }
-    )
-    adapter = resolve_execution_adapter(
+    completed, started_at, finished_at = _invoke_execution(
+        command_argv,
+        run_cwd,
+        adapter,
         execution_root,
-        options.command_argv,
-        options.test_source_ref,
+        root,
+        options.timeout_seconds,
     )
-    if not adapter:
-        raise ValueError(
-            "supported runner command target must resolve inside the selected source view"
-        )
-    command_argv = effective_command_argv(adapter, options.command_argv)
-    started_at = utc_now_iso()
-    completed = subprocess.run(
-        list(command_argv),
-        cwd=run_cwd,
-        env=controlled_execution_environment(adapter),
-        capture_output=True,
-        check=False,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=options.timeout_seconds,
-    )
-    finished_at = utc_now_iso()
     output = _combined_output(completed.stdout, completed.stderr)
     accepted, issue = _outcome(options, completed.returncode, output)
     receipt, receipt_path, output_path = _write_receipt(
@@ -325,15 +296,29 @@ def _receipt_content_issue(
         or not receipt.runner_adapter
     ):
         return "execution runner adapter is invalid or stale"
-    if execution_toolchain(root, receipt.command_argv[0]) != (
+    toolchain_issue = _toolchain_issue(root, receipt)
+    if toolchain_issue:
+        return toolchain_issue
+    accepted, issue = _outcome_from_receipt(receipt, output)
+    return issue if not accepted else ""
+
+
+def _toolchain_issue(root: Path, receipt: LeanCommandExecutionReceipt) -> str:
+    try:
+        current = execution_toolchain(root, receipt.command_argv[0])
+    except (OSError, ValueError) as exc:
+        return f"execution toolchain or dependency environment is unavailable: {exc}"
+    recorded = (
         receipt.toolchain_fingerprint,
         receipt.toolchain_executable,
         receipt.toolchain_executable_digest,
         receipt.environment_fingerprint,
-    ):
-        return "execution toolchain or dependency environment is stale"
-    accepted, issue = _outcome_from_receipt(receipt, output)
-    return issue if not accepted else ""
+    )
+    return (
+        "execution toolchain or dependency environment is stale"
+        if current != recorded
+        else ""
+    )
 
 
 def _snapshot_file_digest(

@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.metadata
 import json
+import os
 import shutil
 import subprocess
 import sys
+import venv
 from pathlib import Path
 
+import pytest
+
+import ai_sdlc.core.lean_code_runner as lean_code_runner
 from ai_sdlc.core.implementation_loop import (
     close_implementation_loop,
     record_implementation_progress,
@@ -25,8 +31,16 @@ from ai_sdlc.core.implementation_models import (
     ImplementationTaskStatus,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
-from ai_sdlc.core.lean_code_environment import resolve_execution_adapter
-from ai_sdlc.core.lean_code_execution import LeanExecutionOptions, run_lean_command
+from ai_sdlc.core.lean_code_environment import (
+    controlled_execution_environment,
+    execution_toolchain,
+    resolve_execution_adapter,
+)
+from ai_sdlc.core.lean_code_execution import (
+    LeanExecutionOptions,
+    run_lean_command,
+    validate_execution_receipt,
+)
 from ai_sdlc.core.lean_code_models import (
     LeanEvaluationInput,
     LeanEvaluationReport,
@@ -372,6 +386,407 @@ def test_documented_whole_file_pytest_targets_execute(tmp_path: Path) -> None:
             )
         )
         assert result.status == "ready", result
+        if Path(command[0]).name.lower().startswith(("pytest", "py.test")):
+            assert result.command_argv[1:3] == ["-m", "pytest"]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX runner shim regression")
+def test_python_named_script_cannot_forge_execution_receipt(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    runner = tmp_path / "bin" / "python-fake"
+    root.mkdir()
+    _seed_enabled_loop(root, "impl-fake-python")
+    test_source = "tests/failing_probe.py"
+    _write(root, test_source, "raise SystemExit(9)\n")
+    _write(runner.parent, runner.name, "#!/bin/sh\nprintf 'sha256:%064d\\n' 0\n")
+    runner.chmod(0o755)
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id="impl-fake-python",
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "blocked"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX console-script regression")
+def test_fake_pytest_entrypoint_cannot_ignore_failing_source(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    runner = tmp_path / "bin" / "pytest"
+    root.mkdir()
+    _seed_enabled_loop(root, "impl-fake-pytest")
+    test_source = "tests/failing_test.py"
+    _write(root, test_source, "def test_failure():\n    assert False\n")
+    _write(runner.parent, runner.name, f"#!{sys.executable}\nraise SystemExit(0)\n")
+    runner.chmod(0o755)
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id="impl-fake-pytest",
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source, "-q"),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "blocked"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX shell shim regression")
+def test_shell_pytest_shim_resolves_selected_python(
+    tmp_path: Path, monkeypatch
+) -> None:
+    root = tmp_path / "project"
+    bin_dir = tmp_path / "bin"
+    python_shim = bin_dir / "python"
+    pytest_shim = bin_dir / "pytest"
+    root.mkdir()
+    _seed_enabled_loop(root, "impl-shell-pytest")
+    test_source = "tests/passing_test.py"
+    _write(root, test_source, "def test_value():\n    assert True\n")
+    _write(
+        bin_dir,
+        python_shim.name,
+        f'#!/bin/sh\nexec {str(sys.executable)!r} "$@"\n',
+    )
+    _write(
+        bin_dir,
+        pytest_shim.name,
+        '#!/bin/sh\nexec "$(dirname "$0")/python" -m pytest "$@"\n',
+    )
+    python_shim.chmod(0o755)
+    pytest_shim.chmod(0o755)
+    monkeypatch.setenv("PATH", os.pathsep.join((str(bin_dir), os.environ["PATH"])))
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id="impl-shell-pytest",
+            purpose="targeted-verification",
+            command_argv=(str(pytest_shim), test_source, "-q"),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "ready", result
+
+
+def test_controlled_execution_ignores_external_python_import_paths(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    external = tmp_path / "external"
+    loop_id = "impl-isolated-python-path"
+    root.mkdir()
+    _seed_enabled_loop(root, loop_id)
+    _write(root, "subject.py", "VALUE = 'selected-source-view'\n")
+    _write(external, "subject.py", "VALUE = 'external-checkout'\n")
+    test_source = "tests/import_path_probe.py"
+    _write(
+        root,
+        test_source,
+        "from subject import VALUE\nassert VALUE == 'selected-source-view', VALUE\n",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(external))
+    monkeypatch.setenv("PYTHONHOME", str(external))
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "ready", result
+
+
+def test_controlled_execution_captures_utf8_stdout(tmp_path: Path) -> None:
+    loop_id = "impl-unicode-output"
+    _seed_enabled_loop(tmp_path, loop_id)
+    test_source = "tests/unicode_output.py"
+    _write(tmp_path, test_source, "print('中文😀')\n")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+
+    assert result.status == "ready", result
+    assert "中文😀" in (tmp_path / result.output_path).read_text("utf-8")
+
+
+def test_controlled_environment_rebuilds_python_startup_boundary(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    for name in (
+        "PYTHONHOME",
+        "PYTHONINSPECT",
+        "PYTHONSTARTUP",
+        "PYTHONUSERBASE",
+    ):
+        monkeypatch.setenv(name, "external-value")
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path.parent / "external-path"))
+
+    environment = controlled_execution_environment("python-script", tmp_path)
+
+    assert environment["PYTHONPATH"] == str(tmp_path.resolve())
+    assert environment["PYTHONNOUSERSITE"] == "1"
+    assert environment["PYTHONUTF8"] == "1"
+    assert environment["PYTHONIOENCODING"] == "utf-8"
+    assert all(
+        name not in environment
+        for name in ("PYTHONHOME", "PYTHONINSPECT", "PYTHONSTARTUP", "PYTHONUSERBASE")
+    )
+
+
+def test_controlled_environment_keeps_legacy_single_argument_api(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("PYTEST_ADDOPTS", "-k external")
+
+    environment = controlled_execution_environment("python-module:pytest")
+
+    assert environment["PYTEST_ADDOPTS"] == ""
+    assert environment["PYTHONPATH"]
+
+
+def test_controlled_environment_maps_project_pythonpath_to_selected_view(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    project_root = tmp_path / "project"
+    execution_root = tmp_path / "selected-view"
+    external = tmp_path / "external"
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join((str(project_root / "src"), str(external))),
+    )
+
+    environment = controlled_execution_environment(
+        "python-script",
+        execution_root,
+        project_root,
+    )
+
+    assert environment["PYTHONPATH"].split(os.pathsep) == [
+        str(execution_root / "src"),
+        str(execution_root),
+    ]
+
+
+def test_toolchain_fingerprint_changes_with_installed_distribution(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    class Distribution:
+        def __init__(self, version: str) -> None:
+            self.version = version
+            self.metadata = {"Name": "example-runner"}
+
+        def read_text(self, filename: str) -> str | None:
+            return (
+                "example-runner.py,sha256=bound,1\n" if filename == "RECORD" else None
+            )
+
+    monkeypatch.setattr(
+        importlib.metadata,
+        "distributions",
+        lambda: [Distribution("1.0")],
+    )
+    first = execution_toolchain(tmp_path, sys.executable)
+    monkeypatch.setattr(
+        importlib.metadata,
+        "distributions",
+        lambda: [Distribution("2.0")],
+    )
+
+    second = execution_toolchain(tmp_path, sys.executable)
+
+    assert first[0] != second[0]
+    assert first[3] != second[3]
+
+
+def test_receipt_fingerprint_tracks_actual_runner_environment(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    runner_root = tmp_path / "runner"
+    root.mkdir()
+    loop_id = "impl-runner-environment"
+    _seed_enabled_loop(root, loop_id)
+    test_source = "tests/runner_environment_probe.py"
+    _write(root, test_source, "print('runner environment verified')\n")
+    venv.EnvBuilder(
+        with_pip=False,
+        symlinks=sys.platform != "win32",
+    ).create(runner_root)
+    runner = (
+        runner_root / "Scripts" / "python.exe"
+        if sys.platform == "win32"
+        else runner_root / "bin" / "python"
+    )
+    purelib_result = subprocess.run(
+        [
+            str(runner),
+            "-I",
+            "-c",
+            "import sysconfig; print(sysconfig.get_paths()['purelib'])",
+        ],
+        capture_output=True,
+        check=True,
+        text=True,
+    )
+    purelib = Path(purelib_result.stdout.strip())
+    first_dist = purelib / "probe_dep-1.0.dist-info"
+    _write(first_dist, "METADATA", "Name: probe-dep\nVersion: 1.0\n")
+    _write(first_dist, "RECORD", "probe_dep.py,sha256=first,1\n")
+
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=root,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+    assert result.status == "ready", result
+    shutil.rmtree(first_dist)
+    second_dist = purelib / "probe_dep-2.0.dist-info"
+    _write(second_dist, "METADATA", "Name: probe-dep\nVersion: 2.0\n")
+    _write(second_dist, "RECORD", "probe_dep.py,sha256=second,1\n")
+
+    validated, issue = validate_execution_receipt(
+        root,
+        result.receipt_path,
+        expected_digest=result.receipt_digest,
+    )
+
+    assert validated is None
+    assert "dependency environment" in issue
+
+
+def test_receipt_fingerprint_tracks_project_pythonpath_selection(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    loop_id = "impl-project-pythonpath"
+    _seed_enabled_loop(tmp_path, loop_id)
+    _write(tmp_path, "src_a/subject.py", "VALUE = 'selected'\n")
+    _write(tmp_path, "src_b/subject.py", "VALUE = 'other'\n")
+    test_source = "tests/project_pythonpath_probe.py"
+    _write(
+        tmp_path,
+        test_source,
+        "from subject import VALUE\nassert VALUE == 'selected', VALUE\n",
+    )
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "src_a"))
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+    assert result.status == "ready", result
+    monkeypatch.setenv("PYTHONPATH", str(tmp_path / "src_b"))
+
+    validated, issue = validate_execution_receipt(
+        tmp_path,
+        result.receipt_path,
+        expected_digest=result.receipt_digest,
+    )
+
+    assert validated is None
+    assert "dependency environment" in issue
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX symlink root regression")
+def test_receipt_validation_canonicalizes_equivalent_project_root(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    root = tmp_path / "project"
+    alias = tmp_path / "project-alias"
+    root.mkdir()
+    _seed_enabled_loop(root, "impl-root-alias")
+    _write(root, "src/subject.py", "VALUE = 1\n")
+    test_source = "tests/root_alias_probe.py"
+    _write(root, test_source, "from subject import VALUE\nassert VALUE == 1\n")
+    alias.symlink_to(root, target_is_directory=True)
+    monkeypatch.setenv("PYTHONPATH", str(alias / "src"))
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=alias,
+            loop_id="impl-root-alias",
+            purpose="targeted-verification",
+            command_argv=(sys.executable, test_source),
+            test_source_ref=test_source,
+        )
+    )
+    assert result.status == "ready", result
+
+    validated, issue = validate_execution_receipt(
+        alias,
+        result.receipt_path,
+        expected_digest=result.receipt_digest,
+    )
+
+    assert validated is not None, issue
+    assert issue == ""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX alternate runner regression")
+def test_distribution_probe_timeout_fails_closed_without_escaping(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    runner = tmp_path / "python-alternate"
+    runner.symlink_to(sys.executable)
+    _seed_enabled_loop(tmp_path, "impl-probe-timeout")
+    test_source = "tests/probe_timeout.py"
+    _write(tmp_path, test_source, "print('verified')\n")
+    result = run_lean_command(
+        LeanExecutionOptions(
+            root=tmp_path,
+            loop_id="impl-probe-timeout",
+            purpose="targeted-verification",
+            command_argv=(str(runner), test_source),
+            test_source_ref=test_source,
+        )
+    )
+    assert result.status == "ready", result
+
+    def _timeout(*args, **kwargs):
+        del args, kwargs
+        raise subprocess.TimeoutExpired(str(runner), timeout=30)
+
+    monkeypatch.setattr(lean_code_runner.subprocess, "run", _timeout)
+
+    validated, issue = validate_execution_receipt(
+        tmp_path,
+        result.receipt_path,
+        expected_digest=result.receipt_digest,
+    )
+
+    assert validated is None
+    assert "dependency environment is unavailable" in issue
 
 
 def test_pytest_option_shaped_path_cannot_impersonate_test_source(

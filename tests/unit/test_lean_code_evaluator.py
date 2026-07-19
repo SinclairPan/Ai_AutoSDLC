@@ -8,6 +8,7 @@ import sys
 import time
 from pathlib import Path
 
+from ai_sdlc.core import lean_code_boundary_findings, lean_code_callers
 from ai_sdlc.core.implementation_models import ImplementationInput
 from ai_sdlc.core.implementation_store import implementation_artifacts
 from ai_sdlc.core.lean_code_evaluator import (
@@ -192,6 +193,278 @@ def test_new_public_helper_with_fewer_than_three_callers_is_required(
 
     assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
     assert report.status == LoopStatus.NEEDS_FIX
+
+
+def test_decorated_framework_entries_are_not_treated_as_zero_callers(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/entries.py",
+        "@router.get('/value')\n"
+        "def route_value():\n"
+        "    return 1\n\n"
+        "@cli.command()\n"
+        "def command_value():\n"
+        "    return 2\n\n"
+        "@plugin.hookimpl\n"
+        "def plugin_value():\n"
+        "    return 3\n\n"
+        "@app.exception_handler(ValueError)\n"
+        "def exception_value(request, exc):\n"
+        "    return 4\n\n"
+        "@app.before_request\n"
+        "def before_request_value():\n"
+        "    return 5\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/entries.py",))
+
+    assert {item.invocation_boundary for item in report.metrics.files[0].functions} == {
+        "decorated-indeterminate"
+    }
+    assert _severities(report, "lean.public-callers") == set()
+    assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_language_decorator_does_not_exempt_unused_public_abstraction(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/service.py",
+        "class Service:\n    @staticmethod\n    def build_value():\n        return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/service.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.invocation_boundary == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+    assert report.status == LoopStatus.NEEDS_FIX
+
+
+def test_unrecognized_task_decorator_does_not_exempt_public_abstraction(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/service.py",
+        "@local.task\ndef build_value():\n    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/service.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.invocation_boundary == "decorated-indeterminate"
+    assert _severities(report, "lean.public-callers") == set()
+    assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_framework_convention_entry_is_not_treated_as_zero_callers(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/plugin.py",
+        "def pytest_configure(config):\n    config.plugin_ready = True\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/plugin.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.caller_count == 0
+    assert function.invocation_boundary == "framework-convention-indeterminate"
+    assert _severities(report, "lean.public-callers") == set()
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_registered_callback_reference_is_not_treated_as_zero_callers(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def startup_handler():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/registration.py",
+        "from src.api import startup_handler\n"
+        "app.add_event_handler('startup', startup_handler)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "startup_handler"
+    )
+    assert function.caller_count == 0
+    assert function.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_function_local_imported_callback_is_detected(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def startup_handler():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/registration.py",
+        "def _register(app):\n"
+        "    from src.api import startup_handler\n"
+        "    app.add_event_handler('startup', startup_handler)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "startup_handler"
+    )
+    assert function.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_shadowed_callback_name_does_not_exempt_public_abstraction(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def startup_handler():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/registration.py",
+        "from src.api import startup_handler\n"
+        "def _register(callbacks, startup_handler):\n"
+        "    callbacks.append(startup_handler)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "startup_handler"
+    )
+    assert function.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_export_alias_does_not_exempt_public_abstraction(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def startup_handler():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/export.py",
+        "from src.api import startup_handler\nEXPORTED = startup_handler\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "startup_handler"
+    )
+    assert function.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_non_hook_pytest_prefix_does_not_exempt_public_abstraction(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def pytest_business_helper():\n    return 1\n")
+
+    report = _evaluate(tmp_path, scope=("src/api.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.invocation_boundary == "framework-convention-indeterminate"
+    assert _severities(report, "lean.public-callers") == set()
+    assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_structured_review_closes_dynamic_invocation_boundary(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/entry.py",
+        "@router.get('/value')\ndef route_value():\n    return 1\n",
+    )
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    first = _evaluate(tmp_path, scope=("src/entry.py",), snapshot=snapshot)
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.invocation-boundary"
+    )
+    exception = _approved_manual_review_exception(
+        tmp_path,
+        first,
+        snapshot,
+        finding,
+        "EX-DYNAMIC-ENTRY",
+    )
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/entry.py",),
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
+
+    retained = next(item for item in report.findings if item.rule_id == finding.rule_id)
+    assert retained.resolution == "waived"
+    assert report.risk_accepted is True
+    assert report.status == LoopStatus.PASSED
+
+
+def test_invocation_boundary_builder_is_not_public_api() -> None:
+    assert lean_code_boundary_findings.__all__ == []
+    assert not hasattr(lean_code_boundary_findings, "invocation_boundary_finding")
+
+
+def test_caller_source_shape_is_built_once_per_product_file(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        "def first_value():\n    return 1\n\n"
+        "def second_value():\n    return 2\n\n"
+        "def third_value():\n    return 3\n",
+    )
+    _write(tmp_path, "src/consumer.py", "def _local():\n    return 0\n")
+    original = lean_code_callers._source_shape
+    scanned: list[int] = []
+
+    def _counted(tree):
+        scanned.append(id(tree))
+        return original(tree)
+
+    monkeypatch.setattr(lean_code_callers, "_source_shape", _counted)
+
+    _evaluate(tmp_path, scope=("src/*.py",))
+
+    assert len(scanned) == 2
 
 
 def test_scope_drift_is_blocker(tmp_path: Path) -> None:
@@ -554,7 +827,9 @@ def test_patch_source_metrics_use_patched_python_content(tmp_path: Path) -> None
         "VALUE = 1\n\ndef _patched_value():\n    return VALUE\n",
     )
     patch_text = _git(tmp_path, "diff", "--binary", "--", "src/app.py")
-    _write(tmp_path, "change.patch", patch_text + "\n")
+    (tmp_path / "change.patch").write_bytes(
+        (patch_text + "\n").replace("\n", "\r\n").encode("utf-8")
+    )
     _git(tmp_path, "restore", "--worktree", "src/app.py")
     snapshot = build_source_snapshot(
         SourceSnapshotOptions(

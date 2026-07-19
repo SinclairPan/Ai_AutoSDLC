@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+from ai_sdlc.core.lean_code_boundary_findings import _invocation_boundary_finding
 from ai_sdlc.core.lean_code_evidence import verification_digest
 from ai_sdlc.core.lean_code_findings import (
     apply_structured_exceptions,
@@ -222,9 +223,12 @@ def _function_findings(
             and function.is_new
             and function.caller_count < policy.public_caller_minimum
         ):
-            findings.append(
-                _public_caller_finding(file, function, policy, round_number)
+            finding = (
+                _invocation_boundary_finding(file, function, round_number)
+                if function.invocation_boundary
+                else _public_caller_finding(file, function, policy, round_number)
             )
+            findings.append(finding)
     return findings
 
 
@@ -358,10 +362,17 @@ def _capability_boundary_needs_user(
         FindingResolutionStatus.WAIVED,
         FindingResolutionStatus.NOT_APPLICABLE,
     }
-    dispositions = {(item.rule_id, item.path): item.resolution for item in findings}
+    dispositions = {
+        (item.rule_id, item.path, item.symbol): item.resolution for item in findings
+    }
     boundaries = [
-        *(("lean.classification-unknown", path) for path in unknown_files),
-        *(("lean.semantic-capability", path) for path in unsupported_files),
+        *(("lean.classification-unknown", path, "") for path in unknown_files),
+        *(("lean.semantic-capability", path, "") for path in unsupported_files),
+        *(
+            (item.rule_id, item.path, item.symbol)
+            for item in findings
+            if item.rule_id == "lean.invocation-boundary"
+        ),
     ]
     return any(dispositions.get(boundary) not in accepted for boundary in boundaries)
 
