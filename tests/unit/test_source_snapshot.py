@@ -78,6 +78,30 @@ def test_unstaged_snapshot_excludes_interpreter_cache_artifacts(tmp_path: Path) 
     assert snapshot.untracked_files == []
 
 
+def test_unstaged_snapshot_excludes_ai_sdlc_runtime_artifacts(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "print('base')\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add source")
+    _write(tmp_path, "src/app.py", "print('changed')\n")
+    _write(tmp_path, ".ai-sdlc/loops/runtime.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/reviews/runtime.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", "{}\n")
+    _write(
+        tmp_path,
+        ".ai-sdlc/work-items/WI-001/codex-handoff.md",
+        "runtime handoff\n",
+    )
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+
+    assert snapshot.changed_files == ["src/app.py"]
+    assert snapshot.untracked_files == []
+
+
 def test_staged_snapshot_changes_when_index_changes(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     target = tmp_path / "src" / "app.py"
@@ -97,6 +121,128 @@ def test_staged_snapshot_changes_when_index_changes(tmp_path: Path) -> None:
     assert first.index_identity != second.index_identity
     assert first.diff_hash != second.diff_hash
     assert revalidate_source_snapshot(tmp_path, first).fresh is False
+
+
+def test_staged_snapshot_excludes_tracked_runtime_but_keeps_memory_rules(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/loops/round.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/reviews/review.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v0\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "add tracked baseline")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/loops/round.json", '{"round": 1}\n')
+    _write(tmp_path, ".ai-sdlc/reviews/review.json", '{"review": 1}\n')
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    _git(tmp_path, "add", ".")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-staged")
+    )
+
+    assert snapshot.changed_files == [
+        ".ai-sdlc/memory/constitution.md",
+        "src/app.py",
+    ]
+    assert set(snapshot.file_digests) == set(snapshot.changed_files)
+    assert set(python_sources(tmp_path, snapshot)) == {
+        "src/app.py",
+    }
+
+
+def test_git_range_snapshot_excludes_tracked_runtime_from_after_view(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v0\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "add tracked baseline")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "change product and runtime")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref=base,
+            head_ref="HEAD",
+        )
+    )
+
+    assert snapshot.changed_files == [
+        ".ai-sdlc/memory/constitution.md",
+        "src/app.py",
+    ]
+    assert set(snapshot.file_digests) == set(snapshot.changed_files)
+    assert set(python_sources(tmp_path, snapshot)) == {"src/app.py"}
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert not (source / ".ai-sdlc/work-items").exists()
+        assert not (source / ".ai-sdlc/state/stage-close-results").exists()
+        assert (source / ".ai-sdlc/memory/constitution.md").is_file()
+
+
+def test_patch_snapshot_separates_raw_input_from_filtered_runtime_view(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v0\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "add tracked baseline")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    patch = _git(tmp_path, "diff", "--binary")
+    _write(tmp_path, "selected.patch", patch + "\n")
+    _git(tmp_path, "checkout", "--", ".")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="patch",
+            patch_file="selected.patch",
+        )
+    )
+
+    assert snapshot.changed_files == [
+        ".ai-sdlc/memory/constitution.md",
+        "src/app.py",
+    ]
+    assert snapshot.source_input_digest != snapshot.diff_hash
+    assert set(python_sources(tmp_path, snapshot)) == {"src/app.py"}
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert not (source / ".ai-sdlc/work-items").exists()
+        assert (source / "src/app.py").read_text("utf-8") == "VALUE = 1\n"
+
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 2\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    _write(tmp_path, "selected.patch", _git(tmp_path, "diff", "--binary") + "\n")
+
+    freshness = revalidate_source_snapshot(tmp_path, snapshot)
+
+    assert freshness.fresh is False
+    assert freshness.reason == "source_content_changed"
 
 
 def test_unstaged_snapshot_becomes_stale_when_only_index_changes(

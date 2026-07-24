@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 from enum import StrEnum
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -110,6 +111,112 @@ class RegressionEvidence(LoopArtifactModel):
         return self
 
 
+class LeanReviewerFindingDecision(BaseModel):
+    """One reviewer's evidence-bound decision for one exact Lean finding."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    stable_signature: str
+    rule_id: str
+    path: str
+    symbol: str = ""
+    verdict: str
+    rationale: str
+    contract_kind: str
+    contract_path: str
+    contract_digest: str
+    contract_symbol: str
+    exact_locators: list[str]
+    exact_locator_digests: dict[str, str]
+    verification_evidence_refs: list[str]
+    verification_evidence_digests: dict[str, str]
+
+    @model_validator(mode="after")
+    def _require_semantic_evidence(self) -> LeanReviewerFindingDecision:
+        required = (
+            self.stable_signature,
+            self.rule_id,
+            self.path,
+            self.verdict,
+            self.rationale,
+            self.contract_kind,
+            self.contract_path,
+            self.contract_digest,
+            self.contract_symbol,
+        )
+        if not all(item.strip() for item in required):
+            raise ValueError("Lean reviewer decision is incomplete")
+        if self.verdict not in {"approved", "rejected"}:
+            raise ValueError("Lean reviewer verdict is invalid")
+        if not self.exact_locators or not self.verification_evidence_refs:
+            raise ValueError("Lean reviewer semantic evidence is missing")
+        if set(self.exact_locators) != set(self.exact_locator_digests):
+            raise ValueError("Lean reviewer exact locator evidence is incomplete")
+        if set(self.verification_evidence_refs) != set(
+            self.verification_evidence_digests
+        ):
+            raise ValueError("Lean reviewer verification evidence is incomplete")
+        return self
+
+
+class LeanReviewerDecisionArtifact(LoopArtifactModel):
+    """Independent reviewer decisions bound to one frozen Lean evaluation."""
+
+    artifact_kind: str = "lean-reviewer-decision"
+    decision_id: str
+    reviewer_id: str
+    reviewer_role: str
+    review_project_id: str
+    review_work_item_id: str
+    review_stage_instance_id: str
+    review_session_id: str
+    review_pass_id: str
+    review_pass_digest: str
+    review_assignment_digest: str
+    decision_payload_digest: str
+    diff_hash: str
+    policy_digest: str
+    evaluation_digest: str
+    decisions: list[LeanReviewerFindingDecision]
+
+    @model_validator(mode="after")
+    def _require_independent_decisions(self) -> LeanReviewerDecisionArtifact:
+        required = (
+            self.decision_id,
+            self.reviewer_id,
+            self.reviewer_role,
+            self.review_project_id,
+            self.review_work_item_id,
+            self.review_stage_instance_id,
+            self.review_session_id,
+            self.review_pass_id,
+            self.review_pass_digest,
+            self.review_assignment_digest,
+            self.decision_payload_digest,
+            self.diff_hash,
+            self.policy_digest,
+            self.evaluation_digest,
+        )
+        if not all(item.strip() for item in required) or not self.decisions:
+            raise ValueError("Lean reviewer decision artifact is incomplete")
+        signatures = [item.stable_signature for item in self.decisions]
+        if len(signatures) != len(set(signatures)):
+            raise ValueError("Lean reviewer decisions must be unique by signature")
+        from ai_sdlc.core.lean_code_exception_review import (
+            reviewer_decision_payload_digest,
+        )
+
+        expected = reviewer_decision_payload_digest(
+            self.diff_hash,
+            self.policy_digest,
+            self.evaluation_digest,
+            self.decisions,
+        )
+        if self.decision_payload_digest != expected:
+            raise ValueError("Lean reviewer decision payload digest is invalid")
+        return self
+
+
 class LeanException(LoopArtifactModel):
     """A bounded exception that changes enforcement without hiding a finding."""
 
@@ -124,6 +231,8 @@ class LeanException(LoopArtifactModel):
     approver: str
     evidence_refs: list[str]
     evidence_digests: dict[str, str]
+    reviewer_decision_refs: list[str] = Field(default_factory=list)
+    reviewer_decision_digests: dict[str, str] = Field(default_factory=dict)
     scope: list[str]
     policy_digest: str
     base_commit: str
@@ -189,6 +298,9 @@ class LeanEvaluationInput(LoopArtifactModel):
     head_commit: str
     diff_hash: str
     declared_scope: list[str]
+    task_scopes: dict[str, list[str]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
     changed_files: list[str]
     tasks_refs: list[str]
     tasks_digest: str = ""
@@ -220,10 +332,26 @@ class FunctionMetric(BaseModel):
     max_nesting: int = Field(default=0, ge=0)
     base_max_nesting: int = Field(default=0, ge=0)
     caller_count: int = Field(default=0, ge=0)
+    caller_evidence: list[str] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
     public: bool = False
     is_new: bool = False
     capability: MetricCapability = MetricCapability.UNSUPPORTED
+    binding_state: Literal["exact", "plausible", "disproven"] = "disproven"
+    execution_state: Literal[
+        "executed", "contractual", "referenced_only", "unreachable", "unknown"
+    ] = "unreachable"
     invocation_boundary: str = ""
+    invocation_evidence: list[str] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
+    reference_evidence: list[str] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
+    unlinked_evidence: list[str] = Field(
+        default_factory=list, exclude_if=lambda value: not value
+    )
     fingerprint: str = ""
     duplicate_count: int = Field(default=1, ge=1)
 
@@ -272,6 +400,9 @@ class LeanMetrics(LoopArtifactModel):
     unsupported_semantic_files: list[str] = Field(default_factory=list)
     duplicate_candidates: list[str] = Field(default_factory=list)
     scope_drift: list[str] = Field(default_factory=list)
+    task_scope_matches: dict[str, list[str]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
     files: list[FileMetric] = Field(default_factory=list)
 
 

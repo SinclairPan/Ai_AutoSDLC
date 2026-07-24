@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import fnmatch
-import hashlib
-from datetime import UTC, datetime
 from pathlib import Path
 
 from ai_sdlc.core.lean_code_evidence import regression_evidence_issue
+from ai_sdlc.core.lean_code_exception_review import (
+    _evidence_issue,
+    _expiry_issue,
+    _reviewer_decision_issue,
+)
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     LeanException,
@@ -22,10 +25,14 @@ from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.models.work import WorkType
 
 
-def scope_findings(paths: list[str], round_number: int) -> list[LeanFinding]:
+def scope_findings(
+    paths: list[str],
+    round_number: int,
+    task_scope_matches: dict[str, list[str]] | None = None,
+) -> list[LeanFinding]:
     """Treat frozen-scope drift as an integrity blocker."""
 
-    return [
+    findings = [
         make_finding(
             "lean.scope-drift",
             FindingSeverity.BLOCKER,
@@ -40,6 +47,10 @@ def scope_findings(paths: list[str], round_number: int) -> list[LeanFinding]:
         )
         for path in paths
     ]
+    matches = task_scope_matches or {}
+    for finding in findings:
+        finding.evidence.append(f"matched_task_ids={matches.get(finding.path, [])}")
+    return findings
 
 
 def unknown_findings(paths: list[str], round_number: int) -> list[LeanFinding]:
@@ -286,34 +297,10 @@ def exception_issue(
     expiry_issue = _expiry_issue(exception.expires_at)
     if expiry_issue:
         return expiry_issue
-    return _evidence_issue(root, exception)
-
-
-def _expiry_issue(expires_at: str) -> str:
-    if not expires_at:
-        return "expiry is missing"
-    try:
-        expires = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
-    except ValueError:
-        return "expiry is malformed"
-    if expires.tzinfo is None:
-        return "expiry must include a timezone"
-    return "exception has expired" if expires <= datetime.now(UTC) else ""
-
-
-def _evidence_issue(root: Path, exception: LeanException) -> str:
-    if not exception.evidence_refs:
-        return "evidence is missing"
-    for reference in exception.evidence_refs:
-        try:
-            path = (root / reference).resolve()
-            path.relative_to(root.resolve())
-            actual = f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
-        except (OSError, ValueError):
-            return f"evidence is unavailable: {reference}"
-        if exception.evidence_digests.get(reference) != actual:
-            return f"evidence digest is stale: {reference}"
-    return ""
+    evidence_issue = _evidence_issue(root, exception)
+    if evidence_issue:
+        return evidence_issue
+    return _reviewer_decision_issue(root, exception, target)
 
 
 def _invalid_exception_finding(

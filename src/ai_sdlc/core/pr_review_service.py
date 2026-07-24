@@ -69,6 +69,11 @@ from ai_sdlc.core.pr_review_source import (
     DiffSourceResolutionOptions,
     resolve_diff_source,
 )
+from ai_sdlc.core.stage_review.adapters import LocalPRReviewStageAdapter
+from ai_sdlc.core.stage_review.close_gate import (
+    execute_stage_close,
+    prepare_local_pr_stage_close,
+)
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REVIEW_PATH = Path(AI_SDLC_DIR) / "reviews" / "pr" / "current-review.json"
@@ -246,6 +251,7 @@ class PRReviewAttestResult(BaseModel):
     review_id: str = ""
     loop_id: str = ""
     attestation_path: str = ""
+    ci_certificate_bundle_path: str = ""
     head_commit: str = ""
     diff_source_hash: str = ""
     verdict: ReviewVerdict | None = None
@@ -1347,12 +1353,15 @@ def close_pr_review(
         status = PRReviewCommandStatus.CLOSED
         next_action = "Local PR review closed."
 
-    store = LoopArtifactStore(root.resolve())
-    final_report_path = store.review_run_dir(review_run.review_id) / "final-report.md"
-    store.write_markdown_artifact(
-        final_report_path,
-        _render_final_report(
+    final_report_path = (
+        LoopArtifactStore(root.resolve()).review_run_dir(review_run.review_id)
+        / "final-report.md"
+    )
+    def writer() -> PRReviewCloseResult:
+        return _write_pr_review_close(
+            root=root.resolve(),
             review_run=review_run,
+            review_run_path=review_run_path,
             review_pack=review_pack,
             findings=findings,
             resolution_statuses=resolution_statuses,
@@ -1360,13 +1369,91 @@ def close_pr_review(
             verdict=verdict,
             unresolved=unresolved,
             verification_evidence=verification_evidence or [],
+            status=status,
+            blocker=blocker,
             next_action=next_action,
-        ),
+            final_report_path=final_report_path,
+        )
+    if status != PRReviewCommandStatus.CLOSED:
+        return writer()
+    prepared = prepare_local_pr_stage_close(
+        root=root.resolve(),
+        adapter=LocalPRReviewStageAdapter(),
+        review_run=review_run,
+        work_item_id=review_run.lean_work_item_id,
+        close_kind="local-pr-review-close",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=final_report_path,
     )
+    return execute_stage_close(
+        prepared,
+        writer,
+    )
+
+
+def _write_pr_review_close(
+    *,
+    root: Path,
+    review_run: ReviewRun,
+    review_run_path: Path,
+    review_pack: ReviewPack,
+    findings: ReviewFindings,
+    resolution_statuses: dict[str, FindingResolutionStatus],
+    resolution_records: dict[str, FindingResolution],
+    verdict: ReviewVerdict,
+    unresolved: dict[FindingSeverity, int],
+    verification_evidence: list[str],
+    status: PRReviewCommandStatus,
+    blocker: str,
+    next_action: str,
+    final_report_path: Path,
+) -> PRReviewCloseResult:
+    store = LoopArtifactStore(root)
+    rendered = _render_final_report(
+        review_run=review_run,
+        review_pack=review_pack,
+        findings=findings,
+        resolution_statuses=resolution_statuses,
+        resolution_records=resolution_records,
+        verdict=verdict,
+        unresolved=unresolved,
+        verification_evidence=verification_evidence,
+        next_action=next_action,
+    )
+    store.write_markdown_artifact(final_report_path, rendered)
+    _persist_closed_review_run(
+        store,
+        review_run_path,
+        review_run,
+        verdict,
+        unresolved,
+        next_action,
+        final_report_path,
+        status,
+    )
+    return _pr_review_close_result(
+        review_run,
+        verdict,
+        unresolved,
+        status,
+        blocker,
+        next_action,
+        final_report_path,
+    )
+
+
+def _persist_closed_review_run(
+    store: LoopArtifactStore,
+    review_run_path: Path,
+    review_run: ReviewRun,
+    verdict: ReviewVerdict,
+    unresolved: dict[FindingSeverity, int],
+    next_action: str,
+    final_report_path: Path,
+    status: PRReviewCommandStatus,
+) -> None:
     review_run.verdict = verdict
-    review_run.final_report_path = _repo_relative_path(
-        root.resolve(), final_report_path
-    )
+    review_run.final_report_path = _repo_relative_path(store.root, final_report_path)
     review_run.final_report_digest = _file_sha256(final_report_path)
     review_run.unresolved_blockers = unresolved[FindingSeverity.BLOCKER]
     review_run.unresolved_required = unresolved[FindingSeverity.REQUIRED]
@@ -1379,6 +1466,16 @@ def close_pr_review(
     review_run.next_action = next_action
     store.write_json_artifact(review_run_path, review_run)
 
+
+def _pr_review_close_result(
+    review_run: ReviewRun,
+    verdict: ReviewVerdict,
+    unresolved: dict[FindingSeverity, int],
+    status: PRReviewCommandStatus,
+    blocker: str,
+    next_action: str,
+    final_report_path: Path,
+) -> PRReviewCloseResult:
     return PRReviewCloseResult(
         status=status,
         review_id=review_run.review_id,
@@ -1566,6 +1663,32 @@ def attest_pr_review(root: Path) -> PRReviewAttestResult:
         lean_risk_accepted=review_run.lean_risk_accepted,
         lean_exception_ids=review_run.lean_exception_ids,
     )
+    prepared = prepare_local_pr_stage_close(
+        root=resolved_root,
+        adapter=LocalPRReviewStageAdapter(),
+        review_run=review_run,
+        work_item_id=review_run.lean_work_item_id,
+        close_kind="local-pr-review-attest",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=attestation_path,
+    )
+    return execute_stage_close(
+        prepared,
+        lambda: _write_pr_review_attestation(
+            store,
+            attestation_path,
+            attestation,
+            review_run,
+        ),
+    )
+
+
+def _write_pr_review_attestation(
+    store: LoopArtifactStore,
+    attestation_path: Path,
+    attestation: ReviewAttestation,
+    review_run: ReviewRun,
+) -> PRReviewAttestResult:
     store.write_json_artifact(attestation_path, attestation)
     return PRReviewAttestResult(
         status=PRReviewCommandStatus.READY,

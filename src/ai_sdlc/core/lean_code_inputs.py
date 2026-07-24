@@ -133,6 +133,10 @@ def _evaluate(loop_run, impl_input, policy, evaluation_round, loaded, root):
             source_snapshot=loaded.snapshot,
             policy=policy,
             declared_scope=tuple(impl_input.declared_scope),
+            task_scopes={
+                task_id: tuple(scope)
+                for task_id, scope in impl_input.task_scopes.items()
+            },
             task_refs=loaded.task_refs,
             acceptance_refs=(impl_input.spec_path,),
             regression_evidence=loaded.regression,
@@ -169,6 +173,7 @@ def _evaluation_input(root, impl_input, policy, report, loaded) -> LeanEvaluatio
         head_commit=snapshot.head_commit,
         diff_hash=snapshot.diff_hash,
         declared_scope=impl_input.declared_scope,
+        task_scopes=impl_input.task_scopes,
         changed_files=snapshot.changed_files,
         tasks_refs=list(loaded.task_refs),
         tasks_digest=loaded.tasks_digest,

@@ -16,7 +16,9 @@ def _load_driver_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "winpty", fake_winpty)
     monkeypatch.setitem(sys.modules, "winpty.enums", fake_enums)
 
-    driver_path = Path(__file__).resolve().parents[2] / "scripts" / "windows_clean_user_e2e.py"
+    scripts_path = Path(__file__).resolve().parents[2] / "scripts"
+    monkeypatch.syspath_prepend(str(scripts_path))
+    driver_path = scripts_path / "windows_clean_user_e2e.py"
     spec = importlib.util.spec_from_file_location("windows_clean_user_e2e", driver_path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)

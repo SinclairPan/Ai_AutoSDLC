@@ -1,0 +1,125 @@
+name: CI Certificate
+
+on:
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / read-only verifier
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Checkout full ancestry
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Verify read-only certificate replay and current Candidate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PYTHONDONTWRITEBYTECODE = "1"
+          $env:UV_CACHE_DIR = Join-Path $env:RUNNER_TEMP "ci-certificate-uv-cache"
+          $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "ci-certificate-venv"
+          uv sync --locked
+          uv run pytest tests/integration/test_stage_review_attestation.py -q -W error
+
+          $testedCommit = (git rev-parse HEAD).Trim()
+          $baseCommit = "${{ github.event.pull_request.base.sha }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($baseCommit)) {
+            $baseCommit = (git rev-parse "$testedCommit^").Trim()
+          }
+          $before = @(
+            git status --porcelain=v1 --untracked-files=all --ignored=matching
+          ) -join "`n"
+          $policyPath = Join-Path $env:RUNNER_TEMP "ci-certificate-policy.json"
+          uv run ai-sdlc verify stage-certificate-policy `
+            --base-commit $baseCommit `
+            --tested-commit $testedCommit `
+            --json | Tee-Object -FilePath $policyPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Current Candidate certificate policy verification failed."
+          }
+          $policy = Get-Content $policyPath -Raw | ConvertFrom-Json
+          if ($policy.valid -ne $true) {
+            throw "Current Candidate certificate policy did not return valid=true."
+          }
+
+          $bundleFiles = @(
+            Get-ChildItem ".ai-sdlc/state/stage-review" `
+              -Recurse `
+              -File `
+              -Filter "ci-certificate-bundle.json" `
+              -ErrorAction SilentlyContinue
+          )
+          if ($policy.certificate_required -eq $true) {
+            $validBundles = 0
+            foreach ($bundleFile in $bundleFiles) {
+              $verificationJson = @(
+                uv run ai-sdlc verify stage-certificate `
+                  --bundle $bundleFile.FullName `
+                  --tested-commit $testedCommit `
+                  --expected-stage-key "local-pr-review" `
+                  --expected-close-kind "local-pr-review-attest" `
+                  --expected-policy-digest $policy.policy_digest `
+                  --expected-mode $policy.mode `
+                  --json 2>$null
+              ) -join "`n"
+              if ($LASTEXITCODE -eq 0) {
+                $verification = $verificationJson | ConvertFrom-Json
+                if ($verification.valid -eq $true) {
+                  $validBundles += 1
+                  $verificationJson | Write-Output
+                }
+              }
+            }
+            if ($validBundles -ne 1) {
+              throw "CI requires exactly one valid current Candidate certificate bundle; found $validBundles."
+            }
+          } else {
+            Write-Output "Certificate is not required for this Shadow Candidate."
+          }
+          $after = @(
+            git status --porcelain=v1 --untracked-files=all --ignored=matching
+          ) -join "`n"
+          if ($before -ne $after) {
+            throw "CI certificate verification changed the checkout."
+          }
+
+  gate:
+    name: CI Certificate Gate
+    if: always()
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all verifier platforms
+        shell: pwsh
+        run: |
+          if ("${{ needs.verify.result }}" -ne "success") {
+            throw "One or more read-only CI certificate verifier cells failed"
+          }

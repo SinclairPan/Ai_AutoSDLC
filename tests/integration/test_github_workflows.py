@@ -33,6 +33,51 @@ def test_github_workflows_are_valid_yaml() -> None:
     )
 
 
+def test_cross_platform_core_runs_clean_user_stage_gate_on_three_platforms() -> None:
+    workflow_path = _WORKFLOWS_DIR / "cross-platform-core.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    matrix = workflow["jobs"]["core-smoke"]["strategy"]["matrix"]
+    assert matrix["os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
+    smoke = workflow_path.read_text(encoding="utf-8")
+    assert "tests/e2e/test_clean_user_stage_gate.py" in smoke
+
+
+def test_ci_certificate_workflow_is_read_only_and_cross_platform() -> None:
+    workflow_path = _WORKFLOWS_DIR / "ci-certificate.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    matrix = workflow["jobs"]["verify"]["strategy"]["matrix"]
+    assert matrix["os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
+    content = workflow_path.read_text(encoding="utf-8")
+    assert "fetch-depth: 0" in content
+    assert "persist-credentials: false" in content
+    assert "test_stage_review_attestation.py" in content
+    assert "CI Certificate Gate" in content
+    assert "contents: read" in content
+    assert "codex" not in content.lower()
+    assert "\n    paths:" not in content
+
+
+def test_ci_certificate_workflow_verifies_the_exact_pr_head_bundle() -> None:
+    content = (_WORKFLOWS_DIR / "ci-certificate.yml").read_text(encoding="utf-8")
+
+    assert "github.event.pull_request.head.sha || github.sha" in content
+    assert "github.event.pull_request.base.sha" in content
+    assert 'Get-ChildItem ".ai-sdlc/state/stage-review"' in content
+    assert "ci-certificate-bundle.json" in content
+    assert "verify stage-certificate-policy" in content
+    assert "certificate_required" in content
+    assert "exactly one valid current Candidate certificate bundle" in content
+    assert "Certificate is not required for this Shadow Candidate" in content
+    assert "verify stage-certificate" in content
+    assert "--tested-commit $testedCommit" in content
+    assert (
+        "git status --porcelain=v1 --untracked-files=all --ignored=matching" in content
+    )
+    assert "CI certificate verification changed the checkout" in content
+
+
 def test_windows_offline_smoke_workflow_covers_bundle_build_install_and_cli_checks() -> (
     None
 ):
@@ -320,11 +365,13 @@ def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None
 def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
     workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
     driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+    support_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e_support.py"
 
     workflow = workflow_path.read_text(encoding="utf-8").split(
         "clean-online-interactive-user-journey:", 1
     )[1]
     driver = driver_path.read_text(encoding="utf-8")
+    contract = driver + support_path.read_text(encoding="utf-8")
 
     assert "PR_HEAD_REPOSITORY:" in workflow
     assert "github.event.pull_request.head.repo.full_name" in workflow
@@ -340,18 +387,21 @@ def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
     assert "git+https://github.com/$sourceRepository.git@$remoteSha" in workflow
     assert "AI_SDLC_E2E_INSTALL_SOURCE=$sourceKind" in workflow
     assert "AI_SDLC_E2E_SOURCE_REVISION=$remoteSha" in workflow
-    assert 'os.environ.get("AI_SDLC_E2E_INSTALL_SOURCE", "remote-main")' in driver
-    assert 'os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", "")' in driver
+    assert 'os.environ.get("AI_SDLC_E2E_INSTALL_SOURCE", "remote-main")' in contract
+    assert 'os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", "")' in contract
 
 
 def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> (
     None
 ):
     driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+    support_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e_support.py"
 
     assert driver_path.is_file()
+    assert support_path.is_file()
 
     driver = driver_path.read_text(encoding="utf-8")
+    contract = driver + support_path.read_text(encoding="utf-8")
 
     assert '"program validate: PASS"' in driver
     assert '"program", "solution-confirm", "--dry-run"' in driver
@@ -362,15 +412,31 @@ def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choi
     assert '"public-primevue",' in driver
     assert '"--style-pack-id",' in driver
     assert '"data-console",' in driver
-    assert "PrimeVue + @primeuix/themes + primeicons" in driver
-    assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in driver
-    assert "enterprise-default" in driver
-    assert "data-console" in driver
-    assert "high-clarity" in driver
-    assert "macos-glass" in driver
-    assert "enterprise-vue2" in driver
+    assert "PrimeVue + @primeuix/themes + primeicons" in contract
+    assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in contract
+    assert "enterprise-default" in contract
+    assert "data-console" in contract
+    assert "high-clarity" in contract
+    assert "macos-glass" in contract
+    assert "enterprise-vue2" in contract
     assert "--execute" not in driver
     assert '["program", "managed-delivery-apply"' not in driver
+
+
+def test_windows_clean_user_e2e_uses_public_requirement_and_workitem_flow() -> None:
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver = driver_path.read_text(encoding="utf-8")
+    workflow = workflow_path.read_text(encoding="utf-8")
+
+    assert "requirement-start.json" in driver
+    assert '"--input-file"' in driver
+    assert "requirement-status.json" in driver
+    assert "requirement-freeze.json" in driver
+    assert '"--yes"' in driver
+    assert "workitem-init.txt" in driver
+    assert "windows_clean_user_e2e_support.py" in workflow
+    assert 'spec_root / "spec.md"' not in driver
 
 
 def test_historical_update_prompt_workflow_is_not_published() -> None:
@@ -426,6 +492,129 @@ def test_posix_offline_smoke_matrix_concurrency_is_job_scoped() -> None:
         "group": "posix-offline-smoke-${{ github.event.pull_request.number || github.ref }}-${{ matrix.os }}",
         "cancel-in-progress": True,
     }
+
+
+def test_reviewer_isolation_workflow_requires_real_mode_specific_evidence() -> None:
+    workflow_path = _WORKFLOWS_DIR / "reviewer-isolation.yml"
+
+    assert workflow_path.is_file()
+    workflow = workflow_path.read_text(encoding="utf-8")
+    for platform in ("ubuntu-latest", "macos-latest", "windows-latest"):
+        assert workflow.count(f"os: {platform}") == 3
+    assert workflow.count("mode: ordinary-fail-closed") == 3
+    assert workflow.count("mode: required-enforced") == 2
+    assert workflow.count("mode: required-unavailable") == 1
+    assert workflow.count("mode: detected-only") == 3
+    assert "codex_version: 0.137.0" in workflow
+    assert workflow.count("codex_version: 0.138.0") == 6
+    assert "AI_SDLC_CODEX_PREFIX=$codexPrefix" in workflow
+    assert '$codexPrefix = "/usr/local/share/ai-sdlc-codex-backend"' in workflow
+    assert 'if ("${{ runner.os }}" -eq "Linux")' in workflow
+    assert "sudo chown -R $env:USER $codexPrefix" in workflow
+    assert '$codexPrefix = Join-Path $env:RUNNER_TEMP "codex-backend"' in workflow
+    assert "npm install --prefix $env:AI_SDLC_CODEX_PREFIX" in workflow
+    assert "npm audit signatures --prefix $env:AI_SDLC_CODEX_PREFIX --json" in workflow
+    assert "codex-npm-audit-signatures.json" in workflow
+    assert "codex-npm-registry-attestations.json" in workflow
+    assert "verify_published_codex_npm_attestations" in workflow
+    assert "AI_SDLC_CODEX_NPM_ATTESTATIONS=$registryPath" in workflow
+    assert "published_codex_release; release = published_codex_release()" in workflow
+    assert "print(release.package_version)" in workflow
+    assert (
+        "trusted_published_codex_release; release = trusted_published_codex_release()"
+        not in workflow
+    )
+    assert "codex-npm-provenance-verification.json" in workflow
+    assert "codex.npm-pinned-provenance-unverified" in workflow
+    assert "npm_provenance_verified" in workflow
+    assert "kernel.apparmor_restrict_unprivileged_userns=0" in workflow
+    assert "sudo apt-get install --yes bubblewrap musl" in workflow
+    assert "AI_SDLC_LINUX_NAMESPACE_PREPARED=1" in workflow
+    assert "linux_namespace_prepared" in workflow
+    assert "t601-unit-junit.xml" in workflow
+    assert "t601-e2e-junit.xml" in workflow
+    assert "Get-ChildItem $pytestRoot -Recurse -Force -File" in workflow
+    assert "$document.testsuites.testsuite" in workflow
+    assert "Measure-Object -Property tests -Sum" in workflow
+    assert "--junitxml" in workflow
+    assert "-W error" in workflow
+    assert "junit.e2e.unexpected-test-count" in workflow
+    assert "ordinary-mode-started-or-attested-provider" in workflow
+    assert "required-mode-egress-lineage-count" in workflow
+    assert "required-mode-transport-claim-invalid" in workflow
+    assert "required-unavailable-started-provider-command" in workflow
+    assert "required-unavailable-proof-missing" in workflow
+    assert "detected-only-started-provider-command" in workflow
+    assert "detected-only-stage-lineage-invalid" in workflow
+    assert 'artifact_kind = "reviewer-isolation-ci-evidence"' in workflow
+    assert 'expectedTestedCommit = "${{ github.sha }}"' in workflow
+    assert (
+        'candidateHeadCommit = "${{ github.event.pull_request.head.sha || github.sha }}"'
+        in workflow
+    )
+    assert 'baseCommit = "${{ github.event.pull_request.base.sha }}"' in workflow
+    assert "reviewed_commit = $testedCommit" in workflow
+    assert "tested_commit = $testedCommit" in workflow
+    assert "candidate_head_commit = $candidateHeadCommit" in workflow
+    assert "base_commit = $baseCommit" in workflow
+    assert "workflow.tested-commit-identity-mismatch" in workflow
+    assert "execution_evidence_root_digest" in workflow
+    assert "transport_contract_attested" in workflow
+    assert "remote_provider_exercised" in workflow
+    assert "actions/attest-build-provenance@v2" not in workflow
+    assert "reviewer-isolation-gate:" in workflow
+    assert "name: Reviewer Isolation Gate" in workflow
+    assert "needs: isolation" in workflow
+    assert '"${{ needs.isolation.result }}" -ne "success"' in workflow
+    assert "--ignore" not in workflow
+    assert "pytest.mark.skip" not in workflow
+    assert "pytest.mark.xfail" not in workflow
+
+
+def test_compatibility_gate_delegates_real_isolation_e2e_to_dedicated_gate() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "uv run pytest -vv --ignore=tests/e2e/stage_review" in workflow
+    assert "uses: ./.github/workflows/reviewer-isolation.yml" not in workflow
+
+
+def test_activation_evidence_workflow_owns_its_trust_root_and_real_inputs() -> None:
+    workflow_path = _WORKFLOWS_DIR / "activation-evidence.yml"
+
+    assert workflow_path.is_file()
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "pull_request:" in workflow
+    assert "push:" in workflow
+    assert "branches: [main]" in workflow
+    assert "uses: ./.github/workflows/reviewer-isolation.yml" in workflow
+    assert "workflow_call:" in (
+        _WORKFLOWS_DIR / "reviewer-isolation.yml"
+    ).read_text(encoding="utf-8")
+    assert "artifact-metadata: write" in workflow
+    assert "actions/download-artifact@v7" in workflow
+    assert "actions/upload-artifact@v6" in workflow
+    assert "actions/attest@v4" in workflow
+    assert "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in workflow
+    assert "name: Activation Evidence Required Gate" in workflow
+    assert "activation-evidence-required:" in workflow
+    assert "if: always()" in workflow
+    assert (
+        "needs: [reviewer-isolation, probe-evidence, activation-evidence-build]"
+        in workflow
+    )
+    assert '"${{ needs.reviewer-isolation.result }}"' in workflow
+    assert '"${{ needs.probe-evidence.result }}"' in workflow
+    assert '"${{ needs.activation-evidence-build.result }}"' in workflow
+    assert "subject-path: activation-evidence/activation-evidence-package.json" in workflow
+    assert "AI_SDLC_ACTIVATION_EVIDENCE_PURPOSE: stage-gate-activation" in workflow
+    assert "AI_SDLC_ACTIVATION_PREDICATE_TYPE: https://slsa.dev/provenance/v1" in workflow
+    assert "scripts/build_activation_evidence.py" in workflow
+    assert "scripts/build_activation_quality_cell.py" in workflow
+    assert "tests/integration/test_cli_activation.py" in workflow
+    assert "${{ inputs." not in workflow
+    assert "activation-evidence-package.json" in workflow
 
 
 def test_github_workflows_use_node24_compatible_core_actions() -> None:

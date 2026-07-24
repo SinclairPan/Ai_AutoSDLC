@@ -19,6 +19,10 @@ from ai_sdlc.cli.beginner_guidance import (
     render_mutating_run_blocker,
 )
 from ai_sdlc.cli.commands import _print_reconcile_guidance
+from ai_sdlc.cli.optimization_hooks import (
+    _maintain_optimization_after_run,
+    foreground_optimization_scope,
+)
 from ai_sdlc.context.state import load_checkpoint
 from ai_sdlc.core.agentops_bridge import (
     ENTERPRISE_PROFILE_ENV,
@@ -238,15 +242,16 @@ def run_command(
         _stage_finish_callback(stage, result)
 
     try:
-        cp = runner.run(
-            mode=mode,
-            dry_run=dry_run,
-            on_confirm=callback,
-            on_stage_start=lambda stage: _stage_start_callback(
-                stage, dry_run=dry_run
-            ),
-            on_stage_finish=_record_stage_finish,
-        )
+        with foreground_optimization_scope(root, dry_run=dry_run):
+            cp = runner.run(
+                mode=mode,
+                dry_run=dry_run,
+                on_confirm=callback,
+                on_stage_start=lambda stage: _stage_start_callback(
+                    stage, dry_run=dry_run
+                ),
+                on_stage_finish=_record_stage_finish,
+            )
         if (
             dry_run
             and last_result is not None
@@ -282,6 +287,8 @@ def run_command(
         if cp is not None:
             _flush_agentops_runtime_report(root, cp, stage_results, dry_run=dry_run)
         raise typer.Exit(code=2) from None
+    finally:
+        _maintain_optimization_after_run(root, dry_run=dry_run)
 
 
 def _render_frontend_contract_runtime_attachment_summary(

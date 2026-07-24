@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 from rich.console import Console
 
+from ai_sdlc.core.stage_review.ci_certificate import (
+    CiCertificateVerificationError,
+    read_ci_certificate_bundle,
+    verify_ci_certificate_bundle,
+)
+from ai_sdlc.core.stage_review.ci_certificate_policy import (
+    CiCertificatePolicyError,
+    verify_ci_certificate_policy,
+)
 from ai_sdlc.core.verify_constraints import (
     build_constraint_report,
     build_verification_gate_context,
@@ -38,6 +48,88 @@ verify_app = typer.Typer(
     ),
 )
 console = Console()
+
+
+@verify_app.command(
+    "stage-certificate",
+    help=(
+        "Read-only: replay a StageCloseCertificate bundle against the exact "
+        "checkout commit, source tree digest, and Git ancestry."
+    ),
+)
+def verify_stage_certificate(
+    bundle: Path = typer.Option(..., "--bundle", exists=True, dir_okay=False),
+    tested_commit: str = typer.Option(..., "--tested-commit"),
+    expected_stage_key: str = typer.Option(..., "--expected-stage-key"),
+    expected_close_kind: str = typer.Option(..., "--expected-close-kind"),
+    expected_policy_digest: str = typer.Option(..., "--expected-policy-digest"),
+    expected_mode: str = typer.Option(..., "--expected-mode"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    root = find_project_root()
+    if root is None:
+        _render_certificate_result(
+            as_json, False, "Not inside an AI-SDLC project (.ai-sdlc/ not found)."
+        )
+        raise typer.Exit(code=1)
+    try:
+        result = verify_ci_certificate_bundle(
+            root,
+            read_ci_certificate_bundle(bundle),
+            tested_commit=tested_commit,
+            expected_stage_key=expected_stage_key,
+            expected_close_kind=expected_close_kind,
+            expected_policy_digest=expected_policy_digest,
+            expected_mode=expected_mode,
+        )
+    except CiCertificateVerificationError as exc:
+        _render_certificate_result(as_json, False, str(exc))
+        raise typer.Exit(code=1) from exc
+    if as_json:
+        typer.echo(json.dumps(result.model_dump(mode="json"), indent=2))
+    else:
+        console.print("[green]stage certificate: valid[/green]")
+
+
+def _render_certificate_result(as_json: bool, ok: bool, error: str) -> None:
+    if as_json:
+        typer.echo(json.dumps({"ok": ok, "error": error}, indent=2))
+    else:
+        console.print(f"[red]{error}[/red]")
+
+
+@verify_app.command(
+    "stage-certificate-policy",
+    help=(
+        "Read-only: independently recompute whether the current PR Candidate "
+        "requires a StageCloseCertificate from the protected Activation Policy."
+    ),
+)
+def verify_stage_certificate_policy(
+    base_commit: str = typer.Option(..., "--base-commit"),
+    tested_commit: str = typer.Option(..., "--tested-commit"),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    root = find_project_root()
+    if root is None:
+        _render_certificate_result(
+            as_json, False, "Not inside an AI-SDLC project (.ai-sdlc/ not found)."
+        )
+        raise typer.Exit(code=1)
+    try:
+        result = verify_ci_certificate_policy(
+            root,
+            base_commit=base_commit,
+            tested_commit=tested_commit,
+        )
+    except CiCertificatePolicyError as exc:
+        _render_certificate_result(as_json, False, str(exc))
+        raise typer.Exit(code=1) from exc
+    if as_json:
+        typer.echo(json.dumps(result.model_dump(mode="json"), indent=2))
+    else:
+        requirement = "required" if result.certificate_required else "not required"
+        console.print(f"[green]stage certificate: {requirement}[/green]")
 
 
 @verify_app.command(

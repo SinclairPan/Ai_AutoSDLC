@@ -35,9 +35,34 @@ from ai_sdlc.core.requirement_loop import (
     freeze_requirement_loop,
     start_requirement_loop,
 )
+from ai_sdlc.core.stage_review.stage_review_execution import (
+    StageCloseGateUnavailableError,
+)
 
 runner = CliRunner()
 pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
+
+
+def test_loop_close_reports_stage_review_result_and_one_next_action(
+    tmp_path: Path,
+) -> None:
+    failure = StageCloseGateUnavailableError("review-isolation-unproven")
+    with (
+        patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.loop_cmd._run_project_writer_adapter"),
+        patch("ai_sdlc.cli.loop_cmd.close_implementation_loop", side_effect=failure),
+    ):
+        result = runner.invoke(
+            app,
+            ["loop", "implementation", "close", "--yes", "--json"],
+        )
+
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert payload["status"] == "needs_user"
+    assert payload["reason_code"] == "review-isolation-unproven"
+    assert payload["request_id"]
+    assert "ai-sdlc doctor" in payload["next_action"]
 
 
 def test_loop_help_lists_status_and_list() -> None:

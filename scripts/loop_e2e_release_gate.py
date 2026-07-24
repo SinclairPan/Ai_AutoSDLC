@@ -1571,8 +1571,11 @@ def _windows_shell_command(command: str) -> list[str]:
 def _no_install_env(evidence_root: Path) -> dict[str, str]:
     empty_path = evidence_root / "no-install-path"
     empty_path.mkdir(parents=True, exist_ok=True)
+    git_path = shutil.which("git")
+    if git_path is None:
+        raise AssertionError("Git must remain available in the no-install scenario")
     return {
-        "PATH": str(empty_path),
+        "PATH": os.pathsep.join((str(Path(git_path).parent), str(empty_path))),
         "AI_SDLC_BROWSER_PROVIDER": "",
     }
 

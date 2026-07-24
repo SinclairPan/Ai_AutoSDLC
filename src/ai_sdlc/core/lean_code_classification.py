@@ -46,6 +46,8 @@ def classify_file(path: str, content: bytes, binary: bool) -> FileClassification
         return FileClassification.SNAPSHOT
     if suffix in _DECLARATIVE_SUFFIXES:
         return FileClassification.DECLARATIVE
+    if normalized.startswith("specs/") and suffix == ".md":
+        return FileClassification.DECLARATIVE
     if (
         normalized.startswith("tests/")
         or "/tests/" in normalized

@@ -9,7 +9,7 @@ license = { text = "MIT" }
 dependencies = [
     "typer>=0.9.0",
     "pyyaml>=6.0",
-    "pydantic>=2.0",
+    "pydantic>=2.12",
     "jinja2>=3.1",
     "rich>=13.0",
 ]

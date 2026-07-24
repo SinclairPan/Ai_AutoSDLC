@@ -22,8 +22,11 @@ from ai_sdlc.core.source_change_capture import (
     read_tree_states,
 )
 from ai_sdlc.core.source_snapshot import (
+    _AI_SDLC_RUNTIME_PREFIXES,
     SourceSnapshot,
+    _filtered_index_records,
     _is_runtime_artifact,
+    _runtime_pathspecs,
 )
 from ai_sdlc.core.source_snapshot import (
     _untracked_payload as _snapshot_untracked_payload,
@@ -73,6 +76,7 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
         path: _worktree_blob(root, path)
         for path in sorted(paths)
         if path.endswith(".py")
+        and not _is_runtime_artifact(path)
         and ((root / path).is_symlink() or (root / path).is_file())
     }
 
@@ -225,6 +229,7 @@ def materialized_source_view(
         ) as env:
             target = Path(env["GIT_WORK_TREE"])
             _overlay_unstaged_source(root, target, snapshot, env)
+            _remove_runtime_artifacts(target)
             yield target
         return
     if snapshot.source_kind == "local-staged":
@@ -232,25 +237,44 @@ def materialized_source_view(
             root,
             expected_index_identity=snapshot.index_identity,
         ) as env:
-            yield Path(env["GIT_WORK_TREE"])
+            target = Path(env["GIT_WORK_TREE"])
+            _remove_runtime_artifacts(target)
+            yield target
+        return
+    if snapshot.source_kind == "loop-artifacts":
+        with _index_worktree(
+            root,
+            expected_index_identity=snapshot.index_identity,
+        ) as env:
+            target = Path(env["GIT_WORK_TREE"])
+            _remove_runtime_artifacts(target)
+            yield target
         return
     if snapshot.source_kind == "local-git-range":
         with (
             _revision_index(root, snapshot.head_commit) as index_env,
             _index_worktree(root, index_env) as env,
         ):
-            yield Path(env["GIT_WORK_TREE"])
+            target = Path(env["GIT_WORK_TREE"])
+            _remove_runtime_artifacts(target)
+            yield target
         return
     with (
         _patched_index(root, snapshot) as index_env,
         _index_worktree(root, index_env) as env,
     ):
-        yield Path(env["GIT_WORK_TREE"])
+        target = Path(env["GIT_WORK_TREE"])
+        _remove_runtime_artifacts(target)
+        yield target
 
 
 def _revision_python_sources(root: Path, revision: str) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-tree", "-r", "--name-only", "-z", revision))
-    python_paths = [path for path in paths if path.endswith(".py")]
+    python_paths = [
+        path
+        for path in paths
+        if path.endswith(".py") and not _is_runtime_artifact(path)
+    ]
     states = read_tree_states(root, revision, python_paths)
     return {path: states[path].payload for path in python_paths if path in states}
 
@@ -259,7 +283,11 @@ def _index_python_sources(
     root: Path, *, env: dict[str, str] | None = None
 ) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-files", "-z", env=env))
-    python_paths = [path for path in paths if path.endswith(".py")]
+    python_paths = [
+        path
+        for path in paths
+        if path.endswith(".py") and not _is_runtime_artifact(path)
+    ]
     states = read_index_states(root, python_paths, env=env)
     return {path: states[path].payload for path in python_paths if path in states}
 
@@ -271,7 +299,8 @@ def _patched_index(root: Path, snapshot: SourceSnapshot) -> Iterator[dict[str, s
     patch_path = (root / snapshot.patch_file).resolve()
     patch_path.relative_to(root.resolve())
     patch = patch_path.read_bytes()
-    if _payload_digest(patch) != snapshot.diff_hash:
+    expected_digest = snapshot.source_input_digest or snapshot.diff_hash
+    if _payload_digest(patch) != expected_digest:
         raise ValueError("patch identity changed before materialization")
     with tempfile.TemporaryDirectory(prefix="ai-sdlc-frozen-patch-") as directory:
         captured_patch = Path(directory) / "selected.patch"
@@ -348,6 +377,7 @@ def _diff_outputs(
     env: dict[str, str],
 ) -> tuple[bytes, bytes, bytes]:
     worktree = Path(env["GIT_WORK_TREE"])
+    paths = ("--", ".", *_runtime_pathspecs())
     return (
         _git(
             worktree,
@@ -356,10 +386,29 @@ def _diff_outputs(
             "--no-ext-diff",
             "--no-textconv",
             *selector,
+            *paths,
             env=env,
         ),
-        _git(worktree, "diff", "--name-status", "-z", "-M", *selector, env=env),
-        _git(worktree, "diff", "--numstat", "-z", "-M", *selector, env=env),
+        _git(
+            worktree,
+            "diff",
+            "--name-status",
+            "-z",
+            "-M",
+            *selector,
+            *paths,
+            env=env,
+        ),
+        _git(
+            worktree,
+            "diff",
+            "--numstat",
+            "-z",
+            "-M",
+            *selector,
+            *paths,
+            env=env,
+        ),
     )
 
 
@@ -532,6 +581,9 @@ def _overlay_unstaged_source(
         "--binary",
         "--no-ext-diff",
         "--no-textconv",
+        "--",
+        ".",
+        *_runtime_pathspecs(),
         env=verify_env,
     )
     discovered = _nul_paths(
@@ -564,6 +616,11 @@ def _remove_materialized_path(path: Path) -> None:
         shutil.rmtree(path)
 
 
+def _remove_runtime_artifacts(root: Path) -> None:
+    for prefix in _AI_SDLC_RUNTIME_PREFIXES:
+        _remove_materialized_path(root / prefix.rstrip("/"))
+
+
 def _copy_selected_path(source: Path, destination: Path) -> None:
     _remove_materialized_path(destination)
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -593,7 +650,11 @@ def _restore_blobs_from_batch(
 
 
 def _index_payload_identity(entries: bytes, flags: bytes) -> str:
-    payload = entries + b"\0INDEX-FLAGS\0" + flags
+    payload = (
+        _filtered_index_records(entries)
+        + b"\0INDEX-FLAGS\0"
+        + _filtered_index_records(flags)
+    )
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 

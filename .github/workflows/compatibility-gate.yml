@@ -59,7 +59,7 @@ jobs:
         run: uv run ai-sdlc doctor
 
       - name: Pytest
-        run: uv run pytest -vv
+        run: uv run pytest -vv --ignore=tests/e2e/stage_review
 
   windows-shell-smoke:
     name: Windows Shell Smoke (${{ matrix.shell }})
