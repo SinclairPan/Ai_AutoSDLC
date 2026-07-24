@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import typer
-from rich.console import Console
 
 from ai_sdlc.branch.git_client import GitClient, GitError
+from ai_sdlc.cli.pr_review_rendering import (
+    emit_pr_review_result as _emit_result,
+)
+from ai_sdlc.cli.stage_review_guidance import execute_stage_close_for_cli
 from ai_sdlc.core.pr_review_provider import MockReviewerFixture, ProviderRunStatus
 from ai_sdlc.core.pr_review_service import (
     PRReviewCommandStatus,
@@ -22,13 +24,15 @@ from ai_sdlc.core.pr_review_service import (
     start_pr_review,
     status_pr_review,
 )
+from ai_sdlc.core.stage_review.ci_certificate_export import (
+    export_latest_ci_certificate_bundle,
+)
 from ai_sdlc.utils.helpers import find_project_root
 
 pr_review_app = typer.Typer(
     help="Run local adversarial PR review loops.",
     no_args_is_help=True,
 )
-console = Console()
 
 
 @pr_review_app.command(name="doctor")
@@ -44,8 +48,12 @@ def pr_review_doctor(
         "--diff-source",
         help="Review input source: local-git-range, patch, local-staged, local-unstaged, or scm-pr.",
     ),
-    patch_file: str = typer.Option("", "--patch-file", help="Patch file for patch diff source."),
-    source_id: str = typer.Option("", "--source-id", help="External source id such as PR/MR id."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Patch file for patch diff source."
+    ),
+    source_id: str = typer.Option(
+        "", "--source-id", help="External source id such as PR/MR id."
+    ),
     source_provider: str = typer.Option(
         "",
         "--source-provider",
@@ -124,8 +132,12 @@ def pr_review_start(
         "--diff-source",
         help="Review input source: local-git-range, patch, local-staged, local-unstaged, or scm-pr.",
     ),
-    patch_file: str = typer.Option("", "--patch-file", help="Patch file for patch diff source."),
-    source_id: str = typer.Option("", "--source-id", help="External source id such as PR/MR id."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Patch file for patch diff source."
+    ),
+    source_id: str = typer.Option(
+        "", "--source-id", help="External source id such as PR/MR id."
+    ),
     source_provider: str = typer.Option(
         "",
         "--source-provider",
@@ -208,7 +220,8 @@ def pr_review_start(
         raise typer.Exit(10)
     raise typer.Exit(
         0
-        if result.status in {PRReviewCommandStatus.DRY_RUN, PRReviewCommandStatus.STARTED}
+        if result.status
+        in {PRReviewCommandStatus.DRY_RUN, PRReviewCommandStatus.STARTED}
         else 1
     )
 
@@ -268,9 +281,7 @@ def pr_review_rerun(
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     if result.provider_status == ProviderRunStatus.CHANGES_REQUIRED:
         raise typer.Exit(10)
-    raise typer.Exit(
-        0 if result.status == PRReviewCommandStatus.STARTED else 1
-    )
+    raise typer.Exit(0 if result.status == PRReviewCommandStatus.STARTED else 1)
 
 
 @pr_review_app.command(name="close")
@@ -290,10 +301,15 @@ def pr_review_close(
     """Close the local PR review with a final verdict."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = close_pr_review(
+    result = execute_stage_close_for_cli(
         root,
-        require_no_blockers=require_no_blockers,
-        verification_evidence=evidence,
+        lambda: close_pr_review(
+            root,
+            require_no_blockers=require_no_blockers,
+            verification_evidence=evidence,
+        ),
+        json_output=json_output,
+        emit=_emit_result,
     )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.CLOSED else 1)
@@ -306,7 +322,21 @@ def pr_review_attest(
     """Write a CI-readable attestation for the current closed local review."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = attest_pr_review(root)
+    result = execute_stage_close_for_cli(
+        root,
+        lambda: attest_pr_review(root),
+        json_output=json_output,
+        emit=_emit_result,
+    )
+    if result.status == PRReviewCommandStatus.READY:
+        bundle_path = export_latest_ci_certificate_bundle(
+            root,
+            close_kind="local-pr-review-attest",
+        )
+        if bundle_path is not None:
+            result = result.model_copy(
+                update={"ci_certificate_bundle_path": str(bundle_path)}
+            )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
 
@@ -349,36 +379,6 @@ def _resolve_base_ref(
             json_output=json_output,
         )
         raise typer.Exit(1) from exc
-
-
-def _emit_result(payload: dict[str, object], *, json_output: bool) -> None:
-    if json_output:
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-    console.print(f"Result: {payload.get('status', '')}")
-    if payload.get("blocker"):
-        console.print(f"Blocker: {payload['blocker']}")
-    console.print(f"Next: {payload.get('next_action') or '-'}")
-    for key in (
-        "source_adapter",
-        "source_access_status",
-        "provider_id",
-        "model_selector",
-        "resolved_model",
-        "code_egress",
-    ):
-        if key in payload:
-            console.print(f"{key}: {payload.get(key)}")
-    if isinstance(payload.get("diff_source"), dict):
-        source = payload["diff_source"]
-        if isinstance(source, dict) and source.get("source_kind"):
-            console.print(f"diff_source: {source.get('source_kind')}")
-    if payload.get("review_pack_path"):
-        console.print(f"review_pack: {payload['review_pack_path']}")
-    if payload.get("source_resolution_path"):
-        console.print(f"source_resolution: {payload['source_resolution_path']}")
-    if payload.get("findings_path"):
-        console.print(f"findings: {payload['findings_path']}")
 
 
 __all__ = ["pr_review_app"]

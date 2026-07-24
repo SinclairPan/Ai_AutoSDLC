@@ -55,6 +55,10 @@ def capture_path_changes(
         after = _index_states(root, paths)
     elif snapshot.source_kind == "local-unstaged":
         return _unstaged_changes(root, paths, git_config_args)
+    elif snapshot.source_kind == "loop-artifacts":
+        if paths:
+            raise ValueError("loop artifact snapshot unexpectedly contains source changes")
+        return {}
     else:
         from ai_sdlc.core.source_snapshot_view import _patched_index
 

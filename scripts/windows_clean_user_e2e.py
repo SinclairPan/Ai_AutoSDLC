@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
-import json
 import os
 import queue
 import re
@@ -13,6 +11,18 @@ import threading
 import time
 from pathlib import Path
 
+from windows_clean_user_e2e_support import (
+    ADVANCED_SOLUTION_TOKENS,
+    CUSTOM_SOLUTION_TOKENS,
+    DEFAULT_SOLUTION_TOKENS,
+    _business_hashes,
+    _commit_current_state,
+    _initialize_existing_repo,
+    _write_existing_project,
+    _write_hashes,
+    _write_refined_frontend_requirement,
+    _write_summary,
+)
 from winpty import PtyProcess
 from winpty.enums import Backend
 
@@ -21,14 +31,6 @@ _ANSI_ESCAPE = re.compile(r"\x1b(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
 
 def _plain_text(value: str) -> str:
     return _ANSI_ESCAPE.sub("", value).replace("\r", "")
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(65536), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _assert_contains(text: str, *expected: str) -> None:
@@ -123,75 +125,6 @@ def _run_cli(
     return output
 
 
-def _write_existing_project(project_root: Path) -> list[Path]:
-    business_files = {
-        "package.json": (
-            '{\n  "name": "existing-customer-portal",\n'
-            '  "private": true,\n  "scripts": {"build": "vite build"}\n}\n'
-        ),
-        "README.md": "# Existing Customer Portal\n\nProduction project fixture.\n",
-        "TODO.md": "- [ ] Add the customer approval dashboard\n",
-        "src/main.ts": "console.log('existing customer portal');\n",
-    }
-    paths: list[Path] = []
-    for relative_path, content in business_files.items():
-        path = project_root / relative_path
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(content, encoding="utf-8")
-        paths.append(path)
-    return paths
-
-
-def _write_refined_frontend_requirement(project_root: Path) -> None:
-    requirement_path = project_root / "requirements" / "customer-approval-dashboard.md"
-    requirement_path.parent.mkdir(parents=True, exist_ok=True)
-    requirement_path.write_text(
-        """# Customer Approval Dashboard Requirement
-
-## Goal
-
-Add a responsive enterprise approval dashboard to the existing portal.
-
-## Scope
-
-- Dashboard summary cards, searchable approval table, detail drawer and approval form.
-- Desktop and mobile layouts, Chinese and English copy, light theme only.
-- Frontend delivery only; existing backend APIs remain unchanged.
-
-## Acceptance Criteria
-
-- Users can filter, inspect and approve or reject a pending request.
-- Loading, empty, validation, permission and network-error states are visible.
-- Keyboard navigation and browser E2E coverage are required.
-""",
-        encoding="utf-8",
-    )
-    spec_root = project_root / "specs" / "001-customer-approval-dashboard"
-    spec_root.mkdir(parents=True, exist_ok=True)
-    (spec_root / "spec.md").write_text(
-        requirement_path.read_text(encoding="utf-8"), encoding="utf-8"
-    )
-    (project_root / "program-manifest.yaml").write_text(
-        """schema_version: "1"
-program:
-  goal: "Deliver the customer approval dashboard without changing backend APIs."
-capabilities:
-  - id: "customer-approval-dashboard"
-    title: "Customer Approval Dashboard"
-    goal: "Provide a usable and verifiable approval workflow."
-    spec_refs:
-      - "001-customer-approval-dashboard"
-specs:
-  - id: "001-customer-approval-dashboard"
-    path: "specs/001-customer-approval-dashboard"
-    depends_on: []
-    capability_refs:
-      - "customer-approval-dashboard"
-""",
-        encoding="utf-8",
-    )
-
-
 def _run_interactive_init(
     cli_path: str,
     project_root: Path,
@@ -237,15 +170,11 @@ def _run_interactive_init(
     return output
 
 
-def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
-    project_root.mkdir(parents=True, exist_ok=True)
-    evidence_root.mkdir(parents=True, exist_ok=True)
-    business_files = _write_existing_project(project_root)
-    hashes_before = {str(path.relative_to(project_root)): _sha256(path) for path in business_files}
-    (evidence_root / "business-hashes-before.json").write_text(
-        json.dumps(hashes_before, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
-
+def _verify_interactive_init(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+) -> None:
     init_output = _run_interactive_init(cli_path, project_root, evidence_root)
     _assert_contains(
         init_output,
@@ -258,8 +187,9 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     )
     if "non-interactive fallback" in init_output or "explicit override" in init_output:
         raise AssertionError("init 未走真实交互选择路径")
-
-    config_path = project_root / ".ai-sdlc" / "project" / "config" / "project-config.yaml"
+    config_path = (
+        project_root / ".ai-sdlc" / "project" / "config" / "project-config.yaml"
+    )
     agents_path = project_root / "AGENTS.md"
     if not config_path.is_file() or not agents_path.is_file():
         raise AssertionError("init 未生成项目配置或 Codex canonical AGENTS.md")
@@ -273,13 +203,84 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
         "program solution-confirm --dry-run --mode advanced",
     )
 
-    hashes_after_init = {
-        str(path.relative_to(project_root)): _sha256(path) for path in business_files
-    }
-    if hashes_after_init != hashes_before:
-        raise AssertionError("交互式 init 修改了已有业务文件")
 
-    _write_refined_frontend_requirement(project_root)
+def _run_requirement_and_workitem_flow(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+) -> None:
+    requirement = _write_refined_frontend_requirement(project_root)
+    relative_requirement = requirement.relative_to(project_root).as_posix()
+    start_output = _run_cli(
+        cli_path,
+        [
+            "loop",
+            "requirement",
+            "start",
+            "--input-file",
+            relative_requirement,
+            "--acceptance",
+            "The approval flow is responsive and browser-tested.",
+            "--work-item-id",
+            "001-customer-approval-dashboard",
+            "--json",
+        ],
+        cwd=project_root,
+        evidence_path=evidence_root / "requirement-start.json",
+    )
+    _assert_contains(
+        start_output,
+        '"result": "Requirement loop started."',
+        '"loop_status": "needs_review"',
+    )
+    status_output = _run_cli(
+        cli_path,
+        ["loop", "requirement", "status", "--json"],
+        cwd=project_root,
+        evidence_path=evidence_root / "requirement-status.json",
+    )
+    _assert_contains(
+        status_output,
+        '"result": "Current requirement loop found."',
+        '"status": "needs_review"',
+    )
+    freeze_output = _run_cli(
+        cli_path,
+        ["loop", "requirement", "freeze", "--yes", "--json"],
+        cwd=project_root,
+        evidence_path=evidence_root / "requirement-freeze.json",
+    )
+    _assert_contains(freeze_output, '"frozen": true')
+    _commit_current_state(project_root, "freeze frontend requirement")
+    _initialize_workitem(cli_path, project_root, evidence_root, requirement)
+
+
+def _initialize_workitem(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+    requirement: Path,
+) -> None:
+    _run_cli(
+        cli_path,
+        [
+            "workitem",
+            "init",
+            "--title",
+            "Customer Approval Dashboard",
+            "--wi-id",
+            "001-customer-approval-dashboard",
+            "--input",
+            requirement.read_text(encoding="utf-8"),
+            "--related-doc",
+            requirement.relative_to(project_root).as_posix(),
+        ],
+        cwd=project_root,
+        evidence_path=evidence_root / "workitem-init.txt",
+    )
+    spec = project_root / "specs" / "001-customer-approval-dashboard" / "spec.md"
+    if not spec.is_file():
+        raise AssertionError("公开 workitem init 未生成规范目录")
     validate_output = _run_cli(
         cli_path,
         ["program", "validate"],
@@ -288,46 +289,33 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     )
     _assert_contains(validate_output, "program validate: PASS")
 
+
+def _run_default_solution(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+) -> None:
     simple_output = _run_cli(
         cli_path,
         ["program", "solution-confirm", "--dry-run"],
         cwd=project_root,
         evidence_path=evidence_root / "solution-simple.txt",
     )
-    _assert_contains(
-        simple_output,
-        "Program Frontend Solution Confirm Simple",
-        "Recommended Solution",
-        "recommended_frontend_stack: vue3",
-        "recommended_provider_id: public-primevue",
-        "recommended_style_pack_id: modern-saas",
-        "PrimeVue + @primeuix/themes + primeicons",
-        "definePreset(Aura) + #1770e6 + darkModeSelector=false",
-        "Vite + TypeScript + UnoCSS + CSS Variables",
-        "Pinia + Vue Router + Axios + vee-validate + zod + vue-i18n",
-        "Playwright + ESLint + Prettier + husky + lint-staged + commitlint",
-        "Advanced Choice Entry",
-        "ai-sdlc program solution-confirm --dry-run --mode advanced",
-    )
+    _assert_contains(simple_output, *DEFAULT_SOLUTION_TOKENS)
 
+
+def _run_advanced_solutions(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+) -> None:
     advanced_output = _run_cli(
         cli_path,
         ["program", "solution-confirm", "--dry-run", "--mode", "advanced"],
         cwd=project_root,
         evidence_path=evidence_root / "solution-advanced.txt",
     )
-    _assert_contains(
-        advanced_output,
-        "Program Frontend Solution Confirm Advanced",
-        "Structured Wizard",
-        "Candidate Matrix",
-        "enterprise-default",
-        "data-console",
-        "high-clarity",
-        "macos-glass",
-        "enterprise-vue2",
-        "public-primevue",
-    )
+    _assert_contains(advanced_output, *ADVANCED_SOLUTION_TOKENS)
 
     custom_output = _run_cli(
         cli_path,
@@ -347,16 +335,10 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
         cwd=project_root,
         evidence_path=evidence_root / "solution-advanced-custom.txt",
     )
-    _assert_contains(
-        custom_output,
-        "requested_frontend_stack: vue3",
-        "requested_provider_id: public-primevue",
-        "requested_style_pack_id: data-console",
-        "effective_frontend_stack: vue3",
-        "effective_provider_id: public-primevue",
-        "effective_style_pack_id: data-console",
-    )
+    _assert_contains(custom_output, *CUSTOM_SOLUTION_TOKENS)
 
+
+def _verify_no_delivery_apply(project_root: Path) -> None:
     solution_artifact = (
         project_root
         / ".ai-sdlc"
@@ -368,36 +350,31 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
         project_root / ".ai-sdlc" / "memory" / "frontend-managed-delivery-apply"
     )
     if solution_artifact.exists() or managed_apply_root.exists():
-        raise AssertionError("dry-run 用户路径不应物化方案或执行 managed delivery apply")
+        raise AssertionError(
+            "dry-run 用户路径不应物化方案或执行 managed delivery apply"
+        )
 
-    hashes_after_all = {
-        str(path.relative_to(project_root)): _sha256(path) for path in business_files
-    }
-    (evidence_root / "business-hashes-after.json").write_text(
-        json.dumps(hashes_after_all, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+
+def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
+    project_root.mkdir(parents=True, exist_ok=True)
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    business_files = _write_existing_project(project_root)
+    _initialize_existing_repo(project_root)
+    hashes_before = _business_hashes(project_root, business_files)
+    _write_hashes(evidence_root / "business-hashes-before.json", hashes_before)
+    _verify_interactive_init(cli_path, project_root, evidence_root)
+    if _business_hashes(project_root, business_files) != hashes_before:
+        raise AssertionError("交互式 init 修改了已有业务文件")
+    _commit_current_state(project_root, "initialize AI-SDLC")
+    _run_requirement_and_workitem_flow(cli_path, project_root, evidence_root)
+    _run_default_solution(cli_path, project_root, evidence_root)
+    _run_advanced_solutions(cli_path, project_root, evidence_root)
+    _verify_no_delivery_apply(project_root)
+    hashes_after_all = _business_hashes(project_root, business_files)
+    _write_hashes(evidence_root / "business-hashes-after.json", hashes_after_all)
     if hashes_after_all != hashes_before:
         raise AssertionError("普通用户 E2E 修改了已有业务文件")
-
-    summary = {
-        "result": "passed",
-        "install_source": os.environ.get("AI_SDLC_E2E_INSTALL_SOURCE", "remote-main"),
-        "source_revision": os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", ""),
-        "terminal_backend": "ConPTY",
-        "init_command": "ai-sdlc init .",
-        "selected_agent_target": "codex",
-        "selected_shell": "powershell",
-        "default_frontend_stack": "vue3",
-        "default_provider": "public-primevue",
-        "default_style_pack": "modern-saas",
-        "custom_advanced_style_pack": "data-console",
-        "managed_delivery_apply_executed": False,
-        "business_files_unchanged": True,
-    }
-    (evidence_root / "summary.json").write_text(
-        json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    _write_summary(evidence_root)
 
 
 def main() -> int:

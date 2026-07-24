@@ -49,6 +49,7 @@ from ai_sdlc.core.lean_code_models import (
     LeanEvaluationInput,
     LeanEvaluationReport,
     LeanException,
+    LeanFinding,
     LeanNoGoDecision,
 )
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
@@ -65,7 +66,9 @@ from ai_sdlc.core.lean_code_runtime import (
 )
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
+from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.models.work import WorkType
+from tests.support.lean_code_review_authority import trusted_reviewer_decisions
 
 
 @pytest.mark.parametrize("receipt_id", ["..", "CON", "NUL", "abc."])
@@ -2404,8 +2407,14 @@ def test_runtime_persists_valid_exception_and_allows_risk_accepted_close(
         ".ai-sdlc/loops/implementation/impl-exception/lean/exception-proof.txt"
     )
     _write(tmp_path, evidence_ref, "approved risk\n")
-    evidence_digest = (
-        "sha256:" + hashlib.sha256((tmp_path / evidence_ref).read_bytes()).hexdigest()
+    evidence_digest = _file_digest(tmp_path / evidence_ref)
+    reviewer_refs, reviewer_digests, approver = _risk_reviewer_decisions(
+        tmp_path,
+        "impl-exception",
+        first_report,
+        finding,
+        evidence_ref,
+        evidence_digest,
     )
     exception = LeanException(
         exception_id="EX-RUNTIME",
@@ -2414,9 +2423,11 @@ def test_runtime_persists_valid_exception_and_allows_risk_accepted_close(
         stable_signature=finding.stable_signature,
         reason="Reproduction environment is unavailable for this bounded delivery.",
         owner="release-owner",
-        approver="quality-owner",
+        approver=approver,
         evidence_refs=[evidence_ref],
         evidence_digests={evidence_ref: evidence_digest},
+        reviewer_decision_refs=reviewer_refs,
+        reviewer_decision_digests=reviewer_digests,
         scope=["src/app.py"],
         policy_digest=first_report.policy_digest,
         base_commit=first_snapshot["base_commit"],
@@ -2968,6 +2979,38 @@ def _init_repo(root: Path) -> None:
     _write(root, "README.md", "# Test\n")
     _git(root, "add", "README.md")
     _git(root, "commit", "-m", "initial")
+
+
+def _risk_reviewer_decisions(
+    root: Path,
+    loop_id: str,
+    report: LeanEvaluationReport,
+    finding: LeanFinding,
+    proof_ref: str,
+    proof_digest: str,
+) -> tuple[list[str], dict[str, str], str]:
+    evaluation_digest = stable_artifact_digest(report)
+    snapshot_path = (
+        implementation_artifacts(root, loop_id).loop_dir
+        / "lean"
+        / "round-001"
+        / "source-snapshot.json"
+    )
+    snapshot = SourceSnapshot.model_validate_json(snapshot_path.read_bytes())
+    return trusted_reviewer_decisions(
+        root,
+        snapshot,
+        finding,
+        "EX-RUNTIME",
+        evaluation_digest,
+        proof_ref,
+        proof_digest,
+        f".ai-sdlc/loops/implementation/{loop_id}/lean",
+    )
+
+
+def _file_digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _write(root: Path, relative: str, content: str) -> None:

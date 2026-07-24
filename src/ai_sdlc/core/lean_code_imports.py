@@ -12,43 +12,102 @@ def _target_import_names(
     target_path: str,
     target_class: str,
     target_name: str,
+    target_paths: frozenset[str] | None = None,
+    target_exports: dict[str, frozenset[str]] | None = None,
 ) -> tuple[set[str], set[str], set[str]]:
-    modules_for_target = _module_names(target_path)
+    provenance_paths = target_paths or frozenset((target_path,))
+    exports = target_exports or {
+        path: frozenset((target_class or target_name,)) for path in provenance_paths
+    }
+    exports_by_module = {
+        module: exported_names
+        for path, exported_names in exports.items()
+        for module in _module_names(path)
+    }
+    modules_for_target = set(exports_by_module)
     direct: set[str] = set()
     modules: set[str] = set()
     classes: set[str] = set()
     for node in nodes:
         if isinstance(node, ast.ImportFrom):
-            imported_from = _import_from_modules(caller_path, node)
-            if imported_from & modules_for_target:
-                direct.update(
-                    alias.asname or alias.name
-                    for alias in node.names
-                    if not target_class and alias.name == target_name
-                )
-                classes.update(
-                    alias.asname or alias.name
-                    for alias in node.names
-                    if target_class and alias.name == target_class
-                )
-            modules.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if any(
-                    f"{module}.{alias.name}" in modules_for_target
-                    for module in imported_from
-                )
+            _merge_import_from_names(
+                node,
+                caller_path,
+                target_class,
+                modules_for_target,
+                exports_by_module,
+                direct,
+                modules,
+                classes,
             )
         elif isinstance(node, ast.Import):
-            modules.update(
-                alias.asname or alias.name
-                for alias in node.names
-                if alias.name in modules_for_target
+            _merge_import_names(
+                node,
+                target_class,
+                modules_for_target,
+                exports_by_module,
+                direct,
+                modules,
+                classes,
             )
-    if target_class:
-        classes.update(f"{module}.{target_class}" for module in modules)
     call_modules = modules if not target_class else set()
     return direct, call_modules, classes
+
+
+def _merge_import_from_names(
+    node: ast.ImportFrom,
+    caller_path: str,
+    target_class: str,
+    modules_for_target: set[str],
+    exports_by_module: dict[str, frozenset[str]],
+    direct: set[str],
+    modules: set[str],
+    classes: set[str],
+) -> None:
+    imported_from = _import_from_modules(caller_path, node)
+    imported_exports = set().union(
+        *(exports_by_module.get(module, frozenset()) for module in imported_from)
+    )
+    imported_names = {
+        alias.asname or alias.name
+        for alias in node.names
+        if alias.name in imported_exports
+    }
+    (classes if target_class else direct).update(imported_names)
+    for alias in node.names:
+        imported_modules = {
+            f"{module}.{alias.name}"
+            for module in imported_from
+            if f"{module}.{alias.name}" in modules_for_target
+        }
+        if not imported_modules:
+            continue
+        local_module = alias.asname or alias.name
+        modules.add(local_module)
+        submodule_exports = set().union(
+            *(exports_by_module[module] for module in imported_modules)
+        )
+        destination = classes if target_class else direct
+        destination.update(f"{local_module}.{export}" for export in submodule_exports)
+
+
+def _merge_import_names(
+    node: ast.Import,
+    target_class: str,
+    modules_for_target: set[str],
+    exports_by_module: dict[str, frozenset[str]],
+    direct: set[str],
+    modules: set[str],
+    classes: set[str],
+) -> None:
+    for alias in node.names:
+        if alias.name not in modules_for_target:
+            continue
+        local_module = alias.asname or alias.name
+        exported_names = exports_by_module[alias.name]
+        destination = classes if target_class else direct
+        destination.update(f"{local_module}.{exported}" for exported in exported_names)
+        modules.add(local_module)
 
 
 def _import_from_modules(path: str, node: ast.ImportFrom) -> set[str]:
@@ -77,6 +136,8 @@ def _module_names(path: str) -> set[str]:
     names = {module}
     if module.startswith("src."):
         names.add(module.removeprefix("src."))
+    if module.startswith("scripts."):
+        names.add(module.rsplit(".", 1)[-1])
     return names
 
 

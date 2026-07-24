@@ -26,7 +26,11 @@ from ai_sdlc.core.implementation_models import (
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
 from ai_sdlc.core.lean_code_execution import LeanExecutionOptions, run_lean_command
-from ai_sdlc.core.lean_code_models import LeanEvaluationReport, LeanException
+from ai_sdlc.core.lean_code_models import (
+    LeanEvaluationReport,
+    LeanException,
+    LeanFinding,
+)
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.lean_code_review import (
     resolve_lean_review_binding,
@@ -52,7 +56,9 @@ from ai_sdlc.core.pr_review_service import (
     start_pr_review,
     status_pr_review,
 )
+from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.models.work import WorkType
+from tests.support.lean_code_review_authority import trusted_reviewer_decisions
 
 
 def test_review_pack_contains_fresh_lean_digest_chain(tmp_path: Path) -> None:
@@ -1593,6 +1599,15 @@ def _seed_risk_accepted_loop(
     )
     proof_ref = f".ai-sdlc/loops/implementation/{loop_id}/lean/exception-proof.txt"
     _write(root, proof_ref, "approved risk\n")
+    proof_digest = _file_digest(root / proof_ref)
+    reviewer_refs, reviewer_digests, approver = _risk_reviewer_decisions(
+        root,
+        loop_id,
+        first_report,
+        finding,
+        proof_ref,
+        proof_digest,
+    )
     exception = LeanException(
         exception_id="EX-PR",
         rule_id=finding.rule_id,
@@ -1600,12 +1615,11 @@ def _seed_risk_accepted_loop(
         stable_signature=finding.stable_signature,
         reason="The reproduction environment is unavailable for this bounded review.",
         owner="implementation-owner",
-        approver="quality-owner",
+        approver=approver,
         evidence_refs=[proof_ref],
-        evidence_digests={
-            proof_ref: "sha256:"
-            + hashlib.sha256((root / proof_ref).read_bytes()).hexdigest()
-        },
+        evidence_digests={proof_ref: proof_digest},
+        reviewer_decision_refs=reviewer_refs,
+        reviewer_decision_digests=reviewer_digests,
         scope=["src/app.py"],
         policy_digest=first_report.policy_digest,
         base_commit=snapshot["base_commit"],
@@ -1644,6 +1658,34 @@ def _seed_risk_accepted_loop(
         LeanCheckOptions(root=root, loop_id=loop_id, exception_paths=(exception_ref,))
     )
     assert second.status == "ready", second
+
+
+def _risk_reviewer_decisions(
+    root: Path,
+    loop_id: str,
+    report: LeanEvaluationReport,
+    finding: LeanFinding,
+    proof_ref: str,
+    proof_digest: str,
+) -> tuple[list[str], dict[str, str], str]:
+    evaluation_digest = stable_artifact_digest(report)
+    snapshot_path = (
+        implementation_artifacts(root, loop_id).loop_dir
+        / "lean"
+        / "round-001"
+        / "source-snapshot.json"
+    )
+    snapshot = SourceSnapshot.model_validate_json(snapshot_path.read_bytes())
+    return trusted_reviewer_decisions(
+        root,
+        snapshot,
+        finding,
+        "EX-PR",
+        evaluation_digest,
+        proof_ref,
+        proof_digest,
+        f".ai-sdlc/loops/implementation/{loop_id}/lean",
+    )
 
 
 def _close_and_commit_risk_accepted_loop(
@@ -1813,6 +1855,10 @@ def _write(root: Path, relative: str, content: str) -> None:
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+
+
+def _file_digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def _git(root: Path, *args: str) -> None:

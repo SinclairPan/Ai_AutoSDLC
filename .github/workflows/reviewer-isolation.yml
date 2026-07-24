@@ -1,0 +1,468 @@
+name: Reviewer isolation boundary
+
+on:
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  isolation:
+    name: ${{ matrix.os }} / ${{ matrix.mode }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            mode: ordinary-fail-closed
+            codex_version: 0.137.0
+            require_enforced: "0"
+            expect_detected_only: "0"
+          - os: macos-latest
+            mode: ordinary-fail-closed
+            codex_version: 0.137.0
+            require_enforced: "0"
+            expect_detected_only: "0"
+          - os: windows-latest
+            mode: ordinary-fail-closed
+            codex_version: 0.137.0
+            require_enforced: "0"
+            expect_detected_only: "0"
+          - os: ubuntu-latest
+            mode: required-enforced
+            codex_version: 0.138.0
+            require_enforced: "1"
+            expect_detected_only: "0"
+          - os: macos-latest
+            mode: required-enforced
+            codex_version: 0.138.0
+            require_enforced: "1"
+            expect_detected_only: "0"
+          - os: windows-latest
+            mode: required-unavailable
+            codex_version: 0.138.0
+            require_enforced: "1"
+            expect_detected_only: "0"
+          - os: ubuntu-latest
+            mode: detected-only
+            codex_version: 0.138.0
+            require_enforced: "1"
+            expect_detected_only: "1"
+          - os: macos-latest
+            mode: detected-only
+            codex_version: 0.138.0
+            require_enforced: "1"
+            expect_detected_only: "1"
+          - os: windows-latest
+            mode: detected-only
+            codex_version: 0.138.0
+            require_enforced: "1"
+            expect_detected_only: "1"
+    env:
+      AI_SDLC_REQUIRE_ENFORCED_ISOLATION: ${{ matrix.require_enforced }}
+      AI_SDLC_EXPECT_DETECTED_ONLY: ${{ matrix.expect_detected_only }}
+      AI_SDLC_EXPECT_REQUIRED_UNAVAILABLE: ${{ matrix.mode == 'required-unavailable' && '1' || '0' }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
+      - name: Configure isolated backend path
+        shell: pwsh
+        run: |
+          if ("${{ runner.os }}" -eq "Linux") {
+            # Codex 的最小 bubblewrap 根会读取 /usr，但不会继承 runner HOME。
+            # 固定发布物仍由 npm provenance 与 native SHA 双重验签。
+            $codexPrefix = "/usr/local/share/ai-sdlc-codex-backend"
+            sudo mkdir -p $codexPrefix
+            sudo chown -R $env:USER $codexPrefix
+          } else {
+            $codexPrefix = Join-Path $env:RUNNER_TEMP "codex-backend"
+          }
+          "AI_SDLC_CODEX_PREFIX=$codexPrefix" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install pinned Codex backend
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          npm install --prefix $env:AI_SDLC_CODEX_PREFIX "@openai/codex@${{ matrix.codex_version }}"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pinned Codex installation failed"
+          }
+          Join-Path $env:AI_SDLC_CODEX_PREFIX "node_modules/.bin" |
+            Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify official npm provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $auditPath = Join-Path $env:RUNNER_TEMP "codex-npm-audit-signatures.json"
+          $auditOutput = npm audit signatures --prefix $env:AI_SDLC_CODEX_PREFIX --json
+          $auditExitCode = $LASTEXITCODE
+          $auditOutput | Set-Content $auditPath -Encoding utf8
+          if ($auditExitCode -ne 0) {
+            throw "Pinned Codex npm signature or provenance verification failed"
+          }
+          $audit = Get-Content $auditPath -Raw | ConvertFrom-Json
+          if (@($audit.invalid).Count -ne 0 -or @($audit.missing).Count -ne 0) {
+            throw "Pinned Codex npm signature or provenance evidence is incomplete"
+          }
+          if ("${{ matrix.mode }}" -ne "ordinary-fail-closed") {
+            $registryPath = Join-Path $env:RUNNER_TEMP "codex-npm-registry-attestations.json"
+            $verificationPath = Join-Path $env:RUNNER_TEMP "codex-npm-provenance-verification.json"
+            $packageVersion = uv run python -c 'from ai_sdlc.core.stage_review.codex_trusted_releases import published_codex_release; release = published_codex_release(); assert release is not None; print(release.package_version)'
+            $packageVersion = @($packageVersion)[-1].Trim()
+            $attestationUrl = npm view "@openai/codex@$packageVersion" dist.attestations.url
+            if ($LASTEXITCODE -ne 0 -or -not $attestationUrl) {
+              throw "Pinned Codex npm provenance URL is unavailable"
+            }
+            Invoke-WebRequest -Uri @($attestationUrl)[-1].Trim() -OutFile $registryPath
+            uv run python -c 'import json, sys; from pathlib import Path; from ai_sdlc.core.stage_review.codex_trusted_releases import verify_published_codex_npm_attestations; payload = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8")); authority = verify_published_codex_npm_attestations(payload); Path(sys.argv[2]).write_text(json.dumps(authority.model_dump(mode="json"), sort_keys=True), encoding="utf-8")' $registryPath $verificationPath
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path $verificationPath)) {
+              throw "Pinned Codex npm provenance does not match the trusted release"
+            }
+            "AI_SDLC_CODEX_NPM_ATTESTATIONS=$registryPath" |
+              Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Install Linux enforced mechanism
+        if: matrix.mode != 'ordinary-fail-closed' && runner.os == 'Linux'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          sudo apt-get update
+          sudo apt-get install --yes bubblewrap musl
+          $restriction = "/proc/sys/kernel/apparmor_restrict_unprivileged_userns"
+          if (Test-Path $restriction) {
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          }
+          /usr/bin/bwrap --version
+          /usr/bin/bwrap --ro-bind / / --unshare-user --unshare-pid --unshare-net /bin/true
+          if ($LASTEXITCODE -ne 0) {
+            throw "Ubuntu runner cannot provide the required native namespace boundary"
+          }
+          "AI_SDLC_LINUX_NAMESPACE_PREPARED=1" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Verify real isolation path
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          uv sync --frozen
+          $unitTemp = Join-Path $env:RUNNER_TEMP "t601-unit-pytest"
+          $e2eTemp = Join-Path $env:RUNNER_TEMP "t601-e2e-pytest"
+          $unitJunit = Join-Path $env:RUNNER_TEMP "t601-unit-junit.xml"
+          $e2eJunit = Join-Path $env:RUNNER_TEMP "t601-e2e-junit.xml"
+          uv run pytest tests/unit/stage_review/test_isolation_execution.py tests/unit/stage_review/test_isolation_launcher.py tests/unit/stage_review/test_isolation_runtime_layout.py tests/unit/stage_review/test_codex_isolation_host_probe.py -q -W error --basetemp $unitTemp --junitxml $unitJunit
+          uv run pytest tests/e2e/stage_review -q -W error --basetemp $e2eTemp --junitxml $e2eJunit
+
+      - name: Build isolation evidence artifact
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "t601-evidence"
+          $rawEvidenceRoot = Join-Path $evidenceRoot "raw"
+          New-Item -ItemType Directory -Force -Path $evidenceRoot | Out-Null
+          New-Item -ItemType Directory -Force -Path $rawEvidenceRoot | Out-Null
+
+          function Read-JsonGroup([object[]] $Files, [string] $Pattern) {
+            return @(
+              $Files |
+                Where-Object { $_.FullName.Replace("\", "/") -match $Pattern } |
+                ForEach-Object { Get-Content $_.FullName -Raw | ConvertFrom-Json }
+            )
+          }
+
+          function Read-Junit([string] $Path, [string] $Name) {
+            if (-not (Test-Path $Path)) {
+              return [ordered]@{ name = $Name; missing = $true }
+            }
+            [xml] $document = Get-Content $Path -Raw
+            $suites = @($document.testsuites.testsuite)
+            return [ordered]@{
+              name = $Name
+              missing = $false
+              tests = [int] ($suites | Measure-Object -Property tests -Sum).Sum
+              failures = [int] ($suites | Measure-Object -Property failures -Sum).Sum
+              errors = [int] ($suites | Measure-Object -Property errors -Sum).Sum
+              skipped = [int] ($suites | Measure-Object -Property skipped -Sum).Sum
+            }
+          }
+
+          $pytestRoot = Join-Path $env:RUNNER_TEMP "t601-e2e-pytest"
+          $evidenceFiles = @()
+          if (Test-Path $pytestRoot) {
+            $evidenceFiles = @(
+              Get-ChildItem $pytestRoot -Recurse -Force -File -Filter *.json
+            )
+          }
+          $manifests = Read-JsonGroup $evidenceFiles "/isolation-execution/manifests/"
+          $receipts = Read-JsonGroup $evidenceFiles "/isolation-execution/receipts/"
+          $observations = Read-JsonGroup $evidenceFiles "/isolation-execution/observations/"
+          $detected = Read-JsonGroup $evidenceFiles "/detected-only-evidence/"
+          $invocations = Read-JsonGroup $evidenceFiles "/review-execution-authority/invocations/"
+          $isolationPermits = Read-JsonGroup $evidenceFiles "/review-execution-authority/isolation-permits/"
+          $isolationReceipts = Read-JsonGroup $evidenceFiles "/review-execution-authority/isolation-receipts/"
+          $egressPermits = Read-JsonGroup $evidenceFiles "/review-execution-authority/egress-permits/"
+          $egressReceipts = Read-JsonGroup $evidenceFiles "/review-execution-authority/egress-receipts/"
+          $responses = Read-JsonGroup $evidenceFiles "/review-execution-authority/responses/"
+
+          $rawFiles = @()
+          $index = 0
+          foreach ($file in $evidenceFiles) {
+            $index += 1
+            $copyName = "$index-$($file.Name)"
+            Copy-Item $file.FullName (Join-Path $rawEvidenceRoot $copyName)
+            $rawFiles += [ordered]@{
+              source = [IO.Path]::GetRelativePath($pytestRoot, $file.FullName)
+              artifact = "raw/$copyName"
+              sha256 = "sha256:$((Get-FileHash $file.FullName -Algorithm SHA256).Hash.ToLower())"
+            }
+          }
+
+          $junit = @(
+            Read-Junit (Join-Path $env:RUNNER_TEMP "t601-unit-junit.xml") "unit"
+            Read-Junit (Join-Path $env:RUNNER_TEMP "t601-e2e-junit.xml") "e2e"
+          )
+          $mode = "${{ matrix.mode }}"
+          $expectedTestedCommit = "${{ github.sha }}"
+          $testedCommit = ((git rev-parse HEAD) -join "`n").Trim()
+          $candidateHeadCommit = "${{ github.event.pull_request.head.sha || github.sha }}"
+          $baseCommit = "${{ github.event.pull_request.base.sha }}"
+          $npmAuditPath = Join-Path $env:RUNNER_TEMP "codex-npm-audit-signatures.json"
+          $npmRegistryPath = Join-Path $env:RUNNER_TEMP "codex-npm-registry-attestations.json"
+          $npmVerificationPath = Join-Path $env:RUNNER_TEMP "codex-npm-provenance-verification.json"
+          $npmAudit = $null
+          $npmProvenance = $null
+          $npmAuditVerified = $false
+          $npmProvenanceVerified = $false
+          if (Test-Path $npmAuditPath) {
+            $npmAudit = Get-Content $npmAuditPath -Raw | ConvertFrom-Json
+            $npmAuditVerified = (
+              @($npmAudit.invalid).Count -eq 0 -and
+              @($npmAudit.missing).Count -eq 0
+            )
+          }
+          if (Test-Path $npmVerificationPath) {
+            $npmProvenance = Get-Content $npmVerificationPath -Raw | ConvertFrom-Json
+            $npmProvenanceVerified = [bool] $npmProvenance.run_identity_digest
+          }
+          $supplyChainArtifacts = @()
+          foreach ($file in @($npmAuditPath, $npmRegistryPath, $npmVerificationPath)) {
+            if (Test-Path $file) {
+              $copyName = [IO.Path]::GetFileName($file)
+              Copy-Item $file (Join-Path $rawEvidenceRoot $copyName)
+              $supplyChainArtifacts += [ordered]@{
+                artifact = "raw/$copyName"
+                sha256 = "sha256:$((Get-FileHash $file -Algorithm SHA256).Hash.ToLower())"
+              }
+            }
+          }
+          $nativePath = ""
+          $nativeDigest = ""
+          try {
+            $resolved = uv run python -c "import shutil; from pathlib import Path; from ai_sdlc.core.stage_review.codex_isolation_host_probe import resolve_codex_native_executable; print(resolve_codex_native_executable(Path(shutil.which('codex'))).resolve())"
+            $nativePath = @($resolved)[-1]
+            $nativeDigest = "sha256:$((Get-FileHash $nativePath -Algorithm SHA256).Hash.ToLower())"
+          } catch {
+            $nativePath = "unavailable"
+          }
+
+          $boundaryResults = @($receipts | ForEach-Object { $_.boundary_results })
+          $commandReceipts = @($receipts | Where-Object { $_.command_started })
+          $errors = @()
+          foreach ($suite in $junit) {
+            if ($suite.missing -or $suite.tests -le 0) {
+              $errors += "junit.$($suite.name).missing-or-empty"
+            }
+            if ($suite.failures -ne 0 -or $suite.errors -ne 0 -or $suite.skipped -ne 0) {
+              $errors += "junit.$($suite.name).not-clean"
+            }
+          }
+          if ($junit[1].tests -ne 5) {
+            $errors += "junit.e2e.unexpected-test-count"
+          }
+          if (-not (((codex --version) -join "`n") -match "${{ matrix.codex_version }}")) {
+            $errors += "codex.version-mismatch"
+          }
+          if (-not $nativeDigest) {
+            $errors += "codex.native-identity-unavailable"
+          }
+          if (-not $npmAuditVerified) {
+            $errors += "codex.npm-registry-audit-unverified"
+          }
+          if ($testedCommit -ne $expectedTestedCommit) {
+            $errors += "workflow.tested-commit-identity-mismatch"
+          }
+
+          if ($mode -eq "ordinary-fail-closed") {
+            if ($commandReceipts.Count -ne 0 -or $invocations.Count -ne 0 -or $egressReceipts.Count -ne 0 -or $detected.Count -ne 0) {
+              $errors += "ordinary-mode-started-or-attested-provider"
+            }
+          } elseif ($mode -eq "required-enforced") {
+            if (-not $npmProvenanceVerified) {
+              $errors += "codex.npm-pinned-provenance-unverified"
+            }
+            $requiredActions = @(
+              "candidate-read-only", "peer-output-denied", "real-home-denied",
+              "global-config-denied", "symlink-boundary-denied",
+              "network-denied", "child-process-contained", "output-write-allowed"
+            )
+            foreach ($action in $requiredActions) {
+              if ($action -notin @($boundaryResults | ForEach-Object { $_.action })) {
+                $errors += "required-boundary-missing:$action"
+              }
+            }
+            if ($commandReceipts.Count -ne 1 -or $invocations.Count -ne 1) {
+              $errors += "required-mode-command-or-invocation-count"
+            }
+            if ($isolationPermits.Count -ne 1 -or $isolationReceipts.Count -ne 1) {
+              $errors += "required-mode-isolation-lineage-count"
+            }
+            if ($egressPermits.Count -ne 1 -or $egressReceipts.Count -ne 1 -or $responses.Count -ne 1) {
+              $errors += "required-mode-egress-lineage-count"
+            }
+            if (@($egressReceipts | Where-Object { -not $_.transport_contract_attested -or $_.remote_provider_exercised }).Count -ne 0) {
+              $errors += "required-mode-transport-claim-invalid"
+            }
+            if (@($invocations | Where-Object { $_.state -ne "committed" }).Count -ne 0) {
+              $errors += "required-mode-invocation-not-committed"
+            }
+          } elseif ($mode -eq "required-unavailable") {
+            if (-not $npmProvenanceVerified) {
+              $errors += "codex.npm-pinned-provenance-unverified"
+            }
+            if ($commandReceipts.Count -ne 0 -or $invocations.Count -ne 0 -or $egressReceipts.Count -ne 0 -or $detected.Count -ne 0) {
+              $errors += "required-unavailable-started-provider-command"
+            }
+            if (@($receipts | Where-Object { $_.reason_id -eq "isolation.backend-unproven" }).Count -lt 1) {
+              $errors += "required-unavailable-proof-missing"
+            }
+          } elseif ($mode -eq "detected-only") {
+            if (-not $npmProvenanceVerified) {
+              $errors += "codex.npm-pinned-provenance-unverified"
+            }
+            if ($commandReceipts.Count -ne 0 -or $invocations.Count -ne 0 -or $egressReceipts.Count -ne 0) {
+              $errors += "detected-only-started-provider-command"
+            }
+            if ((@($detected | ForEach-Object { $_.stage }) -join ",") -ne "polluted,cleaned") {
+              $errors += "detected-only-stage-lineage-invalid"
+            }
+            if (@($detected | Where-Object { $_.stage -eq "cleaned" -and $_.cleanup_succeeded }).Count -ne 1) {
+              $errors += "detected-only-cleanup-invalid"
+            }
+          } else {
+            $errors += "unknown-matrix-mode"
+          }
+
+          $payload = [ordered]@{
+            schema_version = "1"
+            artifact_kind = "reviewer-isolation-ci-evidence"
+            repository = "${{ github.repository }}"
+            reviewed_commit = $testedCommit
+            tested_commit = $testedCommit
+            candidate_head_commit = $candidateHeadCommit
+            base_commit = $baseCommit
+            workflow_ref = "${{ github.workflow_ref }}"
+            run_id = "${{ github.run_id }}"
+            run_attempt = "${{ github.run_attempt }}"
+            run_url = "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            runner_os = "${{ runner.os }}"
+            runner_arch = "${{ runner.arch }}"
+            runner_image_os = $env:ImageOS
+            runner_image_version = $env:ImageVersion
+            linux_namespace_prepared = $env:AI_SDLC_LINUX_NAMESPACE_PREPARED -eq "1"
+            mode = $mode
+            codex_version = ((codex --version) -join "`n")
+            npm_registry_audit_verified = $npmAuditVerified
+            npm_provenance_verified = $npmProvenanceVerified
+            npm_provenance_audit = $npmAudit
+            npm_provenance_attestation = $npmProvenance
+            backend_native_path = $nativePath
+            backend_native_sha256 = $nativeDigest
+            required_enforced = $env:AI_SDLC_REQUIRE_ENFORCED_ISOLATION
+            expected_detected_only = $env:AI_SDLC_EXPECT_DETECTED_ONLY
+            junit = $junit
+            evidence_valid = $errors.Count -eq 0
+            validation_errors = $errors
+            manifest_digests = @($manifests | ForEach-Object { $_.manifest_digest })
+            release_manifest_digests = @($manifests | ForEach-Object { $_.release_manifest_digest })
+            runtime_identity_digests = @($manifests | ForEach-Object { $_.runtime_identity_digest })
+            receipt_digests = @($receipts | ForEach-Object { $_.receipt_digest })
+            isolation_receipt_reason_ids = @(
+              $receipts | ForEach-Object { $_.reason_id }
+            )
+            command_started = @($receipts | ForEach-Object { $_.command_started })
+            boundary_results = $boundaryResults
+            observation_digests = @(
+              $observations | ForEach-Object { $_.observation_digest }
+            )
+            observation_stages = @($observations | ForEach-Object { $_.stage })
+            detected_only_evidence_digests = @(
+              $detected | ForEach-Object { $_.evidence_digest }
+            )
+            detected_only_stages = @($detected | ForEach-Object { $_.stage })
+            detected_only_cleanup = @(
+              $detected | ForEach-Object { $_.cleanup_succeeded }
+            )
+            invocation_ids = @($invocations | ForEach-Object { $_.invocation_id })
+            invocation_evidence_roots = @(
+              $invocations | ForEach-Object { $_.execution_evidence_root_digest }
+            )
+            isolation_permit_digests = @(
+              $isolationPermits | ForEach-Object { $_.permit_digest }
+            )
+            isolation_receipt_digests = @(
+              $isolationReceipts | ForEach-Object { $_.receipt_digest }
+            )
+            egress_permit_digests = @(
+              $egressPermits | ForEach-Object { $_.permit_digest }
+            )
+            egress_receipt_digests = @(
+              $egressReceipts | ForEach-Object { $_.receipt_digest }
+            )
+            transport_contract_attested = @(
+              $egressReceipts | ForEach-Object { $_.transport_contract_attested }
+            )
+            remote_provider_exercised = @(
+              $egressReceipts | ForEach-Object { $_.remote_provider_exercised }
+            )
+            supply_chain_artifacts = $supplyChainArtifacts
+            raw_artifacts = $rawFiles
+          }
+          $payload | ConvertTo-Json -Depth 6 |
+            Set-Content (Join-Path $evidenceRoot "reviewer-isolation-evidence.json")
+          if ($errors.Count -ne 0) {
+            throw "Reviewer isolation evidence validation failed: $($errors -join ', ')"
+          }
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reviewer-isolation-${{ matrix.os }}-${{ matrix.mode }}
+          path: ${{ runner.temp }}/t601-evidence
+
+  reviewer-isolation-gate:
+    name: Reviewer Isolation Gate
+    if: always()
+    needs: isolation
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all isolation matrix cells
+        shell: pwsh
+        run: |
+          if ("${{ needs.isolation.result }}" -ne "success") {
+            throw "One or more reviewer isolation matrix cells failed"
+          }

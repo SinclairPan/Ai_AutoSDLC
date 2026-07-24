@@ -58,6 +58,10 @@ class ImplementationInput(LoopArtifactModel):
     work_type: WorkType = WorkType.UNCERTAIN
     quality_profiles: list[str] = Field(default_factory=list)
     declared_scope: list[str] = Field(default_factory=list)
+    task_scopes: dict[str, list[str]] = Field(
+        default_factory=dict,
+        exclude_if=lambda value: not value,
+    )
     tasks_digest: str = ""
     acceptance_digest: str = ""
 

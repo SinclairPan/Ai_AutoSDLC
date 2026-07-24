@@ -2,23 +2,38 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
+import json
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
-from ai_sdlc.core import lean_code_boundary_findings, lean_code_callers
+import pytest
+
+from ai_sdlc.core import (
+    lean_code_boundary_findings,
+    lean_code_caller_evaluation_support,
+    lean_code_caller_evidence,
+)
 from ai_sdlc.core.implementation_models import ImplementationInput
 from ai_sdlc.core.implementation_store import implementation_artifacts
 from ai_sdlc.core.lean_code_evaluator import (
     LeanEvaluationOptions,
     evaluate_lean_code,
 )
+from ai_sdlc.core.lean_code_exception_review import (
+    exact_locator_digest,
+    reviewer_decision_payload_digest,
+)
 from ai_sdlc.core.lean_code_findings import (
     apply_structured_exceptions,
     make_finding,
 )
+from ai_sdlc.core.lean_code_identity_flow import _trace_identity
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     LeanException,
@@ -34,7 +49,13 @@ from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopStatus, LoopType
 from ai_sdlc.core.pr_review_models import FindingSeverity
 from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
+from ai_sdlc.core.stage_review.artifacts import resolve_canonical_shared_state
+from ai_sdlc.core.stage_review.canonical_stage_review_support import execution_scope
+from ai_sdlc.core.stage_review.shadow_planning_store import (
+    _persist_shadow_plan as persist_shadow_plan,
+)
 from ai_sdlc.models.work import WorkType
+from tests.integration.test_canonical_stage_review_executor import _executor_rig
 
 
 def test_same_frozen_input_produces_the_same_stable_report_digest(
@@ -160,6 +181,16 @@ def test_declarative_schema_is_not_mechanically_split(tmp_path: Path) -> None:
     assert report.status == LoopStatus.PASSED
 
 
+def test_versioned_spec_markdown_is_declarative_evidence(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "specs/WI-001/spec.md", "# Requirement\n\n- AC-001\n")
+
+    report = _evaluate(tmp_path, scope=("specs/WI-001",))
+
+    assert report.metrics.files[0].classification == "declarative"
+    assert _severities(report, "lean.classification-unknown") == set()
+
+
 def test_unknown_changed_file_fails_closed_to_needs_user(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write(tmp_path, "src/runtime.mystery", "opaque\n")
@@ -181,6 +212,16 @@ def test_feature_with_only_declared_scope_passes(tmp_path: Path) -> None:
 
     assert report.status == LoopStatus.PASSED
     assert not report.blocking_findings
+
+
+def test_directory_scope_covers_descendant_paths(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/runtime/app.py", "def _accepted():\n    return 1\n")
+
+    report = _evaluate(tmp_path, scope=("src/runtime",))
+
+    assert report.metrics.scope_drift == []
+    assert report.status == LoopStatus.PASSED
 
 
 def test_new_public_helper_with_fewer_than_three_callers_is_required(
@@ -228,7 +269,7 @@ def test_decorated_framework_entries_are_not_treated_as_zero_callers(
     assert {item.invocation_boundary for item in report.metrics.files[0].functions} == {
         "decorated-indeterminate"
     }
-    assert _severities(report, "lean.public-callers") == set()
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
     assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
     assert report.status == LoopStatus.NEEDS_USER
 
@@ -251,6 +292,23 @@ def test_language_decorator_does_not_exempt_unused_public_abstraction(
     assert report.status == LoopStatus.NEEDS_FIX
 
 
+def test_method_on_private_class_is_not_a_public_abstraction(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/visitor.py",
+        "class _InternalVisitor:\n"
+        "    def visit_Name(self, node):\n"
+        "        return node\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/visitor.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is False
+    assert _severities(report, "lean.public-callers") == set()
+
+
 def test_unrecognized_task_decorator_does_not_exempt_public_abstraction(
     tmp_path: Path,
 ) -> None:
@@ -265,7 +323,7 @@ def test_unrecognized_task_decorator_does_not_exempt_public_abstraction(
 
     function = report.metrics.files[0].functions[0]
     assert function.invocation_boundary == "decorated-indeterminate"
-    assert _severities(report, "lean.public-callers") == set()
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
     assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
     assert report.status == LoopStatus.NEEDS_USER
 
@@ -285,7 +343,7 @@ def test_framework_convention_entry_is_not_treated_as_zero_callers(
     function = report.metrics.files[0].functions[0]
     assert function.caller_count == 0
     assert function.invocation_boundary == "framework-convention-indeterminate"
-    assert _severities(report, "lean.public-callers") == set()
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
     assert report.status == LoopStatus.NEEDS_USER
 
 
@@ -297,8 +355,8 @@ def test_registered_callback_reference_is_not_treated_as_zero_callers(
     _write(
         tmp_path,
         "src/registration.py",
-        "from src.api import startup_handler\n"
-        "app.add_event_handler('startup', startup_handler)\n",
+        "from src.api import startup_handler as handler\n"
+        "app.add_event_handler('startup', handler)\n",
     )
 
     report = _evaluate(tmp_path, scope=("src/*.py",))
@@ -310,9 +368,11 @@ def test_registered_callback_reference_is_not_treated_as_zero_callers(
         if item.symbol == "startup_handler"
     )
     assert function.caller_count == 0
-    assert function.invocation_boundary == "dynamic-reference"
-    assert _severities(report, "lean.public-callers") == set()
-    assert report.status == LoopStatus.NEEDS_USER
+    assert function.execution_state == "referenced_only"
+    assert function.invocation_boundary == ""
+    assert function.reference_evidence
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+    assert report.status == LoopStatus.NEEDS_FIX
 
 
 def test_function_local_imported_callback_is_detected(
@@ -324,8 +384,8 @@ def test_function_local_imported_callback_is_detected(
         tmp_path,
         "src/registration.py",
         "def _register(app):\n"
-        "    from src.api import startup_handler\n"
-        "    app.add_event_handler('startup', startup_handler)\n",
+        "    from src.api import startup_handler as handler\n"
+        "    app.add_event_handler('startup', handler)\n",
     )
 
     report = _evaluate(tmp_path, scope=("src/*.py",))
@@ -336,9 +396,11 @@ def test_function_local_imported_callback_is_detected(
         for item in metric.functions
         if item.symbol == "startup_handler"
     )
-    assert function.invocation_boundary == "dynamic-reference"
-    assert _severities(report, "lean.public-callers") == set()
-    assert report.status == LoopStatus.NEEDS_USER
+    assert function.execution_state == "referenced_only"
+    assert function.invocation_boundary == ""
+    assert function.reference_evidence
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+    assert report.status == LoopStatus.NEEDS_FIX
 
 
 def test_shadowed_callback_name_does_not_exempt_public_abstraction(
@@ -362,9 +424,10 @@ def test_shadowed_callback_name_does_not_exempt_public_abstraction(
         for item in metric.functions
         if item.symbol == "startup_handler"
     )
-    assert function.invocation_boundary == "dynamic-reference"
-    assert _severities(report, "lean.public-callers") == set()
-    assert report.status == LoopStatus.NEEDS_USER
+    assert function.invocation_boundary == ""
+    assert function.invocation_evidence == []
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+    assert report.status == LoopStatus.NEEDS_FIX
 
 
 def test_export_alias_does_not_exempt_public_abstraction(tmp_path: Path) -> None:
@@ -384,9 +447,10 @@ def test_export_alias_does_not_exempt_public_abstraction(tmp_path: Path) -> None
         for item in metric.functions
         if item.symbol == "startup_handler"
     )
-    assert function.invocation_boundary == "dynamic-reference"
-    assert _severities(report, "lean.public-callers") == set()
-    assert report.status == LoopStatus.NEEDS_USER
+    assert function.invocation_boundary == ""
+    assert function.invocation_evidence == []
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+    assert report.status == LoopStatus.NEEDS_FIX
 
 
 def test_non_hook_pytest_prefix_does_not_exempt_public_abstraction(
@@ -399,7 +463,7 @@ def test_non_hook_pytest_prefix_does_not_exempt_public_abstraction(
 
     function = report.metrics.files[0].functions[0]
     assert function.invocation_boundary == "framework-convention-indeterminate"
-    assert _severities(report, "lean.public-callers") == set()
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
     assert report.status == LoopStatus.NEEDS_USER
 
 
@@ -436,7 +500,8 @@ def test_structured_review_closes_dynamic_invocation_boundary(tmp_path: Path) ->
     retained = next(item for item in report.findings if item.rule_id == finding.rule_id)
     assert retained.resolution == "waived"
     assert report.risk_accepted is True
-    assert report.status == LoopStatus.PASSED
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+    assert report.status == LoopStatus.NEEDS_FIX
 
 
 def test_invocation_boundary_builder_is_not_public_api() -> None:
@@ -457,18 +522,52 @@ def test_caller_source_shape_is_built_once_per_product_file(
         "def third_value():\n    return 3\n",
     )
     _write(tmp_path, "src/consumer.py", "def _local():\n    return 0\n")
-    original = lean_code_callers._source_shape
+    original = lean_code_caller_evidence._source_shape
     scanned: list[int] = []
 
     def _counted(tree):
         scanned.append(id(tree))
         return original(tree)
 
-    monkeypatch.setattr(lean_code_callers, "_source_shape", _counted)
+    monkeypatch.setattr(lean_code_caller_evidence, "_source_shape", _counted)
 
     _evaluate(tmp_path, scope=("src/*.py",))
 
     assert len(scanned) == 2
+
+
+def test_unreferenced_public_targets_do_not_trigger_full_caller_scans(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _init_repo(tmp_path)
+    targets = "\n\n".join(
+        f"def public_target_{index}():\n    return {index}" for index in range(40)
+    )
+    _write(tmp_path, "src/api.py", f"{targets}\n")
+    for index in range(40):
+        _write(
+            tmp_path,
+            f"src/consumer_{index}.py",
+            f"def _local_{index}():\n    return {index}\n",
+        )
+    original = lean_code_caller_evaluation_support._collect_target_callers
+    scanned: list[tuple[str, tuple[str, str]]] = []
+
+    def _counted(path, tree, shape, target, callers):
+        scanned.append((path, target))
+        return original(path, tree, shape, target, callers)
+
+    monkeypatch.setattr(
+        lean_code_caller_evaluation_support,
+        "_collect_target_callers",
+        _counted,
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    assert len(report.metrics.files) == 41
+    assert scanned == []
 
 
 def test_scope_drift_is_blocker(tmp_path: Path) -> None:
@@ -480,6 +579,33 @@ def test_scope_drift_is_blocker(tmp_path: Path) -> None:
 
     assert _severities(report, "lean.scope-drift") == {FindingSeverity.BLOCKER}
     assert report.status == LoopStatus.NEEDS_FIX
+    finding = next(
+        item for item in report.findings if item.rule_id == "lean.scope-drift"
+    )
+    assert "matched_task_ids=[]" in finding.evidence
+
+
+def test_task_scope_matches_expose_historical_scope_without_changing_wi_union(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/ai_sdlc/core/unrelated_new.py", "VALUE = 1\n")
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/ai_sdlc/core",),
+        task_scopes={
+            "T503": ("src/ai_sdlc/core",),
+            "T1102": (
+                "src/ai_sdlc/core/lean_code_callers.py",
+                "src/ai_sdlc/core/source_snapshot.py",
+            ),
+        },
+    )
+
+    path = "src/ai_sdlc/core/unrelated_new.py"
+    assert report.metrics.scope_drift == []
+    assert report.metrics.task_scope_matches[path] == ["T503"]
 
 
 def test_structured_exception_cannot_waive_scope_integrity_blocker(
@@ -789,6 +915,15 @@ def test_valid_structured_exception_keeps_finding_and_accepts_risk(
     evidence_path = tmp_path / "evidence" / "exception.txt"
     _write(tmp_path, "evidence/exception.txt", "approved risk\n")
     evidence_digest = "sha256:" + hashlib.sha256(evidence_path.read_bytes()).hexdigest()
+    reviewer_refs, reviewer_digests, approver = _reviewer_decision_artifacts(
+        tmp_path,
+        snapshot,
+        finding,
+        "EX-1",
+        stable_artifact_digest(first),
+        "evidence/exception.txt",
+        evidence_digest,
+    )
     exception = LeanException(
         exception_id="EX-1",
         rule_id=finding.rule_id,
@@ -796,9 +931,11 @@ def test_valid_structured_exception_keeps_finding_and_accepts_risk(
         stable_signature=finding.stable_signature,
         reason="Target environment cannot reproduce the issue before the deadline.",
         owner="release-owner",
-        approver="quality-owner",
+        approver=approver,
         evidence_refs=["evidence/exception.txt"],
         evidence_digests={"evidence/exception.txt": evidence_digest},
+        reviewer_decision_refs=reviewer_refs,
+        reviewer_decision_digests=reviewer_digests,
         scope=["src/bug.py"],
         policy_digest=stable_artifact_digest(LeanPolicy()),
         base_commit=snapshot.base_commit,
@@ -818,10 +955,239 @@ def test_valid_structured_exception_keeps_finding_and_accepts_risk(
     )
 
     retained = next(item for item in report.findings if item.rule_id == finding.rule_id)
-    assert retained.resolution == "waived"
+    assert retained.resolution == "waived", [
+        (item.rule_id, item.claim) for item in report.findings
+    ]
     assert report.exception_ids == ["EX-1"]
     assert report.risk_accepted is True
     assert report.status == LoopStatus.PASSED
+
+
+def test_exception_rejects_self_declared_reviewer_strings_without_execution(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/bug.py": "def _value():\n    return 0\n"})
+    _write(tmp_path, "src/bug.py", "def _value():\n    return 1\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    first = _evaluate(
+        tmp_path,
+        scope=("src/bug.py",),
+        work_type=WorkType.PRODUCTION_ISSUE,
+        snapshot=snapshot,
+    )
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.bugfix-regression"
+    )
+    evidence_ref = "evidence/self-declared.txt"
+    _write(tmp_path, evidence_ref, "two strings claim independent approval\n")
+    evidence_digest = _file_digest(tmp_path / evidence_ref)
+    refs, digests = _self_declared_reviewer_decision_artifacts(
+        tmp_path,
+        snapshot,
+        finding,
+        "EX-SELF-DECLARED",
+        stable_artifact_digest(first),
+        evidence_ref,
+        evidence_digest,
+    )
+    exception = LeanException(
+        exception_id="EX-SELF-DECLARED",
+        rule_id=finding.rule_id,
+        path=finding.path,
+        stable_signature=finding.stable_signature,
+        reason="String identities cannot prove independent reviewer execution.",
+        owner="implementation-owner",
+        approver="architecture-reviewer+delivery-reviewer",
+        evidence_refs=[evidence_ref],
+        evidence_digests={evidence_ref: evidence_digest},
+        reviewer_decision_refs=refs,
+        reviewer_decision_digests=digests,
+        scope=[finding.path],
+        policy_digest=stable_artifact_digest(LeanPolicy()),
+        base_commit=snapshot.base_commit,
+        head_commit=snapshot.head_commit,
+        diff_hash=snapshot.diff_hash,
+        evaluation_digest=stable_artifact_digest(first),
+        expires_at="2099-01-01T00:00:00Z",
+    )
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/bug.py",),
+        work_type=WorkType.PRODUCTION_ISSUE,
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
+
+    assert _severities(report, "lean.exception-invalid") == {
+        FindingSeverity.BLOCKER
+    }
+    assert report.risk_accepted is False
+
+
+def test_exception_rejects_two_declared_reviewers_sharing_one_execution(
+    tmp_path: Path,
+) -> None:
+    snapshot, first, finding, exception = _trusted_bug_exception(
+        tmp_path, "EX-SHARED-EXECUTION"
+    )
+    first_payload = json.loads(
+        (tmp_path / exception.reviewer_decision_refs[0]).read_text(encoding="utf-8")
+    )
+
+    def share_execution(payload):
+        for field in (
+            "review_project_id",
+            "review_work_item_id",
+            "review_stage_instance_id",
+            "review_session_id",
+            "review_pass_id",
+            "review_pass_digest",
+            "review_assignment_digest",
+        ):
+            payload[field] = first_payload[field]
+
+    exception = _mutate_reviewer_artifact(
+        tmp_path, exception, 1, share_execution
+    )
+    report = _evaluate_trusted_bug_exception(
+        tmp_path, snapshot, first, exception
+    )
+
+    assert finding.resolution == "unresolved"
+    assert _severities(report, "lean.exception-invalid") == {
+        FindingSeverity.BLOCKER
+    }
+    assert report.risk_accepted is False
+
+
+def test_exception_rejects_generic_verified_risk_acceptance_contract(
+    tmp_path: Path,
+) -> None:
+    snapshot, first, _finding, exception = _trusted_bug_exception(
+        tmp_path, "EX-GENERIC-CONTRACT"
+    )
+
+    def use_generic_contract(payload):
+        payload["decisions"][0]["contract_kind"] = "verified_risk_acceptance"
+
+    exception = _mutate_reviewer_artifact(
+        tmp_path, exception, 0, use_generic_contract
+    )
+    report = _evaluate_trusted_bug_exception(
+        tmp_path, snapshot, first, exception
+    )
+
+    assert _severities(report, "lean.exception-invalid") == {
+        FindingSeverity.BLOCKER
+    }
+    assert report.risk_accepted is False
+
+
+def test_exception_rejects_tampered_exact_contract_locator(
+    tmp_path: Path,
+) -> None:
+    snapshot, first, _finding, exception = _trusted_bug_exception(
+        tmp_path, "EX-TAMPERED-LOCATOR"
+    )
+
+    def tamper_locator(payload):
+        decision = payload["decisions"][0]
+        locator = decision["exact_locators"][0]
+        decision["exact_locator_digests"][locator] = "sha256:" + "0" * 64
+
+    exception = _mutate_reviewer_artifact(tmp_path, exception, 0, tamper_locator)
+    report = _evaluate_trusted_bug_exception(
+        tmp_path, snapshot, first, exception
+    )
+
+    assert _severities(report, "lean.exception-invalid") == {
+        FindingSeverity.BLOCKER
+    }
+    assert report.risk_accepted is False
+
+
+def test_exception_rejects_decision_not_emitted_by_bound_review_pass(
+    tmp_path: Path,
+) -> None:
+    snapshot, first, _finding, exception = _trusted_bug_exception(
+        tmp_path, "EX-UNBOUND-DECISION"
+    )
+
+    def replace_decision_after_execution(payload):
+        payload["decisions"][0]["rationale"] = "A different decision was added later."
+        payload["decision_payload_digest"] = reviewer_decision_payload_digest(
+            payload["diff_hash"],
+            payload["policy_digest"],
+            payload["evaluation_digest"],
+            payload["decisions"],
+        )
+
+    exception = _mutate_reviewer_artifact(
+        tmp_path, exception, 0, replace_decision_after_execution
+    )
+    report = _evaluate_trusted_bug_exception(
+        tmp_path, snapshot, first, exception
+    )
+
+    assert _severities(report, "lean.exception-invalid") == {
+        FindingSeverity.BLOCKER
+    }
+    assert report.risk_accepted is False
+
+
+def test_exception_cannot_self_approve_without_two_reviewer_decisions(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path, {"src/bug.py": "def _value():\n    return 0\n"})
+    _write(tmp_path, "src/bug.py", "def _value():\n    return 1\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    first = _evaluate(
+        tmp_path,
+        scope=("src/bug.py",),
+        work_type=WorkType.PRODUCTION_ISSUE,
+        snapshot=snapshot,
+    )
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.bugfix-regression"
+    )
+    _write(tmp_path, "evidence/exception.txt", "owner says approved\n")
+    evidence_digest = _file_digest(tmp_path / "evidence/exception.txt")
+    exception = LeanException(
+        exception_id="EX-SELF-APPROVED",
+        rule_id=finding.rule_id,
+        path=finding.path,
+        stable_signature=finding.stable_signature,
+        reason="Free text must not replace independent reviewer decisions.",
+        owner="implementation-owner",
+        approver="implementation-owner",
+        evidence_refs=["evidence/exception.txt"],
+        evidence_digests={"evidence/exception.txt": evidence_digest},
+        scope=[finding.path],
+        policy_digest=stable_artifact_digest(LeanPolicy()),
+        base_commit=snapshot.base_commit,
+        head_commit=snapshot.head_commit,
+        diff_hash=snapshot.diff_hash,
+        evaluation_digest=stable_artifact_digest(first),
+        expires_at="2099-01-01T00:00:00Z",
+    )
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/bug.py",),
+        work_type=WorkType.PRODUCTION_ISSUE,
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
+
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
+    assert report.risk_accepted is False
 
 
 def test_exception_with_wrong_evaluation_digest_is_blocker(tmp_path: Path) -> None:
@@ -847,7 +1213,7 @@ def test_exception_with_wrong_evaluation_digest_is_blocker(tmp_path: Path) -> No
         stable_signature=finding.stable_signature,
         reason="A wrong evaluation digest must not authorize the current finding.",
         owner="release-owner",
-        approver="quality-owner",
+        approver="architecture-reviewer+delivery-reviewer",
         evidence_refs=["evidence/exception.txt"],
         evidence_digests={
             "evidence/exception.txt": _file_digest(tmp_path / "evidence/exception.txt")
@@ -1046,6 +1412,8 @@ def _from_class():
         if function.symbol == "ValueBuilder.build_value"
     )
     assert method.caller_count == 3
+    assert method.invocation_boundary == ""
+    assert method.invocation_evidence == []
     assert _severities(report, "lean.public-callers") == set()
 
 
@@ -1301,6 +1669,7 @@ def test_shadowed_target_class_name_does_not_satisfy_caller_budget(
         if function.symbol == "ValueBuilder.build_value"
     )
     assert method.caller_count == 0
+    assert method.invocation_boundary == ""
     assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
 
 
@@ -1645,6 +2014,85 @@ def test_package_initializer_resolves_relative_class_import(tmp_path: Path) -> N
         if function.symbol == "ValueBuilder.build_value"
     )
     assert method.caller_count == 3
+
+
+def test_module_reexport_resolves_class_method_caller(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/models.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    _write(
+        tmp_path,
+        "src/facade.py",
+        "from src.models import ValueBuilder as Builder\n",
+    )
+    _write(
+        tmp_path,
+        "src/caller.py",
+        "from src.facade import Builder\n\n"
+        "def _caller():\n"
+        "    return Builder().build_value()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 1
+    assert method.caller_evidence == ["src/caller.py:_caller:3"]
+
+
+@pytest.mark.parametrize(
+    "caller_source",
+    (
+        (
+            "from src.facade import make_value as callback\n\n"
+            "def _caller(register):\n"
+            "    register(callback)\n"
+        ),
+        (
+            "def _caller(register):\n"
+            "    from src.facade import make_value as callback\n"
+            "    register(callback)\n"
+        ),
+    ),
+)
+def test_renamed_function_reexport_resolves_callback_reference(
+    tmp_path: Path,
+    caller_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/models.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/facade.py",
+        "from src.models import build_value as make_value\n",
+    )
+    _write(tmp_path, "src/caller.py", caller_source)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.binding_state == "exact"
+    assert helper.execution_state == "referenced_only"
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+    assert helper.reference_evidence
+    assert _severities(report, "lean.public-callers") == {
+        FindingSeverity.REQUIRED
+    }
 
 
 def test_module_rebinding_does_not_preserve_target_class_alias(tmp_path: Path) -> None:
@@ -2375,6 +2823,2577 @@ def test_named_expression_class_alias_counts_target_caller(tmp_path: Path) -> No
     assert method.caller_count == 3
 
 
+@pytest.mark.parametrize(
+    "module_rebinding",
+    [
+        "if (ValueBuilder := OtherBuilder):\n    pass",
+        "while (ValueBuilder := OtherBuilder):\n    break",
+        "with manager() as ValueBuilder:\n    pass",
+    ],
+)
+def test_module_expression_rebinding_does_not_create_three_false_callers(
+    tmp_path: Path,
+    module_rebinding: str,
+) -> None:
+    _init_repo(tmp_path, {"src/other.py": "class OtherBuilder:\n    pass\n"})
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"def _caller_{index}():\n    return ValueBuilder().build_value()"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import ValueBuilder\n"
+        "from src.other import OtherBuilder\n"
+        f"{module_rebinding}\n\n{callers}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "ValueBuilder.build_value"
+    )
+    assert method.caller_count == 0
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_typed_injected_store_attributes_count_real_product_callers(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/store.py",
+        """class StageCloseStore:
+    def append_event(self):
+        return 1
+
+    def require_consumable_state(self):
+        return 2
+""",
+    )
+    callers = "\n".join(
+        f"""    def _caller_{index}(self):
+        self._store.append_event()
+        return self._store.require_consumable_state()
+"""
+        for index in range(4)
+    )
+    _write(
+        tmp_path,
+        "src/service.py",
+        """from src.store import StageCloseStore
+
+class CloseService:
+    def __init__(self, store: StageCloseStore):
+        self._store = store
+
+"""
+        + callers,
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    functions = {
+        function.symbol: function
+        for metric in report.metrics.files
+        for function in metric.functions
+    }
+    assert functions["StageCloseStore.append_event"].caller_count == 4
+    assert functions["StageCloseStore.require_consumable_state"].caller_count == 4
+    assert len(functions["StageCloseStore.append_event"].caller_evidence) == 4
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_class_attribute_annotation_counts_real_product_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/store.py",
+        "class StageCloseStore:\n    def append_event(self):\n        return 1\n",
+    )
+    callers = "\n".join(
+        f"    def _caller_{index}(self):\n        return self.store.append_event()\n"
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/service.py",
+        "from src.store import StageCloseStore\n\n"
+        "class CloseService:\n"
+        "    store: StageCloseStore\n\n"
+        f"{callers}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "StageCloseStore.append_event"
+    )
+    assert method.caller_count == 3
+
+
+def test_typed_helper_return_counts_chained_attribute_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/authority.py",
+        """class CloseAuthority:
+    def require_close_start_current(self):
+        return 1
+""",
+    )
+    callers = "\n".join(
+        f"""    def _caller_{index}(self):
+        return self._require_authority().require_close_start_current()
+"""
+        for index in range(3)
+    )
+    _write(
+        tmp_path,
+        "src/service.py",
+        """from src.authority import CloseAuthority
+
+class CloseService:
+    def _require_authority(self) -> CloseAuthority:
+        raise NotImplementedError
+
+"""
+        + callers,
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "CloseAuthority.require_close_start_current"
+    )
+    assert method.caller_count == 3
+    assert method.invocation_boundary == ""
+    assert method.invocation_evidence == []
+
+
+def test_untyped_injected_self_attribute_is_dynamic_with_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/store.py",
+        "class StageCloseStore:\n    def append_event(self):\n        return 1\n",
+    )
+    _write(
+        tmp_path,
+        "src/service.py",
+        "from src.store import StageCloseStore\n\n"
+        "class CloseService:\n"
+        "    def __init__(self, store):\n"
+        "        self._store = store\n\n"
+        "    def _caller(self):\n"
+        "        return self._store.append_event()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "StageCloseStore.append_event"
+    )
+    evidence = "src/service.py:_caller:7:8:15:8:41"
+    assert method.caller_count == 0
+    assert method.invocation_boundary == "dynamic-reference-unlinked"
+    assert method.invocation_evidence == []
+    assert method.unlinked_evidence == [evidence]
+    boundary = next(
+        item for item in report.findings if item.rule_id == "lean.invocation-boundary"
+    )
+    assert evidence in boundary.evidence
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_exact_reference_without_execution_keeps_public_caller_required(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import build_value\nsaved = build_value\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.binding_state == "exact"
+    assert helper.execution_state == "referenced_only"
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+    assert helper.reference_evidence
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_unknown_callback_sink_cannot_claim_contractual_execution(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import build_value\n"
+        "def register(callback):\n    return callback\n"
+        "register(build_value)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.binding_state == "exact"
+    assert helper.execution_state == "referenced_only"
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+    assert helper.reference_evidence
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    ("dynamic_source", "target_linked"),
+    [
+        ("return getattr(source, 'build_value')()", False),
+        ("return importlib.import_module('src.api').build_value()", True),
+        ("return build_value()", True),
+    ],
+)
+def test_unresolved_dynamic_calls_are_advisory_with_caller_evidence(
+    tmp_path: Path,
+    dynamic_source: str,
+    target_linked: bool,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    star_import = (
+        "from src.api import *\n" if dynamic_source == "return build_value()" else ""
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "import importlib\n"
+        f"{star_import}\n"
+        "def _caller(source=None):\n"
+        f"    {dynamic_source}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    expected_boundary = (
+        "dynamic-reference" if target_linked else "dynamic-reference-unlinked"
+    )
+    assert helper.invocation_boundary == expected_boundary
+    owner_line = 4 if star_import else 3
+    call_line = owner_line + 1
+    evidence = (
+        f"src/callers.py:_caller:{owner_line}:"
+        f"{call_line}:11:{call_line}:{4 + len(dynamic_source)}"
+    )
+    assert (
+        helper.invocation_evidence
+        if target_linked
+        else helper.unlinked_evidence
+    ) == [evidence]
+    boundary = next(
+        item for item in report.findings if item.rule_id == "lean.invocation-boundary"
+    )
+    assert evidence in boundary.evidence
+    expected_caller_finding = set() if target_linked else {FindingSeverity.REQUIRED}
+    assert _severities(report, "lean.public-callers") == expected_caller_finding
+
+
+@pytest.mark.parametrize(
+    ("import_source", "dynamic_source"),
+    (
+        (
+            "import importlib as loader\n",
+            "loader.import_module('src.api').build_value()",
+        ),
+        (
+            "from importlib import import_module as load\n",
+            "load('src.api').build_value()",
+        ),
+    ),
+)
+def test_exact_dynamic_import_alias_is_target_linked(
+    tmp_path: Path,
+    import_source: str,
+    dynamic_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        f"{import_source}\ndef _caller():\n    return {dynamic_source}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+
+
+@pytest.mark.parametrize(
+    "caller_source",
+    (
+        (
+            "from src.api import *\n"
+            "build_value = lambda: 2\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+        (
+            "from src.api import *\n\n"
+            "def _caller():\n"
+            "    build_value = lambda: 2\n"
+            "    return build_value()\n"
+        ),
+        (
+            "import importlib\n\n"
+            "class FakeImportlib:\n"
+            "    def import_module(self, _name):\n"
+            "        return self\n\n"
+            "    def build_value(self):\n"
+            "        return 2\n\n"
+            "importlib = FakeImportlib()\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.api').build_value()\n"
+        ),
+        (
+            "from src.api import *\n"
+            "if True:\n"
+            "    build_value = lambda: 2\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+        (
+            "import importlib as loader\n\n"
+            "class FakeImportlib:\n"
+            "    def import_module(self, _name):\n"
+            "        return self\n\n"
+            "    def build_value(self):\n"
+            "        return 2\n\n"
+            "if True:\n"
+            "    loader = FakeImportlib()\n\n"
+            "def _caller():\n"
+            "    return loader.import_module('src.api').build_value()\n"
+        ),
+        (
+            "from src.api import *\n"
+            "try:\n"
+            "    raise ValueError()\n"
+            "except ValueError as build_value:\n"
+            "    pass\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+        (
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "match {'value': fake}:\n"
+            "    case {'value': build_value}:\n"
+            "        pass\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+        (
+            "from src.api import *\n\n"
+            "def configure(value=(build_value := lambda: 2)):\n"
+            "    return value\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+        (
+            "from src.api import *\n"
+            "config = lambda value=(build_value := lambda: 2): value\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+        (
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "class Config:\n"
+            "    global build_value\n"
+            "    build_value = fake\n\n"
+            "def _caller():\n"
+            "    return build_value()\n"
+        ),
+    ),
+)
+def test_dynamic_import_or_star_rebinding_creates_no_target_evidence(
+    tmp_path: Path,
+    caller_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(tmp_path, "src/callers.py", caller_source)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+    assert _severities(report, "lean.invocation-boundary") == set()
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "comprehension_source",
+    (
+        "ignored = [build_value for build_value in [lambda: 2]]",
+        "ignored = (build_value for build_value in [lambda: 2])",
+    ),
+)
+def test_comprehension_target_does_not_rebind_star_import(
+    tmp_path: Path,
+    comprehension_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\n"
+        f"{comprehension_source}\n\n"
+        "def _caller():\n"
+        "    return build_value()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+
+
+@pytest.mark.parametrize(
+    ("caller_source", "expected_boundary"),
+    (
+        (
+            "from src.api import *\ncallback = lambda: build_value()\n",
+            "",
+        ),
+        (
+            "from src.api import *\ncallback = lambda build_value: build_value()\n",
+            "",
+        ),
+        (
+            "from src.api import *\nclass Config:\n    result = build_value()\n",
+            "dynamic-reference",
+        ),
+        (
+            "from src.api import *\n"
+            "class Config:\n"
+            "    build_value = lambda: 2\n"
+            "    result = build_value()\n",
+            "",
+        ),
+        (
+            "import importlib as loader\n"
+            "callback = lambda: loader.import_module('src.api').build_value()\n",
+            "",
+        ),
+        (
+            "import importlib as loader\n"
+            "callback = lambda loader: loader.import_module('src.api').build_value()\n",
+            "",
+        ),
+        (
+            "import importlib as loader\n"
+            "class Config:\n"
+            "    result = loader.import_module('src.api').build_value()\n",
+            "dynamic-reference",
+        ),
+        (
+            "import importlib as loader\n"
+            "class Config:\n"
+            "    loader = object()\n"
+            "    result = loader.import_module('src.api').build_value()\n",
+            "",
+        ),
+    ),
+)
+def test_lambda_and_class_scope_control_dynamic_lineage(
+    tmp_path: Path,
+    caller_source: str,
+    expected_boundary: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(tmp_path, "src/callers.py", caller_source)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.invocation_boundary == expected_boundary
+    expected_required = (
+        set()
+        if expected_boundary == "dynamic-reference"
+        else {FindingSeverity.REQUIRED}
+    )
+    assert _severities(report, "lean.public-callers") == expected_required
+
+
+@pytest.mark.parametrize(
+    ("case_name", "caller_source", "target_executed"),
+    (
+        (
+            "module-star-annotation-only",
+            "from src.api import *\n"
+            "build_value: object\n\n"
+            "def _caller():\n"
+            "    return build_value()\n",
+            True,
+        ),
+        (
+            "class-star-annotation-only",
+            "from src.api import *\n"
+            "class Config:\n"
+            "    build_value: object\n"
+            "    result = build_value()\n",
+            True,
+        ),
+        (
+            "module-importlib-annotation-only",
+            "import importlib as loader\n"
+            "loader: object\n\n"
+            "def _caller():\n"
+            "    return loader.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "class-importlib-annotation-only",
+            "import importlib as loader\n"
+            "class Config:\n"
+            "    loader: object\n"
+            "    result = loader.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "list-comprehension-star-shadow",
+            "from src.api import *\n"
+            "ignored = [build_value() for build_value in [lambda: 2]]\n",
+            False,
+        ),
+        (
+            "set-comprehension-star-shadow",
+            "from src.api import *\n"
+            "ignored = {build_value() for build_value in [lambda: 2]}\n",
+            False,
+        ),
+        (
+            "dict-comprehension-star-shadow",
+            "from src.api import *\n"
+            "ignored = {build_value(): 1 for build_value in [lambda: 2]}\n",
+            False,
+        ),
+        (
+            "generator-comprehension-star-shadow",
+            "from src.api import *\n"
+            "ignored = (build_value() for build_value in [lambda: 2])\n",
+            False,
+        ),
+        (
+            "comprehension-importlib-shadow",
+            "import importlib as loader\n"
+            "ignored = [\n"
+            "    loader.import_module('src.api').build_value()\n"
+            "    for loader in [object()]\n"
+            "]\n",
+            False,
+        ),
+        (
+            "function-global-call-before-star-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _caller():\n"
+            "    global build_value\n"
+            "    result = build_value()\n"
+            "    build_value = fake\n"
+            "    return result\n",
+            True,
+        ),
+        (
+            "nested-nonlocal-star-shadow",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def outer():\n"
+            "    build_value = fake\n"
+            "    def inner():\n"
+            "        nonlocal build_value\n"
+            "        return build_value()\n"
+            "    return inner()\n\n"
+            "outer()\n",
+            False,
+        ),
+        (
+            "function-global-call-before-importlib-rebind",
+            "import importlib as loader\n\n"
+            "def _caller():\n"
+            "    global loader\n"
+            "    result = loader.import_module('src.api').build_value()\n"
+            "    loader = object()\n"
+            "    return result\n",
+            True,
+        ),
+        (
+            "nested-nonlocal-importlib-shadow",
+            "import importlib as loader\n\n"
+            "def outer():\n"
+            "    loader = object()\n"
+            "    def inner():\n"
+            "        nonlocal loader\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    return inner()\n\n"
+            "outer()\n",
+            False,
+        ),
+        (
+            "nested-function-captures-genuine-importlib",
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "nested-function-importlib-parameter-shadow",
+            "import importlib as loader\n\n"
+            "def outer(loader):\n"
+            "    def inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    return inner()\n\n"
+            "outer(object())\n",
+            False,
+        ),
+        (
+            "inner-global-importlib-uses-module-binding",
+            "import importlib as loader\n\n"
+            "def _outer():\n"
+            "    loader = object()\n"
+            "    def _inner():\n"
+            "        global loader\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "inner-global-importlib-ignores-outer-genuine-binding",
+            "import importlib as loader\n"
+            "loader = object()\n\n"
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        global loader\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "class-global-call-before-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "class Config:\n"
+            "    global build_value\n"
+            "    result = build_value()\n"
+            "    build_value = fake\n",
+            True,
+        ),
+        (
+            "class-same-line-local-shadow",
+            "from src.api import *\n"
+            "class Config: build_value = lambda: 2; result = build_value()\n",
+            False,
+        ),
+        (
+            "function-global-rebind-before-call",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _caller():\n"
+            "    global build_value\n"
+            "    build_value = fake\n"
+            "    return build_value()\n",
+            False,
+        ),
+        (
+            "class-global-rebind-before-call",
+            "from src.api import *\n"
+            "class Config:\n"
+            "    global build_value\n"
+            "    build_value = lambda: 2\n"
+            "    result = build_value()\n",
+            False,
+        ),
+        (
+            "class-before-module-star-rebind",
+            "from src.api import *\n"
+            "class Config:\n"
+            "    result = build_value()\n"
+            "build_value = lambda: 2\n",
+            True,
+        ),
+        (
+            "class-before-module-star-import",
+            "class Config:\n    result = build_value()\nfrom src.api import *\n",
+            False,
+        ),
+        (
+            "class-before-module-importlib-rebind",
+            "import importlib as loader\n"
+            "class Config:\n"
+            "    result = loader.import_module('src.api').build_value()\n"
+            "loader = object()\n",
+            True,
+        ),
+        (
+            "class-before-module-importlib-import",
+            "class Config:\n"
+            "    result = loader.import_module('src.api').build_value()\n"
+            "import importlib as loader\n",
+            False,
+        ),
+        (
+            "nested-class-global-rebind",
+            "from src.api import *\n"
+            "class Outer:\n"
+            "    class Inner:\n"
+            "        global build_value\n"
+            "        build_value = lambda: 2\n\n"
+            "def _caller():\n"
+            "    return build_value()\n",
+            False,
+        ),
+        (
+            "function-class-global-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _caller():\n"
+            "    class Config:\n"
+            "        global build_value\n"
+            "        build_value = fake\n"
+            "    return build_value()\n",
+            False,
+        ),
+        (
+            "outer-global-rebind-before-inner-call",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _outer():\n"
+            "    global build_value\n"
+            "    build_value = fake\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "outer-global-rebind-after-inner-definition",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _outer():\n"
+            "    global build_value\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    build_value = fake\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "outer-global-rebind-after-inner-call",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _outer():\n"
+            "    global build_value\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    result = _inner()\n"
+            "    build_value = fake\n"
+            "    return result\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "outer-global-rebind-before-class-body",
+            "from src.api import *\n"
+            "fake = lambda: 2\n\n"
+            "def _outer():\n"
+            "    global build_value\n"
+            "    build_value = fake\n"
+            "    class Config:\n"
+            "        result = build_value()\n"
+            "    return Config.result\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "outer-class-global-rebind-before-inner-class",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "class Outer:\n"
+            "    global build_value\n"
+            "    build_value = fake\n"
+            "    class Inner:\n"
+            "        result = build_value()\n",
+            False,
+        ),
+        (
+            "outer-importlib-attribute-rebind-before-inner-call",
+            "import importlib\n\n"
+            "def _outer():\n"
+            "    importlib.import_module = lambda name: object()\n"
+            "    def _inner():\n"
+            "        return importlib.import_module('src.api').build_value()\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "module-importlib-attribute-rebind",
+            "import importlib\n"
+            "importlib.import_module = lambda name: object()\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.api').build_value()\n",
+            False,
+        ),
+        (
+            "function-importlib-attribute-rebind",
+            "import importlib\n\n"
+            "def _caller():\n"
+            "    importlib.import_module = lambda name: object()\n"
+            "    return importlib.import_module('src.api').build_value()\n",
+            False,
+        ),
+        (
+            "class-importlib-attribute-rebind",
+            "import importlib\n"
+            "class Config:\n"
+            "    importlib.import_module = lambda name: object()\n"
+            "    result = importlib.import_module('src.api').build_value()\n",
+            False,
+        ),
+        (
+            "importlib-attribute-annotation-only",
+            "import importlib\n"
+            "importlib.import_module: object\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "class-local-importlib-shadow-does-not-mutate-module",
+            "import importlib\n"
+            "class Fake:\n"
+            "    pass\n"
+            "class Config:\n"
+            "    importlib = Fake()\n"
+            "    importlib.import_module = lambda name: object()\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "restored-importlib-attribute-is-genuine",
+            "import importlib\n"
+            "genuine = importlib.import_module\n"
+            "importlib.import_module = lambda name: object()\n"
+            "importlib.import_module = genuine\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "captured-importlib-function-survives-module-attribute-rebind",
+            "from importlib import import_module as load\n"
+            "import importlib\n"
+            "importlib.import_module = lambda name: object()\n\n"
+            "def _caller():\n"
+            "    return load('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "lambda-body-uses-module-final-star-binding",
+            "from src.api import *\n"
+            "callback = lambda: build_value()\n"
+            "build_value = lambda: 2\n",
+            False,
+        ),
+        (
+            "generator-body-uses-module-final-star-rebind",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "build_value = lambda: 2\n"
+            "next(values)\n",
+            False,
+        ),
+        (
+            "generator-body-uses-later-star-import",
+            "values = (build_value() for _ in [0])\n"
+            "from src.api import *\n"
+            "next(values)\n",
+            True,
+        ),
+        (
+            "comprehension-first-iterator-uses-outer-importlib-binding",
+            "import importlib as loader\n"
+            "ignored = [\n"
+            "    value\n"
+            "    for loader in [loader.import_module('src.api').build_value()]\n"
+            "    for value in [loader]\n"
+            "]\n",
+            True,
+        ),
+        (
+            "annotation-with-value-rebinds-star-target",
+            "from src.api import *\n"
+            "build_value: object = lambda: 2\n\n"
+            "def _caller():\n"
+            "    return build_value()\n",
+            False,
+        ),
+        (
+            "function-default-uses-outer-star-binding",
+            "from src.api import *\n"
+            "def _configure(value=build_value()):\n"
+            "    build_value = lambda: 2\n"
+            "    return value\n",
+            True,
+        ),
+        (
+            "lambda-default-uses-outer-star-binding",
+            "from src.api import *\n"
+            "callback = lambda build_value=build_value(): build_value\n",
+            True,
+        ),
+        (
+            "function-default-uses-outer-importlib-binding",
+            "import importlib as loader\n"
+            "def _configure(value=loader.import_module('src.api').build_value()):\n"
+            "    loader = object()\n"
+            "    return value\n",
+            True,
+        ),
+        (
+            "function-defaults-respect-left-to-right-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "def _configure(\n"
+            "    first=(build_value := fake),\n"
+            "    second=build_value(),\n"
+            "):\n"
+            "    return first, second\n",
+            False,
+        ),
+        (
+            "lambda-defaults-respect-left-to-right-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "callback = lambda first=(build_value := fake), second=build_value(): (\n"
+            "    first, second\n"
+            ")\n",
+            False,
+        ),
+        (
+            "tuple-expression-respects-left-to-right-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = ((build_value := fake), build_value())[1]\n",
+            False,
+        ),
+        (
+            "tuple-expression-respects-importlib-rebind",
+            "import importlib as loader\n"
+            "result = (\n"
+            "    (loader := object()),\n"
+            "    loader.import_module('src.api').build_value(),\n"
+            ")[1]\n",
+            False,
+        ),
+        (
+            "future-star-annotation-is-not-executed",
+            "from __future__ import annotations\n"
+            "from src.api import *\n"
+            "callback: build_value()\n",
+            False,
+        ),
+        (
+            "future-importlib-annotation-is-not-executed",
+            "from __future__ import annotations\n"
+            "import importlib\n"
+            "callback: importlib.import_module('src.api').build_value()\n",
+            False,
+        ),
+        (
+            "generator-consumed-before-later-star-rebind",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "next(values)\n"
+            "build_value = lambda: 2\n",
+            True,
+        ),
+        (
+            "generator-fails-before-later-star-import",
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    next(values)\n"
+            "except NameError:\n"
+            "    pass\n"
+            "from src.api import *\n",
+            False,
+        ),
+        (
+            "generator-consumed-before-importlib-rebind",
+            "import importlib as loader\n"
+            "values = (loader.import_module('src.api').build_value() for _ in [0])\n"
+            "next(values)\n"
+            "loader = object()\n",
+            True,
+        ),
+        (
+            "generator-fails-before-later-importlib-import",
+            "values = (loader.import_module('src.api').build_value() for _ in [0])\n"
+            "try:\n"
+            "    next(values)\n"
+            "except NameError:\n"
+            "    pass\n"
+            "import importlib as loader\n",
+            False,
+        ),
+        (
+            "function-default-precedes-annotation-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "def _configure(value: (build_value := fake) = build_value()):\n"
+            "    return value\n",
+            True,
+        ),
+        (
+            "function-annotation-follows-default-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "def _configure(value: build_value() = (build_value := fake)):\n"
+            "    return value\n",
+            False,
+        ),
+        (
+            "dead-inner-call-before-effective-star-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "def _outer():\n"
+            "    global build_value\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    if False:\n"
+            "        _inner()\n"
+            "    build_value = fake\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "dead-inner-call-before-effective-star-restore",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "def _outer():\n"
+            "    global build_value\n"
+            "    build_value = fake\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    if False:\n"
+            "        _inner()\n"
+            "    from src.api import build_value\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "class-list-comprehension-skips-class-star-shadow",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "class Config:\n"
+            "    build_value = fake\n"
+            "    values = [build_value() for _ in [0]]\n",
+            True,
+        ),
+        (
+            "class-generator-skips-class-star-shadow",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "class Config:\n"
+            "    build_value = fake\n"
+            "    values = (build_value() for _ in [0])\n"
+            "    result = next(values)\n",
+            True,
+        ),
+        (
+            "class-comprehension-skips-class-importlib-binding",
+            "class Fake:\n"
+            "    pass\n"
+            "importlib = Fake()\n"
+            "class Config:\n"
+            "    import importlib\n"
+            "    values = [\n"
+            "        importlib.import_module('src.api').build_value()\n"
+            "        for _ in [0]\n"
+            "    ]\n",
+            False,
+        ),
+        (
+            "short-circuit-does-not-apply-skipped-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = (False and (build_value := fake), build_value())\n",
+            True,
+        ),
+        (
+            "assignment-rhs-precedes-target-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "items = {}\n"
+            "items[(build_value := fake)] = build_value()\n",
+            True,
+        ),
+        (
+            "typed-captured-importlib-function-restores-attribute",
+            "import importlib\n"
+            "genuine: object = importlib.import_module\n"
+            "importlib.import_module = lambda name: object()\n"
+            "importlib.import_module = genuine\n"
+            "result = importlib.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "captured-star-target-restores-binding",
+            "from src.api import *\n"
+            "saved = build_value\n"
+            "build_value = lambda: 2\n"
+            "build_value = saved\n"
+            "result = build_value()\n",
+            True,
+        ),
+        (
+            "captured-importlib-module-restores-binding",
+            "import importlib as loader\n"
+            "saved = loader\n"
+            "loader = object()\n"
+            "loader = saved\n"
+            "result = loader.import_module('src.api').build_value()\n",
+            True,
+        ),
+        (
+            "unconsumed-generator-does-not-call-target",
+            "from src.api import *\nvalues = (build_value() for _ in [0])\n",
+            False,
+        ),
+        (
+            "for-loop-consumes-generator-before-star-rebind",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "for value in values:\n"
+            "    result = value\n"
+            "build_value = lambda: 2\n",
+            True,
+        ),
+        (
+            "dead-inner-call-before-effective-importlib-rebind",
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    if False:\n"
+            "        _inner()\n"
+            "    loader = object()\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "multiple-inner-calls-merge-importlib-bindings",
+            "def _outer():\n"
+            "    loader = object()\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    try:\n"
+            "        _inner()\n"
+            "    except AttributeError:\n"
+            "        pass\n"
+            "    import importlib as loader\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "list-consumes-generator",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "result = list(values)\n",
+            True,
+        ),
+        (
+            "list-directly-consumes-generator-expression",
+            "from src.api import *\nresult = list(build_value() for _ in [0])\n",
+            True,
+        ),
+        (
+            "for-directly-consumes-generator-expression",
+            "from src.api import *\n"
+            "for value in (build_value() for _ in [0]):\n"
+            "    result = value\n",
+            True,
+        ),
+        (
+            "generator-alias-preserves-object-identity",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "saved = values\n"
+            "values = iter(())\n"
+            "result = list(saved)\n",
+            True,
+        ),
+        (
+            "generator-name-rebind-does-not-consume-old-object",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "values = iter(())\n"
+            "next(values, None)\n",
+            False,
+        ),
+        (
+            "generator-dead-while-consumer-is-unreachable",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "while False:\n"
+            "    next(values)\n",
+            False,
+        ),
+        (
+            "nested-callable-alias-preserves-identity",
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    callback = _inner\n"
+            "    result = callback()\n"
+            "    loader = object()\n"
+            "    return result\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "nested-callable-rebind-terminates-identity",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    _inner = lambda: 2\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "nested-call-before-definition-does-not-invoke-later-function",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    try:\n"
+            "        _inner()\n"
+            "    except UnboundLocalError:\n"
+            "        pass\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    return 0\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "importlib-multi-anchor-state-keeps-field-correlation",
+            "import importlib\n"
+            "saved = importlib.import_module\n"
+            "def _outer():\n"
+            "    loader = importlib\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    importlib.import_module = lambda name: object()\n"
+            "    try:\n"
+            "        _inner()\n"
+            "    except AttributeError:\n"
+            "        pass\n"
+            "    importlib.import_module = saved\n"
+            "    loader = object()\n"
+            "    try:\n"
+            "        _inner()\n"
+            "    except AttributeError:\n"
+            "        pass\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "walrus-restores-star-target-lineage",
+            "from src.api import *\n"
+            "saved = build_value\n"
+            "build_value = lambda: 2\n"
+            "result = ((build_value := saved), build_value())[1]\n",
+            True,
+        ),
+        (
+            "walrus-restores-importlib-module-lineage",
+            "import importlib as loader\n"
+            "saved = loader\n"
+            "loader = object()\n"
+            "result = (\n"
+            "    (loader := saved),\n"
+            "    loader.import_module('src.api').build_value(),\n"
+            ")[1]\n",
+            True,
+        ),
+        (
+            "if-expression-skips-unselected-star-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = (build_value := fake) if False else build_value()\n",
+            True,
+        ),
+        (
+            "dict-evaluates-each-key-before-its-value",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = {0: (build_value := fake), build_value(): 1}\n",
+            False,
+        ),
+        (
+            "comprehension-filter-precedes-output-expression",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = [build_value() for _ in [0] if (build_value := fake)]\n",
+            False,
+        ),
+        (
+            "returned-generator-expression-is-an-unknown-consumption-boundary",
+            "from src.api import *\n"
+            "def _make_values():\n"
+            "    return (build_value() for _ in [0])\n"
+            "for value in _make_values():\n"
+            "    result = value\n",
+            True,
+        ),
+        (
+            "returned-generator-alias-is-an-unknown-consumption-boundary",
+            "from src.api import *\n"
+            "def _make_values():\n"
+            "    values = (build_value() for _ in [0])\n"
+            "    return values\n"
+            "result = list(_make_values())\n",
+            True,
+        ),
+        (
+            "try-rebind-terminates-callable-identity",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    try:\n"
+            "        _inner = lambda: 2\n"
+            "    except Exception:\n"
+            "        pass\n"
+            "    return _inner()\n\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "tuple-unpack-preserves-callable-identity",
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    (callback,) = (_inner,)\n"
+            "    result = callback()\n"
+            "    loader = object()\n"
+            "    return result\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "chained-assignment-preserves-generator-identity",
+            "from src.api import *\n"
+            "saved = values = (build_value() for _ in [0])\n"
+            "result = list(values)\n",
+            True,
+        ),
+        (
+            "custom-consumer-is-an-unknown-generator-boundary",
+            "from src.api import *\n"
+            "def _consume(items):\n"
+            "    return list(items)\n"
+            "values = (build_value() for _ in [0])\n"
+            "result = _consume(values)\n",
+            True,
+        ),
+        (
+            "lambda-call-uses-pre-rebind-star-state",
+            "from src.api import *\n"
+            "callback = lambda: build_value()\n"
+            "result = callback()\n"
+            "build_value = lambda: 2\n",
+            True,
+        ),
+        (
+            "lambda-failed-call-does-not-borrow-later-star-import",
+            "callback = lambda: build_value()\n"
+            "try:\n"
+            "    callback()\n"
+            "except NameError:\n"
+            "    pass\n"
+            "from src.api import *\n",
+            False,
+        ),
+        (
+            "generator-multi-anchor-keeps-importlib-state-correlation",
+            "import importlib\n"
+            "saved = importlib.import_module\n"
+            "loader = importlib\n"
+            "values = (\n"
+            "    loader.import_module('src.api').build_value()\n"
+            "    for _ in [0, 1]\n"
+            ")\n"
+            "importlib.import_module = lambda name: object()\n"
+            "next(values)\n"
+            "importlib.import_module = saved\n"
+            "loader = object()\n"
+            "next(values)\n",
+            False,
+        ),
+        (
+            "function-walrus-restores-global-star-lineage",
+            "from src.api import *\n"
+            "saved = build_value\n"
+            "fake = lambda: 2\n"
+            "def _caller():\n"
+            "    global build_value\n"
+            "    build_value = fake\n"
+            "    return ((build_value := saved), build_value())[1]\n\n"
+            "_caller()\n",
+            True,
+        ),
+        (
+            "container-walrus-restores-star-lineage",
+            "from src.api import *\n"
+            "saved = [build_value]\n"
+            "build_value = lambda: 2\n"
+            "result = ((build_value := saved[0]), build_value())[1]\n",
+            True,
+        ),
+        (
+            "shadowed-builtin-does-not-consume-generator",
+            "from src.api import *\n"
+            "list = lambda value: []\n"
+            "result = list(build_value() for _ in [0])\n",
+            False,
+        ),
+        (
+            "empty-iterator-does-not-execute-generator-body",
+            "from src.api import *\nresult = list(build_value() for _ in [])\n",
+            False,
+        ),
+        (
+            "false-filter-does-not-execute-generator-body",
+            "from src.api import *\n"
+            "result = list(build_value() for _ in [0] if False)\n",
+            False,
+        ),
+        (
+            "discarded-returned-generator-is-not-consumed",
+            "from src.api import *\n"
+            "def _make_values():\n"
+            "    return (build_value() for _ in [0])\n"
+            "_make_values()\n",
+            False,
+        ),
+        (
+            "while-false-else-consumes-generator",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "while False:\n"
+            "    pass\n"
+            "else:\n"
+            "    result = list(values)\n",
+            True,
+        ),
+        (
+            "empty-for-body-does-not-consume-generator",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "for _ in ():\n"
+            "    next(values)\n",
+            False,
+        ),
+        (
+            "unraised-exception-handler-does-not-consume-generator",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    pass\n"
+            "except Exception:\n"
+            "    next(values)\n",
+            False,
+        ),
+        (
+            "unmatched-case-does-not-consume-generator",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "match 1:\n"
+            "    case 2:\n"
+            "        next(values)\n",
+            False,
+        ),
+        (
+            "loop-target-rebinds-generator-before-body",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "for values in [iter(())]:\n"
+            "    next(values, None)\n",
+            False,
+        ),
+        (
+            "conditional-nested-definition-preserves-callable-identity",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    if True:\n"
+            "        def _inner():\n"
+            "            return build_value()\n"
+            "        return _inner()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "nested-function-default-invokes-callable-at-definition",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    def _wrapper(value=_inner()):\n"
+            "        return value\n"
+            "    return _wrapper()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "nested-lambda-default-invokes-callable-at-definition",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    callback = lambda value=_inner(): value\n"
+            "    return callback()\n\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "comparison-short-circuit-skips-walrus-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = (0 > 1 > (build_value := fake), build_value())[1]\n",
+            True,
+        ),
+        (
+            "unary-constant-short-circuit-skips-walrus-rebind",
+            "from src.api import *\n"
+            "fake = lambda: 2\n"
+            "result = ((not True) and (build_value := fake), build_value())[1]\n",
+            True,
+        ),
+        (
+            "try-safe-generator-rebind-does-not-invent-handler-path",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    values = (0 for _ in [0])\n"
+            "except Exception:\n"
+            "    pass\n"
+            "next(values)\n",
+            False,
+        ),
+        (
+            "try-handler-inherits-state-before-explicit-raise",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "fake_generator = (0 for _ in [0])\n"
+            "try:\n"
+            "    values = fake_generator\n"
+            "    raise RuntimeError()\n"
+            "except RuntimeError:\n"
+            "    next(values)\n",
+            False,
+        ),
+        (
+            "finally-consumes-generator-on-return-path",
+            "from src.api import *\n"
+            "def _factory():\n"
+            "    values = (build_value() for _ in [0])\n"
+            "    try:\n"
+            "        return None\n"
+            "    finally:\n"
+            "        list(values)\n"
+            "_factory()\n",
+            True,
+        ),
+        (
+            "literal-loop-applies-each-identity-transfer",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "other = (0 for _ in [0])\n"
+            "for _ in [0, 1]:\n"
+            "    values, other = other, values\n"
+            "next(values)\n",
+            True,
+        ),
+        (
+            "dead-local-consumer-path-does-not-consume",
+            "from src.api import *\n"
+            "def _consume(items):\n"
+            "    if False:\n"
+            "        list(items)\n"
+            "values = (build_value() for _ in [0])\n"
+            "_consume(values)\n",
+            False,
+        ),
+        (
+            "local-helper-invokes-callable-argument",
+            "from src.api import *\n"
+            "def _invoke(callback):\n"
+            "    return callback()\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    return _invoke(_inner)\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "keyword-only-consumer-maps-generator-argument",
+            "from src.api import *\n"
+            "def _consume(*, items):\n"
+            "    return list(items)\n"
+            "values = (build_value() for _ in [0])\n"
+            "_consume(items=values)\n",
+            True,
+        ),
+        (
+            "consumer-parameter-alias-preserves-generator-identity",
+            "from src.api import *\n"
+            "def _consume(items):\n"
+            "    alias = items\n"
+            "    return list(alias)\n"
+            "values = (build_value() for _ in [0])\n"
+            "_consume(values)\n",
+            True,
+        ),
+        (
+            "consumer-shadowed-builtin-does-not-consume",
+            "from src.api import *\n"
+            "def _consume(items):\n"
+            "    list = lambda value: []\n"
+            "    return list(items)\n"
+            "values = (build_value() for _ in [0])\n"
+            "_consume(values)\n",
+            False,
+        ),
+        (
+            "conditional-factory-return-keeps-path-identity",
+            "from src.api import *\n"
+            "def _make(flag):\n"
+            "    if flag:\n"
+            "        return (build_value() for _ in [0])\n"
+            "    return iter(())\n"
+            "list(_make(False))\n",
+            False,
+        ),
+        (
+            "two-hop-generator-factory-preserves-returned-identity",
+            "from src.api import *\n"
+            "def _make():\n"
+            "    return (build_value() for _ in [0])\n"
+            "def _wrap():\n"
+            "    return _make()\n"
+            "list(_wrap())\n",
+            True,
+        ),
+        (
+            "decorator-replacement-terminates-factory-identity",
+            "from src.api import *\n"
+            "def _empty(function):\n"
+            "    return lambda: iter(())\n"
+            "@_empty\n"
+            "def _make():\n"
+            "    return (build_value() for _ in [0])\n"
+            "list(_make())\n",
+            False,
+        ),
+        (
+            "break-skips-loop-else-consumer",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "for _ in [1]:\n"
+            "    break\n"
+            "else:\n"
+            "    list(values)\n",
+            False,
+        ),
+        (
+            "continue-skips-unreachable-loop-consumer",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "for _ in [1]:\n"
+            "    continue\n"
+            "    list(values)\n",
+            False,
+        ),
+        (
+            "try-handler-respects-exception-type",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    raise ValueError()\n"
+            "except TypeError:\n"
+            "    list(values)\n"
+            "except ValueError:\n"
+            "    pass\n",
+            False,
+        ),
+        (
+            "match-false-guard-skips-consumer",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "match 1:\n"
+            "    case 1 if 1 > 2:\n"
+            "        list(values)\n",
+            False,
+        ),
+        (
+            "match-or-pattern-rejects-unmatched-literal",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "match 1:\n"
+            "    case 2 | 3:\n"
+            "        list(values)\n",
+            False,
+        ),
+        (
+            "generator-comparison-filter-skips-body",
+            "from src.api import *\nlist(build_value() for _ in [0] if 1 > 2)\n",
+            False,
+        ),
+        (
+            "dict-value-preserves-generator-identity",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "box = {'items': values}\n"
+            "list(box['items'])\n",
+            True,
+        ),
+        (
+            "negative-index-preserves-generator-identity",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "box = [values]\n"
+            "list(box[-1])\n",
+            True,
+        ),
+        (
+            "branch-local-import-state-reaches-nested-call-anchor",
+            "def _outer():\n"
+            "    loader = object()\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    if True:\n"
+            "        import importlib as loader\n"
+            "        return _inner()\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "branch-local-fake-state-reaches-nested-call-anchor",
+            "import importlib as loader\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    if True:\n"
+            "        loader = object()\n"
+            "        try:\n"
+            "            return _inner()\n"
+            "        except AttributeError:\n"
+            "            return None\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "builtin-iterator-consumer-does-not-invoke-callable",
+            "from src.api import *\n"
+            "def _outer():\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    try:\n"
+            "        list(_inner)\n"
+            "    except TypeError:\n"
+            "        pass\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "star-args-consumer-maps-generator-argument",
+            "from src.api import *\n"
+            "def _consume(*items):\n"
+            "    return list(items[0])\n"
+            "values = (build_value() for _ in [0])\n"
+            "_consume(*[values])\n",
+            True,
+        ),
+        (
+            "lambda-multi-anchor-keeps-importlib-state-correlation",
+            "import importlib\n"
+            "saved = importlib.import_module\n"
+            "loader = importlib\n"
+            "callback = lambda: loader.import_module('src.api').build_value()\n"
+            "importlib.import_module = lambda name: object()\n"
+            "try:\n"
+            "    callback()\n"
+            "except AttributeError:\n"
+            "    pass\n"
+            "importlib.import_module = saved\n"
+            "loader = object()\n"
+            "try:\n"
+            "    callback()\n"
+            "except AttributeError:\n"
+            "    pass\n",
+            False,
+        ),
+        (
+            "generator-anchor-keeps-branch-local-importlib-state",
+            "values = (\n"
+            "    loader.import_module('src.api').build_value()\n"
+            "    for _ in [0]\n"
+            ")\n"
+            "if True:\n"
+            "    import importlib as loader\n"
+            "    list(values)\n",
+            True,
+        ),
+        (
+            "generator-anchor-keeps-branch-local-fake-state",
+            "import importlib as loader\n"
+            "values = (\n"
+            "    loader.import_module('src.api').build_value()\n"
+            "    for _ in [0]\n"
+            ")\n"
+            "if True:\n"
+            "    loader = object()\n"
+            "    try:\n"
+            "        list(values)\n"
+            "    except AttributeError:\n"
+            "        pass\n",
+            False,
+        ),
+        (
+            "lambda-anchor-keeps-branch-local-importlib-state",
+            "loader = object()\n"
+            "callback = lambda: loader.import_module('src.api').build_value()\n"
+            "if True:\n"
+            "    import importlib as loader\n"
+            "    callback()\n",
+            True,
+        ),
+        (
+            "call-argument-literal-loop-applies-all-transfers",
+            "from src.api import *\n"
+            "def _outer(items):\n"
+            "    values = (build_value() for _ in [0])\n"
+            "    other = (0 for _ in [0])\n"
+            "    for _ in items:\n"
+            "        values, other = other, values\n"
+            "    next(values)\n"
+            "_outer([0, 1])\n",
+            True,
+        ),
+        (
+            "call-argument-single-loop-transfer-does-not-invent-zero-path",
+            "from src.api import *\n"
+            "def _outer(items):\n"
+            "    values = (build_value() for _ in [0])\n"
+            "    other = (0 for _ in [0])\n"
+            "    for _ in items:\n"
+            "        values, other = other, values\n"
+            "    next(values)\n"
+            "_outer([0])\n",
+            False,
+        ),
+        (
+            "nested-callable-respects-enclosing-call-argument",
+            "from src.api import *\n"
+            "def _outer(enabled):\n"
+            "    def _inner():\n"
+            "        return build_value()\n"
+            "    if enabled:\n"
+            "        return _inner()\n"
+            "    return None\n"
+            "_outer(False)\n",
+            False,
+        ),
+        (
+            "nested-lambda-respects-enclosing-call-argument",
+            "from src.api import *\n"
+            "def _outer(enabled):\n"
+            "    callback = lambda: build_value()\n"
+            "    if enabled:\n"
+            "        return callback()\n"
+            "    return None\n"
+            "_outer(False)\n",
+            False,
+        ),
+        (
+            "name-error-handler-keeps-pre-assignment-generator",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    values = missing_name\n"
+            "except NameError:\n"
+            "    next(values)\n",
+            True,
+        ),
+        (
+            "exception-handler-observes-walrus-prefix-state",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    ((values := (0 for _ in [0])), 1 / 0)[1]\n"
+            "except ZeroDivisionError:\n"
+            "    next(values)\n",
+            False,
+        ),
+        (
+            "safe-empty-dict-does-not-invent-handler-path",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "try:\n"
+            "    marker = {}\n"
+            "except Exception:\n"
+            "    list(values)\n",
+            False,
+        ),
+        (
+            "nonlocal-rebind-updates-enclosing-callable",
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    def _disable():\n"
+            "        nonlocal _inner\n"
+            "        _inner = lambda: 2\n"
+            "    _disable()\n"
+            "    return _inner()\n"
+            "_outer()\n",
+            False,
+        ),
+        (
+            "bounded-recursion-preserves-callback-invocation",
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    def _invoke(callback, depth):\n"
+            "        if depth:\n"
+            "            return _invoke(callback, depth - 1)\n"
+            "        return callback()\n"
+            "    result = _invoke(_inner, 1)\n"
+            "    loader = object()\n"
+            "    return result\n"
+            "_outer()\n",
+            True,
+        ),
+        (
+            "match-sequence-selects-rebinding-case",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "match (1, 2):\n"
+            "    case (1, 2):\n"
+            "        values = (0 for _ in [0])\n"
+            "    case _:\n"
+            "        pass\n"
+            "next(values)\n",
+            False,
+        ),
+        (
+            "match-sequence-rejects-impossible-consumer-case",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "match (1,):\n"
+            "    case (2,):\n"
+            "        list(values)\n",
+            False,
+        ),
+        (
+            "match-capture-preserves-subject-identity",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "match values:\n"
+            "    case captured:\n"
+            "        list(captured)\n",
+            True,
+        ),
+        (
+            "range-one-loop-does-not-invent-zero-iteration-path",
+            "from src.api import *\n"
+            "values = (build_value() for _ in [0])\n"
+            "other = (0 for _ in [0])\n"
+            "for _ in range(1):\n"
+            "    values, other = other, values\n"
+            "next(values)\n",
+            False,
+        ),
+        (
+            "range-zero-generator-does-not-execute-body",
+            "from src.api import *\nlist(build_value() for _ in range(0))\n",
+            False,
+        ),
+        (
+            "empty-container-variable-does-not-execute-generator-body",
+            "from src.api import *\nitems = []\nlist(build_value() for _ in items)\n",
+            False,
+        ),
+        (
+            "empty-container-filter-does-not-execute-generator-body",
+            "from src.api import *\nlist(build_value() for _ in [0] if [])\n",
+            False,
+        ),
+        (
+            "dict-negative-key-preserves-saved-callable-identity",
+            "from src.api import *\n"
+            "saved = {-1: build_value}\n"
+            "build_value = lambda: 2\n"
+            "saved[-1]()\n",
+            True,
+        ),
+        (
+            "factory-default-argument-selects-untracked-return-path",
+            "from src.api import *\n"
+            "def _make(enabled=False):\n"
+            "    if enabled:\n"
+            "        return (build_value() for _ in [0])\n"
+            "    return iter(())\n"
+            "list(_make())\n",
+            False,
+        ),
+    ),
+    ids=lambda value: value if isinstance(value, str) and "\n" not in value else None,
+)
+def test_dynamic_lineage_respects_lexical_binding_state(
+    tmp_path: Path,
+    case_name: str,
+    caller_source: str,
+    target_executed: bool,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(tmp_path, "src/callers.py", caller_source)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    expected_boundary = "dynamic-reference" if target_executed else ""
+    assert helper.invocation_boundary == expected_boundary, case_name
+    expected_required = set() if target_executed else {FindingSeverity.REQUIRED}
+    assert _severities(report, "lean.public-callers") == expected_required, case_name
+
+
+@pytest.mark.parametrize(
+    ("consumer_source", "invocation", "target_executed"),
+    (
+        ("def _consume(items):\n    return None\n", "consume(values)", False),
+        ("def _consume(items):\n    return list(items)\n", "consume(values)", True),
+        (
+            "def _consume(*, items):\n    return list(items)\n",
+            "consume(items=values)",
+            True,
+        ),
+        (
+            "def _consume(**kwargs):\n    return list(kwargs['items'])\n",
+            "consume(**{'items': values})",
+            True,
+        ),
+    ),
+)
+def test_imported_consumer_summary_controls_generator_lineage(
+    tmp_path: Path,
+    consumer_source: str,
+    invocation: str,
+    target_executed: bool,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(tmp_path, "src/consumer.py", consumer_source)
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\n"
+        "from src.consumer import _consume as consume\n"
+        "values = (build_value() for _ in [0])\n"
+        f"{invocation}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if metric.path == "src/api.py" and function.symbol == "build_value"
+    )
+    expected_boundary = "dynamic-reference" if target_executed else ""
+    assert helper.invocation_boundary == expected_boundary
+    expected_required = set() if target_executed else {FindingSeverity.REQUIRED}
+    assert _severities(report, "lean.public-callers") == expected_required
+
+
+@pytest.mark.parametrize(
+    ("helper_source", "caller_source"),
+    (
+        (
+            "def consume(items):\n    return list(items)\n",
+            "from src.api import *\n"
+            "import src.helpers as helpers\n"
+            "values = (build_value() for _ in [0])\n"
+            "helpers.consume(values)\n",
+        ),
+        (
+            "def invoke(callback):\n    return callback()\n",
+            "from src.helpers import invoke\n"
+            "def _outer():\n"
+            "    import importlib as loader\n"
+            "    def _inner():\n"
+            "        return loader.import_module('src.api').build_value()\n"
+            "    return invoke(_inner)\n"
+            "_outer()\n",
+        ),
+        (
+            "def invoke(callback):\n    return callback()\n",
+            "from src.helpers import invoke\n"
+            "import importlib as loader\n"
+            "callback = lambda: loader.import_module('src.api').build_value()\n"
+            "invoke(callback)\n",
+        ),
+        (
+            "def _make(callback):\n"
+            "    return (callback() for _ in [0])\n"
+            "def wrap(callback):\n"
+            "    return _make(callback)\n",
+            "from src.api import *\n"
+            "from src.helpers import wrap\n"
+            "list(wrap(build_value))\n",
+        ),
+        (
+            "def preserve(function):\n    return lambda: function()\n",
+            "from src.helpers import preserve\n"
+            "import importlib as loader\n"
+            "@preserve\n"
+            "def _make():\n"
+            "    return loader.import_module('src.api').build_value()\n"
+            "_make()\n",
+        ),
+    ),
+)
+def test_imported_callable_graph_preserves_deferred_execution(
+    tmp_path: Path,
+    helper_source: str,
+    caller_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(tmp_path, "src/helpers.py", helper_source)
+    _write(tmp_path, "src/callers.py", caller_source)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if metric.path == "src/api.py" and function.symbol == "build_value"
+    )
+    assert helper.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_imported_generator_factory_requires_product_consumption(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/helpers.py",
+        "def _make(callback):\n"
+        "    return (callback() for _ in [0])\n"
+        "def wrap(callback):\n"
+        "    return _make(callback)\n",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\nfrom src.helpers import wrap\nwrap(build_value)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if metric.path == "src/api.py" and function.symbol == "build_value"
+    )
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+
+
+def test_transitive_reexport_consumer_summary_controls_generator_lineage(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(tmp_path, "src/helpers.py", "def consume(items):\n    return list(items)\n")
+    _write(tmp_path, "src/facade.py", "from src.helpers import consume\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\n"
+        "from src.facade import consume\n"
+        "values = (build_value() for _ in [0])\n"
+        "consume(values)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if metric.path == "src/api.py" and function.symbol == "build_value"
+    )
+    assert helper.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_identity_flow_caps_unknown_branch_state_growth() -> None:
+    source = "flag = unknown\nvalues = (item for item in [0])\n"
+    source += "".join(f"if flag:\n    alias_{index} = values\n" for index in range(16))
+    source += "list(values)\n"
+    tree = ast.parse(source)
+    origin = next(node for node in ast.walk(tree) if isinstance(node, ast.GeneratorExp))
+
+    trace = _trace_identity(tree, origin, "generator", origin)
+
+    assert len(trace.paths) <= 256
+
+
+def test_direct_import_shadow_does_not_create_false_star_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        {"src/other.py": "def build_value():\n    return 2\n"},
+    )
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\n"
+        "from src.other import build_value\n\n"
+        "def _caller():\n"
+        "    return build_value()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if metric.path == "src/api.py" and function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "function_body",
+    (
+        (
+            "    match {'value': fake}:\n"
+            "        case {'value': build_value}:\n"
+            "            pass\n"
+        ),
+        ("    def nested(value=(build_value := fake)):\n        return value\n"),
+        ("    class Nested((build_value := object)):\n        pass\n"),
+    ),
+)
+def test_function_scope_definition_time_rebinding_is_unlinked(
+    tmp_path: Path,
+    function_body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\n"
+        "fake = lambda: 2\n\n"
+        "def _caller():\n"
+        f"{function_body}"
+        "    return build_value()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    assert helper.invocation_boundary == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_lambda_body_binding_does_not_shadow_enclosing_function(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import *\n"
+        "fake = lambda: 2\n\n"
+        "def _caller():\n"
+        "    callback = lambda: (build_value := fake)\n"
+        "    return build_value()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.invocation_boundary == "dynamic-reference"
+    assert _severities(report, "lean.public-callers") == set()
+
+
+@pytest.mark.parametrize(
+    ("caller_source", "target_executed"),
+    (
+        (
+            "from src.intermediate import *\n\ndef _caller():\n    return helper()\n",
+            True,
+        ),
+        (
+            "from src.intermediate import *\n\n"
+            "def _caller():\n"
+            "    return build_value()\n",
+            False,
+        ),
+        (
+            "import importlib\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.intermediate').helper()\n",
+            True,
+        ),
+        (
+            "import importlib\n\n"
+            "def _caller():\n"
+            "    return importlib.import_module('src.intermediate').build_value()\n",
+            False,
+        ),
+    ),
+)
+def test_renamed_reexport_dynamic_lineage_uses_exported_name(
+    tmp_path: Path,
+    caller_source: str,
+    target_executed: bool,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def build_value():\n    return 1\n")
+    _write(
+        tmp_path,
+        "src/intermediate.py",
+        "from src.api import build_value as helper\n",
+    )
+    _write(tmp_path, "src/caller.py", caller_source)
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_value"
+    )
+    assert helper.caller_count == 0
+    expected_boundary = "dynamic-reference" if target_executed else ""
+    assert helper.invocation_boundary == expected_boundary
+    expected_required = set() if target_executed else {FindingSeverity.REQUIRED}
+    assert _severities(report, "lean.public-callers") == expected_required
+
+
+def test_prefilter_matches_exhaustive_reference_without_cartesian_scanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    targets = "\n\n".join(
+        f"def target_{index}():\n    return {index}" for index in range(12)
+    )
+    _write(tmp_path, "src/api.py", f"{targets}\n")
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.api import target_0\n\ndef _caller():\n    return target_0()\n",
+    )
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    original_collect = lean_code_caller_evaluation_support._collect_target_callers
+    scan_counts: list[int] = []
+
+    def _run() -> dict[str, tuple[int, str]]:
+        scanned = 0
+
+        def _counted(
+            path,
+            tree,
+            shape,
+            target,
+            target_paths,
+            callers,
+            imported_callables=None,
+            source_evidence=None,
+        ):
+            nonlocal scanned
+            scanned += 1
+            return original_collect(
+                path,
+                tree,
+                shape,
+                target,
+                target_paths,
+                callers,
+                imported_callables,
+                source_evidence,
+            )
+
+        monkeypatch.setattr(
+            lean_code_caller_evaluation_support,
+            "_collect_target_callers",
+            _counted,
+        )
+        report = _evaluate(tmp_path, scope=("src/*.py",), snapshot=snapshot)
+        scan_counts.append(scanned)
+        return {
+            function.symbol: (function.caller_count, function.invocation_boundary)
+            for metric in report.metrics.files
+            for function in metric.functions
+        }
+
+    optimized = _run()
+    monkeypatch.setattr(
+        lean_code_caller_evidence,
+        "_referenced_symbol_names",
+        lambda _tree, _shape: {f"target_{index}" for index in range(12)},
+    )
+    exhaustive = _run()
+
+    assert optimized == exhaustive
+    assert scan_counts[0] < scan_counts[1]
+
+
 def test_nested_closure_inherits_resolved_target_instance(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write(
@@ -2509,6 +5528,484 @@ def test_unrelated_same_name_calls_do_not_satisfy_public_caller_budget(
     assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
 
 
+def test_inherited_mixin_method_counts_calls_through_concrete_receiver(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/query_mixin.py",
+        "class QueryMixin:\n    def get_reservation(self):\n        return 1\n",
+    )
+    _write(
+        tmp_path,
+        "src/resources.py",
+        "from src.query_mixin import QueryMixin\n\n"
+        "class ResourceGovernor(QueryMixin):\n    pass\n",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.resources import ResourceGovernor\n\n"
+        "def _one(value: ResourceGovernor):\n    return value.get_reservation()\n\n"
+        "def _two(value: ResourceGovernor):\n    return value.get_reservation()\n\n"
+        "def _three(value: ResourceGovernor):\n    return value.get_reservation()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "QueryMixin.get_reservation"
+    )
+    assert method.caller_count == 3
+    assert method.invocation_boundary == ""
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_subclass_override_does_not_count_as_base_method_caller(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/base.py",
+        "class Base:\n    def resolve(self):\n        return 'base'\n",
+    )
+    _write(
+        tmp_path,
+        "src/concrete.py",
+        "from src.base import Base\n\n"
+        "class Concrete(Base):\n"
+        "    def resolve(self):\n"
+        "        return 'concrete'\n",
+    )
+    _write(
+        tmp_path,
+        "src/caller.py",
+        "from src.concrete import Concrete\n\n"
+        "def _call(value: Concrete):\n    return value.resolve()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    base = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "Base.resolve"
+    )
+    concrete = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "Concrete.resolve"
+    )
+    assert base.caller_count == 0
+    assert concrete.caller_count == 1
+
+
+def test_typed_property_load_counts_as_an_exact_product_caller(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/config.py",
+        "class DomainConfig:\n"
+        "    @property\n"
+        "    def domain_ids(self):\n"
+        "        return ('one',)\n",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.config import DomainConfig\n\n"
+        "def _one(value: DomainConfig):\n    return value.domain_ids\n\n"
+        "def _two(value: DomainConfig):\n    return value.domain_ids\n\n"
+        "def _three(value: DomainConfig):\n    return value.domain_ids\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    prop = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "DomainConfig.domain_ids"
+    )
+    assert prop.caller_count == 3
+    assert prop.invocation_boundary == ""
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_pydantic_model_post_init_is_a_framework_hook_not_a_public_api(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/model.py",
+        "from pydantic import BaseModel\n\n"
+        "class RuntimeModel(BaseModel):\n"
+        "    def model_post_init(self, context):\n"
+        "        self.context = context\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/model.py",))
+
+    hook = report.metrics.files[0].functions[0]
+    assert hook.symbol == "RuntimeModel.model_post_init"
+    assert hook.public is False
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_inherited_pydantic_model_post_init_is_a_framework_hook(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/model.py",
+        "from pydantic import BaseModel\n\n"
+        "class ArtifactModel(BaseModel):\n"
+        "    pass\n\n"
+        "class RuntimeModel(ArtifactModel):\n"
+        "    def model_post_init(self, context):\n"
+        "        self._context = context\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/model.py",))
+
+    hook = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "RuntimeModel.model_post_init"
+    )
+    assert hook.public is False
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_guarded_main_function_is_a_module_entrypoint_not_a_public_api(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def main():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.symbol == "main"
+    assert entrypoint.public is False
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_sibling_script_imports_resolve_to_exact_public_callers(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool_support.py",
+        "def build_summary():\n    return {}\n",
+    )
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "from tool_support import build_summary\n\n"
+        "def _one():\n    return build_summary()\n\n"
+        "def _two():\n    return build_summary()\n\n"
+        "def _three():\n    return build_summary()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "build_summary"
+    )
+    assert helper.caller_count == 3
+    assert helper.invocation_boundary == ""
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_protocol_receiver_calls_are_merged_into_bound_implementation(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/ports.py",
+        "from typing import Protocol\n\n"
+        "class Reader(Protocol):\n"
+        "    def read(self): ...\n",
+    )
+    _write(
+        tmp_path,
+        "src/reader.py",
+        "class FileReader:\n    def read(self):\n        return 'value'\n",
+    )
+    _write(
+        tmp_path,
+        "src/factory.py",
+        "from src.ports import Reader\n"
+        "from src.reader import FileReader\n\n"
+        "def _build() -> Reader:\n    return FileReader()\n",
+    )
+    _write(
+        tmp_path,
+        "src/callers.py",
+        "from src.ports import Reader\n\n"
+        "def _one(value: Reader):\n    return value.read()\n\n"
+        "def _two(value: Reader):\n    return value.read()\n\n"
+        "def _three(value: Reader):\n    return value.read()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    protocol = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "Reader.read"
+    )
+    implementation = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "FileReader.read"
+    )
+    assert protocol.public is False
+    assert implementation.caller_count == 3
+    assert implementation.invocation_boundary == ""
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_unrelated_untyped_member_call_does_not_create_dynamic_boundary(
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/noise.py": (
+                "class UnrelatedService:\n"
+                "    def __init__(self, dependency):\n"
+                "        self._dependency = dependency\n\n"
+                "    def run(self):\n"
+                "        return self._dependency.build_value()\n"
+            )
+        },
+    )
+    _write(
+        tmp_path,
+        "src/api.py",
+        "class ValueBuilder:\n    def build_value(self):\n        return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/api.py",))
+
+    method = report.metrics.files[0].functions[0]
+    assert method.symbol == "ValueBuilder.build_value"
+    assert method.caller_count == 0
+    assert method.invocation_boundary == "dynamic-reference-unlinked"
+    assert method.invocation_evidence == []
+    assert method.unlinked_evidence == ["src/noise.py:run:5:6:15:6:45"]
+    assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_plain_same_named_fields_do_not_create_dynamic_invocation_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        "def anticipated_usage(value):\n    return value\n",
+    )
+    _write(
+        tmp_path,
+        "src/caller.py",
+        "from src.api import anticipated_usage\n\n"
+        "def _call(value):\n    return anticipated_usage(value)\n",
+    )
+    _write(
+        tmp_path,
+        "src/noise.py",
+        "def _serialize(anticipated_usage, request):\n"
+        "    return {'anticipated_usage': anticipated_usage, "
+        "'project_id': request.project_id}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "anticipated_usage"
+    )
+    assert helper.caller_count == 1
+    assert helper.invocation_boundary == ""
+    assert helper.invocation_evidence == []
+
+
+def test_unrelated_dynamic_call_cannot_borrow_same_owner_target_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/api.py",
+        "def anticipated_usage(value):\n    return value\n",
+    )
+    _write(
+        tmp_path,
+        "src/caller.py",
+        "from src.api import anticipated_usage\n\n"
+        "def _call(value, request):\n"
+        "    field = request.anticipated_usage\n"
+        "    result = anticipated_usage(value)\n"
+        "    dynamic = getattr(request, 'anticipated_usage')()\n"
+        "    return field, result, dynamic\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    helper = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "anticipated_usage"
+    )
+    assert helper.caller_count == 1
+    assert helper.invocation_boundary == "dynamic-reference-unlinked"
+    assert len(helper.unlinked_evidence) == 1
+    assert helper.unlinked_evidence[0].startswith("src/caller.py:_call:3:6:")
+
+
+def test_sibling_callable_arguments_keep_distinct_expression_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def target(value):\n    return value\n")
+    _write(
+        tmp_path,
+        "src/usage.py",
+        "def anticipated_usage(value):\n    return value\n",
+    )
+    _write(
+        tmp_path,
+        "src/caller.py",
+        "from src.api import target\n"
+        "from src.usage import anticipated_usage\n\n"
+        "def _call(wrapper):\n"
+        "    return wrapper(target, anticipated_usage)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    metrics = {
+        function.symbol: function
+        for metric in report.metrics.files
+        for function in metric.functions
+    }
+    assert metrics["target"].invocation_evidence == []
+    assert metrics["target"].reference_evidence == [
+        "src/caller.py:_call:4:5:19:5:25"
+    ]
+    assert metrics["anticipated_usage"].invocation_evidence == []
+    assert metrics["anticipated_usage"].reference_evidence == [
+        "src/caller.py:_call:4:5:27:5:44"
+    ]
+    assert _severities(report, "lean.public-callers") == {
+        FindingSeverity.REQUIRED
+    }
+
+
+def test_shadowed_callable_name_cannot_claim_imported_target_evidence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/api.py", "def target(value):\n    return value\n")
+    _write(
+        tmp_path,
+        "src/caller.py",
+        "from src.api import target\n\n"
+        "def _call(target, wrapper):\n"
+        "    return wrapper(target)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    target = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "target"
+    )
+    assert target.caller_count == 0
+    assert target.invocation_boundary == ""
+    assert target.invocation_evidence == []
+
+
+@pytest.mark.parametrize(
+    "noise_kind",
+    (
+        "same-file",
+        "unused-module-import",
+        "unused-from-import",
+        "unused-dynamic-import",
+    ),
+)
+def test_unrelated_member_call_cannot_borrow_file_level_lineage(
+    tmp_path: Path,
+    noise_kind: str,
+) -> None:
+    _init_repo(tmp_path)
+    target = "class Target:\n    def flush(self):\n        return 1\n"
+    noise_prefix = {
+        "same-file": "",
+        "unused-module-import": "import src.api\n\n",
+        "unused-from-import": "from src.api import Target\n\n",
+        "unused-dynamic-import": (
+            "import importlib\nimportlib.import_module('src.api')\n\n"
+        ),
+    }[noise_kind]
+    noise = (
+        "class Noise:\n"
+        "    def __init__(self, dependency):\n"
+        "        self.untyped = dependency\n\n"
+        "    def run(self):\n"
+        "        return self.untyped.flush()\n"
+    )
+    if noise_kind == "same-file":
+        _write(tmp_path, "src/api.py", f"{target}\n{noise}")
+    else:
+        _write(tmp_path, "src/api.py", target)
+        _write(tmp_path, "src/noise.py", f"{noise_prefix}{noise}")
+
+    report = _evaluate(tmp_path, scope=("src/*.py",))
+
+    method = next(
+        function
+        for metric in report.metrics.files
+        for function in metric.functions
+        if function.symbol == "Target.flush"
+    )
+    assert method.caller_count == 0
+    assert method.invocation_boundary == "dynamic-reference-unlinked"
+    assert method.unlinked_evidence
+    assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
 def test_pure_rename_does_not_create_a_new_public_symbol(tmp_path: Path) -> None:
     _init_repo(tmp_path, {"src/old_api.py": "def build_value():\n    return 1\n"})
     _git(tmp_path, "mv", "src/old_api.py", "src/new_api.py")
@@ -2578,6 +6075,7 @@ def _evaluate(
     exceptions: tuple[LeanException, ...] = (),
     previous_report_digest: str = "",
     policy: LeanPolicy | None = None,
+    task_scopes: dict[str, tuple[str, ...]] | None = None,
 ):
     source = snapshot or build_source_snapshot(
         SourceSnapshotOptions(root=root, source_kind="local-unstaged")
@@ -2591,6 +6089,7 @@ def _evaluate(
             source_snapshot=source,
             policy=policy or LeanPolicy(),
             declared_scope=scope,
+            task_scopes=task_scopes or {},
             task_refs=("specs/WI-TEST/tasks.md",),
             acceptance_refs=("AC-1",),
             regression_evidence=evidence,
@@ -2606,6 +6105,53 @@ def _severities(report, rule_id: str) -> set[FindingSeverity]:
         for finding in report.findings
         if finding.rule_id == rule_id
     }
+
+
+def _trusted_bug_exception(root, exception_id):
+    _init_repo(root, {"src/bug.py": "def _value():\n    return 0\n"})
+    _write(root, "src/bug.py", "def _value():\n    return 1\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=root, source_kind="local-unstaged")
+    )
+    first = _evaluate(
+        root,
+        scope=("src/bug.py",),
+        work_type=WorkType.PRODUCTION_ISSUE,
+        snapshot=snapshot,
+    )
+    finding = next(
+        item for item in first.findings if item.rule_id == "lean.bugfix-regression"
+    )
+    exception = _exception_for_finding(
+        root,
+        snapshot,
+        finding,
+        exception_id,
+        stable_artifact_digest(first),
+    )
+    return snapshot, first, finding, exception
+
+
+def _mutate_reviewer_artifact(root, exception, index, mutator):
+    reference = exception.reviewer_decision_refs[index]
+    path = root / reference
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    mutator(payload)
+    _write(root, reference, json.dumps(payload, sort_keys=True))
+    digests = dict(exception.reviewer_decision_digests)
+    digests[reference] = _file_digest(path)
+    return exception.model_copy(update={"reviewer_decision_digests": digests})
+
+
+def _evaluate_trusted_bug_exception(root, snapshot, first, exception):
+    return _evaluate(
+        root,
+        scope=("src/bug.py",),
+        work_type=WorkType.PRODUCTION_ISSUE,
+        snapshot=snapshot,
+        exceptions=(exception,),
+        previous_report_digest=stable_artifact_digest(first),
+    )
 
 
 def _approved_manual_review_exception(root, report, snapshot, finding, exception_id):
@@ -2627,6 +6173,16 @@ def _exception_for_finding(
 ):
     evidence_ref = f"evidence/{exception_id}.txt"
     _write(root, evidence_ref, "independent manual review accepted the boundary\n")
+    evidence_digest = _file_digest(root / evidence_ref)
+    reviewer_refs, reviewer_digests, approver = _reviewer_decision_artifacts(
+        root,
+        snapshot,
+        finding,
+        exception_id,
+        evaluation_digest,
+        evidence_ref,
+        evidence_digest,
+    )
     return LeanException(
         exception_id=exception_id,
         rule_id=finding.rule_id,
@@ -2634,9 +6190,11 @@ def _exception_for_finding(
         stable_signature=finding.stable_signature,
         reason="An independent reviewer accepted this bounded capability gap.",
         owner="implementation-owner",
-        approver="quality-owner",
+        approver=approver,
         evidence_refs=[evidence_ref],
-        evidence_digests={evidence_ref: _file_digest(root / evidence_ref)},
+        evidence_digests={evidence_ref: evidence_digest},
+        reviewer_decision_refs=reviewer_refs,
+        reviewer_decision_digests=reviewer_digests,
         scope=[finding.path],
         policy_digest=stable_artifact_digest(LeanPolicy()),
         base_commit=snapshot.base_commit,
@@ -2645,6 +6203,247 @@ def _exception_for_finding(
         evaluation_digest=evaluation_digest,
         expires_at="2099-01-01T00:00:00Z",
     )
+
+
+def _reviewer_decision_artifacts(
+    root,
+    snapshot,
+    finding,
+    exception_id,
+    evaluation_digest,
+    verification_ref,
+    verification_digest,
+):
+    contract = _reviewed_contract(root, finding)
+    finding_decision = _trusted_finding_decision(
+        finding, verification_ref, verification_digest, contract
+    )
+    policy_digest = stable_artifact_digest(LeanPolicy())
+    decision_digest = reviewer_decision_payload_digest(
+        snapshot.diff_hash,
+        policy_digest,
+        evaluation_digest,
+        [finding_decision],
+    )
+    executions = _trusted_reviewer_executions(root, decision_digest)
+    refs: list[str] = []
+    digests: dict[str, str] = {}
+    for review_pass, assignment in executions:
+        reviewer_id = review_pass.actor_id
+        ref = f"evidence/{exception_id}-{reviewer_id}.json"
+        payload = _trusted_reviewer_decision_payload(
+            snapshot,
+            exception_id,
+            evaluation_digest,
+            review_pass,
+            assignment,
+            finding_decision,
+            decision_digest,
+        )
+        _write(root, ref, json.dumps(payload, sort_keys=True))
+        refs.append(ref)
+        digests[ref] = _file_digest(root / ref)
+    approver = "+".join(sorted(item.actor_id for item, _ in executions))
+    return refs, digests, approver
+
+
+def _trusted_reviewer_executions(root, decision_digest):
+    with tempfile.TemporaryDirectory(prefix="lean-review-authority-") as directory:
+        review_root = Path(directory)
+        services = []
+        rig = _executor_rig(
+            review_root,
+            transport_available=True,
+            on_authorized=services.append,
+        )
+        original_exchange = rig.broker.exchange
+
+        def exchange(permit, envelope):
+            response = original_exchange(permit, envelope)
+            response["review"]["evidence_digests"] = [decision_digest]
+            return response
+
+        rig.broker.exchange = exchange
+        persist_shadow_plan(
+            review_root,
+            rig.request.proposal,
+            rig.request.plan,
+            rig.request.source_snapshot,
+        )
+        outcome = rig.executor.execute(rig.request)
+        assert outcome.status == "completed", outcome
+        executions = _canonical_reviewer_results(rig, services[0])
+        _copy_reviewer_authority(review_root, root, rig.request.candidate.project_id)
+        return executions
+
+
+def _canonical_reviewer_results(rig, service):
+    scope = execution_scope(rig.request)
+    session = service.get(scope)
+    passes = service.visible_passes(scope, session.active_cohort_id, "")
+    executions = []
+    for review_pass in passes:
+        assignment = rig.executor._bindings.get_dispatch_assignment(
+            review_pass.assignment_digest
+        )
+        assert assignment is not None
+        executions.append((review_pass, assignment))
+    assert len(executions) == 2
+    return tuple(executions)
+
+
+def _copy_reviewer_authority(source, target, project_id):
+    source_root = resolve_canonical_shared_state(source, project_id)
+    target_root = resolve_canonical_shared_state(target, project_id)
+    shutil.copytree(source_root, target_root, dirs_exist_ok=True)
+
+
+def _reviewed_contract(root, finding):
+    path = root / finding.path
+    source = path.read_text(encoding="utf-8")
+    lines = source.splitlines()
+    symbol, line = _contract_symbol_and_line(path, source, finding.symbol)
+    locator = f"{finding.path}:{symbol}:{line}"
+    kind = "direct_caller" if path.suffix == ".py" else "schema_dispatch"
+    if symbol == "<module>":
+        kind = "module_entrypoint"
+    return {
+        "kind": kind,
+        "path": finding.path,
+        "digest": _file_digest(path),
+        "symbol": symbol,
+        "locator": locator,
+        "locator_digest": exact_locator_digest(
+            finding.path, symbol, line, lines[line - 1]
+        ),
+    }
+
+
+def _contract_symbol_and_line(path, source, preferred):
+    if path.suffix == ".py":
+        definitions = [
+            node
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        if definitions:
+            selected = next(
+                (item for item in definitions if item.name == preferred),
+                definitions[0],
+            )
+            return selected.name, selected.lineno
+        for index, text in enumerate(source.splitlines(), start=1):
+            if text.strip():
+                return "<module>", index
+    for index, text in enumerate(source.splitlines(), start=1):
+        if text.strip():
+            symbol = preferred if preferred and preferred in text else text.split()[0]
+            return symbol.strip("(){}[]:;"), index
+    raise AssertionError("contract source is empty")
+
+
+def _trusted_reviewer_decision_payload(
+    snapshot,
+    exception_id,
+    evaluation_digest,
+    review_pass,
+    assignment,
+    finding_decision,
+    decision_digest,
+):
+    scope = review_pass.scope
+    return {
+        "artifact_kind": "lean-reviewer-decision",
+        "decision_id": f"{exception_id}.{review_pass.actor_id}",
+        "reviewer_id": review_pass.actor_id,
+        "reviewer_role": review_pass.role_profile_id,
+        "review_project_id": scope.project_id,
+        "review_work_item_id": scope.work_item_id,
+        "review_stage_instance_id": scope.stage_instance_id,
+        "review_session_id": scope.session_id,
+        "review_pass_id": review_pass.pass_id,
+        "review_pass_digest": review_pass.pass_digest,
+        "review_assignment_digest": assignment.assignment_digest,
+        "decision_payload_digest": decision_digest,
+        "diff_hash": snapshot.diff_hash,
+        "policy_digest": stable_artifact_digest(LeanPolicy()),
+        "evaluation_digest": evaluation_digest,
+        "decisions": [finding_decision],
+    }
+
+
+def _trusted_finding_decision(
+    finding,
+    verification_ref,
+    verification_digest,
+    contract,
+):
+    locator = contract["locator"]
+    return {
+        "stable_signature": finding.stable_signature,
+        "rule_id": finding.rule_id,
+        "path": finding.path,
+        "symbol": finding.symbol,
+        "verdict": "approved",
+        "rationale": "Exact contract and verification evidence reviewed.",
+        "contract_kind": contract["kind"],
+        "contract_path": contract["path"],
+        "contract_digest": contract["digest"],
+        "contract_symbol": contract["symbol"],
+        "exact_locators": [locator],
+        "exact_locator_digests": {locator: contract["locator_digest"]},
+        "verification_evidence_refs": [verification_ref],
+        "verification_evidence_digests": {verification_ref: verification_digest},
+    }
+
+
+def _self_declared_reviewer_decision_artifacts(
+    root,
+    snapshot,
+    finding,
+    exception_id,
+    evaluation_digest,
+    verification_ref,
+    verification_digest,
+):
+    refs: list[str] = []
+    digests: dict[str, str] = {}
+    for reviewer_id, reviewer_role in (
+        ("architecture-reviewer", "architecture-evolution"),
+        ("delivery-reviewer", "delivery-protocol"),
+    ):
+        ref = f"evidence/{exception_id}-{reviewer_id}.json"
+        payload = {
+            "artifact_kind": "lean-reviewer-decision",
+            "decision_id": f"{exception_id}.{reviewer_id}",
+            "reviewer_id": reviewer_id,
+            "reviewer_role": reviewer_role,
+            "diff_hash": snapshot.diff_hash,
+            "policy_digest": stable_artifact_digest(LeanPolicy()),
+            "evaluation_digest": evaluation_digest,
+            "decisions": [
+                {
+                    "stable_signature": finding.stable_signature,
+                    "rule_id": finding.rule_id,
+                    "path": finding.path,
+                    "symbol": finding.symbol,
+                    "verdict": "approved",
+                    "rationale": "Exact contract and verification evidence reviewed.",
+                    "contract_kind": "verified_risk_acceptance",
+                    "contract_path": verification_ref,
+                    "contract_symbol": "<evidence>",
+                    "exact_locators": [f"{verification_ref}:<evidence>:1"],
+                    "verification_evidence_refs": [verification_ref],
+                    "verification_evidence_digests": {
+                        verification_ref: verification_digest
+                    },
+                }
+            ],
+        }
+        _write(root, ref, json.dumps(payload, sort_keys=True))
+        refs.append(ref)
+        digests[ref] = _file_digest(root / ref)
+    return refs, digests
 
 
 def _simple_lines(count: int) -> str:

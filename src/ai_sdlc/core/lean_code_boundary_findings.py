@@ -12,7 +12,7 @@ def _invocation_boundary_finding(
     function: FunctionMetric,
     round_number: int,
 ) -> LeanFinding:
-    return make_finding(
+    finding = make_finding(
         rule_id="lean.invocation-boundary",
         severity=FindingSeverity.ADVISORY,
         path=file.path,
@@ -25,6 +25,14 @@ def _invocation_boundary_finding(
         verification="Bind an approved exception to this exact symbol and frozen diff.",
         round_number=round_number,
     )
+    finding.evidence.extend(
+        sorted(
+            set(function.invocation_evidence)
+            | set(function.unlinked_evidence)
+            | set(function.reference_evidence)
+        )
+    )
+    return finding
 
 
 __all__: list[str] = []

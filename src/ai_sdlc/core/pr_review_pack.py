@@ -441,6 +441,9 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         source_adapter=source_resolution.adapter_id,
         source_access_status=source_resolution.access_status,
         source_resolution_path=_repo_relative(root, source_resolution_path),
+        source_resolution_digest=(
+            f"sha256:{hashlib.sha256(source_resolution_path.read_bytes()).hexdigest()}"
+        ),
         repo_root=str(root),
         base_ref=source_resolution.base_ref,
         head_ref=source_resolution.head_ref,
@@ -454,6 +457,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
             f"{len(redaction_report.omitted_files)} omitted."
         ),
         diff_path=_repo_relative(root, diff_path),
+        diff_digest=f"sha256:{hashlib.sha256(diff_path.read_bytes()).hexdigest()}",
         diff_coverage={
             "changed_files": len(changed_files),
             "included_files": len(redaction_report.included_files),
