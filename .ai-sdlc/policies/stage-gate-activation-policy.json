@@ -1,0 +1,57 @@
+{
+  "activation_assessment_digest": "",
+  "activation_escape_cause_ids": [
+    "deterministic_gate_gap",
+    "evidence_visibility_gap",
+    "risk_classification_gap"
+  ],
+  "attribution_policy_digest": "sha256:318f1dc275372435a019fd456e9581c003529c2fc3495e9344c32aaf948ce64a",
+  "active_phase": 1,
+  "artifact_kind": "stage-gate-activation-policy",
+  "canonicalization_version": "canonical-json.v1",
+  "compatibility_mode": "strict",
+  "confidence_requirement": 0.95,
+  "effective_at": "2026-01-01T00:00:00+00:00",
+  "enabled_risk_levels": [],
+  "enabled_stages": [
+    "design-contract",
+    "frontend-evidence",
+    "implementation",
+    "local-pr-review",
+    "requirement"
+  ],
+  "evidence_predicate_type": "https://slsa.dev/provenance/v1",
+  "evidence_purpose": "stage-gate-activation",
+  "extensions": {},
+  "gate_contract_version": "1.0.0",
+  "grandfathered_loop_ids": [],
+  "maximum_escape_events": 0,
+  "maximum_escape_rate_upper": 0.1,
+  "maximum_late_critical_events": 0,
+  "maximum_late_critical_rate_upper": 0.1,
+  "maximum_reversal_events": 0,
+  "maximum_reversal_rate_upper": 0.1,
+  "observation_window_days": 14,
+  "offline_optimization_enabled": false,
+  "outcome_maturity_window_days": 14,
+  "policy_digest": "sha256:f3b21a1b6ee58b3c8bdb277a6121d4f10f0170aef755c5977dd1a51c8e6ab192",
+  "policy_id": "bundled.stage-gate-activation",
+  "policy_version": "1.0.0",
+  "previous_policy_digest": "",
+  "required_isolation_platforms": [
+    "linux",
+    "macos",
+    "windows"
+  ],
+  "sample_size": {
+    "minimum_enforce_sessions_per_new_combination": 0,
+    "minimum_shadow_sessions_per_new_combination": 0,
+    "minimum_shadow_sessions_per_stage": 10,
+    "minimum_total_enforce_sessions": 0,
+    "minimum_total_shadow_sessions": 50
+  },
+  "schema_version": "stage-gate-activation-policy.v2",
+  "trusted_evidence_workflow_paths": [
+    ".github/workflows/activation-evidence.yml"
+  ]
+}

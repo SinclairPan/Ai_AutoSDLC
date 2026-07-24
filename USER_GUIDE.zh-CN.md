@@ -357,6 +357,24 @@ ai-sdlc pr-review close
 ai-sdlc pr-review attest
 ```
 
+在 Enforce 模式下，如果 `attest` 输出
+`.ai-sdlc/attestations/ci-certificate-bundle.json`，必须由用户显式提交并
+推送这个固定证书文件，远端 CI 才能验证同一个候选版本：
+
+```powershell
+git add -- .ai-sdlc/attestations/ci-certificate-bundle.json
+git commit -m "chore: publish AI-SDLC review certificate"
+git push
+```
+
+CLI 不会隐式提交或推送。不要提交 `.ai-sdlc/state/` 下的本地运行状态。
+Shadow 模式不要求证书时，无需执行上述 Git 步骤。
+
+`CI Certificate Gate` 使用受保护 base 分支中的 workflow 与 verifier。待审
+head 只会被检出到独立 Candidate 目录，作为 Git/JSON 数据读取；Gate 不会从
+head 安装依赖、运行测试或执行项目代码。仓库管理员还应在 ruleset 中把该 Gate
+固定为 required check，避免由待审 PR 自己提供同名检查。
+
 默认策略禁止代码外发。只有在组织策略允许且用户明确确认时，才可启用远程模型代码输入。
 
 ## 9. AgentOps 接入

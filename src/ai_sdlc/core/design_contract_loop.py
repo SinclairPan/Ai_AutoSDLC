@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -58,6 +59,11 @@ from ai_sdlc.core.requirement_loop import (
 )
 from ai_sdlc.core.requirement_loop import (
     _validate_explicit_loop_id as _validate_requirement_loop_id,
+)
+from ai_sdlc.core.stage_review.adapters import DesignContractStageAdapter
+from ai_sdlc.core.stage_review.close_gate import (
+    execute_stage_close,
+    prepare_loop_stage_close,
 )
 
 
@@ -206,7 +212,7 @@ def close_design_contract_loop(
             artifacts=artifacts.refs(root),
         )
     if loop_run.status == LoopStatus.CLOSED and artifacts.close_path.is_file():
-        return _result_from_report(
+        result = _result_from_report(
             report,
             artifacts=artifacts.refs(root, include_close=True),
             result="Design contract is already closed.",
@@ -215,6 +221,7 @@ def close_design_contract_loop(
             next_action=loop_run.next_action
             or _implementation_next_action(report.work_item_id),
         )
+        return _execute_design_close_gate(root, loop_run, artifacts, lambda: result)
     if report.blocker_count or loop_run.status != LoopStatus.PASSED:
         return _result_from_report(
             report,
@@ -329,6 +336,21 @@ def _write_close(
     artifacts: DesignContractArtifacts,
     closed_by: str,
 ) -> DesignContractCommandResult:
+    return _execute_design_close_gate(
+        root,
+        loop_run,
+        artifacts,
+        lambda: _write_design_close(root, loop_run, report, artifacts, closed_by),
+    )
+
+
+def _write_design_close(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    artifacts: DesignContractArtifacts,
+    closed_by: str,
+) -> DesignContractCommandResult:
     close = DesignContractClose(
         loop_id=loop_run.loop_id,
         closed_by=closed_by.strip() or "local-user",
@@ -356,6 +378,23 @@ def _write_close(
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
     )
+
+
+def _execute_design_close_gate(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: DesignContractArtifacts,
+    writer: Callable[[], DesignContractCommandResult],
+) -> DesignContractCommandResult:
+    prepared = prepare_loop_stage_close(
+        root=root,
+        adapter=DesignContractStageAdapter(),
+        loop_run=loop_run,
+        close_kind="design-contract-close",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=artifacts.close_path,
+    )
+    return execute_stage_close(prepared, writer)
 
 
 def _closed_recheck_result(

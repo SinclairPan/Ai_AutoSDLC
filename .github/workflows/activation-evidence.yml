@@ -1,0 +1,157 @@
+name: Activation Evidence
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  reviewer-isolation:
+    uses: ./.github/workflows/reviewer-isolation.yml
+    permissions:
+      contents: read
+
+  probe-evidence:
+    name: Protocol probes / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Run governed protocol probe suite
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          uv sync --frozen
+          $junit = Join-Path $env:RUNNER_TEMP "activation-probe-junit.xml"
+          uv run pytest `
+            tests/integration/test_canonical_stage_review_executor.py `
+            tests/integration/test_stage_review_attestation.py `
+            tests/unit/stage_review/test_close_gate_recovery.py `
+            tests/unit/stage_review/test_resources.py `
+            tests/unit/stage_review/test_panel.py `
+            tests/unit/stage_review/test_activation_policy.py `
+            tests/integration/test_cli_activation.py `
+            tests/unit/stage_review/test_findings.py::test_waiver_requires_governance_and_cannot_override_non_waivable `
+            tests/e2e/test_clean_user_stage_gate.py `
+            -q -W error --junitxml $junit
+
+      - name: Build immutable probe cell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $root = Join-Path $env:RUNNER_TEMP "activation-probes"
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+          $testedCommit = ((git rev-parse HEAD) -join "`n").Trim()
+          if ($testedCommit -ne "${{ github.sha }}") {
+            throw "Activation probe tested commit does not match the workflow subject"
+          }
+          uv run python scripts/build_activation_quality_cell.py `
+            --junit (Join-Path $env:RUNNER_TEMP "activation-probe-junit.xml") `
+            --output (Join-Path $root "activation-probe-evidence.json") `
+            --runner-os "${{ runner.os }}" `
+            --tested-commit $testedCommit
+          Copy-Item (Join-Path $env:RUNNER_TEMP "activation-probe-junit.xml") $root
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: activation-probes-${{ matrix.os }}
+          path: ${{ runner.temp }}/activation-probes
+
+  activation-evidence-build:
+    name: Activation Evidence Package Build
+    needs: [reviewer-isolation, probe-evidence]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      AI_SDLC_ACTIVATION_EVIDENCE_PURPOSE: stage-gate-activation
+      AI_SDLC_ACTIVATION_PREDICATE_TYPE: https://slsa.dev/provenance/v1
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: reviewer-isolation-*
+          path: activation-inputs/isolation
+
+      - uses: actions/download-artifact@v7
+        with:
+          pattern: activation-probes-*
+          path: activation-inputs/probes
+
+      - name: Build protected activation evidence package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          uv sync --frozen
+          $projectId = uv run python -c "from pathlib import Path; from ai_sdlc.core.stage_review.artifacts import resolve_repository_project_id; print(resolve_repository_project_id(Path('.')))"
+          $projectId = @($projectId)[-1].Trim()
+          uv run python scripts/build_activation_evidence.py `
+            --evidence-root activation-inputs `
+            --output activation-evidence/activation-evidence-package.json `
+            --repository "${{ github.repository }}" `
+            --tested-commit "${{ github.sha }}" `
+            --project-id $projectId
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: activation-evidence-${{ github.sha }}
+          path: activation-evidence/activation-evidence-package.json
+
+  activation-evidence-required:
+    name: Activation Evidence Required Gate
+    if: always()
+    needs: [reviewer-isolation, probe-evidence, activation-evidence-build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require the complete activation evidence graph
+        shell: pwsh
+        run: |
+          $results = @(
+            "${{ needs.reviewer-isolation.result }}"
+            "${{ needs.probe-evidence.result }}"
+            "${{ needs.activation-evidence-build.result }}"
+          )
+          if (@($results | Where-Object { $_ -ne "success" }).Count -ne 0) {
+            throw "Activation evidence validation is incomplete: $($results -join ', ')"
+          }
+
+  publish-activation-attestation:
+    name: Publish Activation Evidence Attestation
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [activation-evidence-build, activation-evidence-required]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+      artifact-metadata: write
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: activation-evidence-${{ github.sha }}
+          path: activation-evidence
+
+      - uses: actions/attest@v4
+        with:
+          subject-path: activation-evidence/activation-evidence-package.json

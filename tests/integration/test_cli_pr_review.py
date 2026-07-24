@@ -11,8 +11,126 @@ from unittest.mock import patch
 from typer.testing import CliRunner
 
 from ai_sdlc.cli.main import app
+from ai_sdlc.core.pr_review_service import (
+    PRReviewAttestResult,
+    PRReviewCommandStatus,
+)
+from ai_sdlc.core.stage_review.ci_certificate import (
+    CI_CERTIFICATE_BUNDLE_PATH,
+)
+from ai_sdlc.core.stage_review.stage_review_execution import (
+    StageCloseGateUnavailableError,
+)
 
 runner = CliRunner()
+
+
+def test_pr_close_reports_stage_review_result_and_one_next_action(
+    tmp_path: Path,
+) -> None:
+    failure = StageCloseGateUnavailableError("review-runtime-integrity-failure")
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.close_pr_review", side_effect=failure),
+    ):
+        result = runner.invoke(app, ["pr-review", "close", "--json"])
+
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert payload["reason_code"] == "review-runtime-integrity-failure"
+    assert payload["request_id"]
+    assert "ai-sdlc doctor" in payload["next_action"]
+
+
+def test_pr_attest_reports_stage_review_result_and_one_next_action(
+    tmp_path: Path,
+) -> None:
+    failure = StageCloseGateUnavailableError("review-provider-unavailable")
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", side_effect=failure),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 2
+    payload = json.loads(result.output)
+    assert payload["status"] == "needs_user"
+    assert payload["reason_code"] == "review-provider-unavailable"
+    assert payload["request_id"]
+    assert "Restore an eligible reviewer provider" in payload["next_action"]
+    assert "Traceback" not in result.output
+
+
+def test_pr_attest_text_failure_has_one_result_and_next(tmp_path: Path) -> None:
+    failure = StageCloseGateUnavailableError("review-runtime-integrity-failure")
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", side_effect=failure),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest"])
+
+    assert result.exit_code == 2
+    assert result.output.count("Result:") == 1
+    assert result.output.count("Next:") == 1
+    assert "Traceback" not in result.output
+
+
+def test_pr_attest_json_requires_explicit_bundle_commit_and_push(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("{}\n", encoding="utf-8")
+    ready = PRReviewAttestResult(
+        status=PRReviewCommandStatus.READY,
+        review_id="review.enforce",
+        next_action="stale",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.export_latest_ci_certificate_bundle",
+            return_value=bundle,
+        ),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["ci_certificate_bundle_path"] == str(bundle)
+    assert f"git add -- {CI_CERTIFICATE_BUNDLE_PATH}" in payload["next_action"]
+    assert "commit it" in payload["next_action"]
+    assert "push the reviewed branch" in payload["next_action"]
+    assert "latest-attestation.json" not in payload["next_action"]
+
+
+def test_pr_attest_text_requires_explicit_bundle_commit_and_push(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text("{}\n", encoding="utf-8")
+    ready = PRReviewAttestResult(
+        status=PRReviewCommandStatus.READY,
+        review_id="review.enforce",
+        next_action="stale",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.export_latest_ci_certificate_bundle",
+            return_value=bundle,
+        ),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest"])
+
+    assert result.exit_code == 0
+    assert f"git add -- {CI_CERTIFICATE_BUNDLE_PATH}" in result.output
+    assert "push the reviewed branch" in result.output
+    assert f"ci_certificate_bundle: {bundle}" in result.output
 
 
 def test_pr_review_help_lists_p0_commands() -> None:
@@ -426,7 +544,5 @@ def _git(path: Path, *args: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()

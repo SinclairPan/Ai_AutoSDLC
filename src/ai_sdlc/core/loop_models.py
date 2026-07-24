@@ -168,7 +168,10 @@ class LoopPolicyProfile(LoopArtifactModel):
             },
             "lean_enforcement_mode": {"report", "warning", "blocking"},
         }
-        allowed = allowed_by_field[info.field_name]
+        field_name = info.field_name
+        if field_name is None:
+            raise ValueError("policy field name is unavailable")
+        allowed = allowed_by_field[field_name]
         if value not in allowed:
             raise ValueError(f"unsupported policy value: {value}")
         return value

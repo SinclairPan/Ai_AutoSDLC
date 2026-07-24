@@ -8,6 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ai_sdlc.core.git_filter_safety import (
+    external_filter_overrides,
+    safe_git_read_command,
+    safe_git_read_environment,
+)
+
 if TYPE_CHECKING:
     from ai_sdlc.core.source_snapshot import SourceSnapshot
 
@@ -18,6 +24,7 @@ class PathState:
 
     mode: str = ""
     payload: bytes = b""
+    symlink_carrier: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +54,8 @@ def capture_path_changes(
 ) -> dict[str, CapturedPathChange]:
     """Capture all path transitions with at most one patch materialization."""
     paths = affected_paths(snapshot)
+    if snapshot.source_kind in {"local-unstaged", "local-worktree"}:
+        git_config_args = external_filter_overrides(root)
     if snapshot.source_kind == "local-git-range":
         before = _tree_states(root, snapshot.base_commit, paths)
         after = _tree_states(root, snapshot.head_commit, paths)
@@ -55,6 +64,17 @@ def capture_path_changes(
         after = _index_states(root, paths)
     elif snapshot.source_kind == "local-unstaged":
         return _unstaged_changes(root, paths, git_config_args)
+    elif snapshot.source_kind == "local-worktree":
+        return _worktree_changes_from_revision(
+            root,
+            snapshot.base_commit,
+            paths,
+            git_config_args,
+        )
+    elif snapshot.source_kind == "loop-artifacts":
+        if paths:
+            raise ValueError("loop artifact snapshot unexpectedly contains source changes")
+        return {}
     else:
         from ai_sdlc.core.source_snapshot_view import _patched_index
 
@@ -129,6 +149,54 @@ def _unstaged_changes(
             after=_worktree_state(root, path, after_hint),
         )
     return changes
+
+
+def _worktree_changes_from_revision(
+    root: Path,
+    base_commit: str,
+    paths: list[str],
+    git_config_args: tuple[str, ...],
+) -> dict[str, CapturedPathChange]:
+    before = _tree_states(root, base_commit, paths)
+    raw_entries = _raw_diff_entries(root, git_config_args, base_commit)
+    absent = PathState()
+    changes: dict[str, CapturedPathChange] = {}
+    for path in paths:
+        raw = raw_entries.get(path)
+        before_state = before.get(path, absent)
+        if raw is not None and not raw.before_mode:
+            before_state = absent
+        after_hint = raw.after_mode if raw is not None else before_state.mode
+        changes[path] = CapturedPathChange(
+            before=before_state,
+            after=_worktree_state(root, path, after_hint),
+        )
+    return changes
+
+
+def staged_worktree_divergent_paths(
+    root: Path,
+    git_config_args: tuple[str, ...],
+    base_commit: str,
+) -> tuple[str, ...]:
+    """返回 index 已暂存状态与实时 worktree 状态不一致的暂存路径。"""
+
+    staged = _raw_diff_entries(root, git_config_args, "--cached", base_commit)
+    if not staged:
+        return ()
+    unstaged = set(_raw_diff_entries(root, git_config_args))
+    untracked = {
+        _decode_path(item)
+        for item in _git(
+            root,
+            "ls-files",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ).split(b"\0")
+        if item
+    }
+    return tuple(sorted(set(staged) & (unstaged | untracked)))
 
 
 def _tree_states(
@@ -249,6 +317,14 @@ def _unstaged_raw_entries(
     root: Path,
     git_config_args: tuple[str, ...],
 ) -> dict[str, _RawEntry]:
+    return _raw_diff_entries(root, git_config_args)
+
+
+def _raw_diff_entries(
+    root: Path,
+    git_config_args: tuple[str, ...],
+    *selector: str,
+) -> dict[str, _RawEntry]:
     payload = _git(
         root,
         *git_config_args,
@@ -257,6 +333,9 @@ def _unstaged_raw_entries(
         "--no-abbrev",
         "-z",
         "--no-renames",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        *selector,
     )
     fields = payload.split(b"\0")
     entries: dict[str, _RawEntry] = {}
@@ -278,6 +357,12 @@ def _worktree_state(root: Path, path: str, mode_hint: str) -> PathState:
     target = root / path
     if target.is_symlink():
         return PathState(mode="120000", payload=os.fsencode(os.readlink(target)))
+    if mode_hint == "120000" and target.is_file():
+        return PathState(
+            mode="120000",
+            payload=target.read_bytes(),
+            symlink_carrier=True,
+        )
     if mode_hint == "160000":
         return PathState(mode="160000", payload=_gitlink_payload(target))
     if not target.is_file():
@@ -294,8 +379,10 @@ def _worktree_state(root: Path, path: str, mode_hint: str) -> PathState:
 
 def _gitlink_payload(path: Path) -> bytes:
     object_id = _git(path, "rev-parse", "HEAD").strip()
+    git_config_args = external_filter_overrides(path)
     status = _git(
         path,
+        *git_config_args,
         "status",
         "--porcelain=v2",
         "-z",
@@ -304,6 +391,25 @@ def _gitlink_payload(path: Path) -> bytes:
     if not status:
         return object_id
     raise ValueError(f"dirty gitlink is unsupported: {path}")
+
+
+def require_checked_out_gitlinks_clean(root: Path) -> None:
+    """Validate initialized gitlinks without letting the parent diff recurse."""
+
+    records = _git(root, "ls-files", "--stage", "-z").split(b"\0")
+    for record in records:
+        if not record:
+            continue
+        metadata, separator, raw_path = record.partition(b"\t")
+        fields = metadata.split()
+        if not separator or len(fields) != 3:
+            raise ValueError("git index contains a malformed entry")
+        mode, _object_id, stage = fields
+        if mode != b"160000" or stage != b"0":
+            continue
+        path = root / _decode_path(raw_path)
+        if path.is_dir():
+            _gitlink_payload(path)
 
 
 def _mode(payload: bytes) -> str:
@@ -332,12 +438,12 @@ def _run_git(
 ) -> subprocess.CompletedProcess[bytes]:
     try:
         result = subprocess.run(
-            ["git", *args],
+            safe_git_read_command(*args),
             cwd=root,
             input=input_bytes,
             capture_output=True,
             check=False,
-            env=env,
+            env=safe_git_read_environment(env),
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
@@ -359,4 +465,6 @@ __all__ = [
     "read_git_blobs",
     "read_index_states",
     "read_tree_states",
+    "require_checked_out_gitlinks_clean",
+    "staged_worktree_divergent_paths",
 ]

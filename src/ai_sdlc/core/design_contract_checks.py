@@ -17,7 +17,7 @@ from ai_sdlc.core.design_contract_models import (
 from ai_sdlc.core.loop_models import LoopStatus
 
 _CONTRACT_ID = re.compile(r"\b(?:FR|SC)(?:-[A-Za-z0-9]+)*-\d{3}\b")
-_TASK_ID = re.compile(r"\bT\d{2,3}\b")
+_TASK_ID = re.compile(r"\bT\d{2,}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _VERIFICATION_LABEL = re.compile(r"(?:验证|verification|validation)", re.IGNORECASE)

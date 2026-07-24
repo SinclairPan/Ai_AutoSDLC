@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from ai_sdlc.core.design_contract_models import DesignContractReport
@@ -77,11 +78,18 @@ from ai_sdlc.core.loop_models import (
     utc_now_iso,
 )
 from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
+from ai_sdlc.core.stage_review.adapters import ImplementationStageAdapter
+from ai_sdlc.core.stage_review.close_gate import (
+    execute_stage_close,
+    prepare_loop_stage_close,
+)
 
-_TASK_ID = re.compile(r"\bT\d{2,3}\b")
+_TASK_ID = re.compile(r"\bT\d{2,}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _PRIORITY = re.compile(r"(?:优先级|priority)[^\n]*(P[0-9])\b", re.IGNORECASE)
+_CANONICAL_SCOPE = re.compile(r"^\s*-\s*scope\s*:\s*(.*)$", re.IGNORECASE)
+_INDENTED_LIST_ITEM = re.compile(r"^\s{2,}-\s+(.+?)\s*$")
 _FRONTEND_SIGNAL = re.compile(
     r"(?i)(\b(?:frontend|browser|playwright|vue|react|ui|css)\b|前端|浏览器|页面|组件)"
 )
@@ -151,6 +159,15 @@ def start_implementation_loop(
             str(exc),
             loop_id=loop_id,
             next_action=f"Fix {LOOP_POLICY_PATH.as_posix()} and retry.",
+            artifacts=planned_refs,
+        )
+    except ValueError as exc:
+        return _blocked_result(
+            f"Invalid implementation input: {exc}",
+            loop_id=loop_id,
+            next_action=(
+                f"Fix {repo_relative_path(root, work_item_dir / 'spec.md')} and retry."
+            ),
             artifacts=planned_refs,
         )
     tasks = ImplementationTasks(
@@ -346,13 +363,19 @@ def close_implementation_loop(
                 loop_id=loop_run.loop_id,
                 artifacts=artifacts.refs(root, include_close=True),
             )
-        return _result_from_report(
+        result = _result_from_report(
             report,
             artifacts=artifacts.refs(root, include_close=True),
             result="Implementation loop is already closed.",
             closed=True,
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _next_loop_action(report),
+        )
+        return _execute_implementation_close_gate(
+            root,
+            loop_run,
+            artifacts,
+            lambda: result,
         )
     close_blockers = _close_blockers(tasks, progress)
     if close_blockers:
@@ -456,6 +479,27 @@ def _write_close(
     artifacts: ImplementationArtifacts,
     closed_by: str,
 ) -> ImplementationCommandResult:
+    return _execute_implementation_close_gate(
+        root,
+        loop_run,
+        artifacts,
+        lambda: _write_implementation_close(
+            root,
+            loop_run,
+            report,
+            artifacts,
+            closed_by,
+        ),
+    )
+
+
+def _write_implementation_close(
+    root: Path,
+    loop_run: LoopRun,
+    report: ImplementationReport,
+    artifacts: ImplementationArtifacts,
+    closed_by: str,
+) -> ImplementationCommandResult:
     report = report.model_copy(
         update={
             "status": LoopStatus.PASSED,
@@ -492,6 +536,23 @@ def _write_close(
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
     )
+
+
+def _execute_implementation_close_gate(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: ImplementationArtifacts,
+    writer: Callable[[], ImplementationCommandResult],
+) -> ImplementationCommandResult:
+    prepared = prepare_loop_stage_close(
+        root=root,
+        adapter=ImplementationStageAdapter(),
+        loop_run=loop_run,
+        close_kind="implementation-close",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=artifacts.close_path,
+    )
+    return execute_stage_close(prepared, writer)
 
 
 def _record_close_outputs(
@@ -771,12 +832,33 @@ def _task_priority(section: str) -> str:
 
 
 def _task_files(section: str) -> list[str]:
+    canonical_scope = _canonical_task_scope(section)
+    if canonical_scope:
+        return canonical_scope
     for line in section.splitlines():
         if "文件" in line or "files" in line.lower():
             value = _label_value(line)
             if not value:
                 continue
             return _split_values(value)
+    return []
+
+
+def _canonical_task_scope(section: str) -> list[str]:
+    lines = section.splitlines()
+    for index, line in enumerate(lines):
+        match = _CANONICAL_SCOPE.match(line)
+        if match is None:
+            continue
+        values = _split_values(match.group(1))
+        for candidate in lines[index + 1 :]:
+            item = _INDENTED_LIST_ITEM.match(candidate)
+            if item is not None:
+                values.extend(_split_values(item.group(1)))
+                continue
+            if candidate.strip() and not candidate[:1].isspace():
+                break
+        return list(dict.fromkeys(values))
     return []
 
 

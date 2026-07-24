@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import ast
-import difflib
 import fnmatch
 import hashlib
-from collections import Counter, defaultdict
+from collections import Counter
 from pathlib import Path
 
 from ai_sdlc.core.lean_code_callers import attach_python_callers
 from ai_sdlc.core.lean_code_classification import classify_file
 from ai_sdlc.core.lean_code_dynamic_refs import _invocation_boundary
+from ai_sdlc.core.lean_code_metric_calculations import (
+    _complexity,
+    _decode_source,
+    _import_fan_out,
+    _line_delta,
+    _mark_duplicate_candidates,
+    _max_nesting,
+    _parse_python,
+    _span,
+)
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     FileMetric,
@@ -27,6 +36,7 @@ def collect_lean_metrics(
     root: Path,
     snapshot: SourceSnapshot,
     declared_scope: tuple[str, ...],
+    task_scopes: dict[str, tuple[str, ...]] | None = None,
 ) -> LeanMetrics:
     """Collect repeatable metrics without treating unsupported syntax as zero risk."""
 
@@ -47,7 +57,13 @@ def collect_lean_metrics(
             files,
             source_loader=source_loader,
         )
-    return _assemble_metrics(files, duplicate_candidates, snapshot, declared_scope)
+    return _assemble_metrics(
+        files,
+        duplicate_candidates,
+        snapshot,
+        declared_scope,
+        task_scopes or {},
+    )
 
 
 def _assemble_metrics(
@@ -55,6 +71,7 @@ def _assemble_metrics(
     duplicate_candidates: list[str],
     snapshot: SourceSnapshot,
     declared_scope: tuple[str, ...],
+    task_scopes: dict[str, tuple[str, ...]],
 ) -> LeanMetrics:
     counts = Counter(str(item.classification) for item in files)
     product = [
@@ -91,8 +108,21 @@ def _assemble_metrics(
             for path in snapshot.changed_files
             if not _in_scope(path, declared_scope)
         ],
+        task_scope_matches=_task_scope_matches(snapshot, task_scopes),
         files=files,
     )
+
+
+def _task_scope_matches(
+    snapshot: SourceSnapshot,
+    task_scopes: dict[str, tuple[str, ...]],
+) -> dict[str, list[str]]:
+    return {
+        path: sorted(
+            task_id for task_id, scope in task_scopes.items() if _in_scope(path, scope)
+        )
+        for path in snapshot.changed_files
+    }
 
 
 def _unsupported_semantic_files(files: list[FileMetric]) -> list[str]:
@@ -165,8 +195,14 @@ def _python_metrics(
     if head_tree is None:
         return [], 0, 0, errors
     base_functions = _function_nodes(base_tree) if base_tree else {}
+    framework_owned = _framework_owned_symbols(head_tree)
     functions = [
-        _function_metric(symbol, node, base_functions.get(symbol))
+        _function_metric(
+            symbol,
+            node,
+            base_functions.get(symbol),
+            framework_owned=symbol in framework_owned,
+        )
         for symbol, node in _function_nodes(head_tree).items()
     ]
     return functions, _import_fan_out(head_tree), _import_fan_out(base_tree), errors
@@ -192,6 +228,8 @@ def _function_metric(
     symbol: str,
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     base: ast.FunctionDef | ast.AsyncFunctionDef | None,
+    *,
+    framework_owned: bool,
 ) -> FunctionMetric:
     return FunctionMetric(
         symbol=symbol,
@@ -201,7 +239,10 @@ def _function_metric(
         base_complexity=_complexity(base),
         max_nesting=_max_nesting(node),
         base_max_nesting=_max_nesting(base),
-        public=not symbol.split(".")[-1].startswith("_"),
+        public=(
+            not framework_owned
+            and all(not part.startswith("_") for part in symbol.split("."))
+        ),
         is_new=base is None,
         capability=MetricCapability.EXACT,
         invocation_boundary=_invocation_boundary(node),
@@ -209,105 +250,69 @@ def _function_metric(
     )
 
 
+def _framework_owned_symbols(tree: ast.Module) -> set[str]:
+    symbols = _guarded_main_entrypoints(tree)
+    for node in tree.body:
+        if not isinstance(node, ast.ClassDef):
+            continue
+        symbols.update(
+            f"{node.name}.model_post_init"
+            for child in node.body
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and child.name == "model_post_init"
+        )
+        base_names = {_base_name(base).rsplit(".", 1)[-1] for base in node.bases}
+        if "Protocol" in base_names:
+            symbols.update(
+                f"{node.name}.{child.name}"
+                for child in node.body
+                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
+            )
+    return symbols
+
+
+def _guarded_main_entrypoints(tree: ast.Module) -> set[str]:
+    names: set[str] = set()
+    for node in tree.body:
+        if not isinstance(node, ast.If) or not _is_main_guard(node.test):
+            continue
+        names.update(
+            call.func.id
+            for statement in node.body
+            for call in ast.walk(statement)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
+        )
+    return names
+
+
+def _is_main_guard(node: ast.expr) -> bool:
+    if (
+        not isinstance(node, ast.Compare)
+        or len(node.ops) != 1
+        or len(node.comparators) != 1
+    ):
+        return False
+    values = (node.left, node.comparators[0])
+    return any(
+        isinstance(value, ast.Name) and value.id == "__name__" for value in values
+    ) and any(
+        isinstance(value, ast.Constant) and value.value == "__main__" for value in values
+    )
+
+
+def _base_name(node: ast.expr) -> str:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        prefix = _base_name(node.value)
+        return f"{prefix}.{node.attr}" if prefix else node.attr
+    return ""
+
+
 def _function_fingerprint(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     body = ast.Module(body=node.body, type_ignores=[])
     normalized = ast.dump(body, annotate_fields=True, include_attributes=False)
     return f"sha256:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
-
-
-def _mark_duplicate_candidates(files: list[FileMetric]) -> list[str]:
-    groups: dict[str, list[tuple[str, FunctionMetric]]] = defaultdict(list)
-    for file in files:
-        for function in file.functions:
-            if function.fingerprint:
-                groups[function.fingerprint].append((file.path, function))
-    candidates: list[str] = []
-    for fingerprint, members in sorted(groups.items()):
-        if len(members) < 2:
-            continue
-        for _path, function in members:
-            function.duplicate_count = len(members)
-        locations = ",".join(sorted(f"{path}:{item.symbol}" for path, item in members))
-        candidates.append(f"{fingerprint}:{locations}")
-    return candidates
-
-
-def _complexity(node: ast.AST | None) -> int:
-    if node is None:
-        return 0
-    value = 1
-    for child in ast.walk(node):
-        if isinstance(
-            child, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.IfExp, ast.Match)
-        ):
-            value += 1
-        elif isinstance(child, ast.BoolOp):
-            value += max(len(child.values) - 1, 1)
-        elif isinstance(child, ast.Try):
-            value += len(child.handlers) + bool(child.orelse) + bool(child.finalbody)
-    return value
-
-
-def _max_nesting(node: ast.AST | None, depth: int = 0) -> int:
-    if node is None:
-        return 0
-    branch = isinstance(
-        node, (ast.If, ast.For, ast.AsyncFor, ast.While, ast.Try, ast.Match)
-    )
-    current = depth + int(branch)
-    return max(
-        [
-            current,
-            *(_max_nesting(child, current) for child in ast.iter_child_nodes(node)),
-        ]
-    )
-
-
-def _import_fan_out(tree: ast.AST | None) -> int:
-    if tree is None:
-        return 0
-    modules: set[str] = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            modules.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            modules.add(node.module.split(".")[0])
-    return len(modules)
-
-
-def _parse_python(source: str, path: str) -> tuple[ast.Module | None, str]:
-    if not source:
-        return ast.Module(body=[], type_ignores=[]), ""
-    try:
-        return ast.parse(source, filename=path), ""
-    except SyntaxError as exc:
-        return None, f"python_parse_error:{exc.msg}:{exc.lineno}"
-
-
-def _line_delta(before: str, after: str) -> tuple[int, int]:
-    matcher = difflib.SequenceMatcher(
-        a=before.splitlines(), b=after.splitlines(), autojunk=False
-    )
-    added = deleted = 0
-    for tag, start_a, end_a, start_b, end_b in matcher.get_opcodes():
-        if tag in {"insert", "replace"}:
-            added += end_b - start_b
-        if tag in {"delete", "replace"}:
-            deleted += end_a - start_a
-    return added, deleted
-
-
-def _decode_source(payload: bytes) -> tuple[str, str]:
-    try:
-        return payload.decode("utf-8", errors="strict"), ""
-    except UnicodeDecodeError as exc:
-        return "", f"utf8_decode_error:{exc.start}"
-
-
-def _span(node: ast.AST | None) -> int:
-    if node is None or not hasattr(node, "lineno"):
-        return 0
-    return max(int(getattr(node, "end_lineno", node.lineno)) - int(node.lineno) + 1, 0)
 
 
 def _language(path: str) -> str:
@@ -321,9 +326,17 @@ def _language(path: str) -> str:
 
 def _in_scope(path: str, scope: tuple[str, ...]) -> bool:
     normalized = path.replace("\\", "/")
-    return any(
-        fnmatch.fnmatchcase(normalized, item.replace("\\", "/")) for item in scope
-    )
+    for item in scope:
+        pattern = item.strip().strip("`").replace("\\", "/").rstrip("/")
+        if not pattern:
+            continue
+        if fnmatch.fnmatchcase(normalized, pattern):
+            return True
+        if not any(token in pattern for token in "*?[") and normalized.startswith(
+            f"{pattern}/"
+        ):
+            return True
+    return False
 
 
 __all__ = ["collect_lean_metrics"]

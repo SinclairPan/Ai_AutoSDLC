@@ -6,6 +6,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ai_sdlc.core.lean_code_boundary_findings import _invocation_boundary_finding
+from ai_sdlc.core.lean_code_evaluation_status import (
+    _evaluation_status,
+    _unresolved_actionable_signatures,
+)
 from ai_sdlc.core.lean_code_evidence import verification_digest
 from ai_sdlc.core.lean_code_findings import (
     apply_structured_exceptions,
@@ -33,7 +37,7 @@ from ai_sdlc.core.lean_code_models import (
 )
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.loop_models import LoopStatus
-from ai_sdlc.core.pr_review_models import FindingResolutionStatus, FindingSeverity
+from ai_sdlc.core.pr_review_models import FindingSeverity
 from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.models.work import WorkType
 
@@ -49,6 +53,7 @@ class LeanEvaluationOptions:
     source_snapshot: SourceSnapshot
     policy: LeanPolicy
     declared_scope: tuple[str, ...]
+    task_scopes: dict[str, tuple[str, ...]] | None = None
     task_refs: tuple[str, ...] = ()
     acceptance_refs: tuple[str, ...] = ()
     verification_refs: tuple[str, ...] = ()
@@ -68,6 +73,7 @@ def evaluate_lean_code(options: LeanEvaluationOptions) -> LeanEvaluationReport:
         options.root,
         options.source_snapshot,
         options.declared_scope,
+        options.task_scopes,
     )
     policy_digest = stable_artifact_digest(options.policy)
     findings = _collect_findings(options, metrics)
@@ -94,7 +100,11 @@ def evaluate_lean_code(options: LeanEvaluationOptions) -> LeanEvaluationReport:
 
 def _collect_findings(options: LeanEvaluationOptions, metrics) -> list[LeanFinding]:
     findings = [
-        *scope_findings(metrics.scope_drift, options.evaluation_round),
+        *scope_findings(
+            metrics.scope_drift,
+            options.evaluation_round,
+            metrics.task_scope_matches,
+        ),
         *unknown_findings(metrics.unknown_files, options.evaluation_round),
         *unsupported_findings(
             metrics.unsupported_semantic_files, options.evaluation_round
@@ -223,12 +233,18 @@ def _function_findings(
             and function.is_new
             and function.caller_count < policy.public_caller_minimum
         ):
-            finding = (
-                _invocation_boundary_finding(file, function, round_number)
-                if function.invocation_boundary
-                else _public_caller_finding(file, function, policy, round_number)
+            if function.invocation_boundary:
+                findings.append(
+                    _invocation_boundary_finding(file, function, round_number)
+                )
+            boundary_proven = (
+                function.invocation_boundary == "dynamic-reference"
+                and function.execution_state in {"executed", "contractual"}
             )
-            findings.append(finding)
+            if not boundary_proven:
+                findings.append(
+                    _public_caller_finding(file, function, policy, round_number)
+                )
     return findings
 
 
@@ -317,77 +333,6 @@ def _significantly_changed(file: FileMetric, policy: LeanPolicy) -> bool:
     return (
         file.added_lines + file.deleted_lines >= policy.significant_changed_lines
         or file.changed_ratio >= policy.significant_changed_ratio
-    )
-
-
-def _evaluation_status(
-    work_type: WorkType,
-    unknown_files: list[str],
-    unsupported_files: list[str],
-    findings: list[LeanFinding],
-    policy: LeanPolicy,
-) -> LoopStatus:
-    if work_type == WorkType.UNCERTAIN or _capability_boundary_needs_user(
-        unknown_files, unsupported_files, findings
-    ):
-        return LoopStatus.NEEDS_USER
-    unresolved = [
-        item
-        for item in findings
-        if item.resolution
-        not in {
-            FindingResolutionStatus.FIXED,
-            FindingResolutionStatus.WAIVED,
-            FindingResolutionStatus.NOT_APPLICABLE,
-        }
-    ]
-    if any(item.severity == FindingSeverity.BLOCKER for item in unresolved):
-        return LoopStatus.NEEDS_FIX
-    if any(item.severity == FindingSeverity.REQUIRED for item in unresolved):
-        mode = str(policy.enforcement_mode)
-        if mode == "blocking":
-            return LoopStatus.BLOCKED
-        if mode == "warning":
-            return LoopStatus.NEEDS_FIX
-    return LoopStatus.PASSED
-
-
-def _capability_boundary_needs_user(
-    unknown_files: list[str],
-    unsupported_files: list[str],
-    findings: list[LeanFinding],
-) -> bool:
-    accepted = {
-        FindingResolutionStatus.FIXED,
-        FindingResolutionStatus.WAIVED,
-        FindingResolutionStatus.NOT_APPLICABLE,
-    }
-    dispositions = {
-        (item.rule_id, item.path, item.symbol): item.resolution for item in findings
-    }
-    boundaries = [
-        *(("lean.classification-unknown", path, "") for path in unknown_files),
-        *(("lean.semantic-capability", path, "") for path in unsupported_files),
-        *(
-            (item.rule_id, item.path, item.symbol)
-            for item in findings
-            if item.rule_id == "lean.invocation-boundary"
-        ),
-    ]
-    return any(dispositions.get(boundary) not in accepted for boundary in boundaries)
-
-
-def _unresolved_actionable_signatures(current: list[LeanFinding]) -> list[str]:
-    return sorted(
-        item.stable_signature
-        for item in current
-        if item.severity in {FindingSeverity.BLOCKER, FindingSeverity.REQUIRED}
-        and item.resolution
-        not in {
-            FindingResolutionStatus.FIXED,
-            FindingResolutionStatus.WAIVED,
-            FindingResolutionStatus.NOT_APPLICABLE,
-        }
     )
 
 

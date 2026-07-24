@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import yaml
 
@@ -1613,6 +1614,31 @@ def test_close_blocks_provider_blocked_run_even_with_valid_findings(tmp_path) ->
     assert result.verdict == "blocked"
     assert "provider run is blocked" in result.blocker
     assert result.final_report_path == ""
+
+
+def test_close_with_unresolved_findings_does_not_request_close_authorization(
+    tmp_path: Path,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-blocked-without-authorization",
+            mock_fixture=MockReviewerFixture.CHANGES_REQUIRED,
+        )
+    )
+
+    with patch(
+        "ai_sdlc.core.pr_review_service.execute_stage_close",
+        side_effect=AssertionError("blocked review requested close authorization"),
+    ):
+        result = close_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert result.unresolved_required == 1
 
 
 def test_close_treats_invalid_waiver_as_unresolved(tmp_path) -> None:

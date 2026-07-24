@@ -9,6 +9,10 @@ import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ai_sdlc.core.git_filter_safety import (
+    safe_git_read_command,
+    safe_git_read_environment,
+)
 from ai_sdlc.core.source_change_capture import CapturedPathChange, PathState
 
 if TYPE_CHECKING:
@@ -73,7 +77,7 @@ def canonical_content_digests(
     result: dict[str, str] = {}
     for path, payload in payloads.items():
         apply_filters = (
-            source_kind == "local-unstaged"
+            source_kind in {"local-unstaged", "local-worktree"}
             and path not in symlink_paths
             and path not in unsafe_attribute_paths
             and b"\r\n" in payload
@@ -176,7 +180,10 @@ def _safe_local_eol_path(
     after: PathState,
     unsafe_attribute_paths: set[str],
 ) -> bool:
-    if snapshot.source_kind != "local-unstaged" or after.mode not in _FILE_MODES:
+    if (
+        snapshot.source_kind not in {"local-unstaged", "local-worktree"}
+        or after.mode not in _FILE_MODES
+    ):
         return False
     normalized = _normalize_eol(after.payload)
     if (
@@ -217,17 +224,18 @@ def _git_blob_identity(
         header = f"blob {len(payload)}\0".encode("ascii")
         algorithm = hashlib.sha256 if object_format == "sha256" else hashlib.sha1
         return f"git-blob:{algorithm(header + payload).hexdigest()}"
-    command = ["git", "hash-object"]
+    command = ["hash-object"]
     if apply_filters:
         command.append(f"--path={path}")
     command.append("--stdin")
     try:
         result = subprocess.run(
-            command,
+            safe_git_read_command(*command),
             cwd=root,
             input=payload,
             capture_output=True,
             check=False,
+            env=safe_git_read_environment(),
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
@@ -257,11 +265,12 @@ def _object_format(root: Path) -> str:
 def _git_with_input(root: Path, args: tuple[str, ...], payload: bytes) -> bytes:
     try:
         result = subprocess.run(
-            ["git", *args],
+            safe_git_read_command(*args),
             cwd=root,
             input=payload,
             capture_output=True,
             check=False,
+            env=safe_git_read_environment(),
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:
@@ -277,10 +286,11 @@ def _git_with_input(root: Path, args: tuple[str, ...], payload: bytes) -> bytes:
 def _git(root: Path, *args: str) -> bytes:
     try:
         result = subprocess.run(
-            ["git", *args],
+            safe_git_read_command(*args),
             cwd=root,
             capture_output=True,
             check=False,
+            env=safe_git_read_environment(),
             timeout=_GIT_TIMEOUT_SECONDS,
         )
     except subprocess.TimeoutExpired as exc:

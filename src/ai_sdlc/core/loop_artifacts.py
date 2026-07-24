@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -123,7 +124,7 @@ def _atomic_write_text(path: Path, content: str) -> Path:
     if path.exists() and path.read_text(encoding="utf-8") == content:
         return path
 
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    temp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
         try:
             temp_path.write_text(content, encoding="utf-8")

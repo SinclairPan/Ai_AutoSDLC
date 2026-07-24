@@ -16,6 +16,7 @@ def test_scan_rejects_non_public_surfaces_and_pre_release_identity(
     files = {
         f"docs/releases/v{candidate_version}.md": "candidate release",
         ".ai-sdlc/work-items/001-demo/handoff.md": "runtime state",
+        ".ai-sdlc/state/checkpoint.yml": "current_stage: init",
         "internal-notes.md": "private material",
         "README.md": f"AI-SDLC v{candidate_version}",
     }
@@ -23,9 +24,11 @@ def test_scan_rejects_non_public_surfaces_and_pre_release_identity(
     findings = scan_paths(tmp_path, files)
 
     assert {finding.marker for finding in findings} == {
+        "non-public-doc",
         "non-public-root-doc",
         "non-public-work-state",
         "pre-1.0-product-version",
+        "runtime-state",
     }
 
 
@@ -63,6 +66,10 @@ def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> 
         "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.0",
         "uv.lock": 'name = "example"\nversion = "3.4.2"',
         "managed/frontend/package-lock.json": '{"version":"3.3.0"}',
+        "src/provider.py": 'release_ref = "refs/tags/rust-v0.138.0"',
+        "tests/test_attestation.py": (
+            'media_type = "application/vnd.dev.sigstore.bundle.v0.3+json"'
+        ),
     }
 
     assert scan_paths(tmp_path, files) == []
@@ -72,3 +79,4 @@ def test_public_identity_does_not_require_release_history_documents() -> None:
     public_paths = {*PUBLIC_DOC_PATHS, *REQUIRED_SURFACES}
 
     assert not any(path.startswith("docs/releases/") for path in public_paths)
+    assert not any("prd" in path.casefold() for path in public_paths)

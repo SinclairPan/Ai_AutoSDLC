@@ -11,7 +11,11 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
-from ai_sdlc.core.git_filter_safety import external_filter_overrides
+from ai_sdlc.core.git_filter_safety import (
+    external_filter_overrides,
+    safe_git_read_command,
+    safe_git_read_environment,
+)
 from ai_sdlc.core.source_change_capture import (
     CapturedPathChange,
     affected_paths,
@@ -22,8 +26,11 @@ from ai_sdlc.core.source_change_capture import (
     read_tree_states,
 )
 from ai_sdlc.core.source_snapshot import (
+    _AI_SDLC_RUNTIME_PREFIXES,
     SourceSnapshot,
+    _filtered_index_records,
     _is_runtime_artifact,
+    _runtime_pathspecs,
 )
 from ai_sdlc.core.source_snapshot import (
     _untracked_payload as _snapshot_untracked_payload,
@@ -51,6 +58,14 @@ def file_versions(
             b"" if path in snapshot.untracked_files else _index_blob(root, base_path)
         )
         return before, _worktree_blob(root, path)
+    if snapshot.source_kind == "local-worktree":
+        changes = capture_path_changes(
+            root,
+            snapshot,
+            git_config_args=external_filter_overrides(root),
+        )
+        verify_captured_changes(snapshot, changes)
+        return _version_map(snapshot, changes)[path]
     with _patched_index(root, snapshot) as env:
         return _revision_blob(root, snapshot.base_commit, base_path), _index_blob(
             root, path, env=env
@@ -67,12 +82,21 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
     if snapshot.source_kind == "patch":
         with _patched_index(root, snapshot) as env:
             return _index_python_sources(root, env=env)
+    if snapshot.source_kind == "local-worktree":
+        changes = capture_path_changes(
+            root,
+            snapshot,
+            git_config_args=external_filter_overrides(root),
+        )
+        verify_captured_changes(snapshot, changes)
+        return _worktree_python_sources_from_head(root, snapshot, changes)
     paths = set(_nul_paths(_git(root, "ls-files", "-z")))
     paths.update(snapshot.untracked_files)
     return {
         path: _worktree_blob(root, path)
         for path in sorted(paths)
         if path.endswith(".py")
+        and not _is_runtime_artifact(path)
         and ((root / path).is_symlink() or (root / path).is_file())
     }
 
@@ -97,7 +121,11 @@ def lean_metric_source(
                 lambda: _index_python_sources(root, env=env),
             )
         return
-    if snapshot.source_kind in {"local-staged", "local-unstaged"}:
+    if snapshot.source_kind in {
+        "local-staged",
+        "local-unstaged",
+        "local-worktree",
+    }:
         with _local_metric_source(root, snapshot) as source:
             yield source
         return
@@ -114,6 +142,22 @@ def _local_metric_source(
     root: Path,
     snapshot: SourceSnapshot,
 ) -> Iterator[_MetricSource]:
+    if snapshot.source_kind == "local-worktree":
+        changes = capture_path_changes(
+            root,
+            snapshot,
+            git_config_args=external_filter_overrides(root),
+        )
+        yield _verified_metric_source(
+            snapshot,
+            changes,
+            lambda: _worktree_python_sources_from_head(
+                root,
+                snapshot,
+                changes,
+            ),
+        )
+        return
     with _index_worktree(
         root,
         expected_index_identity=snapshot.index_identity,
@@ -175,10 +219,43 @@ def _unstaged_python_sources(
     return sources
 
 
+def _worktree_python_sources_from_head(
+    root: Path,
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+) -> dict[str, bytes]:
+    sources = _revision_python_sources(root, snapshot.base_commit)
+    removed = set(snapshot.deleted_files) | set(snapshot.renamed_files.values())
+    for path in removed:
+        sources.pop(path, None)
+    for path in snapshot.changed_files:
+        change = changes.get(path)
+        if change is None:
+            raise ValueError(f"source state is missing for changed path: {path}")
+        if path.endswith(".py") and change.after.mode in {
+            "100644",
+            "100755",
+            "120000",
+        }:
+            sources[path] = change.after.payload
+        else:
+            sources.pop(path, None)
+    return sources
+
+
 def _verify_captured_changes(
     snapshot: SourceSnapshot,
     changes: dict[str, CapturedPathChange],
 ) -> None:
+    verify_captured_changes(snapshot, changes)
+
+
+def verify_captured_changes(
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+) -> None:
+    """确认一次捕获仍与持久化 SourceSnapshot 的原始身份完全一致。"""
+
     from ai_sdlc.core.source_content_identity import (
         CHANGE_IDENTITY_KIND,
         build_raw_change_identities,
@@ -192,7 +269,7 @@ def _verify_captured_changes(
         return
     current = build_raw_change_identities(snapshot, changes)
     if current != snapshot.raw_change_identities:
-        raise ValueError("source content changed before Lean metric collection")
+        raise ValueError("source content changed after snapshot capture")
 
 
 def _version_map(
@@ -225,6 +302,23 @@ def materialized_source_view(
         ) as env:
             target = Path(env["GIT_WORK_TREE"])
             _overlay_unstaged_source(root, target, snapshot, env)
+            _remove_runtime_artifacts(target)
+            yield target
+        return
+    if snapshot.source_kind == "local-worktree":
+        changes = capture_path_changes(
+            root,
+            snapshot,
+            git_config_args=external_filter_overrides(root),
+        )
+        _verify_captured_changes(snapshot, changes)
+        with (
+            _revision_index(root, snapshot.base_commit) as index_env,
+            _index_worktree(root, index_env) as env,
+        ):
+            target = Path(env["GIT_WORK_TREE"])
+            _overlay_captured_source(target, snapshot, changes)
+            _remove_runtime_artifacts(target)
             yield target
         return
     if snapshot.source_kind == "local-staged":
@@ -232,25 +326,44 @@ def materialized_source_view(
             root,
             expected_index_identity=snapshot.index_identity,
         ) as env:
-            yield Path(env["GIT_WORK_TREE"])
+            target = Path(env["GIT_WORK_TREE"])
+            _remove_runtime_artifacts(target)
+            yield target
+        return
+    if snapshot.source_kind == "loop-artifacts":
+        with _index_worktree(
+            root,
+            expected_index_identity=snapshot.index_identity,
+        ) as env:
+            target = Path(env["GIT_WORK_TREE"])
+            _remove_runtime_artifacts(target)
+            yield target
         return
     if snapshot.source_kind == "local-git-range":
         with (
             _revision_index(root, snapshot.head_commit) as index_env,
             _index_worktree(root, index_env) as env,
         ):
-            yield Path(env["GIT_WORK_TREE"])
+            target = Path(env["GIT_WORK_TREE"])
+            _remove_runtime_artifacts(target)
+            yield target
         return
     with (
         _patched_index(root, snapshot) as index_env,
         _index_worktree(root, index_env) as env,
     ):
-        yield Path(env["GIT_WORK_TREE"])
+        target = Path(env["GIT_WORK_TREE"])
+        _remove_runtime_artifacts(target)
+        yield target
 
 
 def _revision_python_sources(root: Path, revision: str) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-tree", "-r", "--name-only", "-z", revision))
-    python_paths = [path for path in paths if path.endswith(".py")]
+    python_paths = [
+        path
+        for path in paths
+        if path.endswith(".py") and not _is_runtime_artifact(path)
+    ]
     states = read_tree_states(root, revision, python_paths)
     return {path: states[path].payload for path in python_paths if path in states}
 
@@ -259,7 +372,11 @@ def _index_python_sources(
     root: Path, *, env: dict[str, str] | None = None
 ) -> dict[str, bytes]:
     paths = _nul_paths(_git(root, "ls-files", "-z", env=env))
-    python_paths = [path for path in paths if path.endswith(".py")]
+    python_paths = [
+        path
+        for path in paths
+        if path.endswith(".py") and not _is_runtime_artifact(path)
+    ]
     states = read_index_states(root, python_paths, env=env)
     return {path: states[path].payload for path in python_paths if path in states}
 
@@ -271,7 +388,8 @@ def _patched_index(root: Path, snapshot: SourceSnapshot) -> Iterator[dict[str, s
     patch_path = (root / snapshot.patch_file).resolve()
     patch_path.relative_to(root.resolve())
     patch = patch_path.read_bytes()
-    if _payload_digest(patch) != snapshot.diff_hash:
+    expected_digest = snapshot.source_input_digest or snapshot.diff_hash
+    if _payload_digest(patch) != expected_digest:
         raise ValueError("patch identity changed before materialization")
     with tempfile.TemporaryDirectory(prefix="ai-sdlc-frozen-patch-") as directory:
         captured_patch = Path(directory) / "selected.patch"
@@ -348,6 +466,7 @@ def _diff_outputs(
     env: dict[str, str],
 ) -> tuple[bytes, bytes, bytes]:
     worktree = Path(env["GIT_WORK_TREE"])
+    paths = ("--", ".", *_runtime_pathspecs())
     return (
         _git(
             worktree,
@@ -355,11 +474,36 @@ def _diff_outputs(
             "--binary",
             "--no-ext-diff",
             "--no-textconv",
+            "--ignore-submodules=dirty",
+            "--submodule=short",
             *selector,
+            *paths,
             env=env,
         ),
-        _git(worktree, "diff", "--name-status", "-z", "-M", *selector, env=env),
-        _git(worktree, "diff", "--numstat", "-z", "-M", *selector, env=env),
+        _git(
+            worktree,
+            "diff",
+            "--name-status",
+            "-z",
+            "-M",
+            "--ignore-submodules=dirty",
+            "--submodule=short",
+            *selector,
+            *paths,
+            env=env,
+        ),
+        _git(
+            worktree,
+            "diff",
+            "--numstat",
+            "-z",
+            "-M",
+            "--ignore-submodules=dirty",
+            "--submodule=short",
+            *selector,
+            *paths,
+            env=env,
+        ),
     )
 
 
@@ -532,6 +676,11 @@ def _overlay_unstaged_source(
         "--binary",
         "--no-ext-diff",
         "--no-textconv",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        "--",
+        ".",
+        *_runtime_pathspecs(),
         env=verify_env,
     )
     discovered = _nul_paths(
@@ -550,6 +699,39 @@ def _overlay_unstaged_source(
         raise ValueError("unstaged source identity changed before materialization")
 
 
+def _overlay_captured_source(
+    target: Path,
+    snapshot: SourceSnapshot,
+    changes: dict[str, CapturedPathChange],
+) -> None:
+    removed = set(snapshot.deleted_files) | set(snapshot.renamed_files.values())
+    for path in sorted(removed):
+        _remove_materialized_path(_selected_path(target, path))
+    for path in snapshot.changed_files:
+        change = changes.get(path)
+        if change is None:
+            raise ValueError(f"source state is missing for changed path: {path}")
+        destination = _selected_path(target, path)
+        _remove_materialized_path(destination)
+        state = change.after
+        if not state.mode:
+            continue
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        if state.mode in {"100644", "100755"}:
+            destination.write_bytes(state.payload)
+            destination.chmod(0o755 if state.mode == "100755" else 0o644)
+        elif state.mode == "120000":
+            if state.symlink_carrier:
+                destination.write_bytes(state.payload)
+                destination.chmod(0o644)
+            else:
+                destination.symlink_to(os.fsdecode(state.payload))
+        elif state.mode == "160000":
+            destination.mkdir()
+        else:
+            raise ValueError(f"unsupported captured source mode: {state.mode}")
+
+
 def _selected_path(root: Path, path: str) -> Path:
     relative = Path(path)
     if relative.is_absolute() or ".." in relative.parts:
@@ -562,6 +744,22 @@ def _remove_materialized_path(path: Path) -> None:
         path.unlink()
     elif path.is_dir():
         shutil.rmtree(path)
+
+
+def _remove_runtime_artifacts(root: Path) -> None:
+    for prefix in _AI_SDLC_RUNTIME_PREFIXES:
+        _remove_materialized_path(root / prefix.rstrip("/"))
+    runtime_paths = sorted(
+        (
+            path
+            for path in root.rglob("*")
+            if _is_runtime_artifact(path.relative_to(root).as_posix())
+        ),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    )
+    for path in runtime_paths:
+        _remove_materialized_path(path)
 
 
 def _copy_selected_path(source: Path, destination: Path) -> None:
@@ -593,7 +791,11 @@ def _restore_blobs_from_batch(
 
 
 def _index_payload_identity(entries: bytes, flags: bytes) -> str:
-    payload = entries + b"\0INDEX-FLAGS\0" + flags
+    payload = (
+        _filtered_index_records(entries)
+        + b"\0INDEX-FLAGS\0"
+        + _filtered_index_records(flags)
+    )
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
@@ -703,11 +905,11 @@ def _index_entry_blob(
 def _git(root: Path, *args: str, env: dict[str, str] | None = None) -> bytes:
     try:
         result = subprocess.run(
-            ["git", *args],
+            safe_git_read_command(*args),
             cwd=root,
             capture_output=True,
             check=False,
-            env=env,
+            env=safe_git_read_environment(env),
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:
@@ -728,12 +930,12 @@ def _git_input(
 ) -> None:
     try:
         result = subprocess.run(
-            ["git", *args],
+            safe_git_read_command(*args),
             cwd=root,
             input=payload,
             capture_output=True,
             check=False,
-            env=env,
+            env=safe_git_read_environment(env),
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:

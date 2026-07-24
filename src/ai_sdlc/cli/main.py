@@ -6,6 +6,7 @@ import typer
 from rich.console import Console
 
 from ai_sdlc import __version__
+from ai_sdlc.cli.activation_cmd import activation_app
 from ai_sdlc.cli.adapter_cmd import adapter_app
 from ai_sdlc.cli.adopt_cmd import adopt_command
 from ai_sdlc.cli.agentops_cmd import agentops_app
@@ -44,6 +45,7 @@ app = typer.Typer(
 _hook_console = Console()
 _READ_ONLY_SUBCOMMANDS = (
     "adapter",
+    "activation",
     "init",
     "doctor",
     "enterprise",
@@ -112,6 +114,7 @@ app.command(name="scan")(scan_command)
 app.command(name="refresh")(refresh_command)
 app.command(name="run")(run_command)
 app.add_typer(adapter_app, name="adapter")
+app.add_typer(activation_app, name="activation")
 app.add_typer(agentops_app, name="agentops")
 app.add_typer(enterprise_app, name="enterprise")
 app.add_typer(gate_app, name="gate")

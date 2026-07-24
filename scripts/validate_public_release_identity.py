@@ -43,15 +43,10 @@ PATH_RULES = (
     (re.compile(r"^specs/"), "non-public-work-state"),
     (re.compile(r"^\.ai-sdlc/work-items/"), "non-public-work-state"),
     (re.compile(r"^\.ai-sdlc/project/(?:generated|memory)/"), "generated-state"),
-    (
-        re.compile(r"^\.ai-sdlc/state/(?:codex-handoff|repo-facts|resume-pack)"),
-        "runtime-state",
-    ),
-    (re.compile(r"\bv0\.\d", re.IGNORECASE), "pre-1.0-product-version"),
+    (re.compile(r"^\.ai-sdlc/state/"), "runtime-state"),
 )
 
 TEXT_RULES = (
-    (re.compile(r"\bv0\.\d", re.IGNORECASE), "pre-1.0-product-version"),
     (
         re.compile(r"ai-sdlc-offline-0\.\d", re.IGNORECASE),
         "pre-1.0-product-version",
@@ -59,13 +54,16 @@ TEXT_RULES = (
     (
         re.compile(
             r"(?:ai[-_]sdlc|AI_SDLC|__version__|installed_version|latest_version)"
-            r"[^\n]{0,80}\b0\.\d+\.\d+",
+            r"[^\n]{0,80}\bv?0\.\d+\.\d+",
             re.IGNORECASE,
         ),
         "pre-1.0-product-version",
     ),
     (
-        re.compile(r"\b0\.\d+\.\d+[^\n]{0,80}(?:ai-sdlc|ai_sdlc)", re.IGNORECASE),
+        re.compile(
+            r"\bv?0\.\d+\.\d+[^\n]{0,80}(?:ai-sdlc|ai_sdlc)",
+            re.IGNORECASE,
+        ),
         "pre-1.0-product-version",
     ),
     (

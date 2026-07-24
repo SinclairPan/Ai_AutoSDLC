@@ -1,0 +1,151 @@
+name: CI Certificate
+
+on:
+  pull_request_target:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ matrix.os }} / read-only verifier
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    steps:
+      - name: Checkout trusted verifier from protected base
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+          path: trusted-verifier
+
+      - name: Checkout untrusted Candidate as data only
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          repository: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: false
+
+      - name: Verify Candidate with protected-base code
+        shell: pwsh
+        working-directory: trusted-verifier
+        run: |
+          $ErrorActionPreference = "Stop"
+          $env:PYTHONDONTWRITEBYTECODE = "1"
+          $env:UV_CACHE_DIR = Join-Path $env:RUNNER_TEMP "ci-certificate-uv-cache"
+          $env:UV_PROJECT_ENVIRONMENT = Join-Path $env:RUNNER_TEMP "ci-certificate-venv"
+          uv sync --locked
+          uv run pytest tests/integration/test_stage_review_attestation.py -q -W error
+
+          $candidateRoot = (
+            Resolve-Path (Join-Path $env:GITHUB_WORKSPACE "candidate")
+          ).Path
+          $candidateState = Get-Item `
+            -LiteralPath (Join-Path $candidateRoot ".ai-sdlc") `
+            -Force
+          if (
+            -not $candidateState.PSIsContainer `
+            -or $null -ne $candidateState.LinkType
+          ) {
+            throw "Candidate .ai-sdlc must be a real directory."
+          }
+
+          $testedCommit = (git -C $candidateRoot rev-parse HEAD).Trim()
+          $baseCommit = "${{ github.event.pull_request.base.sha }}".Trim()
+          if ([string]::IsNullOrWhiteSpace($baseCommit)) {
+            $baseCommit = (git -C $candidateRoot rev-parse "$testedCommit^").Trim()
+          }
+          $baseRepository = "https://github.com/${{ github.repository }}.git"
+          git -C $candidateRoot fetch --no-tags --no-recurse-submodules `
+            $baseRepository $baseCommit
+          $before = @(
+            git -C $candidateRoot status --porcelain=v1 --untracked-files=all --ignored=matching
+          ) -join "`n"
+          $policyPath = Join-Path $env:RUNNER_TEMP "ci-certificate-policy.json"
+          uv run ai-sdlc verify stage-certificate-policy `
+            --root $candidateRoot `
+            --base-commit $baseCommit `
+            --tested-commit $testedCommit `
+            --json | Tee-Object -FilePath $policyPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Current Candidate certificate policy verification failed."
+          }
+          $policy = Get-Content $policyPath -Raw | ConvertFrom-Json
+          if ($policy.valid -ne $true) {
+            throw "Current Candidate certificate policy did not return valid=true."
+          }
+
+          $bundlePath = Join-Path `
+            $candidateRoot `
+            ".ai-sdlc/attestations/ci-certificate-bundle.json"
+          if ($policy.certificate_required -eq $true) {
+            if (-not (Test-Path -LiteralPath $bundlePath -PathType Leaf)) {
+              throw "CI requires the current Candidate certificate bundle at $bundlePath."
+            }
+            $bundleItem = Get-Item -LiteralPath $bundlePath -Force
+            if ($null -ne $bundleItem.LinkType) {
+              throw "Candidate certificate bundle must be a real file."
+            }
+            $verificationJson = @(
+              uv run ai-sdlc verify stage-certificate `
+                --root $candidateRoot `
+                --bundle $bundlePath `
+                --tested-commit $testedCommit `
+                --expected-stage-key "local-pr-review" `
+                --expected-close-kind "local-pr-review-attest" `
+                --expected-policy-digest $policy.policy_digest `
+                --expected-mode $policy.mode `
+                --json 2>$null
+            ) -join "`n"
+            if ($LASTEXITCODE -ne 0) {
+              throw "Current Candidate certificate bundle verification failed."
+            }
+            $verification = $verificationJson | ConvertFrom-Json
+            if ($verification.valid -ne $true) {
+              throw "Current Candidate certificate bundle did not return valid=true."
+            }
+            $verificationJson | Write-Output
+          } else {
+            Write-Output "Certificate is not required for this Shadow Candidate."
+          }
+          $after = @(
+            git -C $candidateRoot status --porcelain=v1 --untracked-files=all --ignored=matching
+          ) -join "`n"
+          if ($before -ne $after) {
+            throw "CI certificate verification changed the Candidate checkout."
+          }
+
+  gate:
+    name: CI Certificate Gate
+    if: always()
+    needs: verify
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require all verifier platforms
+        shell: pwsh
+        run: |
+          if ("${{ needs.verify.result }}" -ne "success") {
+            throw "One or more read-only CI certificate verifier cells failed"
+          }

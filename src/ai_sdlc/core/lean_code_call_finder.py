@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 from typing import Any
 
+from ai_sdlc.core.lean_code_dynamic_refs import _expression_location
 from ai_sdlc.core.lean_code_flow import (
     ReferenceState,
     _annotated_target_instances,
@@ -17,35 +18,9 @@ from ai_sdlc.core.lean_code_flow import (
 from ai_sdlc.core.lean_code_scope import (
     _argument_names,
     _bound_names,
-    _enclosing_class,
     _local_bindings,
     _without_local_roots,
 )
-
-
-def _function_calls_target(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    direct_names: set[str],
-    module_names: set[str],
-    class_names: set[str],
-    target_name: str,
-    allow_self_or_cls: bool,
-    inherited_instances: set[str],
-    local_imports: dict[int, tuple[set[str], set[str], set[str]]],
-) -> bool:
-    finder = _DirectFunctionCallFinder(
-        direct_names,
-        module_names,
-        class_names,
-        target_name,
-        allow_self_or_cls,
-        inherited_instances,
-        node,
-        local_imports,
-    )
-    for statement in node.body:
-        finder.visit(statement)
-    return finder.found
 
 
 class _DirectFunctionCallFinder(ast.NodeVisitor):
@@ -62,6 +37,8 @@ class _DirectFunctionCallFinder(ast.NodeVisitor):
         node: ast.FunctionDef | ast.AsyncFunctionDef,
         local_imports: dict[int, tuple[set[str], set[str], set[str]]] | None = None,
         watched_call: str = "",
+        capture_references: bool = False,
+        parents: dict[ast.AST, ast.AST] | None = None,
     ) -> None:
         local_names = _local_bindings(node)
         self.direct_names = direct_names - local_names
@@ -76,6 +53,10 @@ class _DirectFunctionCallFinder(ast.NodeVisitor):
             self.instance_names.update({"self", "cls"} & _argument_names(node))
         self.found = False
         self.watched_call = watched_call
+        self.capture_references = capture_references
+        self._parents = parents or {}
+        self.reference_locations: set[str] = set()
+        self._owner = node
         self.captured_instances: set[str] = set()
         self._exception_state_stacks: list[list[ReferenceState]] = []
 
@@ -99,6 +80,38 @@ class _DirectFunctionCallFinder(ast.NodeVisitor):
             self.found = True
             return
         self.generic_visit(node)
+
+    def visit_Name(self, node: ast.Name) -> None:
+        self._capture_reference(node)
+
+    def visit_Attribute(self, node: ast.Attribute) -> None:
+        self._capture_exact_reference(node)
+        self._capture_reference(node)
+        self.generic_visit(node)
+
+    def _capture_exact_reference(self, node: ast.Name | ast.Attribute) -> None:
+        if isinstance(node.ctx, ast.Load) and _calls_target(
+            node,
+            self.direct_names,
+            self.module_names,
+            self.class_names,
+            self.instance_names,
+            self.target_name,
+        ):
+            self.found = True
+
+    def _capture_reference(self, node: ast.Name | ast.Attribute) -> None:
+        if self.capture_references and _calls_target(
+            node,
+            self.direct_names,
+            self.module_names,
+            self.class_names,
+            self.instance_names,
+            self.target_name,
+        ):
+            self.reference_locations.add(
+                _expression_location(node, self._owner, self._parents)
+            )
 
     def visit_Assign(self, node: ast.Assign) -> None:
         assigned_names = {
@@ -343,54 +356,4 @@ class _DirectFunctionCallFinder(ast.NodeVisitor):
 
     def visit_ClassDef(self, node: ast.ClassDef) -> None:
         return
-
-
-def _enclosing_target_instances(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    parents: dict[ast.AST, ast.AST],
-    class_names: set[str],
-    target_class: str,
-) -> set[str]:
-    ancestors: list[ast.FunctionDef | ast.AsyncFunctionDef] = []
-    current = parents.get(node)
-    while current is not None:
-        if isinstance(current, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            ancestors.append(current)
-        current = parents.get(current)
-    ordered = list(reversed(ancestors))
-    instances: set[str] = set()
-    for index, ancestor in enumerate(ordered):
-        child = ordered[index + 1] if index + 1 < len(ordered) else node
-        instances = _function_instances_at_call(
-            ancestor,
-            class_names,
-            _enclosing_class(ancestor, parents) == target_class,
-            instances,
-            child.name,
-        )
-    return instances
-
-
-def _function_instances_at_call(
-    node: ast.FunctionDef | ast.AsyncFunctionDef,
-    class_names: set[str],
-    allow_self_or_cls: bool,
-    inherited_instances: set[str],
-    child_name: str,
-) -> set[str]:
-    finder = _DirectFunctionCallFinder(
-        set(),
-        set(),
-        class_names,
-        "",
-        allow_self_or_cls,
-        inherited_instances,
-        node,
-        watched_call=child_name,
-    )
-    for statement in node.body:
-        finder.visit(statement)
-    return finder.captured_instances
-
-
 __all__: list[str] = []

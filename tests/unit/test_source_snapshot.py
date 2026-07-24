@@ -58,6 +58,292 @@ def test_unstaged_snapshot_includes_untracked_unicode_file(tmp_path: Path) -> No
     assert freshness.reason == "diff_hash_changed"
 
 
+def test_worktree_snapshot_freezes_staged_unstaged_and_untracked_union(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "README.md", "# Base\n")
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "README.md", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add base")
+    _write(tmp_path, "README.md", "# Staged\n")
+    _git(tmp_path, "add", "README.md")
+    _write(tmp_path, "src/app.py", "VALUE = 'worktree'\n")
+    _write(tmp_path, "src/new.py", "NEW = True\n")
+    expected_worktree_bytes = (tmp_path / "src/app.py").read_bytes()
+    expected_untracked_bytes = (tmp_path / "src/new.py").read_bytes()
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+
+    assert snapshot.changed_files == ["README.md", "src/app.py", "src/new.py"]
+    assert snapshot.untracked_files == ["src/new.py"]
+    assert file_versions(tmp_path, snapshot, "src/app.py") == (
+        b"VALUE = 'base'\n",
+        expected_worktree_bytes,
+    )
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert (source / "README.md").read_text(encoding="utf-8") == "# Staged\n"
+        assert (source / "src/app.py").read_bytes() == expected_worktree_bytes
+        assert (source / "src/new.py").read_bytes() == expected_untracked_bytes
+
+    _write(tmp_path, "src/app.py", "VALUE = 'mutated'\n")
+    freshness = revalidate_source_snapshot(tmp_path, snapshot)
+    assert freshness.fresh is False
+    assert freshness.reason == "diff_hash_changed"
+    with pytest.raises(ValueError, match="source content changed"):
+        file_versions(tmp_path, snapshot, "src/app.py")
+    with pytest.raises(ValueError, match="source content changed"):
+        python_sources(tmp_path, snapshot)
+
+
+def test_worktree_snapshot_preserves_explicit_crlf_bytes(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add app")
+    expected_worktree_bytes = b"VALUE = 'worktree'\r\n"
+    (tmp_path / "src/app.py").write_bytes(expected_worktree_bytes)
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+
+    assert file_versions(tmp_path, snapshot, "src/app.py") == (
+        b"VALUE = 'base'\n",
+        expected_worktree_bytes,
+    )
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert (source / "src/app.py").read_bytes() == expected_worktree_bytes
+
+
+def test_worktree_snapshot_rejects_change_between_diff_and_content_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add app")
+    _write(tmp_path, "src/app.py", "VALUE = 'first'\n")
+    original = source_snapshot_module.capture_path_changes
+    mutated = False
+
+    def mutate_before_capture(*args: object, **kwargs: object):
+        nonlocal mutated
+        if not mutated:
+            mutated = True
+            _write(tmp_path, "src/app.py", "VALUE = 'second'\n")
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(
+        source_snapshot_module,
+        "capture_path_changes",
+        mutate_before_capture,
+    )
+
+    with pytest.raises(ValueError, match="changed during snapshot capture"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+        )
+
+
+def test_worktree_snapshot_rejects_aba_during_content_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add app")
+    _write(tmp_path, "src/app.py", "VALUE = 'first'\n")
+    original = source_snapshot_module.capture_path_changes
+    mutated = False
+
+    def capture_aba(*args: object, **kwargs: object):
+        nonlocal mutated
+        if mutated:
+            return original(*args, **kwargs)
+        mutated = True
+        _write(tmp_path, "src/app.py", "VALUE = 'second'\n")
+        captured = original(*args, **kwargs)
+        _write(tmp_path, "src/app.py", "VALUE = 'first'\n")
+        return captured
+
+    monkeypatch.setattr(
+        source_snapshot_module,
+        "capture_path_changes",
+        capture_aba,
+    )
+
+    with pytest.raises(ValueError, match="source content changed"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+        )
+
+
+def test_worktree_snapshot_rejects_hidden_staged_content(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _write(tmp_path, "src/other.py", "OTHER = 'base'\n")
+    _git(tmp_path, "add", "src/app.py", "src/other.py")
+    _git(tmp_path, "commit", "-m", "add base")
+    _write(tmp_path, "src/app.py", "VALUE = 'staged-danger'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _write(tmp_path, "src/other.py", "OTHER = 'worktree'\n")
+
+    with pytest.raises(ValueError, match="divergent staged/worktree paths"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+        )
+
+
+def test_worktree_snapshot_remains_fresh_when_same_content_is_staged(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add base")
+    _write(tmp_path, "src/app.py", "VALUE = 'worktree'\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+
+    _git(tmp_path, "add", "src/app.py")
+
+    assert revalidate_source_snapshot(tmp_path, snapshot).fresh is True
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert (source / "src/app.py").read_text(encoding="utf-8") == (
+            "VALUE = 'worktree'\n"
+        )
+
+
+def test_worktree_snapshot_rejects_index_change_during_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add base")
+    _write(tmp_path, "src/app.py", "VALUE = 'worktree'\n")
+    original_identity = source_snapshot_module._index_identity
+    calls = 0
+
+    def racing_identity(root: Path) -> str:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            _git(root, "add", "src/app.py")
+        return original_identity(root)
+
+    monkeypatch.setattr(source_snapshot_module, "_index_identity", racing_identity)
+
+    with pytest.raises(ValueError, match="index changed during source capture"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+        )
+
+
+def test_worktree_materialization_rejects_raw_eol_change(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, ".gitattributes", "*.txt text\n")
+    _write(tmp_path, "message.txt", "one\n")
+    _git(tmp_path, "add", ".gitattributes", "message.txt")
+    _git(tmp_path, "commit", "-m", "add text")
+    _write_bytes(tmp_path, "message.txt", b"two\r\n")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+    _write_bytes(tmp_path, "message.txt", b"two\n")
+
+    with (
+        pytest.raises(ValueError, match="source content changed"),
+        materialized_source_view(tmp_path, snapshot),
+    ):
+        pass
+
+
+def test_worktree_snapshot_captures_executable_mode_change(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    if _git(tmp_path, "config", "--bool", "core.filemode") != "true":
+        pytest.skip("repository does not track executable mode")
+    _write(tmp_path, "script.sh", "#!/bin/sh\nexit 0\n")
+    _git(tmp_path, "add", "script.sh")
+    _git(tmp_path, "commit", "-m", "add script")
+    (tmp_path / "script.sh").chmod(0o755)
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+    changes = source_change_capture.capture_path_changes(tmp_path, snapshot)
+
+    assert changes["script.sh"].before.mode == "100644"
+    assert changes["script.sh"].after.mode == "100755"
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert (source / "script.sh").stat().st_mode & 0o111
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_worktree_snapshot_rejects_hidden_index_paths(
+    tmp_path: Path,
+    index_flag: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add base")
+    _git(tmp_path, "update-index", index_flag, "src/app.py")
+    _write(tmp_path, "src/app.py", "VALUE = 'hidden'\n")
+
+    with pytest.raises(ValueError, match="hidden index paths"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+        )
+
+
+def test_worktree_snapshot_ignores_tracked_runtime_divergence(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 'base'\n")
+    _write(tmp_path, ".ai-sdlc/loops/runtime.json", '{"value":"base"}\n')
+    _write(tmp_path, "build/generated.txt", "base\n")
+    _git(
+        tmp_path,
+        "add",
+        "-f",
+        "src/app.py",
+        ".ai-sdlc/loops/runtime.json",
+        "build/generated.txt",
+    )
+    _git(tmp_path, "commit", "-m", "add tracked runtime")
+    _write(tmp_path, ".ai-sdlc/loops/runtime.json", '{"value":"staged"}\n')
+    _write(tmp_path, "build/generated.txt", "staged\n")
+    _git(
+        tmp_path,
+        "add",
+        "-f",
+        ".ai-sdlc/loops/runtime.json",
+        "build/generated.txt",
+    )
+    _write(tmp_path, ".ai-sdlc/loops/runtime.json", '{"value":"worktree"}\n')
+    _write(tmp_path, "build/generated.txt", "worktree\n")
+    _write(tmp_path, "src/app.py", "VALUE = 'candidate'\n")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+
+    assert snapshot.changed_files == ["src/app.py"]
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert not (source / ".ai-sdlc/loops/runtime.json").exists()
+        assert not (source / "build/generated.txt").exists()
+
+
 def test_unstaged_snapshot_excludes_interpreter_cache_artifacts(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write(tmp_path, "src/订单.py", "print('base')\n")
@@ -75,6 +361,30 @@ def test_unstaged_snapshot_excludes_interpreter_cache_artifacts(tmp_path: Path) 
     )
 
     assert snapshot.changed_files == ["src/订单.py"]
+    assert snapshot.untracked_files == []
+
+
+def test_unstaged_snapshot_excludes_ai_sdlc_runtime_artifacts(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "print('base')\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add source")
+    _write(tmp_path, "src/app.py", "print('changed')\n")
+    _write(tmp_path, ".ai-sdlc/loops/runtime.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/reviews/runtime.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", "{}\n")
+    _write(
+        tmp_path,
+        ".ai-sdlc/work-items/WI-001/codex-handoff.md",
+        "runtime handoff\n",
+    )
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+
+    assert snapshot.changed_files == ["src/app.py"]
     assert snapshot.untracked_files == []
 
 
@@ -97,6 +407,128 @@ def test_staged_snapshot_changes_when_index_changes(tmp_path: Path) -> None:
     assert first.index_identity != second.index_identity
     assert first.diff_hash != second.diff_hash
     assert revalidate_source_snapshot(tmp_path, first).fresh is False
+
+
+def test_staged_snapshot_excludes_tracked_runtime_but_keeps_memory_rules(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/loops/round.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/reviews/review.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v0\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "add tracked baseline")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/loops/round.json", '{"round": 1}\n')
+    _write(tmp_path, ".ai-sdlc/reviews/review.json", '{"review": 1}\n')
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    _git(tmp_path, "add", ".")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-staged")
+    )
+
+    assert snapshot.changed_files == [
+        ".ai-sdlc/memory/constitution.md",
+        "src/app.py",
+    ]
+    assert set(snapshot.file_digests) == set(snapshot.changed_files)
+    assert set(python_sources(tmp_path, snapshot)) == {
+        "src/app.py",
+    }
+
+
+def test_git_range_snapshot_excludes_tracked_runtime_from_after_view(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", "{}\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v0\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "add tracked baseline")
+    base = _git(tmp_path, "rev-parse", "HEAD")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/state/stage-close-authorizations/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/state/stage-close-results/op.json", '{"v": 1}\n')
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "change product and runtime")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="local-git-range",
+            base_ref=base,
+            head_ref="HEAD",
+        )
+    )
+
+    assert snapshot.changed_files == [
+        ".ai-sdlc/memory/constitution.md",
+        "src/app.py",
+    ]
+    assert set(snapshot.file_digests) == set(snapshot.changed_files)
+    assert set(python_sources(tmp_path, snapshot)) == {"src/app.py"}
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert not (source / ".ai-sdlc/work-items").exists()
+        assert not (source / ".ai-sdlc/state/stage-close-results").exists()
+        assert (source / ".ai-sdlc/memory/constitution.md").is_file()
+
+
+def test_patch_snapshot_separates_raw_input_from_filtered_runtime_view(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 0\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v0\n")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "add tracked baseline")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    patch = _git(tmp_path, "diff", "--binary")
+    _write(tmp_path, "selected.patch", patch + "\n")
+    _git(tmp_path, "checkout", "--", ".")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind="patch",
+            patch_file="selected.patch",
+        )
+    )
+
+    assert snapshot.changed_files == [
+        ".ai-sdlc/memory/constitution.md",
+        "src/app.py",
+    ]
+    assert snapshot.source_input_digest != snapshot.diff_hash
+    assert set(python_sources(tmp_path, snapshot)) == {"src/app.py"}
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert not (source / ".ai-sdlc/work-items").exists()
+        assert (source / "src/app.py").read_text("utf-8") == "VALUE = 1\n"
+
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    _write(tmp_path, ".ai-sdlc/work-items/WI-1/runtime.py", "VALUE = 2\n")
+    _write(tmp_path, ".ai-sdlc/memory/constitution.md", "# v1\n")
+    _write(tmp_path, "selected.patch", _git(tmp_path, "diff", "--binary") + "\n")
+
+    freshness = revalidate_source_snapshot(tmp_path, snapshot)
+
+    assert freshness.fresh is False
+    assert freshness.reason == "source_content_changed"
 
 
 def test_unstaged_snapshot_becomes_stale_when_only_index_changes(
@@ -338,8 +770,7 @@ def test_materialized_view_reads_regular_blobs_with_one_git_process(
         command = args[0] if args else kwargs.get("args")
         if (
             isinstance(command, (list, tuple))
-            and len(command) >= 2
-            and command[:2] == ["git", "cat-file"]
+            and "cat-file" in command
         ):
             cat_file_processes += 1
         return real_popen(*args, **kwargs)
@@ -665,7 +1096,8 @@ def test_large_patch_uses_bounded_capture_processes(
 
     assert len(snapshot.changed_files) == 250
     assert sum("cat-file" in command for command in capture_commands) <= 2
-    assert all(len(command) < 20 for command in capture_commands)
+    command_bound = 17 + len(source_snapshot_module._runtime_pathspecs())
+    assert all(len(command) <= command_bound for command in capture_commands)
 
 
 @pytest.mark.parametrize("source_kind", ["local-staged", "patch"])
@@ -1004,15 +1436,17 @@ def test_cross_source_identity_treats_intent_to_add_as_absent_before(
     assert source_content_equivalent(evaluated, current) is True
 
 
+@pytest.mark.parametrize("source_kind", ["local-unstaged", "local-worktree"])
 @pytest.mark.parametrize("same_target", [True, False])
 def test_cross_source_identity_binds_gitlink_target_oid(
     tmp_path: Path,
     same_target: bool,
+    source_kind: str,
 ) -> None:
     root, c2, c3 = _gitlink_fixture(tmp_path)
     _git(root / "vendor/sub", "checkout", c2)
     evaluated = build_source_snapshot(
-        SourceSnapshotOptions(root=root, source_kind="local-unstaged")
+        SourceSnapshotOptions(root=root, source_kind=source_kind)
     )
     if not same_target:
         _git(root / "vendor/sub", "checkout", c3)
@@ -1030,15 +1464,112 @@ def test_cross_source_identity_binds_gitlink_target_oid(
     assert source_content_equivalent(evaluated, current) is same_target
 
 
-def test_dirty_gitlink_is_rejected_fail_closed(tmp_path: Path) -> None:
+@pytest.mark.parametrize("source_kind", ["local-unstaged", "local-worktree"])
+def test_dirty_gitlink_is_rejected_fail_closed(
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
     root, c2, _c3 = _gitlink_fixture(tmp_path)
     _git(root / "vendor/sub", "checkout", c2)
     _write(root / "vendor/sub", "version.txt", "dirty source\n")
 
     with pytest.raises(ValueError, match="dirty gitlink"):
         build_source_snapshot(
-            SourceSnapshotOptions(root=root, source_kind="local-unstaged")
+            SourceSnapshotOptions(root=root, source_kind=source_kind)
         )
+
+
+def test_dirty_unchanged_gitlink_is_not_hidden_by_parent_source_change(
+    tmp_path: Path,
+) -> None:
+    root, _c2, _c3 = _gitlink_fixture(tmp_path)
+    _write(root, "README.md", "# Parent change\n")
+    _write(root / "vendor/sub", "README.md", "# Dirty submodule\n")
+
+    with pytest.raises(ValueError, match="dirty gitlink"):
+        build_source_snapshot(
+            SourceSnapshotOptions(root=root, source_kind="local-worktree")
+        )
+
+
+def test_gitlink_capture_does_not_execute_submodule_fsmonitor(
+    tmp_path: Path,
+) -> None:
+    root, c2, _c3 = _gitlink_fixture(tmp_path)
+    submodule = root / "vendor/sub"
+    _git(submodule, "checkout", c2)
+    marker = tmp_path / "submodule-fsmonitor-invoked.txt"
+    hook = tmp_path / "submodule-fsmonitor"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"touch '{marker.as_posix()}'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    _git(submodule, "config", "core.fsmonitor", str(hook))
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=root, source_kind="local-worktree")
+    )
+
+    assert snapshot.changed_files == ["vendor/sub"]
+    assert not marker.exists()
+
+
+def test_gitlink_capture_overrides_parent_submodule_config_without_child_filters(
+    tmp_path: Path,
+) -> None:
+    root, c2, _c3 = _gitlink_fixture(tmp_path)
+    submodule = root / "vendor/sub"
+    _git(submodule, "checkout", c2)
+    clean_marker = tmp_path / "submodule-clean-filter-invoked.txt"
+    clean_script = tmp_path / "submodule-clean-filter.py"
+    clean_script.write_text(
+        "import pathlib, sys\n"
+        f"pathlib.Path({str(clean_marker)!r}).write_text('invoked')\n"
+        "sys.stdout.buffer.write(sys.stdin.buffer.read())\n",
+        encoding="utf-8",
+    )
+    diff_marker = tmp_path / "submodule-diff-driver-invoked.txt"
+    diff_script = tmp_path / "submodule-diff-driver.py"
+    diff_script.write_text(
+        "import pathlib\n"
+        f"pathlib.Path({str(diff_marker)!r}).write_text('invoked')\n",
+        encoding="utf-8",
+    )
+    git_dir = Path(_git(submodule, "rev-parse", "--git-dir"))
+    if not git_dir.is_absolute():
+        git_dir = (submodule / git_dir).resolve()
+    attributes = git_dir / "info" / "attributes"
+    attributes.parent.mkdir(parents=True, exist_ok=True)
+    attributes.write_text(
+        "version.txt filter=sideeffect diff=sideeffect\n",
+        encoding="utf-8",
+    )
+    _git(
+        submodule,
+        "config",
+        "filter.sideeffect.clean",
+        f'"{sys.executable}" "{clean_script}"',
+    )
+    _git(submodule, "config", "filter.sideeffect.required", "true")
+    _git(
+        submodule,
+        "config",
+        "diff.sideeffect.command",
+        f'"{sys.executable}" "{diff_script}"',
+    )
+    _git(root, "config", "diff.ignoreSubmodules", "all")
+    _git(root, "config", "diff.submodule", "diff")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=root, source_kind="local-worktree")
+    )
+
+    assert snapshot.changed_files == ["vendor/sub"]
+    assert not clean_marker.exists()
+    assert not diff_marker.exists()
 
 
 @pytest.mark.parametrize("identity_kind", ["source-change-v1", "future-change-v2"])
@@ -1091,8 +1622,10 @@ def test_same_source_freshness_detects_raw_change_hidden_by_clean_filter(
     assert freshness.reason == "diff_hash_changed"
 
 
-def test_unstaged_snapshot_does_not_execute_external_clean_filter(
+@pytest.mark.parametrize("source_kind", ["local-unstaged", "local-worktree"])
+def test_worktree_snapshot_capture_does_not_execute_external_clean_filter(
     tmp_path: Path,
+    source_kind: str,
 ) -> None:
     _init_repo(tmp_path)
     _write(tmp_path, "src/app.py", "VALUE = 0\n")
@@ -1117,10 +1650,115 @@ def test_unstaged_snapshot_does_not_execute_external_clean_filter(
     _write(tmp_path, "src/app.py", "VALUE = 1\n")
 
     snapshot = build_source_snapshot(
-        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+        SourceSnapshotOptions(root=tmp_path, source_kind=source_kind)
+    )
+    source_change_capture.capture_path_changes(tmp_path, snapshot)
+
+    assert snapshot.changed_files == ["src/app.py"]
+    assert not marker.exists()
+
+
+def test_worktree_snapshot_does_not_execute_repository_fsmonitor(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 0\n")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "commit", "-m", "add fsmonitor target")
+    marker = tmp_path / ".git" / "fsmonitor-invoked.txt"
+    hook = tmp_path / ".git" / "fsmonitor-side-effect"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"touch '{marker.as_posix()}'\n"
+        "exit 1\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+    _git(tmp_path, "config", "core.fsmonitor", str(hook))
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
     )
 
     assert snapshot.changed_files == ["src/app.py"]
+    assert not marker.exists()
+
+
+def test_worktree_symlink_carrier_preserves_git_mode_and_materializes_as_file(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    link = tmp_path / "link.txt"
+    try:
+        link.symlink_to("old-target")
+    except OSError:
+        pytest.skip("test setup cannot create the tracked symlink")
+    _git(tmp_path, "add", "link.txt")
+    _git(tmp_path, "commit", "-m", "add symlink")
+    link.unlink()
+    link.write_bytes(b"new-target")
+    _git(tmp_path, "config", "core.symlinks", "false")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+    changes = source_change_capture.capture_path_changes(tmp_path, snapshot)
+
+    assert changes["link.txt"].before.mode == "120000"
+    assert changes["link.txt"].after.mode == "120000"
+    assert changes["link.txt"].after.payload == b"new-target"
+    assert changes["link.txt"].after.symlink_carrier is True
+    with materialized_source_view(tmp_path, snapshot) as source:
+        selected = source / "link.txt"
+        assert selected.is_symlink() is False
+        assert selected.read_bytes() == b"new-target"
+
+
+@pytest.mark.parametrize("source_kind", ["local-worktree", "local-git-range", "patch"])
+def test_materialized_source_does_not_execute_post_index_change_hook(
+    tmp_path: Path,
+    source_kind: str,
+) -> None:
+    base = _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    if source_kind == "local-worktree":
+        _git(tmp_path, "add", "src/app.py")
+        _git(tmp_path, "commit", "-m", "add source")
+        _write(tmp_path, "src/app.py", "VALUE = 2\n")
+        options = SourceSnapshotOptions(root=tmp_path, source_kind=source_kind)
+    elif source_kind == "local-git-range":
+        _git(tmp_path, "add", "src/app.py")
+        _git(tmp_path, "commit", "-m", "add source")
+        options = SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind=source_kind,
+            base_ref=base,
+            head_ref="HEAD",
+        )
+    else:
+        _git(tmp_path, "add", "src/app.py")
+        patch = _git(tmp_path, "diff", "--cached", "--binary", "--no-ext-diff")
+        _git(tmp_path, "reset", "--hard", "HEAD")
+        _write(tmp_path, "change.patch", patch + "\n")
+        options = SourceSnapshotOptions(
+            root=tmp_path,
+            source_kind=source_kind,
+            patch_file="change.patch",
+        )
+    snapshot = build_source_snapshot(options)
+    marker = tmp_path / ".git" / "post-index-change-invoked.txt"
+    hook = tmp_path / ".git" / "hooks" / "post-index-change"
+    hook.write_text(
+        "#!/bin/sh\n"
+        f"touch '{marker.as_posix()}'\n",
+        encoding="utf-8",
+    )
+    hook.chmod(0o755)
+
+    with materialized_source_view(tmp_path, snapshot) as source:
+        assert (source / "src/app.py").is_file()
+
     assert not marker.exists()
 
 
@@ -1161,7 +1799,7 @@ def test_git_content_identity_times_out_fail_closed(
 
     def timed_run(*args: object, **kwargs: object):
         command = args[0] if args else kwargs.get("args")
-        if isinstance(command, list) and command[:2] == ["git", "hash-object"]:
+        if isinstance(command, list) and "hash-object" in command:
             observed.append(kwargs.get("timeout"))  # type: ignore[arg-type]
             raise subprocess.TimeoutExpired(command, 10)
         return original(*args, **kwargs)  # type: ignore[arg-type]

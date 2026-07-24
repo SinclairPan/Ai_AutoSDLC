@@ -20,6 +20,11 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.stage_review.adapters import RequirementStageAdapter
+from ai_sdlc.core.stage_review.close_gate import (
+    execute_stage_close,
+    prepare_loop_stage_close,
+)
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REQUIREMENT_PATH = (
@@ -417,7 +422,7 @@ def freeze_requirement_loop(
         )
 
     if loop_run.status == LoopStatus.CLOSED and artifacts.freeze_path.is_file():
-        return RequirementLoopCommandResult(
+        result = RequirementLoopCommandResult(
             status=RequirementCommandStatus.READY,
             result="Requirement loop is already frozen.",
             loop_id=loop_run.loop_id,
@@ -432,6 +437,15 @@ def freeze_requirement_loop(
             artifacts=artifacts.refs(root, include_freeze=True),
             requirement=_command_requirement_summary(intake, frozen=True),
         )
+        prepared = prepare_loop_stage_close(
+            root=root,
+            adapter=RequirementStageAdapter(),
+            loop_run=loop_run,
+            close_kind="requirement-freeze",
+            target_status=LoopStatus.CLOSED.value,
+            close_artifact_path=artifacts.freeze_path,
+        )
+        return execute_stage_close(prepared, lambda: result)
 
     freeze = RequirementFreeze(
         loop_id=loop_run.loop_id,
@@ -439,6 +453,27 @@ def freeze_requirement_loop(
         intake_path=_repo_relative_path(root, artifacts.intake_path),
         acceptance_count=len(intake.acceptance_criteria),
     )
+    prepared = prepare_loop_stage_close(
+        root=root,
+        adapter=RequirementStageAdapter(),
+        loop_run=loop_run,
+        close_kind="requirement-freeze",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=artifacts.freeze_path,
+    )
+    return execute_stage_close(
+        prepared,
+        lambda: _write_requirement_freeze(root, loop_run, intake, freeze, artifacts),
+    )
+
+
+def _write_requirement_freeze(
+    root: Path,
+    loop_run: LoopRun,
+    intake: RequirementIntake,
+    freeze: RequirementFreeze,
+    artifacts: _RequirementArtifacts,
+) -> RequirementLoopCommandResult:
     loop_run.status = LoopStatus.CLOSED
     loop_run.updated_at = utc_now_iso()
     loop_run.next_action = _design_contract_next_action(loop_run.loop_id)

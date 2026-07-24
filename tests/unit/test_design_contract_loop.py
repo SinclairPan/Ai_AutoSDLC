@@ -1425,7 +1425,7 @@ def test_check_design_contract_loop_uses_checkpoint_feature_spec_dir(
 ) -> None:
     _write_work_item(tmp_path)
     checkpoint = tmp_path / ".ai-sdlc" / "state" / "checkpoint.yml"
-    checkpoint.parent.mkdir(parents=True)
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text(
         "\n".join(
             [
@@ -1454,7 +1454,7 @@ def test_check_design_contract_loop_prefers_checkpoint_linked_wi_id(
 ) -> None:
     _write_work_item(tmp_path)
     checkpoint = tmp_path / ".ai-sdlc" / "state" / "checkpoint.yml"
-    checkpoint.parent.mkdir(parents=True)
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
     checkpoint.write_text(
         "\n".join(
             [

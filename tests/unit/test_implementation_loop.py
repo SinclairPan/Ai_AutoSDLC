@@ -72,6 +72,193 @@ def test_start_implementation_loop_writes_artifacts(tmp_path: Path) -> None:
     assert [item["required"] for item in tasks["items"]] == [True, False]
 
 
+def test_start_implementation_loop_preserves_four_digit_task_ids(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8")
+        + "\n".join(
+            [
+                "",
+                "### Task 10.1 Build bounded storage",
+                "",
+                "- task_id: T1001",
+                "- priority: P1",
+                "- depends: T903",
+                "- scope: src/ai_sdlc/core/storage.py",
+                "- acceptance: Storage remains bounded.",
+                "- verify: uv run pytest tests/unit/test_implementation_loop.py -q",
+                "- **验收标准**：Storage remains bounded.",
+                "- **验证**：`uv run pytest tests/unit/test_implementation_loop.py -q`",
+                "",
+                "### Task 11.1 Run final acceptance",
+                "",
+                "- task_id: T1101",
+                "- priority: P0",
+                "- depends: T701, T1002",
+                "- scope: tests/unit/test_implementation_loop.py",
+                "- acceptance: All acceptance evidence is present.",
+                "- verify: uv run pytest tests/unit/test_implementation_loop.py -q",
+                "- **验收标准**：All acceptance evidence is present.",
+                "- **验证**：`uv run pytest tests/unit/test_implementation_loop.py -q`",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    _close_design_contract_for_work_item(tmp_path, work_item)
+
+    result = start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-four-digit-task-ids",
+        )
+    )
+
+    assert result.status == "ready"
+    tasks = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "implementation"
+            / "impl-four-digit-task-ids"
+            / "implementation-tasks.json"
+        ).read_text("utf-8")
+    )
+    assert [item["task_id"] for item in tasks["items"]] == [
+        "T11",
+        "T21",
+        "T1001",
+        "T1101",
+    ]
+
+
+def test_start_implementation_loop_prefers_canonical_task_scope(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    tasks_path = work_item / "tasks.md"
+    tasks_text = tasks_path.read_text(encoding="utf-8")
+    tasks_text = tasks_text.replace(
+        "- **任务编号**：T11\n",
+        "- task_id: T11\n"
+        "- status: doing\n"
+        "- scope:\n"
+        "  - src/runtime/*.py\n"
+        "  - tests/runtime/*.py\n"
+        "- **任务编号**：T11\n",
+    ).replace(
+        "- **任务编号**：T21\n",
+        "- task_id: T21\n"
+        "- status: needs-review\n"
+        "- scope: docs/runtime/*.md\n"
+        "- **任务编号**：T21\n",
+    )
+    tasks_path.write_text(tasks_text, encoding="utf-8")
+    _close_design_contract_for_work_item(tmp_path, work_item)
+
+    result = start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-canonical-task-scope",
+        )
+    )
+
+    assert result.status == "ready"
+    loop_dir = (
+        tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-canonical-task-scope"
+    )
+    impl_input = json.loads(
+        (loop_dir / "implementation-input.json").read_text(encoding="utf-8")
+    )
+    tasks = json.loads(
+        (loop_dir / "implementation-tasks.json").read_text(encoding="utf-8")
+    )
+    assert impl_input["declared_scope"] == [
+        "src/runtime/*.py",
+        "tests/runtime/*.py",
+        "docs/runtime/*.md",
+    ]
+    assert impl_input["task_scopes"] == {
+        "T11": ["src/runtime/*.py", "tests/runtime/*.py"],
+        "T21": ["docs/runtime/*.md"],
+    }
+    assert [item["files"] for item in tasks["items"]] == [
+        ["src/runtime/*.py", "tests/runtime/*.py"],
+        ["docs/runtime/*.md"],
+    ]
+
+
+def test_direct_formal_work_item_enables_lean_profile_from_spec_metadata(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    spec_path = work_item / "spec.md"
+    spec_path.write_text(
+        "---\nwork_type: new_requirement\n---\n"
+        + spec_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _close_design_contract_for_work_item(tmp_path, work_item)
+
+    result = start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-direct-formal-lean-profile",
+        )
+    )
+
+    assert result.status == "ready"
+    impl_input = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "implementation"
+            / "impl-direct-formal-lean-profile"
+            / "implementation-input.json"
+        ).read_text("utf-8")
+    )
+    assert impl_input["work_type"] == "new_requirement"
+    assert impl_input["quality_profiles"] == ["lean-code"]
+
+
+def test_direct_formal_work_item_rejects_invalid_work_type_metadata(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    spec_path = work_item / "spec.md"
+    spec_path.write_text(
+        "---\nwork_type: typo_requirement\n---\n"
+        + spec_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+    _close_design_contract_for_work_item(tmp_path, work_item)
+
+    result = start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-invalid-formal-work-type",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "work_type" in result.blocker
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "impl-invalid-formal-work-type"
+    ).exists()
+
+
 def test_start_implementation_loop_dry_run_does_not_write(tmp_path: Path) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
