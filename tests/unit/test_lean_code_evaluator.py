@@ -5706,6 +5706,29 @@ def test_guarded_main_function_is_a_module_entrypoint_not_a_public_api(
     assert _severities(report, "lean.public-callers") == set()
 
 
+def test_not_equal_name_check_does_not_hide_import_entrypoint(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def main():\n"
+        "    return 0\n\n"
+        "if __name__ != '__main__':\n"
+        "    main()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.symbol == "main"
+    assert entrypoint.public is True
+    assert _severities(report, "lean.public-callers") == {
+        FindingSeverity.REQUIRED
+    }
+
+
 def test_sibling_script_imports_resolve_to_exact_public_callers(tmp_path: Path) -> None:
     _init_repo(tmp_path)
     _write(

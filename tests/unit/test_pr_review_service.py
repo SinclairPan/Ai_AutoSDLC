@@ -1547,6 +1547,45 @@ def test_attest_blocks_changed_patch_source_hash_after_close(tmp_path) -> None:
     assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
 
 
+def test_attest_blocks_non_exportable_patch_before_writing_attestation(
+    tmp_path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(
+        tmp_path,
+        "change.patch",
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+print('from patch')\n",
+        "add patch",
+    )
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file="change.patch",
+            provider_id="mock-reviewer",
+            review_id="review-patch-non-exportable",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    close = close_pr_review(tmp_path)
+    attestation_path = tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json"
+    prior_attestation = b'{"review_id":"prior-trusted-review"}\n'
+    attestation_path.write_bytes(prior_attestation)
+    before = _artifact_tree(tmp_path / ".ai-sdlc")
+
+    result = attest_pr_review(tmp_path)
+
+    assert close.status == PRReviewCommandStatus.CLOSED
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "local-git-range" in result.next_action
+    assert attestation_path.read_bytes() == prior_attestation
+    assert _artifact_tree(tmp_path / ".ai-sdlc") == before
+
+
 def test_attest_blocks_before_review_close(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
@@ -2331,6 +2370,14 @@ def _write_no_output_reviewer_script(path: Path) -> Path:
     script = path / "no_output_reviewer.py"
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
     return script
+
+
+def _artifact_tree(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _init_repo(path: Path) -> str:

@@ -74,6 +74,9 @@ from ai_sdlc.core.stage_review.close_gate import (
     execute_stage_close,
     prepare_local_pr_stage_close,
 )
+from ai_sdlc.core.stage_review.close_gate_models import (
+    StageCloseExecutionIdentityResult,
+)
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REVIEW_PATH = Path(AI_SDLC_DIR) / "reviews" / "pr" / "current-review.json"
@@ -242,7 +245,7 @@ class PRReviewCloseResult(BaseModel):
     next_action: str = ""
 
 
-class PRReviewAttestResult(BaseModel):
+class PRReviewAttestResult(StageCloseExecutionIdentityResult):
     """Result for writing a CI-readable local review attestation."""
 
     model_config = ConfigDict(extra="forbid", use_enum_values=True)
@@ -1497,14 +1500,6 @@ def attest_pr_review(root: Path) -> PRReviewAttestResult:
     resolved_root = root.resolve()
     attestation_path = _latest_attestation_path(resolved_root)
     try:
-        _remove_latest_attestation(attestation_path)
-    except OSError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"Unable to clear stale review attestation: {exc}",
-            next_action="Remove latest-attestation.json and rerun pr-review attest.",
-        )
-    try:
         review_run, review_run_path = _load_current_review_run(resolved_root)
     except FileNotFoundError as exc:
         return PRReviewAttestResult(
@@ -1517,6 +1512,44 @@ def attest_pr_review(root: Path) -> PRReviewAttestResult:
             status=PRReviewCommandStatus.BLOCKED,
             blocker=f"Current PR review artifacts are malformed: {exc}",
             next_action="Rerun ai-sdlc pr-review start.",
+        )
+
+    diff_source_mismatch = _reviewed_diff_source_mismatch(resolved_root, review_run)
+    if diff_source_mismatch:
+        return PRReviewAttestResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            loop_id=review_run.loop_id,
+            head_commit=review_run.head_commit,
+            diff_source_hash=review_run.diff_source.patch_hash,
+            blocker=diff_source_mismatch,
+            next_action="Rerun local PR review for the current diff source.",
+        )
+    if (
+        str(review_run.diff_source.source_kind)
+        != DiffSourceKind.LOCAL_GIT_RANGE.value
+    ):
+        return PRReviewAttestResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            loop_id=review_run.loop_id,
+            head_commit=review_run.head_commit,
+            diff_source_hash=review_run.diff_source.patch_hash,
+            blocker="CI attestation requires a local-git-range review source.",
+            next_action=(
+                "Rerun the local PR review with "
+                "`--diff-source local-git-range` before attestation."
+            ),
+        )
+    try:
+        _remove_latest_attestation(attestation_path)
+    except OSError as exc:
+        return PRReviewAttestResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            loop_id=review_run.loop_id,
+            blocker=f"Unable to clear stale review attestation: {exc}",
+            next_action="Remove latest-attestation.json and rerun pr-review attest.",
         )
 
     if review_run.status != LoopStatus.CLOSED:
@@ -1616,16 +1649,13 @@ def attest_pr_review(root: Path) -> PRReviewAttestResult:
             ),
             next_action="Rerun local PR review for the current commit.",
         )
-    diff_source_mismatch = _reviewed_diff_source_mismatch(resolved_root, review_run)
-    if diff_source_mismatch:
+    if attestation_path.exists() and not attestation_path.is_file():
         return PRReviewAttestResult(
             status=PRReviewCommandStatus.BLOCKED,
             review_id=review_run.review_id,
             loop_id=review_run.loop_id,
-            head_commit=review_run.head_commit,
-            diff_source_hash=review_run.diff_source.patch_hash,
-            blocker=diff_source_mismatch,
-            next_action="Rerun local PR review for the current diff source.",
+            blocker="Unable to replace stale review attestation: path is not a file.",
+            next_action="Remove latest-attestation.json and rerun pr-review attest.",
         )
 
     store = LoopArtifactStore(resolved_root)

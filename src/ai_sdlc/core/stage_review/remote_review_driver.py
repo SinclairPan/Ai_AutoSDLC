@@ -28,6 +28,7 @@ from ai_sdlc.core.stage_review.provider_journal_models import (
     ProviderQueryResult,
     ProviderSubmission,
 )
+from ai_sdlc.core.stage_review.provider_transport import TrustedEgressUnavailable
 from ai_sdlc.core.stage_review.provider_transport_models import (
     ProviderTransportEnvelope,
     ProviderTransportExchangeResult,
@@ -110,6 +111,11 @@ class RemoteReviewDriver:
             raise ProviderDriverRefused("remote provider is unavailable")
         try:
             exchange = self._transport.exchange(self._envelope(request, permit))
+        except TrustedEgressUnavailable as exc:
+            raise ProviderDriverRefused(
+                str(exc),
+                outcome=self._execution_outcome,
+            ) from exc
         except ProviderTransportExecutionError as exc:
             outcome = build_provider_execution_outcome(exc.accounted_usage)
             raise ProviderDriverRefused(str(exc), outcome=outcome) from exc

@@ -53,7 +53,17 @@ def decode_finding_artifact(
     if payload.get(spec.digest_field) != _payload_digest(payload, spec.digest_field):
         raise SharedStateIntegrityError(f"{artifact_kind} digest mismatch")
     try:
-        return spec.model.model_validate(_compatible_payload(payload, spec))
+        compatible = _compatible_payload(payload, spec)
+        context = (
+            {
+                "verified_legacy_source_digest": compatible["extensions"][
+                    "source_digest"
+                ]
+            }
+            if compatible.get("compatibility_mode") == "read-only-legacy"
+            else None
+        )
+        return spec.model.model_validate(compatible, context=context)
     except ValidationError as exc:
         raise SharedStateIntegrityError(f"{version} is invalid") from exc
 

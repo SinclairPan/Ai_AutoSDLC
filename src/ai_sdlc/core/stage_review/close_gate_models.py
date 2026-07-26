@@ -277,6 +277,13 @@ class StageCloseGateAttestation(ArtifactCompatibility):
         return fill_artifact_digest(self, "attestation_digest")
 
 
+class StageCloseExecutionIdentityResult(BaseModel):
+    """允许 Enforce 关闭把确切 Session/Certificate 身份带回调用方。"""
+
+    stage_review_session_id: str = ""
+    stage_close_certificate_id: str = ""
+
+
 @dataclass(frozen=True, slots=True)
 class PreparedStageClose:
     root: Path

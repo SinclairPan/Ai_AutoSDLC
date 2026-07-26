@@ -1,9 +1,18 @@
 from __future__ import annotations
 
+import os
+import re
+import sys
 from dataclasses import dataclass
+from functools import partial
+from operator import attrgetter
+from random import Random
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
+from ai_sdlc.core import git_filter_safety as git_filter_safety_module
+from ai_sdlc.core.stage_review.optimization import evaluators as evaluators_module
 from ai_sdlc.core.stage_review.optimization.candidate_domain_defaults import (
     default_candidate_domain_registry,
 )
@@ -11,12 +20,33 @@ from ai_sdlc.core.stage_review.optimization.evaluators import (
     EvaluationContext,
     EvaluatorContract,
     OptimizationEvaluatorRegistry,
+    component_implementation_identity,
+    component_runtime_digest,
 )
 from ai_sdlc.core.stage_review.optimization.models import (
     OptimizationCandidate,
     OptimizationEvaluationReport,
     OptimizationPatchOperation,
+    OptimizationStatisticalSample,
 )
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    _binary_improvement_statistics as binary_improvement_statistics,
+)
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    baseline_statistics_policy,
+)
+
+_DETACHED_RUNTIME_THRESHOLD = 1
+_FAST_EXTERNAL_THRESHOLD = 1
+_DETACHED_HELPERS = ModuleType("plugin_helpers")
+
+
+def _detached_helper2(value: int) -> bool:
+    return value >= _DETACHED_HELPERS.threshold  # type: ignore[attr-defined]
+
+
+def _fast_external_helper(value: int) -> bool:
+    return value >= _FAST_EXTERNAL_THRESHOLD
 
 
 def test_all_candidate_domains_share_one_schema_and_enforce_patch_authority() -> None:
@@ -48,7 +78,7 @@ def test_all_candidate_domains_share_one_schema_and_enforce_patch_authority() ->
 
 
 def test_new_evaluator_contract_and_adapter_register_without_core_branch() -> None:
-    registry = OptimizationEvaluatorRegistry()
+    registry = _registry()
     adapter = _Adapter()
     registry.register(_contract("custom-risk-evaluator"), adapter)
 
@@ -67,8 +97,893 @@ def test_new_evaluator_contract_and_adapter_register_without_core_branch() -> No
     assert adapter.calls == 1
 
 
+def test_registry_manifest_binds_the_actual_adapter_implementation() -> None:
+    first = _registry()
+    second = _registry()
+    contract = _contract("custom-risk-evaluator")
+    first.register(contract, _Adapter())
+    second.register(contract, _AlternateAdapter())
+
+    assert first.registry_digest == second.registry_digest
+    assert first.implementation_digest != second.implementation_digest
+
+
+def test_callable_identity_binds_closure_values() -> None:
+    def with_behavior(value: str):
+        def execute() -> str:
+            return value
+
+        return execute
+
+    assert component_implementation_identity(
+        with_behavior("first")
+    ) != component_implementation_identity(with_behavior("second"))
+
+
+def test_callable_identity_binds_bound_instance_configuration() -> None:
+    class Policy:
+        def __init__(self, threshold: int) -> None:
+            self.threshold = threshold
+
+        def decide(self, value: int) -> bool:
+            return value >= self.threshold
+
+    assert Policy(1).decide(50) is True
+    assert Policy(99).decide(50) is False
+    assert component_implementation_identity(
+        Policy(1).decide
+    ) != component_implementation_identity(Policy(99).decide)
+
+
+def test_callable_identity_binds_builtin_bound_receiver() -> None:
+    def with_lookup(mapping: dict[str, int]):
+        lookup = mapping.get
+
+        def execute() -> int | None:
+            return lookup("value")
+
+        return execute
+
+    def with_append(items: list[int]):
+        append = items.append
+
+        def execute() -> tuple[int, ...]:
+            append(3)
+            return tuple(items)
+
+        return execute
+
+    assert component_implementation_identity(
+        with_lookup({"value": 1})
+    ) != component_implementation_identity(with_lookup({"value": 2}))
+    assert component_implementation_identity(
+        with_append([1])
+    ) != component_implementation_identity(with_append([2]))
+
+
+def test_callable_identity_rejects_opaque_native_builtin_receiver() -> None:
+    def with_random(seed: int):
+        draw = Random(seed).random
+
+        def execute() -> float:
+            return draw()
+
+        return execute
+
+    assert with_random(1)() != with_random(2)()
+    with pytest.raises(
+        ValueError,
+        match="explicit runtime_identity",
+    ):
+        component_implementation_identity(with_random(1))
+
+
+def test_callable_identity_binds_slots_and_live_class_configuration() -> None:
+    class SlottedPolicy:
+        __slots__ = ("threshold",)
+
+        def __init__(self, threshold: int) -> None:
+            self.threshold = threshold
+
+        def decide(self, value: int) -> bool:
+            return value >= self.threshold
+
+    class ClassConfiguredPolicy:
+        threshold = 1
+
+        def decide(self, value: int) -> bool:
+            return value >= self.threshold
+
+    assert component_implementation_identity(
+        SlottedPolicy(1).decide
+    ) != component_implementation_identity(SlottedPolicy(99).decide)
+    policy = ClassConfiguredPolicy()
+    first = component_implementation_identity(policy.decide)
+    ClassConfiguredPolicy.threshold = 99
+    second = component_implementation_identity(policy.decide)
+    assert first != second
+
+
+def test_runtime_identity_binds_stateful_callable_object_configuration() -> None:
+    class StatefulRoute:
+        def __init__(self, provider: str) -> None:
+            self.provider = provider
+
+        def __call__(self) -> str:
+            return self.provider
+
+    route = StatefulRoute("provider-a")
+    first = component_runtime_digest(route)
+    route.provider = "provider-b"
+
+    assert component_runtime_digest(route) != first
+
+
+def test_runtime_identity_binds_private_callable_configuration() -> None:
+    class PrivatePolicy:
+        def __init__(self, threshold: int) -> None:
+            self._threshold = threshold
+
+        def __call__(self, value: int) -> bool:
+            return value >= self._threshold
+
+    assert PrivatePolicy(1)(50) is True
+    assert PrivatePolicy(99)(50) is False
+    assert component_runtime_digest(PrivatePolicy(1)) != component_runtime_digest(
+        PrivatePolicy(99)
+    )
+
+
+def test_runtime_identity_binds_transparent_class_level_object_configuration() -> None:
+    class ClassPolicy:
+        settings = SimpleNamespace(threshold=1)
+
+        def __call__(self, value: int) -> bool:
+            return value >= self.settings.threshold
+
+    policy = ClassPolicy()
+    first = component_runtime_digest(policy)
+    ClassPolicy.settings.threshold = 99
+
+    assert component_runtime_digest(policy) != first
+
+
+def test_runtime_identity_rejects_opaque_native_class_configuration() -> None:
+    class ClassPolicy:
+        rng = Random(1)
+
+        def __call__(self) -> float:
+            return self.rng.random()
+
+    with pytest.raises(
+        ValueError,
+        match="explicit runtime_identity",
+    ):
+        component_runtime_digest(ClassPolicy())
+
+
+def test_runtime_identity_binds_inherited_base_method_replacement(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class BasePolicy:
+        def decide(self) -> int:
+            return 1
+
+    class ChildPolicy(BasePolicy):
+        pass
+
+    policy = ChildPolicy()
+    original = component_runtime_digest(policy)
+    monkeypatch.setattr(BasePolicy, "decide", lambda self: 2)
+
+    assert policy.decide() == 2
+    assert component_runtime_digest(policy) != original
+
+
+def test_snapshot_memo_does_not_alias_distinct_bound_method_receivers() -> None:
+    class Adapter:
+        def __init__(self, threshold: int) -> None:
+            self.threshold = threshold
+
+        def evaluate(self, value: int) -> bool:
+            return value >= self.threshold
+
+    first = Adapter(1)
+    second = Adapter(99)
+
+    with evaluators_module.optimization_runtime_identity_snapshot():
+        first_identity = component_implementation_identity(first.evaluate)
+        second_identity = component_implementation_identity(second.evaluate)
+
+    assert first.evaluate(50) is True
+    assert second.evaluate(50) is False
+    assert first_identity != second_identity
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "test_evaluators",
+        "ai_sdlc.extension",
+        "ai_sdlc.core.stage_review",
+        "ai_sdlc.core.stage_review.optimization.evaluators",
+    ),
+)
+def test_snapshot_memo_revalidates_external_function_defaults(
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+) -> None:
+    def policy(value: int, threshold: int = 1) -> bool:
+        return value >= threshold
+
+    monkeypatch.setattr(policy, "__module__", module_name)
+    with evaluators_module.optimization_runtime_identity_snapshot():
+        original = component_implementation_identity(policy)
+        monkeypatch.setattr(policy, "__defaults__", (99,))
+        changed = component_implementation_identity(policy)
+
+    assert policy(50) is False
+    assert changed != original
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    (
+        "ai_sdlc.extension",
+        "ai_sdlc.core.stage_review.optimization.controller",
+    ),
+)
+def test_component_identity_binds_globals_for_detached_ai_sdlc_function(
+    monkeypatch: pytest.MonkeyPatch,
+    module_name: str,
+) -> None:
+    def decide(value: int) -> bool:
+        return value >= _DETACHED_RUNTIME_THRESHOLD
+
+    monkeypatch.setattr(decide, "__module__", module_name)
+    monkeypatch.setitem(decide.__globals__, "_DETACHED_RUNTIME_THRESHOLD", 1)
+    original = component_implementation_identity(decide)
+
+    monkeypatch.setitem(decide.__globals__, "_DETACHED_RUNTIME_THRESHOLD", 99)
+
+    assert decide(50) is False
+    assert component_implementation_identity(decide) != original
+
+
+def test_component_identity_binds_referenced_external_module_helper(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def evaluate() -> int:
+        return _DETACHED_HELPERS.route()  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(evaluate, "__module__", "plugin_adapter")
+    monkeypatch.setattr(
+        _DETACHED_HELPERS,
+        "route",
+        lambda: 1,
+        raising=False,
+    )
+    original = component_implementation_identity(evaluate)
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "route", lambda: 2)
+
+    assert evaluate() == 2
+    assert component_implementation_identity(evaluate) != original
+
+
+def test_component_identity_binds_nested_external_helper_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def route(value: int) -> bool:
+        return _detached_helper2(value)
+
+    def evaluate(value: int) -> bool:
+        return _DETACHED_HELPERS.route(value)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "route", route, raising=False)
+    monkeypatch.setattr(_DETACHED_HELPERS, "threshold", 1, raising=False)
+    monkeypatch.setattr(_DETACHED_HELPERS, "unrelated", 1, raising=False)
+    original = component_implementation_identity(evaluate)
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "threshold", 99)
+
+    assert evaluate(50) is False
+    changed = component_implementation_identity(evaluate)
+    assert changed != original
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "unrelated", 2)
+
+    assert component_implementation_identity(evaluate) == changed
+
+
+def test_component_identity_binds_cross_module_helper_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    helper2 = ModuleType("plugin_helper2")
+    helper2.THRESHOLD = 1  # type: ignore[attr-defined]
+    exec(
+        compile(
+            "def decide(value): return value >= THRESHOLD",
+            "<plugin-helper2>",
+            "exec",
+        ),
+        helper2.__dict__,
+    )
+    helper1 = ModuleType("plugin_helper1")
+    helper1.helper2 = helper2  # type: ignore[attr-defined]
+    exec(
+        compile(
+            "def route(value): return helper2.decide(value)",
+            "<plugin-helper1>",
+            "exec",
+        ),
+        helper1.__dict__,
+    )
+
+    def evaluate(value: int) -> bool:
+        return _DETACHED_HELPERS.route(value)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "route", helper1.route, raising=False)  # type: ignore[attr-defined]
+    original = component_implementation_identity(evaluate)
+
+    helper2.THRESHOLD = 99  # type: ignore[attr-defined]
+
+    assert evaluate(50) is False
+    assert component_implementation_identity(evaluate) != original
+
+
+def test_component_identity_binds_module_bound_method_receiver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Router:
+        def __init__(self, threshold: int) -> None:
+            self.threshold = threshold
+
+        def route(self, value: int) -> bool:
+            return value >= self.threshold
+
+    router = Router(1)
+
+    def evaluate(value: int) -> bool:
+        return _DETACHED_HELPERS.route(value)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "route", router.route, raising=False)
+    original = component_implementation_identity(evaluate)
+
+    router.threshold = 99
+
+    assert evaluate(50) is False
+    assert component_implementation_identity(evaluate) != original
+
+
+def test_component_identity_binds_module_partial_configuration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def route(value: int, *, threshold: int) -> bool:
+        return value >= threshold
+
+    configured = partial(route, threshold=1)
+
+    def evaluate(value: int) -> bool:
+        return _DETACHED_HELPERS.route(value)  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(_DETACHED_HELPERS, "route", configured, raising=False)
+    original = component_implementation_identity(evaluate)
+
+    assert configured.keywords is not None
+    configured.keywords["threshold"] = 99
+
+    assert evaluate(50) is False
+    assert component_implementation_identity(evaluate) != original
+
+
+def test_component_identity_rejects_dynamic_module_attribute_lookup() -> None:
+    def evaluate(name: str) -> object:
+        return getattr(_DETACHED_HELPERS, name)
+
+    with pytest.raises(
+        ValueError,
+        match="explicit referenced attributes",
+    ):
+        component_implementation_identity(evaluate)
+
+
+def test_component_identity_supports_nested_stdlib_module_helper() -> None:
+    def join(left: str, right: str) -> str:
+        return os.path.join(left, right)
+
+    assert join("left", "right").endswith("left/right")
+    assert component_implementation_identity(join)["source_digest"].startswith(
+        "sha256:"
+    )
+
+
+def test_component_identity_does_not_capture_runtime_module_registry_contents() -> None:
+    def lookup(name: str) -> object | None:
+        return sys.modules.get(name)
+
+    first = component_implementation_identity(lookup)
+    transient_name = "test_runtime_identity_transient_module"
+    sys.modules[transient_name] = ModuleType(transient_name)
+    try:
+        assert component_implementation_identity(lookup) == first
+    finally:
+        sys.modules.pop(transient_name, None)
+
+
+def test_component_identity_binds_referenced_regex_policy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = component_implementation_identity(
+        git_filter_safety_module.external_filter_overrides
+    )
+    monkeypatch.setattr(
+        git_filter_safety_module,
+        "_FILTER_KEY",
+        re.compile(r"^never-match$"),
+    )
+
+    assert (
+        component_implementation_identity(
+            git_filter_safety_module.external_filter_overrides
+        )
+        != original
+    )
+
+
+def test_runtime_identity_rejects_opaque_callable_without_explicit_contract() -> None:
+    with pytest.raises(
+        ValueError,
+        match="explicit runtime_identity",
+    ):
+        component_runtime_digest(attrgetter("left"))
+
+
+def test_live_package_cache_hit_fails_closed_then_rebuilds_for_changed_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    evaluators_module._LIVE_PACKAGE_DIGEST_CACHE.clear()
+    first_token = ("stable", ())
+    changed_token = ("changed", ())
+    evaluators_module._LIVE_PACKAGE_DIGEST_CACHE[first_token] = "sha256:stale"
+    calls = 0
+
+    def current_token() -> object:
+        nonlocal calls
+        calls += 1
+        return first_token if calls == 1 else changed_token
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_live_package_fast_token",
+        current_token,
+    )
+    monkeypatch.setattr(
+        evaluators_module,
+        "_compute_live_package_digest",
+        lambda: "sha256:current",
+    )
+
+    with pytest.raises(ValueError, match="changed during manifest snapshot"):
+        evaluators_module._optimization_live_package_digest()
+
+    assert evaluators_module._optimization_live_package_digest() == "sha256:current"
+
+
+def test_live_class_fast_token_uses_shallow_member_bindings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Policy:
+        def decide(self) -> bool:
+            return bool(_DETACHED_RUNTIME_THRESHOLD)
+
+    def fail_on_recursive_member_dependency(*_args: object) -> object:
+        raise AssertionError("class fast token recursively expanded a member")
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_release_dependency_fast_token",
+        fail_on_recursive_member_dependency,
+    )
+
+    token = evaluators_module._live_callable_cache_token(Policy)
+
+    assert token[0] == "class"
+
+
+def test_live_class_fast_token_reuses_one_generation_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Policy:
+        def decide(self) -> bool:
+            return True
+
+    memo: dict[tuple[str, int], object] = {}
+    first = evaluators_module._live_callable_cache_token(
+        Policy,
+        memo=memo,
+    )
+
+    def fail_if_reexpanded(_implementation: type[object]) -> object:
+        raise AssertionError("class fast token ignored the generation memo")
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_class_runtime_member_groups",
+        fail_if_reexpanded,
+    )
+
+    assert (
+        evaluators_module._live_callable_cache_token(
+            Policy,
+            memo=memo,
+        )
+        == first
+    )
+
+
+def test_release_class_fast_token_reuses_generation_dependency_memo(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Policy:
+        def decide(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        evaluators_module._LIVE_PACKAGE_SNAPSHOT_LOCAL,
+        "fast_dependency_memo",
+        {},
+        raising=False,
+    )
+    first = evaluators_module._release_runtime_value_fast_token(
+        Policy,
+        set(),
+    )
+
+    def fail_if_reexpanded(_implementation: type[object]) -> object:
+        raise AssertionError("release class token ignored the generation memo")
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_class_runtime_member_groups",
+        fail_if_reexpanded,
+    )
+
+    assert (
+        evaluators_module._release_runtime_value_fast_token(
+            Policy,
+            set(),
+        )
+        == first
+    )
+
+
+def test_component_implementation_reuses_class_memo_within_snapshot(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Policy:
+        def decide(self) -> bool:
+            return True
+
+    monkeypatch.setattr(
+        evaluators_module._LIVE_PACKAGE_SNAPSHOT_LOCAL,
+        "implementation_memo",
+        {},
+        raising=False,
+    )
+    first = component_implementation_identity(Policy())
+
+    def fail_if_reexpanded(_implementation: type[object]) -> object:
+        raise AssertionError("component implementation ignored the class memo")
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_class_runtime_member_groups",
+        fail_if_reexpanded,
+    )
+
+    assert component_implementation_identity(Policy()) == first
+
+
+def test_live_package_cache_miss_refreshes_dependency_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ScopeCacheSpy:
+        def __init__(self) -> None:
+            self.clear_calls = 0
+
+        def cache_clear(self) -> None:
+            self.clear_calls += 1
+
+    token = ("stable", ())
+    scope_cache = ScopeCacheSpy()
+    evaluators_module._LIVE_PACKAGE_DIGEST_CACHE.clear()
+    monkeypatch.setattr(
+        evaluators_module,
+        "_cached_optimization_dependency_scope",
+        scope_cache,
+    )
+    monkeypatch.setattr(
+        evaluators_module,
+        "_compute_live_package_digest",
+        lambda: "sha256:current",
+    )
+    monkeypatch.setattr(
+        evaluators_module,
+        "_live_package_fast_token",
+        lambda: token,
+    )
+
+    assert evaluators_module._resolve_live_package_digest_for_token(token) == (
+        token,
+        "sha256:current",
+    )
+    assert scope_cache.clear_calls == 1
+
+
+def test_identity_measurement_kernel_is_excluded_from_product_semantic_scope() -> None:
+    assert evaluators_module._is_identity_measurement_kernel_callable(
+        evaluators_module._bounded_builtin_identity
+    )
+    assert not evaluators_module._verified_first_party_scope_target(
+        evaluators_module._bounded_builtin_identity
+    )
+    assert evaluators_module._verified_first_party_scope_target(
+        evaluators_module._validate_invocation
+    )
+    assert evaluators_module._release_dependency_fast_token(
+        evaluators_module._validate_invocation,
+        "component_runtime_identity",
+        evaluators_module.component_runtime_identity,
+        set(),
+    )[0] == "identity-kernel-callable"
+
+
+def test_release_class_members_exclude_injected_third_party_methods() -> None:
+    assert all(
+        str(getattr(member, "__module__", "") or "").startswith("ai_sdlc.")
+        for _, members in evaluators_module._release_class_runtime_member_groups(
+            EvaluationContext
+        )
+        for _, member in members
+    )
+
+
+def test_product_semantic_scope_excludes_generated_class_methods() -> None:
+    assert all(
+        getattr(getattr(item, "__code__", None), "co_filename", None)
+        != "<string>"
+        for item in evaluators_module._optimization_dependency_scope().nodes
+    )
+
+
+def test_product_semantic_scope_stays_within_structural_budget() -> None:
+    scope = evaluators_module._optimization_dependency_scope()
+
+    assert len(scope.module_names) <= 180
+    assert len(scope.nodes) <= 2500
+    assert len(scope.covered_function_ids) <= 1800
+
+
+def test_identity_measurement_policy_and_kernel_are_digest_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    policy_digest = evaluators_module._identity_measurement_policy_digest()
+    kernel_digest = evaluators_module._identity_measurement_kernel_digest()
+    monkeypatch.setattr(
+        evaluators_module,
+        "_TRUSTED_STDLIB_RUNTIME_OBJECTS",
+        frozenset(
+            (
+                *evaluators_module._TRUSTED_STDLIB_RUNTIME_OBJECTS,
+                "example:Policy",
+            )
+        ),
+    )
+    assert evaluators_module._identity_measurement_policy_digest() != policy_digest
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_module_attribute_identity",
+        lambda _value, _seen: {"replacement": True},
+    )
+    assert evaluators_module._identity_measurement_kernel_digest() != kernel_digest
+
+
+def test_identity_measurement_kernel_binds_lru_wrapped_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = evaluators_module._identity_measurement_kernel_digest()
+    original_fast_token = evaluators_module._live_package_fast_token()
+    wrapped = evaluators_module._cached_function_global_names.__wrapped__
+
+    def tampered(_code: object) -> tuple[str, ...]:
+        return ("tampered-global",)
+
+    monkeypatch.setattr(wrapped, "__code__", tampered.__code__)
+
+    assert evaluators_module._identity_measurement_kernel_digest() != original
+    assert evaluators_module._live_package_fast_token() != original_fast_token
+
+
+def test_identity_measurement_kernel_binds_contextmanager_wrapped_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = evaluators_module._identity_measurement_kernel_digest()
+    wrapped = evaluators_module.optimization_runtime_identity_snapshot.__wrapped__
+
+    def tampered_snapshot():
+        yield
+
+    monkeypatch.setattr(wrapped, "__code__", tampered_snapshot.__code__)
+
+    assert evaluators_module._identity_measurement_kernel_digest() != original
+
+
+def test_release_fast_token_detects_external_helper_global_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def owner(value: int) -> bool:
+        return _fast_external_helper(value)
+
+    first = evaluators_module._release_dependency_fast_token(
+        owner,
+        "_fast_external_helper",
+        _fast_external_helper,
+        set(),
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__],
+        "_FAST_EXTERNAL_THRESHOLD",
+        99,
+    )
+
+    assert (
+        evaluators_module._release_dependency_fast_token(
+            owner,
+            "_fast_external_helper",
+            _fast_external_helper,
+            set(),
+        )
+        != first
+    )
+
+
+def test_runtime_generation_change_invalidates_active_manifest_snapshot() -> None:
+    with pytest.raises(
+        ValueError,
+        match="generation changed",
+    ), evaluators_module.optimization_runtime_identity_snapshot():
+        evaluators_module.invalidate_optimization_runtime_identity()
+
+
+def test_noop_runtime_invalidation_does_not_change_content_digest() -> None:
+    first = evaluators_module._optimization_live_package_digest()
+
+    evaluators_module.invalidate_optimization_runtime_identity()
+    second = evaluators_module._optimization_live_package_digest()
+    evaluators_module.invalidate_optimization_runtime_identity()
+
+    assert second == first
+    assert evaluators_module._optimization_live_package_digest() == first
+
+
+def test_live_package_identity_detects_in_place_keyword_default_change() -> None:
+    from ai_sdlc.core.stage_review.optimization import (
+        candidate_domain_defaults,
+    )
+
+    defaults = candidate_domain_defaults._contract.__kwdefaults__
+    assert defaults is not None
+    original = defaults["escape"]
+    first = evaluators_module._optimization_live_package_digest()
+    defaults["escape"] = not original
+    try:
+        assert evaluators_module._optimization_live_package_digest() != first
+    finally:
+        defaults["escape"] = original
+
+    assert evaluators_module._optimization_live_package_digest() == first
+
+
+def test_callable_identity_binds_third_party_closure_and_partial_objects() -> None:
+    class ThirdPartyPolicy:
+        def __init__(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+        def decide(self) -> bool:
+            return self.enabled
+
+    def with_policy(policy: ThirdPartyPolicy):
+        def execute() -> bool:
+            return policy.decide()
+
+        return execute
+
+    def execute_partial(policy: ThirdPartyPolicy) -> bool:
+        return policy.decide()
+
+    enabled = ThirdPartyPolicy(True)
+    disabled = ThirdPartyPolicy(False)
+    assert component_implementation_identity(
+        with_policy(enabled)
+    ) != component_implementation_identity(with_policy(disabled))
+    assert component_implementation_identity(
+        partial(execute_partial, enabled)
+    ) != component_implementation_identity(partial(execute_partial, disabled))
+
+
+def test_dynamic_callable_identity_binds_normalized_code() -> None:
+    first_namespace = {"__name__": "dynamic.reviewer"}
+    second_namespace = {"__name__": "dynamic.reviewer"}
+    exec(compile("def evaluate(): return 1", "<dynamic>", "exec"), first_namespace)
+    exec(compile("def evaluate(): return 2", "<dynamic>", "exec"), second_namespace)
+
+    assert component_implementation_identity(
+        first_namespace["evaluate"]
+    ) != component_implementation_identity(second_namespace["evaluate"])
+
+
+def test_callable_identity_binds_referenced_globals_and_sets() -> None:
+    namespace = {"__name__": "dynamic.global-reviewer", "THRESHOLD": 1}
+    exec(
+        compile(
+            "def decide(value): return value >= THRESHOLD",
+            "<dynamic-global>",
+            "exec",
+        ),
+        namespace,
+    )
+    decide = namespace["decide"]
+    first = component_implementation_identity(decide)
+    namespace["THRESHOLD"] = 99
+    second = component_implementation_identity(decide)
+
+    def with_capabilities(capabilities: set[str]):
+        def allows(name: str) -> bool:
+            return name in capabilities
+
+        return allows
+
+    assert first != second
+    assert component_implementation_identity(
+        with_capabilities({"security"})
+    ) != component_implementation_identity(with_capabilities({"delivery"}))
+
+
+def test_callable_identity_fails_closed_for_recursive_capture() -> None:
+    recursive: list[object] = []
+    recursive.append(recursive)
+
+    def execute() -> int:
+        return len(recursive)
+
+    with pytest.raises(ValueError, match="recursive reference"):
+        component_implementation_identity(execute)
+
+
+def test_core_statistics_authority_rejects_adapter_improvement_count_forgery() -> None:
+    registry = _registry()
+    adapter = _Adapter(improved_count=59)
+    registry.register(_contract("forged-statistics"), adapter)
+
+    with pytest.raises(
+        ValueError,
+        match="statistical sample diverged from core evidence",
+    ):
+        registry.evaluate(
+            evaluator_kind="forged-statistics",
+            candidate=_candidate(
+                "selection",
+                "selection_policy.capability_requirement_rules",
+                suffix="forged-statistics",
+            ),
+            context=_context(),
+        )
+
+
 def test_evaluator_rejects_partition_not_authorized_by_contract() -> None:
-    registry = OptimizationEvaluatorRegistry()
+    registry = _registry()
     adapter = _Adapter()
     registry.register(_contract("validation-only"), adapter)
 
@@ -87,7 +1002,7 @@ def test_evaluator_rejects_partition_not_authorized_by_contract() -> None:
 
 
 def test_semantic_evaluator_must_be_independent_from_candidate_generator() -> None:
-    registry = OptimizationEvaluatorRegistry()
+    registry = _registry()
     adapter = _Adapter()
     registry.register(_contract("independent-semantic"), adapter)
     candidate = _candidate(
@@ -107,7 +1022,7 @@ def test_semantic_evaluator_must_be_independent_from_candidate_generator() -> No
 
 
 def test_evaluator_provider_identity_and_capabilities_are_enforced() -> None:
-    registry = OptimizationEvaluatorRegistry()
+    registry = _registry()
     adapter = _Adapter()
     registry.register(_contract("provider-bound"), adapter)
     candidate = _candidate(
@@ -131,7 +1046,7 @@ def test_evaluator_provider_identity_and_capabilities_are_enforced() -> None:
 
 
 def test_schema_incompatible_evaluator_is_rejected_before_adapter_call() -> None:
-    registry = OptimizationEvaluatorRegistry()
+    registry = _registry()
     adapter = _Adapter()
     registry.register(
         _contract(
@@ -158,6 +1073,7 @@ def test_schema_incompatible_evaluator_is_rejected_before_adapter_call() -> None
 @dataclass
 class _Adapter:
     calls: int = 0
+    improved_count: int = 60
 
     def evaluate(
         self,
@@ -166,6 +1082,14 @@ class _Adapter:
         contract: EvaluatorContract,
     ) -> OptimizationEvaluationReport:
         self.calls += 1
+        policy = baseline_statistics_policy()
+        session_ids = tuple(f"session.{index:03d}" for index in range(60))
+        p_value, power, lower = binary_improvement_statistics(
+            self.improved_count,
+            len(session_ids),
+            alpha=policy.shadow_alpha,
+            policy=policy,
+        )
         return OptimizationEvaluationReport(
             report_id=f"evaluation.{candidate.candidate_id}",
             candidate_digest=candidate.candidate_digest,
@@ -176,6 +1100,7 @@ class _Adapter:
             domain_registry_digest=candidate.domain_registry_digest,
             evaluator_kind=contract.evaluator_kind,
             evaluator_version=contract.evaluator_version,
+            evaluator_contract_digest=contract.contract_digest,
             dataset_digest=context.dataset_digest,
             partition=context.partition,
             evaluation_binding_id=context.evaluation_binding_id,
@@ -183,17 +1108,53 @@ class _Adapter:
             cost_deltas={"estimated_cost": 0.0},
             censoring_metrics={"unknown_or_censored_rate": 0.0},
             guard_results={"protocol_integrity": True},
-            comparison_session_ids=tuple(
-                f"session.{index}" for index in range(5)
-            ),
+            comparison_session_ids=session_ids,
             hypothesis_family_digest=context.hypothesis_family_digest,
-            raw_p_value=0.01,
+            improved_count=self.improved_count,
+            sample_count=len(session_ids),
+            statistical_sample_digest=_sample(candidate, context).sample_digest,
+            statistics_policy_digest=policy.policy_digest,
+            statistical_alpha=policy.shadow_alpha,
+            raw_p_value=p_value,
             holm_rank=1,
             holm_threshold=0.05,
-            statistical_power=0.9,
-            effect_confidence_lower=0.1,
+            statistical_power=power,
+            effect_confidence_lower=lower,
             recommendation="finalist_eligible",
         )
+
+
+class _AlternateAdapter(_Adapter):
+    pass
+
+
+class _StatisticsAuthority:
+    def sample(
+        self,
+        candidate: OptimizationCandidate,
+        context: EvaluationContext,
+    ) -> OptimizationStatisticalSample:
+        return _sample(candidate, context)
+
+
+def _registry() -> OptimizationEvaluatorRegistry:
+    return OptimizationEvaluatorRegistry(
+        statistics_authority=_StatisticsAuthority()
+    )
+
+
+def _sample(
+    candidate: OptimizationCandidate,
+    context: EvaluationContext,
+) -> OptimizationStatisticalSample:
+    session_ids = tuple(f"session.{index:03d}" for index in range(60))
+    return OptimizationStatisticalSample(
+        candidate_digest=candidate.candidate_digest,
+        dataset_digest=context.dataset_digest,
+        comparison_session_ids=session_ids,
+        improved_session_ids=session_ids,
+        source_evidence_digests=("sha256:test-evidence",),
+    )
 
 
 def _contract(
@@ -227,6 +1188,7 @@ def _context(
     evaluation_provider_id: str = "provider.evaluator",
     provider_capabilities: tuple[str, ...] = ("read-only",),
 ) -> EvaluationContext:
+    policy = baseline_statistics_policy()
     return EvaluationContext(
         dataset_digest="sha256:dataset.1",
         partition=partition,
@@ -234,6 +1196,8 @@ def _context(
         evaluation_provider_id=evaluation_provider_id,
         provider_capabilities=provider_capabilities,
         resource_reservation_digest="sha256:offline-reservation.1",
+        statistics_policy_digest=policy.policy_digest,
+        statistical_alpha=policy.shadow_alpha,
     )
 
 

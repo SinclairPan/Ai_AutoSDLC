@@ -92,7 +92,10 @@ def _migrate_previous(
     ):
         raise SessionIntegrityError("previous session artifact digest is invalid")
     migrated = _previous_payload(model_type, payload, spec, source_digest)
-    return model_type.model_validate(migrated)
+    return model_type.model_validate(
+        migrated,
+        context={"verified_legacy_source_digest": source_digest},
+    )
 
 
 def _previous_payload(

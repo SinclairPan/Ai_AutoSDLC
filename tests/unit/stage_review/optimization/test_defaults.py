@@ -25,6 +25,9 @@ from ai_sdlc.core.stage_review.optimization.defaults import (
     baseline_epoch_budget_policy,
     baseline_offline_capacity,
 )
+from ai_sdlc.core.stage_review.optimization.evaluators import (
+    fixed_holdout_evaluator_contract,
+)
 
 
 def test_versioned_baseline_lineage_is_complete_and_deterministic() -> None:
@@ -48,7 +51,18 @@ def test_versioned_baseline_lineage_is_complete_and_deterministic() -> None:
         baseline_storage_policy(), CanonicalizationPolicy()
     )
     assert constitution.evaluator_registry_digest == canonical_digest(
-        (baseline_evaluator_contract(),), CanonicalizationPolicy()
+        tuple(
+            sorted(
+                (
+                    baseline_evaluator_contract(),
+                    fixed_holdout_evaluator_contract(
+                        baseline_evaluator_contract().compatible_candidate_domains
+                    ),
+                ),
+                key=lambda item: item.evaluator_kind,
+            )
+        ),
+        CanonicalizationPolicy(),
     )
     assert snapshot == baseline_optimization_snapshot("project.shared")
     assert (

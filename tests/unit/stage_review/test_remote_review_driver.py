@@ -29,6 +29,7 @@ from ai_sdlc.core.stage_review.provider_transport_models import (
     _build_transport_contract as build_transport_contract,
 )
 from ai_sdlc.core.stage_review.provider_usage_models import metered_provider_usage
+from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
 
 _OWNER = "owner.test-process"
 
@@ -218,6 +219,63 @@ def test_remote_review_never_calls_non_remote_broker(tmp_path: Path) -> None:
     assert result.result_code == "needs_user"
     assert rig.broker.calls == 0
     assert rig.transport.receipts() == ()
+
+
+def test_remote_review_returns_stable_needs_user_for_trusted_egress_unavailable(
+    tmp_path: Path,
+) -> None:
+    from ai_sdlc.core.stage_review.provider_transport import TrustedEgressUnavailable
+
+    rig = _review_rig(tmp_path, _valid_response())
+    rig.journal.prepare(rig.request, lease_owner=_OWNER, now=_now())
+    transport_attempts = 0
+
+    def unavailable_egress(envelope):
+        nonlocal transport_attempts
+        del envelope
+        transport_attempts += 1
+        raise TrustedEgressUnavailable("provider egress recovery is required")
+
+    rig.transport.exchange = unavailable_egress
+
+    result = rig.journal.resume(
+        rig.request.invocation_id,
+        driver=rig.driver,
+        validator=lambda submission: "sha256:must-not-run",
+        lease_owner=_OWNER,
+        now=_now(),
+    )
+
+    assert result.result_code == "needs_user"
+    invocation = rig.journal.get(rig.request.invocation_id)
+    assert invocation.state == "dispatched"
+    assert not rig.journal.submission_path(rig.request.invocation_id).exists()
+    reservation = rig.governor.get_reservation(rig.request.reservation_id)
+    assert reservation.usage == ResourceAmounts()
+    assert reservation.authorized_pending == rig.request.anticipated_usage
+    assert {item.invocation_id for item in reservation.provider_permits} == {
+        rig.request.invocation_id
+    }
+    assert rig.broker.calls == 0
+
+    replay = rig.journal.resume(
+        rig.request.invocation_id,
+        driver=rig.driver,
+        validator=lambda submission: "sha256:must-not-run",
+        lease_owner=_OWNER,
+        now=_now(),
+    )
+
+    assert replay.result_code == "needs_user"
+    assert transport_attempts == 1
+    assert rig.broker.calls == 0
+    assert rig.journal.get(rig.request.invocation_id).state == "dispatched"
+    repeated_reservation = rig.governor.get_reservation(rig.request.reservation_id)
+    assert repeated_reservation.usage == ResourceAmounts()
+    assert repeated_reservation.authorized_pending == rig.request.anticipated_usage
+    assert {item.invocation_id for item in repeated_reservation.provider_permits} == {
+        rig.request.invocation_id
+    }
 
 
 def _review_rig(

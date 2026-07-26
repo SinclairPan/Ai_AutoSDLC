@@ -289,6 +289,7 @@ def _is_main_guard(node: ast.expr) -> bool:
     if (
         not isinstance(node, ast.Compare)
         or len(node.ops) != 1
+        or not isinstance(node.ops[0], ast.Eq)
         or len(node.comparators) != 1
     ):
         return False

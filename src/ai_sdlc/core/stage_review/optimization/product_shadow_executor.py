@@ -13,6 +13,9 @@ from ai_sdlc.core.stage_review.isolation_backend_identity import (
     TrustedBackendReleaseManifest,
 )
 from ai_sdlc.core.stage_review.optimization.controller_models import OptimizationEpoch
+from ai_sdlc.core.stage_review.optimization.evaluators import (
+    component_runtime_identity,
+)
 from ai_sdlc.core.stage_review.optimization.finding_lineage import (
     FindingEventLineageReader,
 )
@@ -32,15 +35,11 @@ from ai_sdlc.core.stage_review.optimization.shadow_execution import (
     ShadowExecutionNoChangeError,
     ShadowExecutionUnrecoverableError,
 )
-from ai_sdlc.core.stage_review.optimization.shadow_labels import (
-    labeled_shadow_outcomes,
-)
 from ai_sdlc.core.stage_review.optimization.shadow_observations import (
     OptimizationShadowObservationStore,
 )
 from ai_sdlc.core.stage_review.optimization.shadow_provider import (
     CodexOptimizationShadowDriver,
-    OptimizationShadowProviderOutput,
     build_shadow_provider_payload,
     shadow_provider_spec,
     validate_shadow_provider_output,
@@ -94,6 +93,15 @@ class ProductShadowAssignmentExecutor:
             late_critical_recorder=self._existing_late_critical,
         )
 
+    def runtime_identity(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "transport_source": component_runtime_identity(
+                self.transport_source
+            ),
+            "clock": component_runtime_identity(self.clock),
+        }
+
     def execute(
         self,
         epoch: OptimizationEpoch,
@@ -120,16 +128,26 @@ class ProductShadowAssignmentExecutor:
             executions=self.transport_source(assignment),
         )
         authorize_effect()
-        result = self.service.evaluate(
+        prepared = self.service.prepare(
             epoch_id=epoch.epoch_id,
             finalist_candidate_digest=candidate.candidate_digest,
             session=_shadow_input(assignment),
             epoch_session_sequence_high_watermark=epoch.session_sequence_high_watermark,
             provider=shadow_provider_spec(payload),
-            driver=driver,
-            validator=validate_shadow_provider_output,
             reservation_id=reservation.reservation_id,
             lease_owner=reservation.lease_owner,
+            runtime_bundle_manifest_digest=epoch.runtime_bundle_manifest_digest,
+        )
+        authorize_effect()
+        result = self.service.resume(
+            prepared,
+            driver=driver,
+            validator=validate_shadow_provider_output,
+            lease_owner=reservation.lease_owner,
+            expected_runtime_bundle_manifest_digest=(
+                epoch.runtime_bundle_manifest_digest
+            ),
+            authorize_dispatch=authorize_effect,
         )
         if result.invocation_result.result_code in _RETRYABLE_RESULTS:
             return False
@@ -138,11 +156,16 @@ class ProductShadowAssignmentExecutor:
                 f"shadow_provider_{result.invocation_result.result_code}"
             )
         return self._record_observation(
-            candidate, assignment, result.invocation_result.submission, authorize_effect
+            epoch,
+            candidate,
+            assignment,
+            result.invocation_result.submission,
+            authorize_effect,
         )
 
     def _record_observation(
         self,
+        epoch: OptimizationEpoch,
         candidate: OptimizationCandidate,
         assignment: OptimizationShadowAssignment,
         submission: ProviderSubmission | None,
@@ -150,26 +173,14 @@ class ProductShadowAssignmentExecutor:
     ) -> bool:
         if submission is None:
             raise ShadowExecutionUnrecoverableError("shadow_submission_missing")
-        output = OptimizationShadowProviderOutput.model_validate(
-            submission.output_payload
-        )
-        baseline = _baseline_observation(self.observations, assignment)
-        outcomes = labeled_shadow_outcomes(
-            candidate=candidate,
-            baseline_observation=baseline,
-            review=output.review,
-            finding_events=self.findings.events(assignment.session_id),
-        )
-        authorize_effect()
-        self.shadow_observations.record_committed(
-            assignment,
+        self.shadow_observations.publisher(
+            epoch=epoch,
             journal=self.journal,
+            authorize_effect=authorize_effect,
+        ).publish(
+            assignment=assignment,
+            candidate=candidate,
             provider_invocation_id=submission.invocation_id,
-            baseline=outcomes[0],
-            challenger=outcomes[1],
-            evaluation_binding_id=f"evaluation-binding.{assignment.assignment_id}",
-            label_source_digests=outcomes[2],
-            observed_at=self.clock(),
         )
         return True
 

@@ -30,6 +30,10 @@ from ai_sdlc.core.stage_review.activation_evidence_runtime import (
 from ai_sdlc.core.stage_review.activation_evidence_runtime import (
     _refresh_activation_policy_from_local_evidence as refresh_activation_policy_from_local_evidence,
 )
+from ai_sdlc.core.stage_review.activation_models import (
+    ACTIVATION_RISKS,
+    StageGateActivationPolicy,
+)
 from ai_sdlc.core.stage_review.activation_policy import baseline_activation_policy
 from ai_sdlc.core.stage_review.activation_policy_anchor import (
     ACTIVATION_POLICY_ANCHOR,
@@ -167,6 +171,59 @@ def test_v1_local_pointer_yields_to_equivalent_v2_anchor(
     assert selected.compatibility_mode == "strict"
 
 
+def test_v1_local_pointer_cannot_claim_unanchored_higher_phase(
+    tmp_path: Path,
+) -> None:
+    _init_repository(tmp_path)
+    project_id = resolve_repository_project_id(tmp_path)
+    shared = resolve_canonical_shared_state(tmp_path, project_id)
+    legacy = _legacy_policy_payload()
+    legacy.update(
+        active_phase=4,
+        policy_version="1.3.0",
+        sample_size={},
+        enabled_risk_levels=ACTIVATION_RISKS,
+        offline_optimization_enabled=True,
+        previous_policy_digest=_digest("forged-previous-policy"),
+        activation_assessment_digest=_digest("forged-assessment"),
+        policy_digest="",
+    )
+    legacy["policy_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in legacy.items()
+            if key != "policy_digest"
+        },
+        CanonicalizationPolicy(),
+    )
+    legacy_digest = str(legacy["policy_digest"])
+    _write_payload(
+        shared
+        / "activation/policies"
+        / f"{legacy_digest.removeprefix('sha256:')}.json",
+        legacy,
+    )
+    _write_json(
+        shared / "activation/active-policy.json",
+        ActivationPolicyPointer(
+            project_id=project_id,
+            revision=1,
+            policy_digest=legacy_digest,
+            previous_policy_digest=_digest("forged-previous-policy"),
+        ),
+    )
+    _write_payload(
+        tmp_path / ACTIVATION_POLICY_ANCHOR,
+        baseline_activation_policy().model_dump(mode="json"),
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="legacy activation policy pointer is not equivalent",
+    ):
+        current_activation_policy(tmp_path)
+
+
 def test_v1_session_record_rebuilds_authoritative_scope(
     tmp_path: Path,
 ) -> None:
@@ -263,13 +320,11 @@ def test_eligible_evidence_atomically_advances_the_active_policy(
     assert promoted.active_phase == 2
     assert current_activation_policy(tmp_path).policy_digest == promoted.policy_digest
     anchor = tmp_path / ACTIVATION_POLICY_ANCHOR
-    assert json.loads(anchor.read_text(encoding="utf-8"))["policy_digest"] == (
-        promoted.policy_digest
-    )
+    assert not anchor.exists()
     assert len(tuple(tmp_path.rglob("evidences/*.json"))) == 1
 
 
-def test_tracked_anchor_recovers_deleted_local_pointer(
+def test_deleted_local_pointer_recovers_verified_transition_chain(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -282,6 +337,45 @@ def test_tracked_anchor_recovers_deleted_local_pointer(
     pointer.unlink()
 
     assert current_activation_policy(tmp_path).policy_digest == promoted.policy_digest
+
+
+def test_forged_higher_phase_pointer_without_transition_receipt_is_rejected(
+    tmp_path: Path,
+) -> None:
+    _init_repository(tmp_path)
+    baseline = baseline_activation_policy()
+    payload = baseline.model_dump(mode="json")
+    payload.update(
+        active_phase=4,
+        policy_version="1.3.0",
+        sample_size={},
+        enabled_risk_levels=ACTIVATION_RISKS,
+        offline_optimization_enabled=True,
+        previous_policy_digest=_digest("forged-previous-policy"),
+        activation_assessment_digest=_digest("forged-assessment"),
+        policy_digest="",
+    )
+    forged = StageGateActivationPolicy.model_validate(payload)
+    project_id = resolve_repository_project_id(tmp_path)
+    shared = resolve_canonical_shared_state(tmp_path, project_id)
+    _write_json(
+        shared
+        / "activation/policies"
+        / f"{forged.policy_digest.removeprefix('sha256:')}.json",
+        forged,
+    )
+    _write_json(
+        shared / "activation/active-policy.json",
+        ActivationPolicyPointer(
+            project_id=project_id,
+            revision=1,
+            policy_digest=forged.policy_digest,
+            previous_policy_digest=forged.previous_policy_digest,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="transition receipt"):
+        current_activation_policy(tmp_path)
 
 
 def test_local_sources_automatically_advance_without_user_parameters(
@@ -308,6 +402,84 @@ def test_local_sources_automatically_advance_without_user_parameters(
 
     assert assessment is not None and assessment.eligible
     assert promoted.active_phase == 2
+
+
+def test_newest_ancestral_evidence_package_is_selected_for_one_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _trust_attestations(monkeypatch)
+    start, project_id, _sessions = _prepare_session_sources(tmp_path)
+    inbox = tmp_path / ".ai-sdlc/policies/activation-evidence"
+    inbox.mkdir(parents=True, exist_ok=True)
+    older_head = _git(tmp_path, "rev-parse", "HEAD")
+    older = _evidence_package(
+        project_id,
+        repository="SinclairPan/Ai_AutoSDLC",
+        tested_commit=older_head,
+    )
+    artifact, bundle = _write_package(tmp_path, older)
+    artifact.replace(inbox / "older.package.json")
+    bundle.replace(inbox / "older.bundle.jsonl")
+    (tmp_path / "new-evidence.txt").write_text("newer\n", encoding="utf-8")
+    _git(tmp_path, "add", "new-evidence.txt")
+    _git(tmp_path, "commit", "-m", "newer evidence source")
+    newer_head = _git(tmp_path, "rev-parse", "HEAD")
+    newer = _evidence_package(
+        project_id,
+        repository="SinclairPan/Ai_AutoSDLC",
+        tested_commit=newer_head,
+    )
+    artifact, bundle = _write_package(tmp_path, newer)
+    artifact.replace(inbox / "newer.package.json")
+    bundle.replace(inbox / "newer.bundle.jsonl")
+
+    promoted, assessment = refresh_activation_policy_from_local_evidence(
+        tmp_path,
+        assessed_at=(start + timedelta(days=24)).isoformat(),
+    )
+
+    assert assessment is not None and assessment.eligible
+    assert promoted.active_phase == 2
+    source_sets = tuple(
+        resolve_canonical_shared_state(tmp_path, project_id)
+        .joinpath("activation/evidence-source-sets")
+        .glob("*.json")
+    )
+    assert len(source_sets) == 1
+    selected = json.loads(source_sets[0].read_text(encoding="utf-8"))
+    assert selected["tested_commit"] == newer_head
+
+
+def test_policy_refresh_ignores_historical_imports_from_prior_policy(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _trust_attestations(monkeypatch)
+    start, project_id, _sessions = _prepare_session_sources(tmp_path)
+    package = _evidence_package(
+        project_id,
+        repository="SinclairPan/Ai_AutoSDLC",
+        tested_commit=_git(tmp_path, "rev-parse", "HEAD"),
+    )
+    inbox = tmp_path / ".ai-sdlc/policies/activation-evidence"
+    artifact, bundle = _write_package(tmp_path, package)
+    inbox.mkdir(parents=True, exist_ok=True)
+    artifact.replace(inbox / "qualification.package.json")
+    bundle.replace(inbox / "qualification.bundle.jsonl")
+    promoted, first_assessment = refresh_activation_policy_from_local_evidence(
+        tmp_path,
+        assessed_at=(start + timedelta(days=24)).isoformat(),
+    )
+
+    refreshed, _second_assessment = refresh_activation_policy_from_local_evidence(
+        tmp_path,
+        assessed_at=(start + timedelta(days=25)).isoformat(),
+    )
+
+    assert first_assessment is not None and first_assessment.eligible
+    assert promoted.active_phase == 2
+    assert refreshed.active_phase >= 2
 
 
 def test_missing_local_package_downloads_latest_attested_ancestor(

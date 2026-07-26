@@ -34,9 +34,9 @@ from ai_sdlc.core.stage_review.activation_outcomes import (
     mature_activation_session_records,
 )
 from ai_sdlc.core.stage_review.activation_policy_anchor import (
+    is_strict_activation_policy_schema_upgrade,
     read_activation_policy_anchor,
     select_local_activation_policy,
-    write_activation_policy_anchor,
 )
 from ai_sdlc.core.stage_review.activation_rollback import (
     require_activation_rollback_idle,
@@ -46,6 +46,7 @@ from ai_sdlc.core.stage_review.activation_safety import (
     persist_activation_safety_hold,
 )
 from ai_sdlc.core.stage_review.activation_source_models import (
+    ActivationEvidenceImportReceipt,
     ActivationIsolationSourceRecord,
     ActivationProbeSourceRecord,
 )
@@ -58,6 +59,7 @@ from ai_sdlc.core.stage_review.artifacts import (
     atomic_write_json,
     bind_repository_project,
     create_json_exclusive,
+    portable_content_digest_name,
     read_json_object,
     resolve_canonical_shared_state,
     resolve_repository_project_id,
@@ -91,11 +93,46 @@ class ActivationPolicyPointer(ArtifactCompatibility):
         return fill_artifact_digest(self, "pointer_digest")
 
 
+class ActivationPolicyTransitionReceipt(ArtifactCompatibility):
+    schema_version: Literal["activation-policy-transition-receipt.v1"] = (
+        "activation-policy-transition-receipt.v1"
+    )
+    artifact_kind: Literal["activation-policy-transition-receipt"] = (
+        "activation-policy-transition-receipt"
+    )
+    project_id: str
+    previous_policy_digest: str
+    promoted_policy_digest: str
+    assessment_digest: str
+    evidence_digest: str
+    source_import_receipt_digests: tuple[str, ...]
+    transition_receipt_digest: str = ""
+
+    @model_validator(mode="after")
+    def _verify_receipt(self) -> Self:
+        identities = (
+            self.project_id,
+            self.previous_policy_digest,
+            self.promoted_policy_digest,
+            self.assessment_digest,
+            self.evidence_digest,
+            *self.source_import_receipt_digests,
+        )
+        if any(not value.strip() for value in identities):
+            raise ValueError("activation transition receipt identity is incomplete")
+        if self.source_import_receipt_digests != tuple(
+            sorted(set(self.source_import_receipt_digests))
+        ):
+            raise ValueError("activation transition receipt sources are not canonical")
+        return fill_artifact_digest(self, "transition_receipt_digest")
+
+
 @dataclass(frozen=True, slots=True)
 class _ActivationPaths:
     repository: Path
     root: Path
     policies: Path
+    transitions: Path
     evidences: Path
     assessments: Path
     session_records: Path
@@ -109,8 +146,9 @@ class _ActivationPaths:
 def current_activation_policy(root: Path) -> StageGateActivationPolicy:
     require_activation_rollback_idle(root)
     paths = _activation_paths(root)
-    pointer_policy = _read_pointer_policy(paths)
     anchor_policy = read_activation_policy_anchor(root)
+    trusted_anchor = anchor_policy or baseline_activation_policy()
+    pointer_policy = _read_pointer_policy(paths, trusted_anchor=trusted_anchor)
     return select_local_activation_policy(
         pointer_policy,
         anchor_policy,
@@ -161,8 +199,15 @@ def _advance_activation_policy_from_evidence(
                 )
                 if promoted is None:
                     return current, assessment
+                _persist_policy(paths, current)
                 _persist_policy(paths, promoted)
-                write_activation_policy_anchor(root, promoted)
+                _persist_transition_receipt(
+                    paths,
+                    current=current,
+                    promoted=promoted,
+                    assessment=assessment,
+                    evidence=evidence,
+                )
                 pointer = ActivationPolicyPointer(
                     project_id=paths.project_id,
                     revision=revision + 1,
@@ -176,28 +221,45 @@ def _advance_activation_policy_from_evidence(
 def _read_current_locked(
     paths: _ActivationPaths,
 ) -> tuple[StageGateActivationPolicy, int]:
-    pointer_policy = _read_pointer_policy(paths)
     anchor_policy = read_activation_policy_anchor(paths.repository)
+    trusted_anchor = anchor_policy or baseline_activation_policy()
+    pointer_policy = _read_pointer_policy(paths, trusted_anchor=trusted_anchor)
     current = select_local_activation_policy(
         pointer_policy,
         anchor_policy,
         baseline_activation_policy(),
     )
     if not paths.pointer.is_file():
-        return current, 0
+        return current, max(0, current.active_phase - 1)
     pointer = ActivationPolicyPointer.model_validate(read_json_object(paths.pointer))
     return current, pointer.revision
 
 
 def _read_pointer_policy(
     paths: _ActivationPaths,
+    *,
+    trusted_anchor: StageGateActivationPolicy,
 ) -> StageGateActivationPolicy | None:
     if not paths.pointer.is_file():
-        return None
+        return _recover_transition_policy(paths)
     pointer = ActivationPolicyPointer.model_validate(read_json_object(paths.pointer))
     if pointer.project_id != paths.project_id:
         raise ValueError("activation policy pointer project mismatch")
-    return _read_policy(paths, pointer.policy_digest)
+    policy = _read_policy(paths, pointer.policy_digest)
+    if policy.compatibility_mode == "read-only-legacy":
+        if not is_strict_activation_policy_schema_upgrade(
+            trusted_anchor,
+            policy,
+        ):
+            raise ValueError(
+                "legacy activation policy pointer is not equivalent "
+                "to the trusted activation anchor"
+            )
+        return policy
+    if pointer.previous_policy_digest != policy.previous_policy_digest:
+        raise ValueError("activation policy pointer lineage mismatch")
+    _verify_transition_chain(paths, policy)
+    return policy
 
 
 def _read_policy(
@@ -209,6 +271,137 @@ def _read_policy(
     if policy.policy_digest != policy_digest:
         raise ValueError("activation policy pointer digest mismatch")
     return policy
+
+
+def _recover_transition_policy(
+    paths: _ActivationPaths,
+) -> StageGateActivationPolicy | None:
+    receipts = tuple(
+        ActivationPolicyTransitionReceipt.model_validate(read_json_object(path))
+        for path in sorted(paths.transitions.glob("*.json"))
+    )
+    if not receipts:
+        return None
+    candidates = []
+    for receipt in receipts:
+        policy = _read_policy(paths, receipt.promoted_policy_digest)
+        _verify_transition_chain(paths, policy)
+        candidates.append(policy)
+    highest_phase = max(item.active_phase for item in candidates)
+    highest = {
+        item.policy_digest: item
+        for item in candidates
+        if item.active_phase == highest_phase
+    }
+    if len(highest) != 1:
+        raise ValueError("activation transition recovery is ambiguous")
+    return next(iter(highest.values()))
+
+
+def _verify_transition_chain(
+    paths: _ActivationPaths,
+    policy: StageGateActivationPolicy,
+) -> None:
+    current = policy
+    visited = set()
+    while current.active_phase > 1:
+        if current.policy_digest in visited:
+            raise ValueError("activation transition chain contains a cycle")
+        visited.add(current.policy_digest)
+        receipt = _read_transition_receipt(paths, current.policy_digest)
+        previous = _read_policy(paths, current.previous_policy_digest)
+        assessment = _read_assessment(paths, current.activation_assessment_digest)
+        evidence = _read_evidence(paths, assessment.evidence_digest)
+        sources = _source_import_receipt_digests(paths, evidence, previous)
+        expected_receipt = ActivationPolicyTransitionReceipt(
+            project_id=paths.project_id,
+            previous_policy_digest=previous.policy_digest,
+            promoted_policy_digest=current.policy_digest,
+            assessment_digest=assessment.assessment_digest,
+            evidence_digest=evidence.evidence_digest,
+            source_import_receipt_digests=sources,
+        )
+        if receipt != expected_receipt:
+            raise ValueError("activation transition receipt lineage diverged")
+        expected_assessment = assess_activation(previous, evidence)
+        if assessment != expected_assessment or not assessment.eligible:
+            raise ValueError("activation transition assessment is not eligible")
+        expected_policy = advance_activation_policy(
+            previous,
+            assessment,
+            grandfathered_loop_ids=current.grandfathered_loop_ids,
+        )
+        if expected_policy != current:
+            raise ValueError("activation policy transition is invalid")
+        current = previous
+    if current.active_phase != 1:
+        raise ValueError("activation transition chain does not reach phase one")
+
+
+def _read_transition_receipt(
+    paths: _ActivationPaths,
+    policy_digest: str,
+) -> ActivationPolicyTransitionReceipt:
+    path = paths.transitions / f"{_digest_name(policy_digest)}.json"
+    if not path.is_file():
+        raise ValueError("activation policy transition receipt is missing")
+    return ActivationPolicyTransitionReceipt.model_validate(read_json_object(path))
+
+
+def _read_assessment(
+    paths: _ActivationPaths,
+    assessment_digest: str,
+) -> ActivationAssessment:
+    path = paths.assessments / f"{_digest_name(assessment_digest)}.json"
+    assessment = ActivationAssessment.model_validate(read_json_object(path))
+    if assessment.assessment_digest != assessment_digest:
+        raise ValueError("activation assessment digest mismatch")
+    return assessment
+
+
+def _read_evidence(
+    paths: _ActivationPaths,
+    evidence_digest: str,
+) -> ActivationEvidence:
+    path = paths.evidences / f"{_digest_name(evidence_digest)}.json"
+    evidence = ActivationEvidence.model_validate(read_json_object(path))
+    if evidence.evidence_digest != evidence_digest:
+        raise ValueError("activation evidence digest mismatch")
+    return evidence
+
+
+def _source_import_receipt_digests(
+    paths: _ActivationPaths,
+    evidence: ActivationEvidence,
+    policy: StageGateActivationPolicy,
+) -> tuple[str, ...]:
+    isolation = tuple(
+        _read_isolation_source(paths, digest)
+        for digest in evidence.isolation_record_digests
+    )
+    probe = _read_probe_source(paths, evidence.probe_record_digest)
+    digests = tuple(
+        sorted(
+            {
+                probe.import_receipt_digest,
+                *(item.import_receipt_digest for item in isolation),
+            }
+        )
+    )
+    for digest in digests:
+        path = (
+            paths.root
+            / "activation/evidence-imports/receipts"
+            / f"{portable_content_digest_name(digest)}.json"
+        )
+        receipt = ActivationEvidenceImportReceipt.model_validate(read_json_object(path))
+        if (
+            receipt.receipt_digest != digest
+            or receipt.project_id != paths.project_id
+            or receipt.activation_policy_digest != policy.policy_digest
+        ):
+            raise ValueError("activation transition source receipt mismatch")
+    return digests
 
 
 def _verify_evidence_sources(
@@ -328,6 +521,34 @@ def _persist_policy(
         raise ValueError("activation policy content address diverged")
 
 
+def _persist_transition_receipt(
+    paths: _ActivationPaths,
+    *,
+    current: StageGateActivationPolicy,
+    promoted: StageGateActivationPolicy,
+    assessment: ActivationAssessment,
+    evidence: ActivationEvidence,
+) -> None:
+    receipt = ActivationPolicyTransitionReceipt(
+        project_id=paths.project_id,
+        previous_policy_digest=current.policy_digest,
+        promoted_policy_digest=promoted.policy_digest,
+        assessment_digest=assessment.assessment_digest,
+        evidence_digest=evidence.evidence_digest,
+        source_import_receipt_digests=_source_import_receipt_digests(
+            paths,
+            evidence,
+            current,
+        ),
+    )
+    path = paths.transitions / f"{_digest_name(promoted.policy_digest)}.json"
+    if create_json_exclusive(path, receipt.model_dump(mode="json")):
+        return
+    existing = ActivationPolicyTransitionReceipt.model_validate(read_json_object(path))
+    if existing != receipt:
+        raise ValueError("activation policy transition receipt diverged")
+
+
 def _persist_assessment(
     paths: _ActivationPaths,
     assessment: ActivationAssessment,
@@ -359,6 +580,7 @@ def _activation_paths(root: Path) -> _ActivationPaths:
         repository=root.resolve(),
         root=shared,
         policies=base / "policies",
+        transitions=base / "transitions",
         evidences=base / "evidences",
         assessments=base / "assessments",
         session_records=base / "session-records",

@@ -56,6 +56,7 @@ def test_candidate_schema_rejects_prefix_only_field_authorization() -> None:
             base_snapshot=baseline,
             attributions=(attribution,),
             evaluation_report_digests=("sha256:report",),
+            shadow_result_digest="sha256:shadow-result",
             created_at="2026-07-22T00:00:00Z",
         )
 
@@ -137,6 +138,7 @@ def test_applier_validates_lineage_and_builds_challenger_snapshot() -> None:
         base_snapshot=baseline,
         attributions=(attribution,),
         evaluation_report_digests=("sha256:report",),
+        shadow_result_digest="sha256:shadow-result",
         created_at="2026-07-22T00:00:00Z",
     )
 
@@ -154,6 +156,7 @@ def test_applier_validates_lineage_and_builds_challenger_snapshot() -> None:
             base_snapshot=baseline,
             attributions=(),
             evaluation_report_digests=("sha256:report",),
+            shadow_result_digest="sha256:shadow-result",
             created_at="2026-07-22T00:00:00Z",
         )
 
@@ -285,6 +288,9 @@ def _epoch() -> OptimizationEpoch:
             "project.shared"
         ).snapshot_digest,
         candidate_domain_registry_digest="sha256:registry",
+        statistics_policy_digest="sha256:statistics-policy",
+        evaluator_registry_digest="sha256:evaluator-registry",
+        auto_promotion_policy_digest="sha256:promotion-policy",
         session_sequence_high_watermark=30,
         new_session_count=30,
         state="generating",

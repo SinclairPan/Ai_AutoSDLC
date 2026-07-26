@@ -232,11 +232,13 @@ class StageCloseCertificateAuthority:
         certificate: StageCloseCertificate,
     ) -> StageCloseCertificate:
         self._require_authority_binding()
+        if certificate.compatibility_mode != "strict":
+            raise CertificateInvalidError(
+                "legacy stage close certificate is read-only"
+            )
         trusted = StageCloseCertificate.model_validate(
             certificate.model_dump(mode="json")
         )
-        if trusted.compatibility_mode != "strict":
-            raise CertificateInvalidError("legacy stage close certificate is read-only")
         if read_certificate(self.certificate_path(trusted)) != trusted:
             raise CertificateInvalidError("persisted stage close certificate differs")
         return trusted

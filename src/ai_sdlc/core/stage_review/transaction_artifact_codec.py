@@ -140,4 +140,26 @@ def _migrate_previous(
             RepoWriteLease,
             lease,
         ).model_dump(mode="json")
-    return model_type.model_validate(migrated)
+    return model_type.model_validate(
+        migrated,
+        context={
+            "verified_legacy_source_digests": _legacy_source_digests(migrated)
+        },
+    )
+
+
+def _legacy_source_digests(value: object) -> tuple[str, ...]:
+    values: set[str] = set()
+    if isinstance(value, dict):
+        if value.get("compatibility_mode") == "read-only-legacy":
+            extensions = value.get("extensions")
+            if isinstance(extensions, dict):
+                digest = extensions.get("source_digest")
+                if isinstance(digest, str) and digest:
+                    values.add(digest)
+        for item in value.values():
+            values.update(_legacy_source_digests(item))
+    elif isinstance(value, list):
+        for item in value:
+            values.update(_legacy_source_digests(item))
+    return tuple(sorted(values))

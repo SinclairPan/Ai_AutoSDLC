@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
+from ai_sdlc.core.stage_review.artifacts import create_json_exclusive
 from ai_sdlc.core.stage_review.optimization.defaults import (
     _baseline_usage_estimate_policy as baseline_usage_estimate_policy,
 )
@@ -13,6 +13,7 @@ from ai_sdlc.core.stage_review.optimization.shadow import (
 )
 from ai_sdlc.core.stage_review.optimization.shadow_observations import (
     OptimizationShadowObservationStore,
+    PublishedShadowObservation,
     ShadowOutcome,
 )
 from ai_sdlc.core.stage_review.optimization.shadow_observations import (
@@ -22,7 +23,7 @@ from ai_sdlc.core.stage_review.provider_usage_models import metered_provider_usa
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
 
 
-def test_shadow_observation_is_immutable_and_binds_provider_lineage(
+def test_unpublished_shadow_observation_is_not_trusted_evidence(
     tmp_path: Path,
 ) -> None:
     policy = baseline_usage_estimate_policy()
@@ -65,19 +66,56 @@ def test_shadow_observation_is_immutable_and_binds_provider_lineage(
         observed_at="2026-07-23T00:00:00Z",
     )
 
-    assert store.append(observation) == observation
-    assert store.read_assignment(assignment.assignment_id) == observation
-    divergent = observation.model_copy(
-        update={
-            "challenger": ShadowOutcome(
-                false_positive=True,
-                terminal_outcome="consumed",
-            ),
-            "observation_digest": "",
-        }
+    assert create_json_exclusive(
+        store.root / f"{assignment.assignment_id}.json",
+        observation.model_dump(mode="json"),
     )
-    with pytest.raises(SharedStateIntegrityError, match="other content"):
-        store.append(divergent)
+    assert store.read_assignment(assignment.assignment_id) is None
+    assert not hasattr(store, "append")
+    assert not hasattr(store, "record_committed")
+    assert not hasattr(store, "prepare_committed")
+
+
+def test_self_digested_publication_without_epoch_receipt_is_quarantined(
+    tmp_path: Path,
+) -> None:
+    assignment = _assignment_fixture()
+    observation = build_shadow_observation(
+        assignment,
+        baseline=ShadowOutcome(terminal_outcome="consumed"),
+        challenger=ShadowOutcome(
+            unconfirmed_finding=True,
+            terminal_outcome="needs_user",
+        ),
+        evaluation_binding_id="evaluation-binding.forged",
+        evaluation_provider_id="provider.forged",
+        provider_invocation_id="provider-invocation.forged",
+        provider_submission_digest="sha256:forged-submission",
+        accounted_usage=_accounted_usage(),
+        validation_digest="sha256:forged-validation",
+        resource_settlement_event_digest="sha256:forged-settlement",
+        label_source_digests=("sha256:invented-label",),
+        observed_at="2026-07-23T00:00:00Z",
+    )
+    forged = PublishedShadowObservation(
+        observation=observation,
+        runtime_bundle_manifest_digest="sha256:forged-runtime",
+        provider_request_artifact_digest="sha256:forged-request",
+        provider_journal_last_event_digest="sha256:forged-event",
+        epoch_fencing_epoch=1,
+        epoch_claim_digest="sha256:forged-claim",
+    )
+    store = OptimizationShadowObservationStore(
+        tmp_path,
+        project_id="project.shared",
+        journal=object(),  # type: ignore[arg-type]
+    )
+    assert create_json_exclusive(
+        store.root / assignment.assignment_id / "forged.json",
+        forged.model_dump(mode="json"),
+    )
+
+    assert store.read_assignment(assignment.assignment_id) is None
 
 
 def test_complete_shadow_observation_requires_authority_labels() -> None:

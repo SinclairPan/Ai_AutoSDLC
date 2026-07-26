@@ -33,6 +33,7 @@ from ai_sdlc.core.stage_review.binding_models import (
     BindingAuthoritySnapshot,
 )
 from ai_sdlc.core.stage_review.bindings import ReviewerBindingService
+from ai_sdlc.core.stage_review.candidate import CandidateManifest
 from ai_sdlc.core.stage_review.canonical_stage_review_executor import (
     CanonicalStageReviewExecutor,
 )
@@ -40,6 +41,7 @@ from ai_sdlc.core.stage_review.canonical_stage_review_support import blocked, ne
 from ai_sdlc.core.stage_review.close_gate_models import (
     GateApplicabilityDecision,
     PreparedStageClose,
+    StageCloseExecutionIdentityResult,
 )
 from ai_sdlc.core.stage_review.close_models import StageCloseAuthorization
 from ai_sdlc.core.stage_review.codex_isolation_backend import (
@@ -158,7 +160,11 @@ class CodexStageReviewExecutor:
                 raise StageCloseGateUnavailableError(
                     "activation-session-recovery-failed"
                 ) from exc
-            return result
+            return _bind_stage_close_execution_identity(
+                result,
+                preflight.candidate,
+                authorization,
+            )
         resolved = resolve_codex_runtime_prerequisites()
         if resolved is None:
             raise StageCloseGateUnavailableError("review-isolation-unproven")
@@ -210,6 +216,7 @@ def _execute_enforced_close(
     release: TrustedBackendReleaseManifest,
 ) -> object:
     services: list[StageReviewSessionService] = []
+    authorizations: list[StageCloseAuthorization] = []
     request = runtime.execution_request(mode="enforce")
     executor = _build_executor(
         root,
@@ -232,6 +239,7 @@ def _execute_enforced_close(
             review_outcome=outcome,
             authorization=authorization,
         )
+        authorizations.append(authorization)
 
     project_id = runtime.planned.candidate.project_id
     try:
@@ -269,7 +277,7 @@ def _execute_enforced_close(
             raise StageCloseGateUnavailableError(
                 "activation-safety-hold-blocked-product-commit"
             )
-        return authorize_product_stage_close(
+        result = authorize_product_stage_close(
             prepared,
             decision,
             runtime,
@@ -277,6 +285,31 @@ def _execute_enforced_close(
             writer,
             on_closed=record_closed,
         )
+        if len(authorizations) != 1:
+            raise ValueError("stage close authorization identity is unavailable")
+        return _bind_stage_close_execution_identity(
+            result,
+            runtime.planned.candidate,
+            authorizations[0],
+        )
+
+
+def _bind_stage_close_execution_identity(
+    result: object,
+    candidate: CandidateManifest,
+    authorization: StageCloseAuthorization,
+) -> object:
+    if not isinstance(result, StageCloseExecutionIdentityResult):
+        return result
+    receipt = authorization.receipt
+    if receipt is None:
+        raise ValueError("closed stage authorization receipt is unavailable")
+    return result.model_copy(
+        update={
+            "stage_review_session_id": candidate.review_session_id,
+            "stage_close_certificate_id": receipt.certificate_id,
+        }
+    )
 
 
 def _build_executor(

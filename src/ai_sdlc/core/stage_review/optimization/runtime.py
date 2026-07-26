@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -22,6 +22,10 @@ from ai_sdlc.core.stage_review.optimization.controller_models import (
     MaintenanceBudget,
     OptimizationMaintenanceResult,
     OptimizationTriggerEvent,
+    bundled_optimization_constitutions,
+)
+from ai_sdlc.core.stage_review.optimization.controller_store import (
+    OptimizationControllerStore,
 )
 from ai_sdlc.core.stage_review.optimization.defaults import (
     _baseline_foreground_capacity as baseline_foreground_capacity,
@@ -34,7 +38,6 @@ from ai_sdlc.core.stage_review.optimization.defaults import (
 )
 from ai_sdlc.core.stage_review.optimization.defaults import (
     baseline_constitution,
-    baseline_epoch_budget_policy,
     baseline_offline_capacity,
 )
 from ai_sdlc.core.stage_review.optimization.finding_lineage import (
@@ -44,7 +47,10 @@ from ai_sdlc.core.stage_review.optimization.observations import (
     CommittedSessionBindingStore,
     OptimizationObservationStore,
 )
-from ai_sdlc.core.stage_review.optimization.pipeline import OptimizationPipelineExecutor
+from ai_sdlc.core.stage_review.optimization.pipeline import (
+    OptimizationPipelineExecutor,
+    OptimizationRuntimeBundle,
+)
 from ai_sdlc.core.stage_review.optimization.product_pipeline import (
     _build_product_optimization_pipeline as build_product_optimization_pipeline,
 )
@@ -58,6 +64,7 @@ from ai_sdlc.core.stage_review.optimization.snapshot_monitor import (
     reconcile_active_snapshot,
 )
 from ai_sdlc.core.stage_review.optimization.snapshots import SnapshotControlService
+from ai_sdlc.core.stage_review.panel_models import ReviewerBudgetPolicy
 from ai_sdlc.core.stage_review.provider_journal import ProviderInvocationJournal
 from ai_sdlc.core.stage_review.resource_builders import utc_iso
 from ai_sdlc.core.stage_review.resource_runtime import utc_now
@@ -73,6 +80,7 @@ class OptimizationRuntime:
     bindings: CommittedSessionBindingStore
     observations: OptimizationObservationStore
     finding_events: FindingEventLineageReader
+
     clock: Callable[[], str]
 
     def refresh_optimization_state(self) -> OptimizationTriggerEvent:
@@ -99,6 +107,42 @@ class OptimizationRuntime:
             trigger_refresher=self.refresh_optimization_state,
             finding_event_source=self.finding_events.event_digests,
         )
+
+
+@dataclass(frozen=True, slots=True)
+class OptimizationRuntimeBundleRegistry:
+    """Constitution 对应的完整可重放运行时与预算策略注册表。"""
+
+    bundles: Mapping[str, OptimizationRuntimeBundle]
+    budget_policies: Mapping[str, ReviewerBudgetPolicy]
+
+    def __post_init__(self) -> None:
+        bundle_keys = set(self.bundles)
+        bundled_keys = {
+            item.constitution_digest
+            for item in bundled_optimization_constitutions()
+        }
+        if (
+            not bundle_keys
+            or bundle_keys != bundled_keys
+            or bundle_keys != set(self.budget_policies)
+        ):
+            raise ValueError("optimization runtime registry coverage diverged")
+        for digest, bundle in self.bundles.items():
+            policy = self.budget_policies[digest]
+            if (
+                bundle.constitution.constitution_digest != digest
+                or policy.policy_digest
+                != bundle.constitution.epoch_budget_policy_digest
+            ):
+                raise ValueError("optimization runtime registry lineage diverged")
+
+    @property
+    def manifests(self) -> dict[str, str]:
+        return {
+            digest: bundle.manifest_digest
+            for digest, bundle in self.bundles.items()
+        }
 
 
 def build_optimization_runtime(
@@ -156,11 +200,17 @@ def _runtime_infrastructure(
     journal = ProviderInvocationJournal(
         root, project_id=project_id, resource_governor=governor
     )
+    promotion_authority = OptimizationControllerStore(
+        root,
+        project_id=project_id,
+        lock_timeout_seconds=2,
+    )
     snapshots = SnapshotControlService(
         root,
         project_id=project_id,
         baseline_snapshot=baseline_optimization_snapshot(project_id),
         resource_governor=governor,
+        promotion_authority=promotion_authority,
         storage_policy=baseline_storage_policy(),
     )
     return governor, journal, snapshots
@@ -173,7 +223,9 @@ def _resolve_active_optimization_snapshot(
 ) -> OptimizationSnapshot:
     runtime = build_optimization_runtime(root)
     if runtime.project_id != project_id:
-        raise SharedStateIntegrityError("optimization runtime project identity diverged")
+        raise SharedStateIntegrityError(
+            "optimization runtime project identity diverged"
+        )
     token = runtime.snapshots.resolve_snapshot()
     snapshot = runtime.snapshots.store.snapshot(token.active_snapshot_digest)
     if snapshot is None or snapshot.snapshot_digest in token.revoked_snapshot_digests:
@@ -191,12 +243,24 @@ def _build_controller(
     snapshots: SnapshotControlService,
     clock: Callable[[], str],
 ) -> OfflineOptimizationController:
+    baseline = baseline_constitution()
+    registry = OptimizationRuntimeBundleRegistry(
+        bundles=pipeline.runtime_bundles,
+        budget_policies=pipeline.runtime_budget_policies,
+    )
     return OfflineOptimizationController(
         root,
         project_id=project_id,
-        constitution=baseline_constitution(),
+        constitution=baseline,
         baseline_snapshot_digest=baseline_snapshot_digest,
-        epoch_budget_policy=baseline_epoch_budget_policy(),
+        epoch_budget_policy=registry.budget_policies[
+            baseline.constitution_digest
+        ],
+        runtime_bundle_manifests=registry.manifests,
+        constitution_bundles={
+            digest: bundle.constitution for digest, bundle in registry.bundles.items()
+        },
+        epoch_budget_policies=registry.budget_policies,
         resource_governor=governor,
         provider_journal=journal,
         step_executor=pipeline,
@@ -256,25 +320,31 @@ def _compact_storage_stream(runtime: OptimizationRuntime, stream_kind: str) -> b
     loose = tuple((storage.loose_root / stream_kind).glob("*.json"))
     minimum_records = min(64, max(2, storage.policy.maximum_segment_records))
     minimum_bytes = min(4 * 1024**2, storage.policy.maximum_segment_bytes // 4)
-    if len(loose) < minimum_records and sum(path.stat().st_size for path in loose) < minimum_bytes:
+    if (
+        len(loose) < minimum_records
+        and sum(path.stat().st_size for path in loose) < minimum_bytes
+    ):
         return False
     prepared = storage._prepare_compaction(stream_kind)
     if prepared is None:
         return False
     operation_id = prepared.operation_id
-    with runtime.snapshots.resources.storage_bundle(
-        bundle_class="reclamation",
-        bundle_bytes=prepared.required_bundle_bytes,
-        net_reclaim_bytes=prepared.net_reclaim_bytes,
-        policy=storage.policy,
-        operation_id=operation_id,
-    ) as bundle, storage.acquire_planned_lease(
-        prepared.lease_plan,
-        write_class="reclamation",
-        bundle_bytes=prepared.required_bundle_bytes,
-        net_reclaim_bytes=prepared.net_reclaim_bytes,
-        resource_bundle=bundle,
-    ) as lease:
+    with (
+        runtime.snapshots.resources.storage_bundle(
+            bundle_class="reclamation",
+            bundle_bytes=prepared.required_bundle_bytes,
+            net_reclaim_bytes=prepared.net_reclaim_bytes,
+            policy=storage.policy,
+            operation_id=operation_id,
+        ) as bundle,
+        storage.acquire_planned_lease(
+            prepared.lease_plan,
+            write_class="reclamation",
+            bundle_bytes=prepared.required_bundle_bytes,
+            net_reclaim_bytes=prepared.net_reclaim_bytes,
+            resource_bundle=bundle,
+        ) as lease,
+    ):
         storage._commit_compaction(
             prepared,
             lease=lease,

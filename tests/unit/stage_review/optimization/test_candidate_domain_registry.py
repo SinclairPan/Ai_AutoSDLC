@@ -54,9 +54,13 @@ from ai_sdlc.core.stage_review.optimization.pipeline_contracts import (
     PipelineSnapshotResult,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_models import OptimizationSnapshot
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    baseline_statistics_policy,
+)
 
 
 def test_new_domain_registers_without_core_branch_and_applies_safely() -> None:
+    statistics_policy = baseline_statistics_policy()
     baseline = _baseline()
     dataset = _dataset(baseline.snapshot_digest)
     attribution = _attribution("custom_policy")
@@ -84,6 +88,7 @@ def test_new_domain_registers_without_core_branch_and_applies_safely() -> None:
         base_snapshot=baseline,
         attributions=(attribution,),
         evaluation_report_digests=("sha256:report",),
+        shadow_result_digest="sha256:shadow-result",
         created_at="2026-07-23T00:00:00Z",
     )
     report = LocalCandidateEvaluator(
@@ -99,6 +104,8 @@ def test_new_domain_registers_without_core_branch_and_applies_safely() -> None:
             evaluation_provider_id="provider.local-evaluator",
             provider_capabilities=("local-read-only",),
             resource_reservation_digest="sha256:reservation",
+            statistics_policy_digest=statistics_policy.policy_digest,
+            statistical_alpha=statistics_policy.familywise_alpha,
         ),
         baseline_evaluator_contract(registry.domain_ids),
     )
@@ -343,6 +350,9 @@ def _epoch(baseline_digest: str) -> OptimizationEpoch:
         constitution_digest="sha256:constitution",
         baseline_snapshot_digest=baseline_digest,
         candidate_domain_registry_digest="sha256:registry",
+        statistics_policy_digest=baseline_statistics_policy().policy_digest,
+        evaluator_registry_digest="sha256:evaluator-registry",
+        auto_promotion_policy_digest="sha256:promotion-policy",
         session_sequence_high_watermark=1,
         new_session_count=1,
         state="generating",

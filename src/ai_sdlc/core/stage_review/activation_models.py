@@ -370,6 +370,7 @@ class ActivationEvidence(ArtifactCompatibility):
     isolation_record_digests: tuple[str, ...]
     probes: ActivationProbeEvidence
     probe_record_digest: str
+    evidence_source_set_digest: str = ""
     session_outcomes: tuple[ActivationSessionOutcome, ...]
     cohort_boundaries: tuple[ActivationEvaluationCohortBoundary, ...] = ()
     evidence_digest: str = ""
@@ -424,6 +425,10 @@ class ActivationEvidence(ArtifactCompatibility):
             raise ValueError("activation evidence source digest is reused")
         if any(not _valid_sha256(item) for item in source_digests):
             raise ValueError("activation evidence source digest is invalid")
+        if self.evidence_source_set_digest and not _valid_sha256(
+            self.evidence_source_set_digest
+        ):
+            raise ValueError("activation evidence source set digest is invalid")
         assessed_at = parse_utc(self.assessed_at)
         if any(parse_utc(item.completed_at) > assessed_at for item in self.sessions):
             raise ValueError("activation session completes after assessment")

@@ -10,6 +10,10 @@ from ai_sdlc.core.stage_review.optimization.observations import (
     CommittedSessionBindingStore,
     OptimizationObservationStore,
 )
+from ai_sdlc.core.stage_review.optimization.pipeline_contracts import (
+    PipelinePromotionAuthorization,
+    PipelinePromotionPackage,
+)
 from ai_sdlc.core.stage_review.optimization.promotion import (
     AutoPromotionDecision,
     AutoPromotionEvidence,
@@ -34,17 +38,15 @@ def test_auto_promotion_requires_quality_non_regression_and_significance() -> No
     gate = AutoPromotionGate(_promotion_policy())
     accepted = gate.evaluate(_promotion_evidence(), decision_id="decision.accepted")
     quality_regression = gate.evaluate(
-        _promotion_evidence().model_copy(update={"late_critical_delta": 0.01}),
+        _promotion_evidence_with(late_critical_delta=0.01),
         decision_id="decision.regression",
     )
     budget_regression = gate.evaluate(
-        _promotion_evidence().model_copy(
-            update={"hard_budget_exhausted_delta": 0.01}
-        ),
+        _promotion_evidence_with(hard_budget_exhausted_delta=0.01),
         decision_id="decision.budget-regression",
     )
     insignificant = gate.evaluate(
-        _promotion_evidence().model_copy(update={"quality_confidence_lower": 0}),
+        _promotion_evidence_with(quality_confidence_lower=0),
         decision_id="decision.insignificant",
     )
 
@@ -108,12 +110,17 @@ def test_promotion_only_affects_sessions_bound_after_control_event(
             baseline_digest=baseline.snapshot_digest,
             challenger_digest=challenger.snapshot_digest,
             candidate_digest=challenger.candidate_digest,
+            shadow_result_digest=challenger.shadow_result_digest,
+            evaluation_report_digests=challenger.evaluation_report_digests,
         ),
         decision_id="decision.promote",
     )
-    service.promote(
+    package = _promotion_package(challenger, decision)
+    authorization_digest = _register_promotion(service, package)
+    service._promote_committed_package(
         challenger.snapshot_digest,
-        decision=decision,
+        promotion_package_digest=package.package_digest,
+        promotion_authorization_digest=authorization_digest,
         operation_id="operation.promote",
     )
 
@@ -126,6 +133,33 @@ def test_promotion_only_affects_sessions_bound_after_control_event(
     assert second_binding.target_snapshot_digest == challenger.snapshot_digest
     assert after.active_snapshot_digest == challenger.snapshot_digest
     assert service.events()[-1].event_kind == "session_binding"
+
+
+def test_snapshot_control_rejects_uncommitted_promotion_package(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("baseline", is_baseline=True)
+    challenger = _snapshot(
+        "challenger",
+        parent_snapshot_digest=baseline.snapshot_digest,
+        stable_fallback_digest=baseline.snapshot_digest,
+    )
+    service = _service(tmp_path, baseline)
+    service.register_snapshot(challenger)
+    assert not hasattr(service, "promote")
+
+    with pytest.raises(
+        SharedStateIntegrityError,
+        match="committed promotion package is unavailable",
+    ):
+        service._promote_committed_package(
+            challenger.snapshot_digest,
+            promotion_package_digest=f"sha256:{'0' * 64}",
+            promotion_authorization_digest=f"sha256:{'1' * 64}",
+            operation_id="operation.uncommitted-promotion",
+        )
+
+    assert service.resolve_snapshot().active_snapshot_digest == baseline.snapshot_digest
 
 
 def test_snapshot_control_recovers_from_segment_and_fences_followup_writer(
@@ -214,12 +248,17 @@ def test_visible_revocation_is_recovered_before_new_session_and_rolls_back(
             baseline_digest=baseline.snapshot_digest,
             challenger_digest=challenger.snapshot_digest,
             candidate_digest=challenger.candidate_digest,
+            shadow_result_digest=challenger.shadow_result_digest,
+            evaluation_report_digests=challenger.evaluation_report_digests,
         ),
         decision_id="decision.promote",
     )
-    service.promote(
+    package = _promotion_package(challenger, decision)
+    authorization_digest = _register_promotion(service, package)
+    service._promote_committed_package(
         challenger.snapshot_digest,
-        decision=decision,
+        promotion_package_digest=package.package_digest,
+        promotion_authorization_digest=authorization_digest,
         operation_id="operation.promote",
     )
     service.request_revocation(
@@ -262,25 +301,41 @@ def test_stability_event_changes_fallback_but_revocation_remains_monotonic(
     service = _service(tmp_path, baseline)
     service.register_snapshot(first)
     service.register_snapshot(second)
-    service.promote(
-        first.snapshot_digest,
-        decision=_decision(
+    first_package = _promotion_package(
+        first,
+        _decision(
             baseline.snapshot_digest,
             first.snapshot_digest,
             first.candidate_digest,
             "one",
+            shadow_result_digest=first.shadow_result_digest,
+            evaluation_report_digests=first.evaluation_report_digests,
         ),
+    )
+    first_authorization = _register_promotion(service, first_package)
+    service._promote_committed_package(
+        first.snapshot_digest,
+        promotion_package_digest=first_package.package_digest,
+        promotion_authorization_digest=first_authorization,
         operation_id="operation.promote-one",
     )
     service.mark_stable(first.snapshot_digest, operation_id="operation.stable-one")
-    service.promote(
-        second.snapshot_digest,
-        decision=_decision(
+    second_package = _promotion_package(
+        second,
+        _decision(
             first.snapshot_digest,
             second.snapshot_digest,
             second.candidate_digest,
             "two",
+            shadow_result_digest=second.shadow_result_digest,
+            evaluation_report_digests=second.evaluation_report_digests,
         ),
+    )
+    second_authorization = _register_promotion(service, second_package)
+    service._promote_committed_package(
+        second.snapshot_digest,
+        promotion_package_digest=second_package.package_digest,
+        promotion_authorization_digest=second_authorization,
         operation_id="operation.promote-two",
     )
     service.revoke_and_rollback(
@@ -405,12 +460,15 @@ def _promotion_evidence(
     baseline_digest: str = "sha256:baseline",
     challenger_digest: str = "sha256:challenger",
     candidate_digest: str = "sha256:candidate",
+    shadow_result_digest: str = "sha256:shadow-result",
+    evaluation_report_digests: tuple[str, ...] = ("sha256:evaluation",),
 ) -> AutoPromotionEvidence:
     return AutoPromotionEvidence(
         baseline_snapshot_digest=baseline_digest,
         challenger_snapshot_digest=challenger_digest,
         candidate_digest=candidate_digest,
-        evaluation_report_digests=("sha256:evaluation",),
+        evaluation_report_digests=evaluation_report_digests,
+        shadow_result_digest=shadow_result_digest,
         invariant_results={"protocol": True, "isolation": True, "recovery": True},
         critical_detection_delta=0,
         late_critical_delta=0,
@@ -433,19 +491,58 @@ def _promotion_evidence(
     )
 
 
+def _promotion_evidence_with(**updates: object) -> AutoPromotionEvidence:
+    baseline = _promotion_evidence()
+    return AutoPromotionEvidence.model_validate(
+        {
+            **baseline.model_dump(
+                mode="json",
+                exclude={"evidence_digest"},
+            ),
+            **updates,
+        }
+    )
+
+
 def _decision(
     baseline_digest: str,
     challenger_digest: str,
     candidate_digest: str,
     suffix: str,
+    *,
+    shadow_result_digest: str,
+    evaluation_report_digests: tuple[str, ...],
 ) -> AutoPromotionDecision:
     return AutoPromotionGate(_promotion_policy()).evaluate(
         _promotion_evidence(
             baseline_digest=baseline_digest,
             challenger_digest=challenger_digest,
             candidate_digest=candidate_digest,
+            shadow_result_digest=shadow_result_digest,
+            evaluation_report_digests=evaluation_report_digests,
         ),
         decision_id=f"decision.{suffix}",
+    )
+
+
+def _promotion_package(
+    snapshot: OptimizationSnapshot,
+    decision: AutoPromotionDecision,
+) -> PipelinePromotionPackage:
+    evidence = _promotion_evidence(
+        baseline_digest=decision.baseline_snapshot_digest,
+        challenger_digest=snapshot.snapshot_digest,
+        candidate_digest=snapshot.candidate_digest,
+        shadow_result_digest=snapshot.shadow_result_digest,
+        evaluation_report_digests=snapshot.evaluation_report_digests,
+    )
+    assert decision.promotion_evidence_digest == evidence.evidence_digest
+    return PipelinePromotionPackage(
+        epoch_id="optimization-epoch.snapshot-control-test",
+        constitution_digest="sha256:snapshot-control-constitution",
+        decision=decision,
+        evidence=evidence,
+        snapshot=snapshot,
     )
 
 
@@ -465,6 +562,9 @@ def _snapshot(
         evaluation_report_digests=()
         if is_baseline
         else (f"sha256:evaluation-{suffix}",),
+        shadow_result_digest=""
+        if is_baseline
+        else f"sha256:shadow-{suffix}",
         policy_payload={"selection_policy": {"version": suffix}},
         created_at="2026-07-22T00:00:00+00:00",
         is_baseline=is_baseline,
@@ -493,6 +593,64 @@ def _binding(
     )
 
 
+class _SnapshotPromotionAuthority:
+    def __init__(self) -> None:
+        self.receipts: dict[str, PipelinePromotionAuthorization] = {}
+
+    def authorize(
+        self,
+        package: PipelinePromotionPackage,
+    ) -> PipelinePromotionAuthorization:
+        receipt = PipelinePromotionAuthorization(
+            authorization_id=f"authorization.{package.snapshot.snapshot_id}",
+            epoch_id=package.epoch_id,
+            epoch_revision=1,
+            epoch_digest="sha256:test-epoch",
+            constitution_digest=package.constitution_digest,
+            runtime_bundle_manifest_digest="sha256:test-runtime-bundle",
+            epoch_fencing_epoch=1,
+            epoch_claim_digest="sha256:test-epoch-claim",
+            promotion_package_digest=package.package_digest,
+            decision_digest=package.decision.decision_digest,
+            promotion_evidence_digest=package.evidence.evidence_digest,
+            snapshot_digest=package.snapshot.snapshot_digest,
+            shadow_result_digest=package.snapshot.shadow_result_digest,
+            evaluation_report_digests=package.snapshot.evaluation_report_digests,
+        )
+        self.receipts[package.package_digest] = receipt
+        return receipt
+
+    def promotion_authorization(
+        self,
+        package_digest: str,
+    ) -> PipelinePromotionAuthorization | None:
+        return self.receipts.get(package_digest)
+
+    def verify_promotion_authorization(
+        self,
+        receipt: PipelinePromotionAuthorization,
+        package: PipelinePromotionPackage,
+    ) -> None:
+        if self.receipts.get(package.package_digest) != receipt:
+            raise SharedStateIntegrityError(
+                "promotion authorization lineage diverged"
+            )
+
+
+def _register_promotion(
+    service: SnapshotControlService,
+    package: PipelinePromotionPackage,
+) -> str:
+    authority = service.promotion_authority
+    assert isinstance(authority, _SnapshotPromotionAuthority)
+    receipt = authority.authorize(package)
+    service.store.register_promotion_package(
+        package,
+        authorization_digest=receipt.authorization_digest,
+    )
+    return receipt.authorization_digest
+
+
 def _service(root: Path, baseline: OptimizationSnapshot) -> SnapshotControlService:
     governor = ResourceGovernor(
         root,
@@ -501,12 +659,14 @@ def _service(root: Path, baseline: OptimizationSnapshot) -> SnapshotControlServi
         offline_optimization_capacity=ResourceAmounts(),
         lock_timeout_seconds=1,
     )
-    return SnapshotControlService(
+    service = SnapshotControlService(
         root,
         project_id="project.shared",
         baseline_snapshot=baseline,
         resource_governor=governor,
+        promotion_authority=_SnapshotPromotionAuthority(),
     )
+    return service
 
 
 def _service_with_policy(
@@ -520,11 +680,12 @@ def _service_with_policy(
         offline_optimization_capacity=ResourceAmounts(),
         lock_timeout_seconds=1,
     )
-    return SnapshotControlService(
+    service = SnapshotControlService(
         root,
         project_id="project.shared",
         baseline_snapshot=baseline,
         resource_governor=governor,
+        promotion_authority=_SnapshotPromotionAuthority(),
         storage_policy=OptimizationStoragePolicy(
             maximum_total_bytes=12_000,
             minimum_free_bytes=0,
@@ -535,6 +696,7 @@ def _service_with_policy(
             safety_bundle_max_bytes=2_000,
         ),
     )
+    return service
 
 
 def _tree_bytes(root: Path) -> int:

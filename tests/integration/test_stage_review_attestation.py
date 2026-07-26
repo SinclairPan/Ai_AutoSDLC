@@ -21,10 +21,15 @@ from ai_sdlc.core.stage_review import codex_review_runtime
 from ai_sdlc.core.stage_review.activation_policy_anchor import (
     write_activation_policy_anchor,
 )
+from ai_sdlc.core.stage_review.activation_policy_store import (
+    _advance_activation_policy_from_evidence as advance_activation_policy_from_evidence,
+)
 from ai_sdlc.core.stage_review.activation_store import (
     _read_activation_session_records as read_activation_session_records,
 )
-from ai_sdlc.core.stage_review.artifacts import resolve_canonical_shared_state
+from ai_sdlc.core.stage_review.artifacts import (
+    resolve_canonical_shared_state,
+)
 from ai_sdlc.core.stage_review.ci_certificate import (
     CI_CERTIFICATE_BUNDLE_PATH,
     CiCertificateVerificationError,
@@ -32,7 +37,13 @@ from ai_sdlc.core.stage_review.ci_certificate import (
     verify_ci_certificate_bundle,
 )
 from ai_sdlc.core.stage_review.ci_certificate_export import (
-    export_latest_ci_certificate_bundle,
+    export_ci_certificate_bundle,
+)
+from ai_sdlc.core.stage_review.isolation_backend_identity import (
+    _build_trusted_backend_release_manifest as build_trusted_backend_release_manifest,
+)
+from ai_sdlc.core.stage_review.isolation_backend_identity import (
+    _host_backend_platform as host_backend_platform,
 )
 from ai_sdlc.core.stage_review.shadow_planning_store import (
     _persist_shadow_plan as persist_shadow_plan,
@@ -53,7 +64,7 @@ from tests.integration.test_stage_close_product_runtime import (
     _held_plan,
     _prepared_close,
 )
-from tests.unit.stage_review.test_ci_certificate_policy import _phase_two_policy
+from tests.unit.stage_review.test_activation_policy_store import _eligible_evidence
 from tests.unit.test_lean_code_pr_review import _seed_lean_loop
 
 
@@ -90,11 +101,24 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
     )
     _git(tmp_path, "config", "core.autocrlf", "false")
     _git(tmp_path, "config", "core.eol", "lf")
+    _git(
+        tmp_path,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/SinclairPan/Ai_AutoSDLC.git",
+    )
     (tmp_path / "src/app.py").write_text(
         "def _small():\n    return 0\n",
         encoding="utf-8",
     )
-    policy = _phase_two_policy()
+    policy, activation_assessment = advance_activation_policy_from_evidence(
+        tmp_path,
+        _eligible_evidence(tmp_path, monkeypatch),
+    )
+    assert activation_assessment.eligible
+    (tmp_path / "activation-evidence-package.json").unlink()
+    (tmp_path / "activation-evidence-attestation.jsonl").unlink()
     write_activation_policy_anchor(tmp_path, policy)
     save_project_config(tmp_path, ProjectConfig(agent_target="codex"))
     base_commit = _commit(tmp_path, "protected phase two policy")
@@ -161,10 +185,11 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
         captured_closes.append((self, prepared, decision, preflight))
         return enforce_close(self, prepared, decision, preflight, writer)
 
+    trusted_release = _trusted_test_release()
     monkeypatch.setattr(
         codex_review_runtime,
         "resolve_codex_runtime_prerequisites",
-        lambda: ("deterministic-provider", object()),
+        lambda: ("deterministic-provider", trusted_release),
     )
     monkeypatch.setattr(
         codex_review_runtime,
@@ -194,7 +219,13 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
 
     closed = close_pr_review(tmp_path)
     assert closed.status == "closed"
-    assert len(read_activation_session_records(tmp_path)) == 1
+    assert len(
+        tuple(
+            item
+            for item in read_activation_session_records(tmp_path)
+            if item.observation.mode == "enforce"
+        )
+    ) == 1
     assert len(captured_closes) == 1
     executor_count = len(built_executor_sessions)
     release_count = len(released_sessions)
@@ -211,12 +242,17 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
         tmp_path,
         preflight.candidate.project_id,
     )
-    activation_records = tuple(
-        (shared / "activation/session-records").glob("*.json")
+    activation_record = next(
+        path
+        for path in (shared / "activation/session-records").glob("*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["observation"]["session_id"]
+        == preflight.candidate.review_session_id
     )
-    assert len(activation_records) == 1
-    activation_records[0].unlink()
-    assert read_activation_session_records(tmp_path) == ()
+    activation_record.unlink()
+    assert all(
+        item.observation.session_id != preflight.candidate.review_session_id
+        for item in read_activation_session_records(tmp_path)
+    )
     completion_path = (
         shared
         / "stage-review-sessions/sessions"
@@ -244,7 +280,10 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
             preflight,
             replay_writer,
         )
-    assert read_activation_session_records(tmp_path) == ()
+    assert all(
+        item.observation.session_id != preflight.candidate.review_session_id
+        for item in read_activation_session_records(tmp_path)
+    )
     completion_path.write_text(
         json.dumps(original_completion),
         encoding="utf-8",
@@ -269,13 +308,19 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
     )
 
     assert attested.exit_code == 0, attested.output
-    activation_sessions = read_activation_session_records(tmp_path)
+    activation_sessions = tuple(
+        item
+        for item in read_activation_session_records(tmp_path)
+        if item.observation.mode == "enforce"
+    )
     assert len(activation_sessions) == 2
     assert {item.observation.mode for item in activation_sessions} == {"enforce"}
     assert policy_checks == [policy.policy_digest] * 4
     assert hold_checks == [policy.policy_digest] * 2
     assert len(set(released_sessions)) == 2
     attested_payload = json.loads(attested.output)
+    assert attested_payload["stage_review_session_id"]
+    assert attested_payload["stage_close_certificate_id"]
     bundle_path = Path(attested_payload["ci_certificate_bundle_path"])
     assert bundle_path.relative_to(tmp_path).as_posix() == CI_CERTIFICATE_BUNDLE_PATH
     bundle = read_ci_certificate_bundle(bundle_path)
@@ -327,6 +372,14 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
     assert before == _tree_digest(tmp_path)
     assert bundle.candidate.stage_key == "local-pr-review"
     assert bundle.certificate.close_kind == "local-pr-review-attest"
+    assert (
+        bundle.certificate.scope.session_id
+        == attested_payload["stage_review_session_id"]
+    )
+    assert (
+        bundle.certificate.certificate_id
+        == attested_payload["stage_close_certificate_id"]
+    )
     assert bundle.certificate_request.intent.close_kind == "local-pr-review-attest"
     assert bundle.candidate.stage_instance_id == started.review_id
     assert bundle.candidate.loop_id == started.loop_id
@@ -582,14 +635,53 @@ def _committed_bundle(root: Path) -> tuple[Path, str]:
         sessions[0],
         writer,
     )
-    bundle_path = export_latest_ci_certificate_bundle(
+    shared = resolve_canonical_shared_state(
+        root,
+        rig.request.candidate.project_id,
+    )
+    proof_paths = tuple(
+        (shared / "stage-review-sessions/sessions").glob(
+            "*/*/*/certificate-proofs/*.json"
+        )
+    )
+    assert len(proof_paths) == 1
+    bundle_path = export_ci_certificate_bundle(
         root,
         close_kind="implementation-close",
+        stage_instance_id=rig.request.candidate.stage_instance_id,
+        review_session_id=rig.request.candidate.review_session_id,
+        certificate_id=proof_paths[0].stem,
     )
     assert bundle_path is not None
     relative = bundle_path.relative_to(root).as_posix()
     assert relative == CI_CERTIFICATE_BUNDLE_PATH
     return bundle_path, _commit(root, "certificate evidence", relative)
+
+
+def _trusted_test_release():
+    platform_id, architecture = host_backend_platform()
+    return build_trusted_backend_release_manifest(
+        backend_id="codex.permission-profile",
+        contract_version="2026-07-01",
+        exact_backend_version="0.0.0",
+        ecosystem="npm",
+        package_name="@openai/codex-test",
+        package_version=f"0.0.0-test-{architecture}",
+        platform_id=platform_id,
+        architecture=architecture,
+        package_integrity="sha512:test",
+        shim_resolver_id="codex-npm-layout.v1",
+        native_relative_path="codex",
+        native_sha256=f"sha256:{'a' * 64}",
+        profile_digest="sha256:test-profile",
+        policy_pin_digest=f"sha256:{'b' * 64}",
+        ci_attestation_subject="test-subject",
+        ci_attestation_workflow_ref="test-workflow",
+        ci_attestation_digest=f"sha256:{'c' * 64}",
+        ci_attestation_verified=True,
+        revocation_metadata_digest=f"sha256:{'d' * 64}",
+        revoked=False,
+    )
 
 
 def _commit(root: Path, message: str, *paths: str) -> str:

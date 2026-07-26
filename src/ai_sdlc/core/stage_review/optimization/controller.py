@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
@@ -40,6 +40,9 @@ from ai_sdlc.core.stage_review.optimization.observations import (
     OptimizationObservationStore,
     OptimizationSessionObservation,
 )
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    statistics_policy_for_digest,
+)
 from ai_sdlc.core.stage_review.panel_models import ReviewerBudgetPolicy
 from ai_sdlc.core.stage_review.provider_journal import ProviderInvocationJournal
 from ai_sdlc.core.stage_review.resource_builders import parse_utc, stable_id, utc_iso
@@ -60,6 +63,9 @@ class OfflineOptimizationController:
         constitution: OptimizationConstitution,
         baseline_snapshot_digest: str,
         epoch_budget_policy: ReviewerBudgetPolicy,
+        runtime_bundle_manifests: Mapping[str, str],
+        constitution_bundles: Mapping[str, OptimizationConstitution] | None = None,
+        epoch_budget_policies: Mapping[str, ReviewerBudgetPolicy] | None = None,
         resource_governor: ResourceGovernor,
         provider_journal: ProviderInvocationJournal,
         step_executor: OptimizationStepExecutor,
@@ -73,6 +79,25 @@ class OfflineOptimizationController:
         self.constitution = OptimizationConstitution.model_validate(
             constitution.model_dump(mode="json")
         )
+        self.constitutions = {
+            self.constitution.constitution_digest: self.constitution,
+            **dict(constitution_bundles or {}),
+        }
+        self.runtime_bundle_manifests = dict(runtime_bundle_manifests)
+        if set(self.runtime_bundle_manifests) != set(self.constitutions):
+            raise ValueError(
+                "optimization runtime bundle manifest coverage diverged"
+            )
+        self.epoch_budget_policies = {
+            self.constitution.constitution_digest: _trusted_budget_policy(
+                self.constitution, epoch_budget_policy
+            ),
+            **dict(epoch_budget_policies or {}),
+        }
+        if set(self.epoch_budget_policies) != set(self.constitutions):
+            raise ValueError("optimization epoch budget policy coverage diverged")
+        for digest, policy in self.epoch_budget_policies.items():
+            _trusted_budget_policy(self.constitutions[digest], policy)
         self.baseline_snapshot_digest = baseline_snapshot_digest
         self.active_snapshot_digest = active_snapshot_digest or (
             lambda: self.baseline_snapshot_digest
@@ -94,12 +119,16 @@ class OfflineOptimizationController:
             root,
             project_id=project_id,
             lock_timeout_seconds=lock_timeout_seconds,
+            constitution_bundles={
+                **self.constitutions,
+            },
+            runtime_bundle_manifests=self.runtime_bundle_manifests,
         )
         self._maintenance = OptimizationMaintenanceRunner(
             project_id=project_id,
             store=self.store,
             resource_governor=resource_governor,
-            budget_policy=self.epoch_budget_policy,
+            budget_policies=self.epoch_budget_policies,
             step_executor=step_executor,
             foreground_requested=foreground_requested,
         )
@@ -130,6 +159,20 @@ class OfflineOptimizationController:
         now: datetime | None = None,
     ) -> OptimizationMaintenanceResult:
         self._validate_advance(project_id, budget)
+        active = self._active_epoch()
+        if active is not None and (
+            self.runtime_bundle_manifests.get(active.constitution_digest)
+            != active.runtime_bundle_manifest_digest
+        ):
+            superseded = self._maintenance.supersede_runtime_upgrade(
+                active,
+                budget,
+                owner_id=owner_id,
+                now=now,
+            )
+            if superseded.result_code == "paused":
+                return superseded
+            self.refresh_trigger()
         trigger = self._latest_trigger()
         if trigger is None:
             return OptimizationMaintenanceResult(result_code="not_ready")
@@ -153,9 +196,13 @@ class OfflineOptimizationController:
             len(created), watermark, self._new_fact_digests(fact_digests)
         )
         baseline_digest = self.active_snapshot_digest()
+        runtime_manifest = self.runtime_bundle_manifests[
+            self.constitution.constitution_digest
+        ]
         fingerprint = _trigger_fingerprint(
             self.constitution.constitution_digest,
             baseline_digest,
+            runtime_manifest,
             watermark,
             len(created),
             facts,
@@ -171,6 +218,12 @@ class OfflineOptimizationController:
             candidate_domain_registry_digest=(
                 self.constitution.candidate_domain_registry_digest
             ),
+            statistics_policy_digest=self.constitution.statistics_policy_digest,
+            evaluator_registry_digest=self.constitution.evaluator_registry_digest,
+            auto_promotion_policy_digest=(
+                self.constitution.auto_promotion_policy_digest
+            ),
+            runtime_bundle_manifest_digest=runtime_manifest,
             trigger_facts=facts,
             trigger_fact_digests=fact_digests,
             new_session_count=len(created),
@@ -186,6 +239,12 @@ class OfflineOptimizationController:
             return False
         previous = self._latest_terminal_epoch()
         if previous is None:
+            return True
+        if (
+            previous.state == "superseded_runtime_upgrade"
+            and previous.runtime_bundle_manifest_digest
+            != self.runtime_bundle_manifests[self.constitution.constitution_digest]
+        ):
             return True
         if watermark <= previous.session_sequence_high_watermark:
             return False
@@ -224,11 +283,62 @@ class OfflineOptimizationController:
         )
         return candidates[-1] if candidates else None
 
+    def _active_epoch(self) -> OptimizationEpoch | None:
+        active = tuple(
+            item
+            for item in self.store.epochs()
+            if item.state not in TERMINAL_EPOCH_STATES
+        )
+        if len(active) > 1:
+            raise SharedStateIntegrityError(
+                "multiple active optimization epochs detected"
+            )
+        return active[0] if active else None
+
     def _latest_trigger(self) -> OptimizationTriggerEvent | None:
-        values = self.store.triggers()
-        return values[-1] if values else None
+        current_manifest = self.runtime_bundle_manifests[
+            self.constitution.constitution_digest
+        ]
+        return next(
+            (
+                item
+                for item in reversed(self.store.triggers())
+                if item.constitution_digest
+                == self.constitution.constitution_digest
+                and item.runtime_bundle_manifest_digest == current_manifest
+            ),
+            None,
+        )
 
     def _resolve_epoch(self, trigger: OptimizationTriggerEvent) -> OptimizationEpoch:
+        if not trigger.statistics_policy_digest:
+            raise SharedStateIntegrityError(
+                "optimization trigger statistics policy is missing"
+            )
+        statistics_policy_for_digest(trigger.statistics_policy_digest)
+        try:
+            constitution = self.constitutions[trigger.constitution_digest]
+            runtime_manifest = self.runtime_bundle_manifests[
+                trigger.constitution_digest
+            ]
+        except KeyError as exc:
+            raise SharedStateIntegrityError(
+                "optimization historical runtime bundle is unavailable"
+            ) from exc
+        if (
+            trigger.candidate_domain_registry_digest
+            != constitution.candidate_domain_registry_digest
+            or trigger.statistics_policy_digest
+            != constitution.statistics_policy_digest
+            or trigger.evaluator_registry_digest
+            != constitution.evaluator_registry_digest
+            or trigger.auto_promotion_policy_digest
+            != constitution.auto_promotion_policy_digest
+            or trigger.runtime_bundle_manifest_digest != runtime_manifest
+        ):
+            raise SharedStateIntegrityError(
+                "optimization trigger constitution lineage diverged"
+            )
         epoch_id = stable_id(
             "optimization-epoch", self.project_id, trigger.trigger_fingerprint
         )
@@ -256,7 +366,15 @@ class OfflineOptimizationController:
                     constitution_digest=trigger.constitution_digest,
                     baseline_snapshot_digest=trigger.baseline_snapshot_digest,
                     candidate_domain_registry_digest=(
-                        self.constitution.candidate_domain_registry_digest
+                        trigger.candidate_domain_registry_digest
+                    ),
+                    statistics_policy_digest=trigger.statistics_policy_digest,
+                    evaluator_registry_digest=trigger.evaluator_registry_digest,
+                    auto_promotion_policy_digest=(
+                        trigger.auto_promotion_policy_digest
+                    ),
+                    runtime_bundle_manifest_digest=(
+                        trigger.runtime_bundle_manifest_digest
                     ),
                     session_sequence_high_watermark=trigger.session_sequence_high_watermark,
                     new_session_count=trigger.new_session_count,
@@ -312,6 +430,7 @@ def _critical_facts(
 def _trigger_fingerprint(
     constitution_digest: str,
     baseline_digest: str,
+    runtime_bundle_manifest_digest: str,
     watermark: int,
     count: int,
     facts: tuple[str, ...],
@@ -321,6 +440,7 @@ def _trigger_fingerprint(
         (
             constitution_digest,
             baseline_digest,
+            runtime_bundle_manifest_digest,
             str(watermark),
             str(count),
             *facts,

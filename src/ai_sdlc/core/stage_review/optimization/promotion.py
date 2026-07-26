@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import ConfigDict, Field, field_validator, model_validator
 
 from ai_sdlc.core.stage_review.artifact_compat import (
     ArtifactCompatibility,
@@ -36,13 +36,18 @@ class AutoPromotionPolicy(ArtifactCompatibility):
         return fill_artifact_digest(self, "policy_digest")
 
 
-class AutoPromotionEvidence(BaseModel):
+class AutoPromotionEvidence(ArtifactCompatibility):
     model_config = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
+    schema_version: Literal["auto-promotion-evidence.v1"] = (
+        "auto-promotion-evidence.v1"
+    )
+    artifact_kind: Literal["auto-promotion-evidence"] = "auto-promotion-evidence"
 
     baseline_snapshot_digest: str
     challenger_snapshot_digest: str
     candidate_digest: str
     evaluation_report_digests: tuple[str, ...]
+    shadow_result_digest: str
     invariant_results: dict[str, bool]
     critical_detection_delta: float
     late_critical_delta: float
@@ -62,12 +67,17 @@ class AutoPromotionEvidence(BaseModel):
     shadow_observation_days: int = Field(ge=0)
     resources_within_constitution: bool
     duties_independent: bool
+    evidence_digest: str = ""
 
     @model_validator(mode="after")
     def _verify_evidence(self) -> Self:
-        if not self.evaluation_report_digests or not self.invariant_results:
+        if (
+            not self.evaluation_report_digests
+            or not self.invariant_results
+            or not self.shadow_result_digest.strip()
+        ):
             raise ValueError("promotion evidence is incomplete")
-        return self
+        return fill_artifact_digest(self, "evidence_digest")
 
 
 class AutoPromotionDecision(ArtifactCompatibility):
@@ -81,6 +91,8 @@ class AutoPromotionDecision(ArtifactCompatibility):
     challenger_snapshot_digest: str
     candidate_digest: str
     evaluation_report_digests: tuple[str, ...]
+    shadow_result_digest: str
+    promotion_evidence_digest: str
     approved: bool
     failed_guards: tuple[str, ...]
     decision_digest: str = ""
@@ -96,6 +108,8 @@ class AutoPromotionDecision(ArtifactCompatibility):
             raise ValueError("promotion failed guards must be canonical")
         if self.approved == bool(self.failed_guards):
             raise ValueError("promotion decision guard result is inconsistent")
+        if not self.shadow_result_digest or not self.promotion_evidence_digest:
+            raise ValueError("promotion decision evidence lineage is incomplete")
         return fill_artifact_digest(self, "decision_digest")
 
 
@@ -115,9 +129,39 @@ class AutoPromotionGate:
             challenger_snapshot_digest=trusted.challenger_snapshot_digest,
             candidate_digest=trusted.candidate_digest,
             evaluation_report_digests=tuple(sorted(trusted.evaluation_report_digests)),
+            shadow_result_digest=trusted.shadow_result_digest,
+            promotion_evidence_digest=trusted.evidence_digest,
             approved=not failures,
             failed_guards=failures,
         )
+
+
+def bundled_auto_promotion_policies() -> tuple[AutoPromotionPolicy, ...]:
+    from ai_sdlc.core.stage_review.optimization.defaults import (
+        baseline_auto_promotion_policy,
+    )
+
+    return (baseline_auto_promotion_policy(),)
+
+
+def resolve_auto_promotion_policy(
+    policy_digest: str,
+    *,
+    configured_policy: AutoPromotionPolicy | None = None,
+) -> AutoPromotionPolicy:
+    if not policy_digest.strip():
+        raise ValueError("auto promotion policy digest is required")
+    policies = {
+        item.policy_digest: item
+        for item in (
+            *bundled_auto_promotion_policies(),
+            *(() if configured_policy is None else (configured_policy,)),
+        )
+    }
+    try:
+        return policies[policy_digest]
+    except KeyError as exc:
+        raise ValueError("auto promotion policy is unavailable") from exc
 
 
 def _failed_guards(

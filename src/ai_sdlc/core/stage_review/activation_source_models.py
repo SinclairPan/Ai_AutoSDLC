@@ -187,6 +187,46 @@ class ActivationEvidenceImportReceipt(ArtifactCompatibility):
         return fill_artifact_digest(self, "receipt_digest")
 
 
+class ActiveActivationEvidenceSourceSet(ArtifactCompatibility):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["active-activation-evidence-source-set.v1"] = (
+        "active-activation-evidence-source-set.v1"
+    )
+    artifact_kind: Literal["active-activation-evidence-source-set"] = (
+        "active-activation-evidence-source-set"
+    )
+    project_id: str
+    activation_policy_digest: str
+    import_receipt_digest: str
+    tested_commit: str
+    isolation_record_digests: tuple[str, ...]
+    probe_record_digest: str
+    selection_algorithm_version: Literal["ancestral-maximal.v1"] = (
+        "ancestral-maximal.v1"
+    )
+    source_set_digest: str = ""
+
+    @model_validator(mode="after")
+    def _verify_source_set(self) -> Self:
+        if re.fullmatch(r"[0-9a-f]{40}", self.tested_commit) is None:
+            raise ValueError("activation evidence source set commit is invalid")
+        if self.isolation_record_digests != tuple(
+            sorted(set(self.isolation_record_digests))
+        ):
+            raise ValueError("activation evidence source set is not canonical")
+        digests = (
+            self.activation_policy_digest,
+            self.import_receipt_digest,
+            *self.isolation_record_digests,
+            self.probe_record_digest,
+        )
+        if any(not _valid_sha256(item) for item in digests):
+            raise ValueError("activation evidence source set digest is invalid")
+        require_machine_id(self.project_id, "activation source set project_id")
+        return fill_artifact_digest(self, "source_set_digest")
+
+
 def _valid_sha256(value: str) -> bool:
     if not value.startswith("sha256:") or len(value) != 71:
         return False

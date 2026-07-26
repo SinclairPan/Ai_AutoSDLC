@@ -17,6 +17,9 @@ from ai_sdlc.core.stage_review.optimization.controller_models import Optimizatio
 from ai_sdlc.core.stage_review.optimization.datasets import (
     DatasetPopulationEntry,
 )
+from ai_sdlc.core.stage_review.optimization.evaluators import (
+    component_runtime_identity,
+)
 from ai_sdlc.core.stage_review.optimization.models import (
     OptimizationCandidate,
     OptimizationPatchOperation,
@@ -53,6 +56,18 @@ class LocalCandidateGenerationPort:
 
             domain_registry = default_candidate_domain_registry()
         self.domain_registry = domain_registry
+
+    def runtime_identity(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "snapshot_source": component_runtime_identity(
+                self.snapshot_source
+            ),
+            "candidate_view_source": component_runtime_identity(
+                self.candidate_view_source
+            ),
+            "domain_registry_digest": self.domain_registry.snapshot_digest,
+        }
 
     def generate(
         self,

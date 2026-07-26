@@ -51,26 +51,28 @@ def test_ci_policy_baseline_anchor_is_shadow_and_read_only(tmp_path: Path) -> No
     assert result.mode == "shadow"
     assert result.certificate_required is False
     assert result.risk_level == "low"
-    assert result.policy_source == "protected-candidate-anchor"
+    assert result.policy_source == "protected-base-anchor"
     assert before == _status(tmp_path)
 
 
-def test_ci_policy_uses_promoted_tracked_anchor(tmp_path: Path) -> None:
+def test_ci_policy_rejects_unattested_tracked_policy_promotion(
+    tmp_path: Path,
+) -> None:
     base, _head = _repository(tmp_path, "README.md")
     promoted = _phase_two_policy()
     write_activation_policy_anchor(tmp_path, promoted)
     (tmp_path / "feature.py").write_text("VALUE = 2\n", encoding="utf-8")
     head = _commit(tmp_path, "promote policy and change candidate")
 
-    result = verify_ci_certificate_policy(
-        tmp_path,
-        base_commit=base,
-        tested_commit=head,
-    )
-
-    assert result.mode == "enforce"
-    assert result.certificate_required is True
-    assert result.policy_digest == promoted.policy_digest
+    with pytest.raises(
+        CiCertificatePolicyError,
+        match="tracked activation policy promotion is not trusted",
+    ):
+        verify_ci_certificate_policy(
+            tmp_path,
+            base_commit=base,
+            tested_commit=head,
+        )
 
 
 def test_ci_policy_cannot_delete_base_anchor_to_downgrade(tmp_path: Path) -> None:
@@ -102,6 +104,76 @@ def test_ci_policy_rejects_non_head_tested_commit(tmp_path: Path) -> None:
     _commit(tmp_path, "later")
 
     with pytest.raises(CiCertificatePolicyError, match="checkout HEAD"):
+        verify_ci_certificate_policy(
+            tmp_path,
+            base_commit=base,
+            tested_commit=head,
+        )
+
+
+def test_ci_policy_uses_merge_base_when_feature_is_behind_base(
+    tmp_path: Path,
+) -> None:
+    _init_repository(tmp_path)
+    write_activation_policy_anchor(tmp_path, baseline_activation_policy())
+    common = _commit(tmp_path, "common base")
+    base_branch = _git(tmp_path, "branch", "--show-current")
+    _git(tmp_path, "checkout", "-b", "feature")
+    (tmp_path / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+    feature = _commit(tmp_path, "feature candidate")
+    _git(tmp_path, "checkout", base_branch)
+    (tmp_path / "base-only.py").write_text("VALUE = 2\n", encoding="utf-8")
+    protected_base = _commit(tmp_path, "protected base advanced")
+    _git(tmp_path, "checkout", "feature")
+
+    result = verify_ci_certificate_policy(
+        tmp_path,
+        base_commit=protected_base,
+        tested_commit=feature,
+    )
+
+    assert result.valid is True
+    assert result.base_commit == protected_base
+    assert result.source_diff_hash
+    assert _git(tmp_path, "merge-base", protected_base, feature) == common
+
+
+def test_ci_policy_uses_newer_protected_policy_when_feature_did_not_edit_anchor(
+    tmp_path: Path,
+) -> None:
+    _init_repository(tmp_path)
+    write_activation_policy_anchor(tmp_path, baseline_activation_policy())
+    _commit(tmp_path, "common phase one policy")
+    base_branch = _git(tmp_path, "branch", "--show-current")
+    _git(tmp_path, "checkout", "-b", "feature")
+    (tmp_path / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+    feature = _commit(tmp_path, "feature candidate")
+    _git(tmp_path, "checkout", base_branch)
+    write_activation_policy_anchor(tmp_path, _phase_two_policy())
+    protected_base = _commit(tmp_path, "protected base advanced to phase two")
+    _git(tmp_path, "checkout", "feature")
+
+    result = verify_ci_certificate_policy(
+        tmp_path,
+        base_commit=protected_base,
+        tested_commit=feature,
+    )
+
+    assert result.mode == "enforce"
+    assert result.certificate_required is True
+    assert result.policy_source == "protected-base-anchor"
+    assert result.policy_digest == _phase_two_policy().policy_digest
+
+
+def test_ci_policy_rejects_commits_without_a_common_history(tmp_path: Path) -> None:
+    _init_repository(tmp_path)
+    write_activation_policy_anchor(tmp_path, baseline_activation_policy())
+    base = _commit(tmp_path, "protected history")
+    _git(tmp_path, "checkout", "--orphan", "unrelated")
+    (tmp_path / "unrelated.py").write_text("VALUE = 1\n", encoding="utf-8")
+    head = _commit(tmp_path, "unrelated candidate")
+
+    with pytest.raises(CiCertificatePolicyError, match="no merge base"):
         verify_ci_certificate_policy(
             tmp_path,
             base_commit=base,

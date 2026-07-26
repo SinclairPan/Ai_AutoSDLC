@@ -174,6 +174,7 @@ class ProviderInvocationJournal:
         validator: ProviderOutputValidator,
         lease_owner: str,
         now: datetime | None = None,
+        authorize_dispatch: Callable[[], None] | None = None,
     ) -> ProviderJournalResult:
         try:
             try:
@@ -202,6 +203,7 @@ class ProviderInvocationJournal:
                 validator=validator,
                 lease_owner=lease_owner,
                 now=now,
+                authorize_dispatch=authorize_dispatch,
             )
         except ResourceLockUnavailableError:
             return _result("lock_unavailable")
@@ -269,6 +271,7 @@ class ProviderInvocationJournal:
         validator: ProviderOutputValidator,
         lease_owner: str,
         now: datetime | None,
+        authorize_dispatch: Callable[[], None] | None,
     ) -> ProviderJournalResult:
         context = _ProviderResumeContext(
             store=self._store,
@@ -278,6 +281,7 @@ class ProviderInvocationJournal:
             lease_owner=lease_owner,
             now=now,
             resource_ready=self._resource_ready,
+            authorize_dispatch=authorize_dispatch,
         )
         return resume_provider_invocation(invocation, driver, context)
 

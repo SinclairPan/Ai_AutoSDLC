@@ -46,6 +46,7 @@ def build_provider_invocation_request(
     command_id: str,
     idempotency_key: str,
     authorization_scope: str = "generic",
+    runtime_bundle_manifest_digest: str = "",
 ) -> ProviderInvocationRequest:
     values: dict[str, Any] = {
         "project_id": project_id,
@@ -56,6 +57,7 @@ def build_provider_invocation_request(
         "assignment_digest": assignment_digest,
         "authorization_scope": authorization_scope,
         "epoch_id": epoch_id,
+        "runtime_bundle_manifest_digest": runtime_bundle_manifest_digest,
         "provider_id": provider_id,
         "request_digest": request_digest,
         "reservation_id": reservation_id,

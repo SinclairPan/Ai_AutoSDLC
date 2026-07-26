@@ -107,7 +107,7 @@ def _build_policy_context(
     base_commit: str,
     tested_commit: str,
 ) -> _PolicyContext:
-    _verify_commits(root, base_commit, tested_commit)
+    merge_base = _verify_commits(root, base_commit, tested_commit)
     snapshot = build_source_snapshot(
         SourceSnapshotOptions(
             root=root,
@@ -121,6 +121,7 @@ def _build_policy_context(
         root,
         base_commit,
         baseline_activation_policy(),
+        candidate_base_commit=merge_base,
     )
     decision = resolve_gate_applicability(
         policy=policy,
@@ -158,7 +159,7 @@ def _verification(
             sorted(
                 {
                     "activation-policy-anti-downgrade",
-                    "commit-ancestry",
+                    "commit-merge-base",
                     "current-candidate-risk",
                     "protected-policy-anchor",
                 }
@@ -167,19 +168,22 @@ def _verification(
     )
 
 
-def _verify_commits(root: Path, base_commit: str, tested_commit: str) -> None:
+def _verify_commits(root: Path, base_commit: str, tested_commit: str) -> str:
     if _COMMIT.fullmatch(base_commit) is None or _COMMIT.fullmatch(tested_commit) is None:
         raise CiCertificatePolicyError("CI certificate policy commit is invalid")
     if _git(root, "rev-parse", "HEAD") != tested_commit:
         raise CiCertificatePolicyError("tested commit is not checkout HEAD")
     result = subprocess.run(
-        ["git", "merge-base", "--is-ancestor", base_commit, tested_commit],
+        ["git", "merge-base", base_commit, tested_commit],
         cwd=root,
         check=False,
         capture_output=True,
+        text=True,
+        encoding="utf-8",
     )
-    if result.returncode != 0:
-        raise CiCertificatePolicyError("base commit is not tested ancestor")
+    if result.returncode != 0 or _COMMIT.fullmatch(result.stdout.strip()) is None:
+        raise CiCertificatePolicyError("base and tested commits have no merge base")
+    return result.stdout.strip()
 
 
 def _git(root: Path, *args: str) -> str:

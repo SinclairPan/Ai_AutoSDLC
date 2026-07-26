@@ -6,7 +6,16 @@ from pathlib import Path
 import pytest
 from tests.unit.stage_review.test_resources import _capacity, _governor, _policy
 
-from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
+from ai_sdlc.core.stage_review.artifacts import (
+    SharedStateIntegrityError,
+    create_json_exclusive,
+    read_json_object,
+)
+from ai_sdlc.core.stage_review.canonical import (
+    CanonicalizationPolicy,
+    canonical_digest,
+)
+from ai_sdlc.core.stage_review.optimization import statistics as statistics_module
 from ai_sdlc.core.stage_review.optimization.controller import (
     OfflineOptimizationController,
     OptimizationStepExecutor,
@@ -16,11 +25,14 @@ from ai_sdlc.core.stage_review.optimization.controller_models import (
     OptimizationConstitution,
     OptimizationEpoch,
     OptimizationStepResult,
+    OptimizationTriggerEvent,
+    bundled_legacy_runtime_bundle_manifests,
 )
 from ai_sdlc.core.stage_review.optimization.controller_store import (
     OptimizationControllerStore,
     OptimizationEpochLeaseBusyError,
 )
+from ai_sdlc.core.stage_review.optimization.defaults import baseline_constitution
 from ai_sdlc.core.stage_review.optimization.maintenance_window import (
     EpochLeaseGuard,
 )
@@ -30,11 +42,19 @@ from ai_sdlc.core.stage_review.optimization.maintenance_window import (
 from ai_sdlc.core.stage_review.optimization.maintenance_window import (
     _optimization_resource_session_id as optimization_resource_session_id,
 )
+from ai_sdlc.core.stage_review.optimization.models import (
+    OptimizationStatisticsPolicy,
+)
 from ai_sdlc.core.stage_review.optimization.observations import (
     OptimizationSessionObservation,
 )
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    baseline_statistics_policy,
+)
 from ai_sdlc.core.stage_review.provider_journal import ProviderInvocationJournal
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
+
+_RUNTIME_MANIFEST = "sha256:test-runtime-bundle"
 
 
 class _NoChangeExecutor(OptimizationStepExecutor):
@@ -172,6 +192,293 @@ def test_constitution_freezes_required_baseline_limits() -> None:
     assert constitution.promotion_day_cooldown == 7
     assert constitution.familywise_alpha == 0.05
     assert constitution.constitution_digest
+
+
+def test_legacy_v1_trigger_and_epoch_preserve_source_digest_on_decode(
+    tmp_path: Path,
+) -> None:
+    constitution = baseline_constitution()
+    trigger = OptimizationTriggerEvent(
+        trigger_id="optimization-trigger.legacy",
+        project_id="project.shared",
+        session_sequence_high_watermark=30,
+        trigger_fingerprint="sha256:legacy-trigger-fingerprint",
+        constitution_digest=constitution.constitution_digest,
+        baseline_snapshot_digest="sha256:baseline",
+        candidate_domain_registry_digest=(
+            constitution.candidate_domain_registry_digest
+        ),
+        statistics_policy_digest=constitution.statistics_policy_digest,
+        evaluator_registry_digest=constitution.evaluator_registry_digest,
+        auto_promotion_policy_digest=constitution.auto_promotion_policy_digest,
+        runtime_bundle_manifest_digest=_RUNTIME_MANIFEST,
+        trigger_facts=(),
+        new_session_count=30,
+        triggered=True,
+    )
+    epoch = OptimizationEpoch(
+        epoch_id="optimization-epoch.legacy",
+        project_id="project.shared",
+        trigger_fingerprint=trigger.trigger_fingerprint,
+        trigger_digest=trigger.trigger_digest,
+        constitution_digest=constitution.constitution_digest,
+        baseline_snapshot_digest="sha256:baseline",
+        candidate_domain_registry_digest=(
+            constitution.candidate_domain_registry_digest
+        ),
+        statistics_policy_digest=constitution.statistics_policy_digest,
+        evaluator_registry_digest=constitution.evaluator_registry_digest,
+        auto_promotion_policy_digest=constitution.auto_promotion_policy_digest,
+        runtime_bundle_manifest_digest=_RUNTIME_MANIFEST,
+        session_sequence_high_watermark=30,
+        new_session_count=30,
+        state="snapshotting",
+        revision=1,
+    )
+    legacy_trigger = _legacy_v1_payload(
+        trigger,
+        schema_version="optimization-trigger-event.v1",
+        digest_field="trigger_digest",
+    )
+    legacy_epoch = _legacy_v1_payload(
+        epoch,
+        schema_version="optimization-epoch.v1",
+        digest_field="epoch_digest",
+    )
+
+    context = {
+        "optimization_constitutions": {
+            constitution.constitution_digest: constitution,
+        },
+        "optimization_legacy_runtime_bundle_manifests": (
+            bundled_legacy_runtime_bundle_manifests()
+        ),
+    }
+    decoded_trigger = OptimizationTriggerEvent.model_validate(
+        legacy_trigger, context=context
+    )
+    decoded_epoch = OptimizationEpoch.model_validate(legacy_epoch, context=context)
+    alternate_context = {
+        **context,
+        "optimization_runtime_bundle_manifests": {
+            constitution.constitution_digest: "sha256:new-current-runtime",
+        },
+    }
+    assert (
+        OptimizationTriggerEvent.model_validate(
+            legacy_trigger,
+            context=alternate_context,
+        )
+        == decoded_trigger
+    )
+
+    assert decoded_trigger.trigger_digest == legacy_trigger["trigger_digest"]
+    assert decoded_epoch.epoch_digest == legacy_epoch["epoch_digest"]
+    assert decoded_trigger.compatibility_mode == "strict"
+    assert decoded_epoch.compatibility_mode == "strict"
+    assert (
+        decoded_trigger.extensions["legacy_source_digest"]
+        == legacy_trigger["trigger_digest"]
+    )
+    assert (
+        decoded_epoch.evaluator_registry_digest
+        == constitution.evaluator_registry_digest
+    )
+    store = OptimizationControllerStore(
+        tmp_path,
+        project_id="project.shared",
+        lock_timeout_seconds=1,
+        runtime_bundle_manifests={
+            constitution.constitution_digest: _RUNTIME_MANIFEST,
+        },
+    )
+    assert store.accounting.persist_json_exclusive(
+        store.root
+        / "triggers"
+        / f"{decoded_trigger.trigger_fingerprint}.json",
+        legacy_trigger,
+    )
+    assert store.accounting.persist_json_exclusive(
+        store.root
+        / "epochs"
+        / decoded_epoch.epoch_id
+        / "00000000000000000001.json",
+        legacy_epoch,
+    )
+
+    assert store.triggers() == (decoded_trigger,)
+    assert store.epoch(decoded_epoch.epoch_id) == decoded_epoch
+    migrated_payload = decoded_epoch.model_dump(mode="json")
+    migrated_extensions = dict(decoded_epoch.extensions)
+    migrated_extensions.pop("legacy_source_digest")
+    migrated_extensions.pop("legacy_source_schema_version")
+    migrated_extensions.pop("legacy_source_extensions")
+    migrated_extensions["migrated_from_digest"] = decoded_epoch.epoch_digest
+    migrated_payload.update(
+        schema_version="optimization-epoch.v2",
+        compatibility_mode="strict",
+        extensions=migrated_extensions,
+        revision=2,
+        previous_epoch_digest=decoded_epoch.epoch_digest,
+        epoch_digest="",
+    )
+    migrated = store.append_epoch(
+        OptimizationEpoch.model_validate(migrated_payload)
+    )
+
+    assert migrated.schema_version == "optimization-epoch.v2"
+    assert migrated.previous_epoch_digest == decoded_epoch.epoch_digest
+    assert store.epoch(decoded_epoch.epoch_id) == migrated
+
+
+def test_enriched_legacy_v1_requires_catalog_and_rejects_lineage_tampering() -> None:
+    constitution = baseline_constitution()
+    epoch = OptimizationEpoch(
+        epoch_id="optimization-epoch.enriched-legacy",
+        project_id="project.shared",
+        trigger_fingerprint="sha256:trigger",
+        trigger_digest="sha256:trigger-event",
+        constitution_digest=constitution.constitution_digest,
+        baseline_snapshot_digest="sha256:baseline",
+        candidate_domain_registry_digest=(
+            constitution.candidate_domain_registry_digest
+        ),
+        statistics_policy_digest=constitution.statistics_policy_digest,
+        evaluator_registry_digest=constitution.evaluator_registry_digest,
+        auto_promotion_policy_digest=constitution.auto_promotion_policy_digest,
+        runtime_bundle_manifest_digest=_RUNTIME_MANIFEST,
+        session_sequence_high_watermark=30,
+        new_session_count=30,
+        state="snapshotting",
+        revision=1,
+    )
+    context = {
+        "optimization_constitutions": {
+            constitution.constitution_digest: constitution,
+        },
+        "optimization_legacy_runtime_bundle_manifests": (
+            bundled_legacy_runtime_bundle_manifests()
+        ),
+    }
+    legacy = _legacy_v1_payload(
+        epoch,
+        schema_version="optimization-epoch.v1",
+        digest_field="epoch_digest",
+    )
+    enriched = OptimizationEpoch.model_validate(
+        legacy,
+        context=context,
+    ).model_dump(mode="json")
+    enriched["evaluator_registry_digest"] = "sha256:tampered-evaluator"
+    enriched["runtime_bundle_manifest_digest"] = "sha256:tampered-runtime"
+
+    with pytest.raises(
+        ValueError,
+        match="trusted legacy optimization context is required",
+    ):
+        OptimizationEpoch.model_validate(enriched)
+    with pytest.raises(
+        ValueError,
+        match="legacy optimization policy lineage diverged",
+    ):
+        OptimizationEpoch.model_validate(enriched, context=context)
+
+
+def test_v2_artifact_cannot_self_declare_legacy_digest_trust() -> None:
+    constitution = baseline_constitution()
+    epoch = OptimizationEpoch(
+        epoch_id="optimization-epoch.forged-legacy-mode",
+        project_id="project.shared",
+        trigger_fingerprint="sha256:trigger",
+        trigger_digest="sha256:trigger-event",
+        constitution_digest=constitution.constitution_digest,
+        baseline_snapshot_digest="sha256:baseline",
+        candidate_domain_registry_digest=(
+            constitution.candidate_domain_registry_digest
+        ),
+        statistics_policy_digest=constitution.statistics_policy_digest,
+        evaluator_registry_digest=constitution.evaluator_registry_digest,
+        auto_promotion_policy_digest=constitution.auto_promotion_policy_digest,
+        runtime_bundle_manifest_digest=_RUNTIME_MANIFEST,
+        session_sequence_high_watermark=30,
+        new_session_count=30,
+        state="snapshotting",
+        revision=1,
+    )
+    forged = epoch.model_dump(mode="json")
+    forged.update(
+        compatibility_mode="read-only-legacy",
+        extensions={"source_digest": "sha256:forged"},
+        baseline_snapshot_digest="sha256:attacker-baseline",
+        epoch_digest="sha256:forged",
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="trusted legacy source verification",
+    ):
+        OptimizationEpoch.model_validate(forged)
+
+
+def test_store_decodes_non_baseline_v1_with_injected_constitution_catalog(
+    tmp_path: Path,
+) -> None:
+    constitution = _constitution()
+    epoch = OptimizationEpoch(
+        epoch_id="optimization-epoch.non-baseline-legacy",
+        project_id="project.shared",
+        trigger_fingerprint="sha256:trigger",
+        trigger_digest="sha256:trigger-event",
+        constitution_digest=constitution.constitution_digest,
+        baseline_snapshot_digest="sha256:baseline",
+        candidate_domain_registry_digest=(
+            constitution.candidate_domain_registry_digest
+        ),
+        statistics_policy_digest=constitution.statistics_policy_digest,
+        evaluator_registry_digest=constitution.evaluator_registry_digest,
+        auto_promotion_policy_digest=constitution.auto_promotion_policy_digest,
+        runtime_bundle_manifest_digest=_RUNTIME_MANIFEST,
+        session_sequence_high_watermark=30,
+        new_session_count=30,
+        state="snapshotting",
+        revision=1,
+    )
+    legacy = _legacy_v1_payload(
+        epoch,
+        schema_version="optimization-epoch.v1",
+        digest_field="epoch_digest",
+    )
+    store = OptimizationControllerStore(
+        tmp_path,
+        project_id="project.shared",
+        lock_timeout_seconds=1,
+        constitution_bundles={
+            constitution.constitution_digest: constitution,
+        },
+        runtime_bundle_manifests={
+            baseline_constitution().constitution_digest: "sha256:baseline-runtime",
+            constitution.constitution_digest: _RUNTIME_MANIFEST,
+        },
+        legacy_runtime_bundle_manifests={
+            (
+                "optimization-epoch.v1:"
+                f"{constitution.constitution_digest}"
+            ): "sha256:historical-runtime-bundle",
+        },
+    )
+    assert store.accounting.persist_json_exclusive(
+        store.root
+        / "epochs"
+        / epoch.epoch_id
+        / "00000000000000000001.json",
+        legacy,
+    )
+
+    decoded = store.epoch(epoch.epoch_id)
+
+    assert decoded is not None
+    assert decoded.epoch_digest == legacy["epoch_digest"]
+    assert decoded.evaluator_registry_digest == constitution.evaluator_registry_digest
 
 
 def test_record_observation_triggers_once_at_threshold(tmp_path: Path) -> None:
@@ -476,6 +783,384 @@ def test_new_trigger_cannot_orphan_an_active_epoch(tmp_path: Path) -> None:
     assert len(controller.store.epochs()) == 1
 
 
+def test_runtime_upgrade_supersedes_active_epoch_and_starts_current_runtime(
+    tmp_path: Path,
+) -> None:
+    controller, _ = _controller(tmp_path, executor=_TwoStepExecutor())
+    _record_threshold(controller)
+    first = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.old-runtime",
+    )
+    assert first.epoch is not None and first.epoch.state == "generating"
+
+    # 这个 manifest 产生的 fingerprint 小于旧 trigger，防止按哈希排序假装时序。
+    upgraded_manifest = "sha256:runtime-upgrade-2"
+    controller.runtime_bundle_manifests[
+        controller.constitution.constitution_digest
+    ] = upgraded_manifest
+    resumed = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-runtime",
+    )
+
+    epochs = controller.store.epochs()
+    superseded = next(item for item in epochs if item.epoch_id == first.epoch.epoch_id)
+    assert superseded.state == "superseded_runtime_upgrade"
+    assert superseded.terminal_at
+    assert not superseded.reservation_id
+    assert resumed.epoch is not None
+    assert resumed.epoch.epoch_id != first.epoch.epoch_id
+    assert resumed.epoch.runtime_bundle_manifest_digest == upgraded_manifest
+    assert resumed.epoch.state == "generating"
+    current_trigger = next(
+        item
+        for item in controller.store.triggers()
+        if item.runtime_bundle_manifest_digest == upgraded_manifest
+    )
+    old_trigger = next(
+        item
+        for item in controller.store.triggers()
+        if item.runtime_bundle_manifest_digest == _RUNTIME_MANIFEST
+    )
+    assert current_trigger.trigger_fingerprint < old_trigger.trigger_fingerprint
+
+    second_manifest = "sha256:runtime-upgrade-3"
+    controller.runtime_bundle_manifests[
+        controller.constitution.constitution_digest
+    ] = second_manifest
+    second_upgrade = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.second-upgrade",
+    )
+    assert second_upgrade.epoch is not None
+    assert second_upgrade.epoch.runtime_bundle_manifest_digest == second_manifest
+
+    restarted, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        runtime_manifest=second_manifest,
+    )
+    after_restart = restarted.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.after-restart",
+    )
+    assert after_restart.epoch is not None
+    assert after_restart.epoch.epoch_id == second_upgrade.epoch.epoch_id
+    assert after_restart.epoch.runtime_bundle_manifest_digest == second_manifest
+
+
+def test_runtime_upgrade_terminal_epoch_preserves_cooldown_order_after_restart(
+    tmp_path: Path,
+) -> None:
+    controller, _ = _controller(tmp_path, executor=_TwoStepExecutor())
+    _record_threshold(controller)
+    old = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.old-runtime",
+    )
+    assert old.epoch is not None and old.epoch.state == "generating"
+
+    current_manifest = "sha256:runtime-19"
+    controller.runtime_bundle_manifests[
+        controller.constitution.constitution_digest
+    ] = current_manifest
+    current = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-runtime",
+    )
+    terminal = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-runtime-terminal",
+    )
+
+    assert current.epoch is not None
+    assert terminal.epoch is not None and terminal.epoch.state == "no_change"
+    old_trigger = next(
+        item
+        for item in controller.store.triggers()
+        if item.runtime_bundle_manifest_digest == _RUNTIME_MANIFEST
+    )
+    current_trigger = next(
+        item
+        for item in controller.store.triggers()
+        if item.runtime_bundle_manifest_digest == current_manifest
+    )
+    assert current_trigger.trigger_fingerprint < old_trigger.trigger_fingerprint
+    assert not controller._record_session_observation(_observation(31)).triggered
+
+    restarted, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        runtime_manifest=current_manifest,
+    )
+    assert not restarted.refresh_trigger().triggered
+
+
+def test_legacy_trigger_migration_preserves_runtime_upgrade_cooldown(
+    tmp_path: Path,
+) -> None:
+    observed_time = ["2026-07-26T00:00:00+00:00"]
+    controller, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        clock=lambda: observed_time[-1],
+    )
+    _record_threshold(controller)
+    old = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.old-runtime",
+    )
+    assert old.epoch is not None and old.epoch.state == "generating"
+
+    current_manifest = "sha256:runtime-19"
+    observed_time.append("2026-07-25T00:00:00+00:00")
+    controller.runtime_bundle_manifests[
+        controller.constitution.constitution_digest
+    ] = current_manifest
+    current = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-runtime",
+    )
+    terminal = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-runtime-terminal",
+    )
+    assert current.epoch is not None
+    assert terminal.epoch is not None and terminal.epoch.state == "no_change"
+
+    order_root = controller.store.root / "trigger-order"
+    legacy_root = controller.store.root / "triggers"
+    for path in sorted(order_root.glob("*.json")):
+        payload = read_json_object(path)
+        event = OptimizationTriggerEvent.model_validate(payload["event"])
+        assert create_json_exclusive(
+            legacy_root / f"{event.trigger_fingerprint}.json",
+            event.model_dump(mode="json"),
+        )
+        path.unlink()
+    order_root.rmdir()
+
+    restarted, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        runtime_manifest=current_manifest,
+    )
+    assert not restarted.refresh_trigger().triggered
+    migration = read_json_object(
+        restarted.store.root / "legacy-trigger-order.json"
+    )
+    ordered = tuple(migration["ordered_trigger_digests"])
+    epochs = restarted.store.epochs()
+    assert ordered.index(epochs[-2].trigger_digest) < ordered.index(
+        epochs[-1].trigger_digest
+    )
+
+    restarted_again, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        runtime_manifest=current_manifest,
+    )
+    assert not restarted_again.refresh_trigger().triggered
+    assert read_json_object(
+        restarted_again.store.root / "legacy-trigger-order.json"
+    ) == migration
+
+
+def test_ambiguous_legacy_trigger_order_fails_closed_without_new_state(
+    tmp_path: Path,
+) -> None:
+    controller, _ = _controller(tmp_path, executor=_TwoStepExecutor())
+    _record_threshold(controller)
+    order_root = controller.store.root / "trigger-order"
+    legacy_root = controller.store.root / "triggers"
+    ordered_path = next(order_root.glob("*.json"))
+    payload = read_json_object(ordered_path)
+    original = OptimizationTriggerEvent.model_validate(payload["event"])
+    divergent = original.model_copy(
+        update={
+            "trigger_id": "optimization-trigger.ambiguous-runtime",
+            "trigger_fingerprint": "sha256:ambiguous-runtime",
+            "runtime_bundle_manifest_digest": "sha256:ambiguous-runtime",
+            "trigger_digest": "",
+        }
+    )
+    assert create_json_exclusive(
+        legacy_root / f"{original.trigger_fingerprint}.json",
+        original.model_dump(mode="json"),
+    )
+    assert create_json_exclusive(
+        legacy_root / f"{divergent.trigger_fingerprint}.json",
+        divergent.model_dump(mode="json"),
+    )
+    ordered_path.unlink()
+    order_root.rmdir()
+
+    with pytest.raises(
+        SharedStateIntegrityError,
+        match="trigger order is ambiguous",
+    ):
+        controller.refresh_trigger()
+
+    assert not (controller.store.root / "legacy-trigger-order.json").exists()
+    assert not (controller.store.root / "epochs").exists()
+    assert not (controller.store.root / "trigger-order").exists()
+
+
+def test_legacy_trigger_migration_groups_control_equivalent_superseded_history(
+    tmp_path: Path,
+) -> None:
+    observed_time = ["2026-07-27T00:00:00+00:00"]
+    controller, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        clock=lambda: observed_time[-1],
+    )
+    _record_threshold(controller)
+    old = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.old-runtime",
+    )
+    assert old.epoch is not None
+
+    observed_time.append("2026-07-25T00:00:00+00:00")
+    middle_manifest = "sha256:runtime-middle"
+    controller.runtime_bundle_manifests[
+        controller.constitution.constitution_digest
+    ] = middle_manifest
+    middle = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.middle-runtime",
+    )
+    assert middle.epoch is not None
+
+    observed_time.append("2026-07-26T00:00:00+00:00")
+    current_manifest = "sha256:runtime-current"
+    controller.runtime_bundle_manifests[
+        controller.constitution.constitution_digest
+    ] = current_manifest
+    current = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-runtime",
+    )
+    terminal = controller.advance_optimization(
+        "project.shared",
+        _maintenance_budget(),
+        owner_id="controller.current-terminal",
+    )
+    assert current.epoch is not None
+    assert terminal.epoch is not None and terminal.epoch.state == "no_change"
+
+    order_root = controller.store.root / "trigger-order"
+    legacy_root = controller.store.root / "triggers"
+    for path in sorted(order_root.glob("*.json")):
+        payload = read_json_object(path)
+        event = OptimizationTriggerEvent.model_validate(payload["event"])
+        assert create_json_exclusive(
+            legacy_root / f"{event.trigger_fingerprint}.json",
+            event.model_dump(mode="json"),
+        )
+        path.unlink()
+    order_root.rmdir()
+
+    restarted, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        runtime_manifest=current_manifest,
+    )
+    assert not restarted.refresh_trigger().triggered
+    migration = read_json_object(
+        restarted.store.root / "legacy-trigger-order.json"
+    )
+    groups = tuple(
+        tuple(group) for group in migration["ordered_trigger_groups"]
+    )
+    assert len(groups) == 2
+    assert len(groups[0]) == 2
+    assert groups[1] == (terminal.epoch.trigger_digest,)
+
+    restarted_again, _ = _controller(
+        tmp_path,
+        executor=_TwoStepExecutor(),
+        runtime_manifest=current_manifest,
+    )
+    assert not restarted_again.refresh_trigger().triggered
+    assert read_json_object(
+        restarted_again.store.root / "legacy-trigger-order.json"
+    ) == migration
+
+
+def test_epoch_copies_versioned_policy_lineage_from_its_trigger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    controller, _ = _controller(tmp_path)
+    _record_threshold(controller)
+    historical = OptimizationStatisticsPolicy(
+        policy_id="statistics.optimization-controller-test",
+        policy_version="0.9.0",
+    )
+    monkeypatch.setattr(
+        statistics_module,
+        "bundled_statistics_policies",
+        lambda: (historical, baseline_statistics_policy()),
+    )
+    historical_constitution = OptimizationConstitution.model_validate(
+        {
+            **controller.constitution.model_dump(
+                mode="json",
+                exclude={"constitution_digest"},
+            ),
+            "candidate_domain_registry_digest": "sha256:historical-registry",
+            "statistics_policy_digest": historical.policy_digest,
+            "familywise_alpha": historical.familywise_alpha,
+        }
+    )
+    historical_manifest = "sha256:historical-runtime-bundle"
+    controller.constitutions[
+        historical_constitution.constitution_digest
+    ] = historical_constitution
+    controller.runtime_bundle_manifests[
+        historical_constitution.constitution_digest
+    ] = historical_manifest
+    trigger = controller._trigger_events()[-1].model_copy(
+        update={
+            "constitution_digest": historical_constitution.constitution_digest,
+            "candidate_domain_registry_digest": "sha256:historical-registry",
+            "statistics_policy_digest": historical.policy_digest,
+            "runtime_bundle_manifest_digest": historical_manifest,
+            "trigger_digest": "",
+        }
+    )
+
+    epoch = controller._resolve_epoch(trigger)
+
+    assert epoch.constitution_digest == trigger.constitution_digest
+    assert (
+        epoch.candidate_domain_registry_digest
+        == trigger.candidate_domain_registry_digest
+    )
+    assert epoch.statistics_policy_digest == trigger.statistics_policy_digest
+    assert epoch.evaluator_registry_digest == trigger.evaluator_registry_digest
+    assert (
+        epoch.auto_promotion_policy_digest
+        == trigger.auto_promotion_policy_digest
+    )
+
+
 def test_epoch_usage_accumulates_across_maintenance_windows(tmp_path: Path) -> None:
     executor = _UsageExecutor()
     controller, governor = _controller(tmp_path, executor=executor)
@@ -571,6 +1256,7 @@ def _controller(
     foreground_requested: object | None = None,
     active_snapshot_digest: object | None = None,
     clock: object | None = None,
+    runtime_manifest: str = _RUNTIME_MANIFEST,
 ) -> tuple[OfflineOptimizationController, object]:
     governor = _governor(root, offline_capacity=_capacity())
     journal = ProviderInvocationJournal(
@@ -587,6 +1273,9 @@ def _controller(
             constitution=_constitution(),
             baseline_snapshot_digest="sha256:baseline",
             epoch_budget_policy=_policy(),
+            runtime_bundle_manifests={
+                _constitution().constitution_digest: runtime_manifest,
+            },
             resource_governor=governor,
             provider_journal=journal,
             step_executor=executor or _NoChangeExecutor(),
@@ -603,6 +1292,29 @@ def _controller(
     )
 
 
+def _legacy_v1_payload(
+    artifact: OptimizationTriggerEvent | OptimizationEpoch,
+    *,
+    schema_version: str,
+    digest_field: str,
+) -> dict[str, object]:
+    payload = artifact.model_dump(mode="json")
+    for field_name in (
+        "statistics_policy_digest",
+        "evaluator_registry_digest",
+        "auto_promotion_policy_digest",
+        "runtime_bundle_manifest_digest",
+    ):
+        payload.pop(field_name)
+    payload["schema_version"] = schema_version
+    payload.pop(digest_field)
+    payload[digest_field] = canonical_digest(
+        payload,
+        CanonicalizationPolicy(),
+    )
+    return payload
+
+
 def _constitution() -> OptimizationConstitution:
     return OptimizationConstitution(
         constitution_version="1.0.0",
@@ -612,6 +1324,7 @@ def _constitution() -> OptimizationConstitution:
         auto_promotion_policy_digest="sha256:auto-promotion-policy",
         storage_policy_digest="sha256:storage-policy",
         candidate_domain_registry_digest="sha256:registry",
+        statistics_policy_digest=baseline_statistics_policy().policy_digest,
     )
 
 

@@ -6,6 +6,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from typer.testing import CliRunner
@@ -85,19 +86,28 @@ def test_pr_attest_json_requires_explicit_bundle_commit_and_push(
     ready = PRReviewAttestResult(
         status=PRReviewCommandStatus.READY,
         review_id="review.enforce",
+        stage_review_session_id="session.enforce",
+        stage_close_certificate_id="certificate.enforce",
         next_action="stale",
     )
     with (
         patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
         patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
         patch(
-            "ai_sdlc.cli.pr_review_cmd.export_latest_ci_certificate_bundle",
+            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
             return_value=bundle,
-        ),
+        ) as export_bundle,
     ):
         result = runner.invoke(app, ["pr-review", "attest", "--json"])
 
     assert result.exit_code == 0
+    export_bundle.assert_called_once_with(
+        tmp_path,
+        close_kind="local-pr-review-attest",
+        stage_instance_id=ready.review_id,
+        review_session_id=ready.stage_review_session_id,
+        certificate_id=ready.stage_close_certificate_id,
+    )
     payload = json.loads(result.output)
     assert payload["ci_certificate_bundle_path"] == str(bundle)
     assert f"git add -- {CI_CERTIFICATE_BUNDLE_PATH}" in payload["next_action"]
@@ -115,13 +125,15 @@ def test_pr_attest_text_requires_explicit_bundle_commit_and_push(
     ready = PRReviewAttestResult(
         status=PRReviewCommandStatus.READY,
         review_id="review.enforce",
+        stage_review_session_id="session.enforce",
+        stage_close_certificate_id="certificate.enforce",
         next_action="stale",
     )
     with (
         patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
         patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
         patch(
-            "ai_sdlc.cli.pr_review_cmd.export_latest_ci_certificate_bundle",
+            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
             return_value=bundle,
         ),
     ):
@@ -131,6 +143,137 @@ def test_pr_attest_text_requires_explicit_bundle_commit_and_push(
     assert f"git add -- {CI_CERTIFICATE_BUNDLE_PATH}" in result.output
     assert "push the reviewed branch" in result.output
     assert f"ci_certificate_bundle: {bundle}" in result.output
+
+
+def test_pr_attest_blocks_non_exportable_ci_bundle_without_traceback(
+    tmp_path: Path,
+) -> None:
+    ready = PRReviewAttestResult(
+        status=PRReviewCommandStatus.READY,
+        review_id="review.local-patch",
+        stage_review_session_id="session.local-patch",
+        stage_close_certificate_id="certificate.local-patch",
+        next_action="stale",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
+            side_effect=ValueError("CI certificate candidate source is not exportable"),
+        ),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert "not exportable" in payload["blocker"]
+    assert "local-git-range" in payload["next_action"]
+    assert "Traceback" not in result.output
+
+
+def test_pr_attest_blocks_and_clears_stale_bundle_when_exact_proof_is_missing(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
+    ready = PRReviewAttestResult(
+        status=PRReviewCommandStatus.READY,
+        review_id="review.current",
+        stage_review_session_id="session.current",
+        stage_close_certificate_id="certificate.current",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
+            return_value=None,
+        ),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert "exact certificate proof" in payload["blocker"]
+    assert not bundle.exists()
+
+
+def test_pr_attest_failure_clears_previous_exact_bundle_under_attest_lock(
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text('{"published":"concurrently"}\n', encoding="utf-8")
+    ready = PRReviewAttestResult(
+        status=PRReviewCommandStatus.READY,
+        review_id="review.current",
+        stage_review_session_id="session.current",
+        stage_close_certificate_id="certificate.current",
+    )
+    current = SimpleNamespace(
+        certificate=SimpleNamespace(
+            certificate_id="certificate.current",
+            scope=SimpleNamespace(session_id="session.current"),
+        )
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
+            return_value=None,
+        ),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.read_ci_certificate_bundle",
+            return_value=current,
+        ),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    assert not bundle.exists()
+    assert json.loads(result.output)["status"] == "blocked"
+
+
+def test_pr_attest_non_ready_result_clears_stale_ci_bundle(tmp_path: Path) -> None:
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
+    blocked = PRReviewAttestResult(
+        status=PRReviewCommandStatus.BLOCKED,
+        blocker="review evidence changed",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=blocked),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    assert not bundle.exists()
+
+
+def test_pr_attest_incomplete_identity_clears_stale_ci_bundle(tmp_path: Path) -> None:
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
+    incomplete = PRReviewAttestResult(
+        status=PRReviewCommandStatus.READY,
+        review_id="review.current",
+        stage_review_session_id="session.current",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=incomplete),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    assert not bundle.exists()
 
 
 def test_pr_review_help_lists_p0_commands() -> None:

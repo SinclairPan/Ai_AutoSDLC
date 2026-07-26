@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,9 @@ from ai_sdlc.core.stage_review.artifacts import (
     resolve_canonical_shared_state,
 )
 from ai_sdlc.core.stage_review.optimization.controller_models import OptimizationEpoch
+from ai_sdlc.core.stage_review.optimization.controller_store import (
+    OptimizationControllerStore,
+)
 from ai_sdlc.core.stage_review.optimization.defaults import (
     _baseline_foreground_capacity as baseline_foreground_capacity,
 )
@@ -25,6 +29,9 @@ from ai_sdlc.core.stage_review.optimization.defaults import (
 from ai_sdlc.core.stage_review.optimization.defaults import (
     baseline_epoch_budget_policy,
     baseline_offline_capacity,
+)
+from ai_sdlc.core.stage_review.optimization.maintenance_window import (
+    EpochLeaseGuard,
 )
 from ai_sdlc.core.stage_review.optimization.maintenance_window import (
     _optimization_resource_session_id as optimization_resource_session_id,
@@ -40,19 +47,30 @@ from ai_sdlc.core.stage_review.optimization.observations import (
 from ai_sdlc.core.stage_review.optimization.observations import (
     _build_terminal_observation as build_terminal_observation,
 )
+from ai_sdlc.core.stage_review.optimization.pipeline_effects import (
+    EpochRuntimeAuthorizer,
+    allow_effect,
+)
 from ai_sdlc.core.stage_review.optimization.product_shadow_executor import (
     ProductShadowAssignmentExecutor,
     build_product_shadow_executor,
 )
 from ai_sdlc.core.stage_review.optimization.shadow import (
+    OptimizationShadowAssignment,
     OptimizationShadowAssignmentStore,
     ShadowSessionInput,
+)
+from ai_sdlc.core.stage_review.optimization.shadow_execution import (
+    ShadowExecutionUnrecoverableError,
 )
 from ai_sdlc.core.stage_review.optimization.shadow_observations import (
     OptimizationShadowObservationStore,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_models import OptimizationSnapshot
-from ai_sdlc.core.stage_review.provider_journal import ProviderInvocationJournal
+from ai_sdlc.core.stage_review.provider_journal import (
+    ProviderInvocation,
+    ProviderInvocationJournal,
+)
 from ai_sdlc.core.stage_review.provider_transport import TrustedProviderTransport
 from ai_sdlc.core.stage_review.provider_usage_models import build_usage_estimate_policy
 from ai_sdlc.core.stage_review.resource_builders import build_budget_envelope
@@ -64,6 +82,90 @@ from ai_sdlc.core.stage_review.review_input_packet import (
     ReviewPathChange,
     ReviewPathState,
 )
+
+
+class _RejectingRuntimeAuthorizer:
+    epoch_fencing_epoch = 1
+    epoch_claim_digest = "sha256:test-rejecting-epoch-claim"
+
+    def __init__(self, reject_at: int) -> None:
+        self.reject_at = reject_at
+        self.authorizations = 0
+
+    def __call__(self) -> None:
+        self.authorizations += 1
+        if self.authorizations == self.reject_at:
+            raise SharedStateIntegrityError("runtime bundle drifted")
+
+    def commit(self, operation: Callable[[], object]) -> object:
+        self()
+        return operation()
+
+
+class _CommitRejectingRuntimeAuthorizer:
+    epoch_fencing_epoch = 1
+    epoch_claim_digest = "sha256:test-commit-rejecting-epoch-claim"
+
+    def __call__(self) -> None:
+        raise SharedStateIntegrityError("runtime bundle drifted")
+
+    def commit(self, _operation: Callable[[], object]) -> object:
+        raise SharedStateIntegrityError("runtime bundle drifted")
+
+
+class _ToggleRuntimeAuthorizer:
+    epoch_fencing_epoch = 1
+    epoch_claim_digest = "sha256:test-toggle-epoch-claim"
+
+    def __init__(self) -> None:
+        self.blocked = False
+
+    def __call__(self) -> None:
+        if self.blocked:
+            raise SharedStateIntegrityError("runtime bundle drifted")
+
+    def commit(self, operation: Callable[[], object]) -> object:
+        self()
+        return operation()
+
+
+class _CallableLease:
+    epoch_fencing_epoch = 1
+    epoch_claim_digest = "sha256:test-callable-epoch-claim"
+
+    def __init__(self, gate: Callable[[], None]) -> None:
+        self._gate = gate
+
+    def __call__(self) -> None:
+        self._gate()
+
+    def commit(self, operation: Callable[[], object]) -> object:
+        self._gate()
+        return operation()
+
+
+def _epoch_authorizer(
+    root: Path,
+    epoch: OptimizationEpoch,
+    gate: Callable[[], None],
+) -> EpochRuntimeAuthorizer:
+    store = OptimizationControllerStore(
+        root,
+        project_id=epoch.project_id,
+        lock_timeout_seconds=2,
+    )
+    if store.epoch(epoch.epoch_id) is None:
+        store.create_epoch(epoch)
+    claim = store.acquire_lease(
+        epoch.epoch_id,
+        owner_id="controller.shadow-test",
+        lease_seconds=360,
+    )
+    return EpochRuntimeAuthorizer.for_epoch(
+        EpochLeaseGuard(store, claim),
+        gate,
+        epoch,
+    )
 
 
 def test_product_shadow_executor_commits_provider_and_label_lineage(
@@ -95,12 +197,322 @@ def test_product_shadow_executor_commits_provider_and_label_lineage(
         tmp_path, project_id, assignments, observations, governor
     )
 
-    assert executor.execute(epoch, candidate, assignment, lambda: None) is True
+    assert executor.execute(
+        epoch,
+        candidate,
+        assignment,
+        _epoch_authorizer(tmp_path, epoch, allow_effect),
+    ) is True
     result = results.read_assignment(assignment.assignment_id)
     assert result is not None
     assert result.challenger.unconfirmed_finding is False
     assert result.provider_submission_digest
     assert journal.get(result.provider_invocation_id).state == "committed"
+
+
+def test_product_shadow_runtime_drift_leaves_prepared_outbox_without_provider_call(
+    tmp_path: Path,
+) -> None:
+    project_id = "project.shared"
+    candidate = _candidate()
+    governor, reservation = _offline_resources(tmp_path, project_id)
+    epoch = _epoch(candidate, reservation.reservation_id, reservation.fencing_token)
+    observations = OptimizationObservationStore(tmp_path, project_id=project_id)
+    baseline = observations.append(
+        build_terminal_observation(
+            _binding(candidate),
+            "consumed",
+            sequence=31,
+            occurred_at="2026-07-24T00:00:00Z",
+            terminal_reason="consumed",
+        )
+    )
+    assignments = OptimizationShadowAssignmentStore(tmp_path, project_id=project_id)
+    assignment = assignments.assign(
+        epoch_id=epoch.epoch_id,
+        finalist_candidate_digest=candidate.candidate_digest,
+        session=_shadow_input(baseline.observation_digest),
+        epoch_session_sequence_high_watermark=30,
+    )
+    _persist_packet(tmp_path, project_id, assignment.session_id)
+    broker = _RemoteShadowBroker()
+    executor, journal, _ = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+        broker=broker,
+    )
+    authorizations = 0
+
+    def reject_after_prepare() -> None:
+        nonlocal authorizations
+        authorizations += 1
+        if authorizations == 2:
+            raise SharedStateIntegrityError("runtime bundle drifted")
+
+    with pytest.raises(SharedStateIntegrityError, match="runtime bundle drifted"):
+        executor.execute(
+            epoch,
+            candidate,
+            assignment,
+            _epoch_authorizer(tmp_path, epoch, reject_after_prepare),
+        )
+
+    invocation = next(
+        item
+        for item in (
+            journal.get(path.name)
+            for path in journal._store.root.iterdir()  # noqa: SLF001
+            if path.is_dir()
+        )
+        if item is not None
+    )
+    assert invocation.state == "prepared"
+    assert (
+        invocation.request.runtime_bundle_manifest_digest
+        == epoch.runtime_bundle_manifest_digest
+    )
+    assert broker.envelope is None
+
+
+def test_product_shadow_journal_authorization_rejection_keeps_dispatch_retryable(
+    tmp_path: Path,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    broker = _RemoteShadowBroker()
+    executor, journal, _ = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+        broker=broker,
+    )
+    reject_at_journal_dispatch = _RejectingRuntimeAuthorizer(3)
+
+    with pytest.raises(
+        ShadowExecutionUnrecoverableError,
+        match="shadow_provider_dispatch_unauthorized",
+    ):
+        executor.execute(
+            epoch,
+            candidate,
+            assignment,
+            _epoch_authorizer(
+                tmp_path,
+                epoch,
+                reject_at_journal_dispatch,
+            ),
+        )
+
+    invocation = _only_invocation(journal)
+    assert invocation.state == "prepared"
+    assert broker.envelope is None
+
+
+def test_product_shadow_dispatch_commit_rejection_keeps_prepared_without_call(
+    tmp_path: Path,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    broker = _RemoteShadowBroker()
+    executor, journal, _ = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+        broker=broker,
+    )
+
+    with pytest.raises(
+        ShadowExecutionUnrecoverableError,
+        match="shadow_provider_dispatch_unauthorized",
+    ):
+        executor.execute(
+            epoch,
+            candidate,
+            assignment,
+            _epoch_authorizer(
+                tmp_path,
+                epoch,
+                _RejectingRuntimeAuthorizer(3),
+            ),
+        )
+
+    assert _only_invocation(journal).state == "prepared"
+    assert broker.envelope is None
+
+
+def test_product_shadow_post_call_runtime_drift_quarantines_submission(
+    tmp_path: Path,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    broker = _RemoteShadowBroker()
+    executor, journal, results = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+        broker=broker,
+    )
+    reject_provider_return = _RejectingRuntimeAuthorizer(5)
+
+    with pytest.raises(
+        ShadowExecutionUnrecoverableError,
+        match="shadow_provider_dispatch_unauthorized",
+    ):
+        executor.execute(
+            epoch,
+            candidate,
+            assignment,
+            _epoch_authorizer(tmp_path, epoch, reject_provider_return),
+        )
+
+    invocation = _only_invocation(journal)
+    assert invocation.state == "dispatched"
+    assert journal.submission_path(invocation.invocation_id).is_file()
+    assert results.read_assignment(assignment.assignment_id) is None
+    assert broker.envelope is not None
+
+
+def test_product_shadow_observation_publish_reauthorizes_after_staging(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    executor, journal, results = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+    )
+    authorizer = _ToggleRuntimeAuthorizer()
+    prepare = results._canonical_publication  # noqa: SLF001
+
+    def prepare_then_reject(*args: object, **kwargs: object) -> object:
+        staged = prepare(*args, **kwargs)  # type: ignore[arg-type]
+        authorizer.blocked = True
+        return staged
+
+    monkeypatch.setattr(results, "_canonical_publication", prepare_then_reject)
+
+    with pytest.raises(SharedStateIntegrityError, match="runtime bundle drifted"):
+        executor.execute(
+            epoch,
+            candidate,
+            assignment,
+            _epoch_authorizer(tmp_path, epoch, authorizer),
+        )
+
+    assert _only_invocation(journal).state == "committed"
+    assert results.read_assignment(assignment.assignment_id) is None
+    assert not hasattr(results, "append")
+    assert not hasattr(results, "record_committed")
+
+
+def test_product_shadow_rejects_callable_forged_epoch_authority(
+    tmp_path: Path,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    executor, journal, results = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+    )
+    forged = EpochRuntimeAuthorizer.for_epoch(
+        _CallableLease(allow_effect),
+        lambda: None,
+        epoch,
+    )
+
+    with pytest.raises(TypeError, match="bound EpochLeaseGuard"):
+        executor.execute(
+            epoch,
+            candidate,
+            assignment,
+            forged,
+        )
+
+    assert _only_invocation(journal).state == "committed"
+    assert results.read_assignment(assignment.assignment_id) is None
+
+
+def test_shadow_publication_recovers_after_envelope_before_receipt_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    executor, journal, results = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+    )
+    first_authority = _epoch_authorizer(tmp_path, epoch, allow_effect)
+    def crash_before_receipt(
+        _store: OptimizationControllerStore,
+        _receipt: object,
+    ) -> object:
+        raise SharedStateIntegrityError("simulated receipt crash")
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(
+            OptimizationControllerStore,
+            "_persist_effect_receipt",
+            crash_before_receipt,
+        )
+        with pytest.raises(
+            SharedStateIntegrityError,
+            match="simulated receipt crash",
+        ):
+            executor.execute(
+                epoch,
+                candidate,
+                assignment,
+                first_authority,
+            )
+
+    invocation = _only_invocation(journal)
+    assert invocation.state == "committed"
+    assert len(journal.events(invocation.invocation_id)) == 5
+    assert results.read_assignment(assignment.assignment_id) is None
+    first_authority._lease_guard.release()  # noqa: SLF001
+
+    recovered = executor.execute(
+        epoch,
+        candidate,
+        assignment,
+        _epoch_authorizer(tmp_path, epoch, allow_effect),
+    )
+
+    assert recovered is True
+    assert results.read_assignment(assignment.assignment_id) is not None
+    assert len(journal.events(invocation.invocation_id)) == 5
 
 
 def test_product_shadow_transport_uses_epoch_snapshot_estimate_policy(
@@ -195,6 +607,8 @@ def _executor(
     assignments: OptimizationShadowAssignmentStore,
     observations: OptimizationObservationStore,
     governor: ResourceGovernor,
+    *,
+    broker: _RemoteShadowBroker | None = None,
 ) -> tuple[
     ProductShadowAssignmentExecutor,
     ProviderInvocationJournal,
@@ -203,7 +617,12 @@ def _executor(
     journal = ProviderInvocationJournal(
         root, project_id=project_id, resource_governor=governor
     )
-    results = OptimizationShadowObservationStore(root, project_id=project_id)
+    selected_broker = broker or _RemoteShadowBroker()
+    results = OptimizationShadowObservationStore(
+        root,
+        project_id=project_id,
+        journal=journal,
+    )
     executor = ProductShadowAssignmentExecutor(
         root=root,
         project_id=project_id,
@@ -213,11 +632,58 @@ def _executor(
         journal=journal,
         resources=governor,
         transport_source=lambda _: _executions(
-            _transport(root, project_id, _RemoteShadowBroker())
+            _transport(root, project_id, selected_broker)
         ),
         clock=lambda: "2026-08-06T00:00:00Z",
     )
     return executor, journal, results
+
+
+def _prepared_product_shadow(
+    root: Path,
+    project_id: str,
+) -> tuple[
+    OptimizationCandidate,
+    OptimizationEpoch,
+    OptimizationShadowAssignmentStore,
+    OptimizationShadowAssignment,
+    OptimizationObservationStore,
+    ResourceGovernor,
+]:
+    candidate = _candidate()
+    governor, reservation = _offline_resources(root, project_id)
+    epoch = _epoch(candidate, reservation.reservation_id, reservation.fencing_token)
+    observations = OptimizationObservationStore(root, project_id=project_id)
+    baseline = observations.append(
+        build_terminal_observation(
+            _binding(candidate),
+            "consumed",
+            sequence=31,
+            occurred_at="2026-07-24T00:00:00Z",
+            terminal_reason="consumed",
+        )
+    )
+    assignments = OptimizationShadowAssignmentStore(root, project_id=project_id)
+    assignment = assignments.assign(
+        epoch_id=epoch.epoch_id,
+        finalist_candidate_digest=candidate.candidate_digest,
+        session=_shadow_input(baseline.observation_digest),
+        epoch_session_sequence_high_watermark=30,
+    )
+    _persist_packet(root, project_id, assignment.session_id)
+    return candidate, epoch, assignments, assignment, observations, governor
+
+
+def _only_invocation(journal: ProviderInvocationJournal) -> ProviderInvocation:
+    return next(
+        item
+        for item in (
+            journal.get(path.name)
+            for path in journal._store.root.iterdir()  # noqa: SLF001
+            if path.is_dir()
+        )
+        if item is not None
+    )
 
 
 def _offline_resources(
@@ -271,6 +737,10 @@ def _epoch(
         constitution_digest="sha256:constitution",
         baseline_snapshot_digest=candidate.base_snapshot_digest,
         candidate_domain_registry_digest="sha256:registry",
+        statistics_policy_digest="sha256:statistics-policy",
+        evaluator_registry_digest="sha256:evaluator-registry",
+        auto_promotion_policy_digest="sha256:promotion-policy",
+        runtime_bundle_manifest_digest="sha256:test-runtime-bundle",
         session_sequence_high_watermark=30,
         new_session_count=30,
         state="shadow_observing",

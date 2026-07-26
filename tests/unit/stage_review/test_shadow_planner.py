@@ -193,6 +193,7 @@ def _snapshot_with_minimum_slots(
         stable_fallback_digest=baseline.snapshot_digest,
         candidate_digest="sha256:selection-candidate",
         evaluation_report_digests=("sha256:selection-report",),
+        shadow_result_digest="sha256:shadow-result",
         policy_payload=payload,
         created_at="2026-07-22T00:00:00Z",
     )

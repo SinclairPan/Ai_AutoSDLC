@@ -13,6 +13,9 @@ from ai_sdlc.core.stage_review.optimization.holdout_contracts import (
     HoldoutQueryCommitment,
     HoldoutQueryRequest,
 )
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    statistics_policy_for_digest,
+)
 from ai_sdlc.core.stage_review.optimization.storage import OptimizationStorage
 from ai_sdlc.core.stage_review.optimization.storage_models import (
     OptimizationStoragePolicy,
@@ -50,12 +53,38 @@ class HoldoutCommitmentStore:
             commit_leases=self.commit_leases,
         )
 
+    def runtime_identity(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "familywise_alpha": self.familywise_alpha,
+            "storage_policy": self.storage.policy.model_dump(mode="json"),
+            "commit_lock_timeout_seconds": (
+                self.commit_leases.lock_timeout_seconds
+            ),
+        }
+
     @property
     def cumulative_alpha(self) -> float:
         return sum(item.alpha_i for item in self.commitments())
 
     def commit(self, request: HoldoutQueryRequest) -> HoldoutQueryCommitment:
         trusted = HoldoutQueryRequest.model_validate(request.model_dump(mode="json"))
+        policy = statistics_policy_for_digest(
+            trusted.statistics_policy_digest
+        )
+        if trusted.familywise_alpha != policy.familywise_alpha:
+            raise SharedStateIntegrityError(
+                "holdout familywise alpha diverged from statistics policy"
+            )
+        if (
+            trusted.holdout_alpha_ledger_id
+            != policy.holdout_alpha_ledger_id
+            or trusted.holdout_alpha_ledger_limit
+            != policy.holdout_alpha_ledger_limit
+        ):
+            raise SharedStateIntegrityError(
+                "holdout alpha ledger diverged from statistics policy"
+            )
         idempotency_key = _query_idempotency_key(self.project_id, trusted)
         existing = self._lookup("idempotency_key", idempotency_key)
         if existing is not None:
@@ -70,11 +99,63 @@ class HoldoutCommitmentStore:
 
     def commitments(self) -> tuple[HoldoutQueryCommitment, ...]:
         values = tuple(_commitment(record) for record in self.storage.read_stream(_STREAM))
-        for sequence, item in enumerate(values, start=1):
-            previous = "" if sequence == 1 else values[sequence - 2].commitment_digest
-            if item.test_sequence != sequence or item.previous_commitment_digest != previous:
+        prior: dict[str, HoldoutQueryCommitment] = {}
+        counts: dict[str, int] = {}
+        limits: dict[str, float] = {}
+        spent: dict[str, float] = {}
+        for item in values:
+            ledger_id = item.holdout_alpha_ledger_id
+            sequence = counts.get(ledger_id, 0) + 1
+            policy = statistics_policy_for_digest(
+                item.statistics_policy_digest
+            )
+            previous = prior.get(ledger_id)
+            previous_digest = (
+                "" if previous is None else previous.commitment_digest
+            )
+            if (
+                item.test_sequence != sequence
+                or item.previous_commitment_digest != previous_digest
+                or item.holdout_alpha_ledger_id
+                != policy.holdout_alpha_ledger_id
+                or item.holdout_alpha_ledger_limit
+                != policy.holdout_alpha_ledger_limit
+                or item.familywise_alpha != policy.familywise_alpha
+                or item.alpha_i
+                != (
+                    item.familywise_alpha
+                    / (sequence * (sequence + 1))
+                )
+            ):
                 raise SharedStateIntegrityError("holdout commitment chain diverged")
+            ledger_limit = limits.setdefault(
+                ledger_id,
+                item.holdout_alpha_ledger_limit,
+            )
+            if item.holdout_alpha_ledger_limit != ledger_limit:
+                raise SharedStateIntegrityError(
+                    "holdout alpha ledger limit diverged"
+                )
+            spent[ledger_id] = spent.get(ledger_id, 0.0) + item.alpha_i
+            if spent[ledger_id] > ledger_limit:
+                raise SharedStateIntegrityError(
+                    "holdout alpha ledger is exhausted"
+                )
+            counts[ledger_id] = sequence
+            prior[ledger_id] = item
         return values
+
+    def commitment(self, commitment_digest: str) -> HoldoutQueryCommitment | None:
+        matches = tuple(
+            item
+            for item in self.commitments()
+            if item.commitment_digest == commitment_digest
+        )
+        if len(matches) > 1:
+            raise SharedStateIntegrityError(
+                "holdout commitment digest is ambiguous"
+            )
+        return None if not matches else matches[0]
 
     def _commit_locked(
         self,
@@ -88,14 +169,19 @@ class HoldoutCommitmentStore:
         if existing is not None:
             return _verify_idempotent(existing, request)
         self._verify_unused(request)
-        commitments = self.commitments()
+        commitments = tuple(
+            item
+            for item in self.commitments()
+            if item.holdout_alpha_ledger_id
+            == request.holdout_alpha_ledger_id
+        )
         sequence = len(commitments) + 1
         previous = "" if not commitments else commitments[-1].commitment_digest
         commitment = _build_commitment(
             self.project_id,
             request,
             sequence,
-            self.familywise_alpha / (sequence * (sequence + 1)),
+            request.familywise_alpha / (sequence * (sequence + 1)),
             previous,
             lease,
         )
@@ -105,8 +191,6 @@ class HoldoutCommitmentStore:
             keys=_lookup_keys(commitment),
             lease=lease,
         )
-        if record.sequence != commitment.test_sequence:
-            raise SharedStateIntegrityError("holdout storage sequence diverged")
         return _commitment(record)
 
     def _verify_unused(self, request: HoldoutQueryRequest) -> None:
@@ -137,6 +221,7 @@ def _query_idempotency_key(project_id: str, request: HoldoutQueryRequest) -> str
         request.holdout_generation_id,
         request.baseline_snapshot_digest,
         request.finalist_candidate_digest,
+        request.holdout_alpha_ledger_id,
     )
 
 
@@ -159,6 +244,10 @@ def _build_commitment(
         baseline_snapshot_digest=request.baseline_snapshot_digest,
         finalist_candidate_digest=request.finalist_candidate_digest,
         holdout_session_ids=request.holdout_session_ids,
+        statistics_policy_digest=request.statistics_policy_digest,
+        holdout_alpha_ledger_id=request.holdout_alpha_ledger_id,
+        holdout_alpha_ledger_limit=request.holdout_alpha_ledger_limit,
+        familywise_alpha=request.familywise_alpha,
         provider_query_idempotency_key=request.provider_query_idempotency_key,
         test_sequence=sequence,
         alpha_i=alpha_i,
@@ -171,10 +260,7 @@ def _build_commitment(
 
 
 def _commitment(record: OptimizationStorageRecord) -> HoldoutQueryCommitment:
-    commitment = HoldoutQueryCommitment.model_validate(record.payload)
-    if commitment.test_sequence != record.sequence:
-        raise SharedStateIntegrityError("holdout record sequence diverged")
-    return commitment
+    return HoldoutQueryCommitment.model_validate(record.payload)
 
 
 def _verify_idempotent(
@@ -188,6 +274,12 @@ def _verify_idempotent(
         existing.baseline_snapshot_digest == request.baseline_snapshot_digest,
         existing.finalist_candidate_digest == request.finalist_candidate_digest,
         existing.holdout_session_ids == request.holdout_session_ids,
+        existing.statistics_policy_digest == request.statistics_policy_digest,
+        existing.holdout_alpha_ledger_id
+        == request.holdout_alpha_ledger_id,
+        existing.holdout_alpha_ledger_limit
+        == request.holdout_alpha_ledger_limit,
+        existing.familywise_alpha == request.familywise_alpha,
         existing.provider_query_idempotency_key
         == request.provider_query_idempotency_key,
     )

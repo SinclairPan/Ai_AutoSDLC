@@ -12,11 +12,18 @@ from tests.unit.stage_review.test_provider_journal import (
 from tests.unit.stage_review.test_resources import _provider_anticipated
 
 from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
+from ai_sdlc.core.stage_review.optimization import statistics as statistics_module
 from ai_sdlc.core.stage_review.optimization.holdout import (
     HoldoutCommitmentStore,
     HoldoutEvaluationService,
     HoldoutProviderSpec,
     HoldoutQueryRequest,
+)
+from ai_sdlc.core.stage_review.optimization.models import (
+    OptimizationStatisticsPolicy,
+)
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    baseline_statistics_policy,
 )
 from ai_sdlc.core.stage_review.provider_journal import ProviderRecoveryCapabilities
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
@@ -84,6 +91,56 @@ def test_commitment_recovers_from_sealed_segment_and_keeps_sequence(
     third = store.commit(_request(3))
     assert third.test_sequence == 3
     assert third.previous_commitment_digest == second.commitment_digest
+
+
+def test_statistics_policy_upgrade_inherits_the_alpha_ledger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = baseline_statistics_policy()
+    historical = OptimizationStatisticsPolicy(
+        policy_id="statistics.holdout-historical-test",
+        policy_version="0.9.0",
+        familywise_alpha=0.01,
+    )
+    monkeypatch.setattr(
+        statistics_module,
+        "bundled_statistics_policies",
+        lambda: (historical, baseline),
+    )
+    store = HoldoutCommitmentStore(
+        tmp_path,
+        project_id="project.shared",
+        familywise_alpha=baseline.familywise_alpha,
+    )
+
+    baseline_first = store.commit(_request(1))
+    historical_first = store.commit(
+        _request(2).model_copy(
+            update={
+                "statistics_policy_digest": historical.policy_digest,
+                "familywise_alpha": historical.familywise_alpha,
+            }
+        )
+    )
+    baseline_second = store.commit(_request(3))
+
+    assert baseline_first.test_sequence == 1
+    assert baseline_first.alpha_i == pytest.approx(
+        baseline.familywise_alpha / 2
+    )
+    assert historical_first.test_sequence == 2
+    assert historical_first.alpha_i == pytest.approx(
+        historical.familywise_alpha / 6
+    )
+    assert historical_first.previous_commitment_digest == (
+        baseline_first.commitment_digest
+    )
+    assert baseline_second.test_sequence == 3
+    assert baseline_second.previous_commitment_digest == (
+        historical_first.commitment_digest
+    )
+    assert store.cumulative_alpha < baseline.holdout_alpha_ledger_limit
 
 
 def test_same_holdout_query_is_idempotent_and_generation_is_single_use(
@@ -185,6 +242,7 @@ def test_committed_query_survives_crash_without_requery_or_alpha_refund(
 
 def _request(index: int, *, payload_bytes: int = 0) -> HoldoutQueryRequest:
     session_suffix = f".{'x' * payload_bytes}" if payload_bytes else ""
+    policy = baseline_statistics_policy()
     return HoldoutQueryRequest(
         epoch_id=f"optimization-epoch.{index:03d}",
         hypothesis_digest=f"sha256:hypothesis-{index}",
@@ -192,6 +250,10 @@ def _request(index: int, *, payload_bytes: int = 0) -> HoldoutQueryRequest:
         baseline_snapshot_digest="sha256:baseline",
         finalist_candidate_digest=f"sha256:finalist-{index}",
         holdout_session_ids=(f"session.{index:03d}{session_suffix}",),
+        statistics_policy_digest=policy.policy_digest,
+        holdout_alpha_ledger_id=policy.holdout_alpha_ledger_id,
+        holdout_alpha_ledger_limit=policy.holdout_alpha_ledger_limit,
+        familywise_alpha=policy.familywise_alpha,
         provider_query_idempotency_key=f"holdout-query.{index:03d}",
         epoch_lease_fencing_epoch=1,
         epoch_lease_claim_digest="sha256:epoch-claim.1",

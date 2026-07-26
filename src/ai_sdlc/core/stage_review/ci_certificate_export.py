@@ -23,20 +23,26 @@ from ai_sdlc.core.stage_review.ci_certificate import (
 from ai_sdlc.core.stage_review.ci_certificate_evidence import (
     CiCertificateAuthorityProof,
 )
-from ai_sdlc.core.stage_review.resource_builders import parse_utc
 
 
-def export_latest_ci_certificate_bundle(
+def export_ci_certificate_bundle(
     root: Path,
     *,
     close_kind: str,
-) -> Path | None:
+    stage_instance_id: str,
+    review_session_id: str,
+    certificate_id: str,
+) -> Path:
     resolved = root.resolve()
     project_id = resolve_repository_project_id(resolved)
     shared = resolve_canonical_shared_state(resolved, project_id)
-    proof = _latest_proof(shared, close_kind)
-    if proof is None:
-        return None
+    proof = _selected_proof(
+        shared,
+        close_kind,
+        stage_instance_id=stage_instance_id,
+        review_session_id=review_session_id,
+        certificate_id=certificate_id,
+    )
     candidate, snapshot = _candidate_source(shared, proof)
     bundle = build_ci_certificate_bundle(
         certificate=proof.certificate,
@@ -53,32 +59,30 @@ def export_latest_ci_certificate_bundle(
     return path
 
 
-def _latest_proof(
+def _selected_proof(
     shared: Path,
     close_kind: str,
-) -> CiCertificateAuthorityProof | None:
+    *,
+    stage_instance_id: str,
+    review_session_id: str,
+    certificate_id: str,
+) -> CiCertificateAuthorityProof:
     values = []
     proof_glob = "stage-review-sessions/sessions/*/*/*/certificate-proofs/*.json"
     for path in sorted(shared.glob(proof_glob)):
         proof = CiCertificateAuthorityProof.model_validate(read_json_object(path))
-        if proof.certificate.close_kind == close_kind:
+        if (
+            proof.certificate.close_kind == close_kind
+            and proof.certificate.stage_instance_id == stage_instance_id
+            and proof.certificate.scope.session_id == review_session_id
+            and proof.certificate.certificate_id == certificate_id
+        ):
             values.append(proof)
     if not values:
-        return None
-    ordered = sorted(
-        values,
-        key=lambda item: (
-            parse_utc(item.certificate.issued_at),
-            item.certificate.certificate_id,
-        ),
-    )
-    latest_time = ordered[-1].certificate.issued_at
-    latest = tuple(
-        item for item in ordered if item.certificate.issued_at == latest_time
-    )
-    if len(latest) != 1:
-        raise ValueError("latest CI certificate authority proof is ambiguous")
-    return latest[0]
+        raise ValueError("exact CI certificate authority proof was not found")
+    if len(values) != 1:
+        raise ValueError("selected CI certificate authority proof is ambiguous")
+    return values[0]
 
 
 def _candidate_source(
@@ -114,4 +118,4 @@ def _persist_bundle(path: Path, bundle: CiStageCloseCertificateBundle) -> None:
         raise ValueError("CI certificate bundle persistence diverged")
 
 
-__all__ = ["export_latest_ci_certificate_bundle"]
+__all__ = ["export_ci_certificate_bundle"]

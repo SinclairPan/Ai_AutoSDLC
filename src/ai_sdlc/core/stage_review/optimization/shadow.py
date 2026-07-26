@@ -23,6 +23,10 @@ from ai_sdlc.core.stage_review.artifacts import (
 from ai_sdlc.core.stage_review.optimization.accounting import (
     OfflineOptimizationAccounting,
 )
+from ai_sdlc.core.stage_review.optimization.pipeline_effects import (
+    EpochRuntimeAuthorizer,
+    commit_effect,
+)
 from ai_sdlc.core.stage_review.provider_journal import (
     ProviderInvocationDriver,
     ProviderInvocationJournal,
@@ -38,7 +42,7 @@ from ai_sdlc.core.stage_review.provider_journal_models import (
     ProviderRecoveryCapabilities,
 )
 from ai_sdlc.core.stage_review.registry_versions import require_machine_id
-from ai_sdlc.core.stage_review.resource_builders import stable_id
+from ai_sdlc.core.stage_review.resource_builders import parse_utc, stable_id
 from ai_sdlc.core.stage_review.resource_ledger_models import ResourceReservation
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
 from ai_sdlc.core.stage_review.resources import ResourceGovernor
@@ -95,6 +99,73 @@ class OptimizationShadowAssignment(ArtifactCompatibility):
         return fill_artifact_digest(self, "assignment_digest")
 
 
+class OptimizationShadowSampleMember(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    session_id: str
+    session_sequence: int = Field(ge=1)
+    binding_digest: str
+
+    @field_validator("session_id")
+    @classmethod
+    def _identity_is_stable(cls, value: str) -> str:
+        return require_machine_id(value, "shadow sample session identity")
+
+    @field_validator("binding_digest")
+    @classmethod
+    def _binding_is_complete(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("shadow sample binding digest is required")
+        return value
+
+
+class OptimizationShadowSamplePlan(ArtifactCompatibility):
+    """在读取终态结果前冻结的 prospective shadow cohort。"""
+
+    schema_version: Literal["optimization-shadow-sample-plan.v1"] = (
+        "optimization-shadow-sample-plan.v1"
+    )
+    artifact_kind: Literal["optimization-shadow-sample-plan"] = (
+        "optimization-shadow-sample-plan"
+    )
+    plan_id: str
+    project_id: str
+    epoch_id: str
+    finalist_candidate_digest: str
+    statistics_policy_digest: str
+    statistical_alpha: float = Field(gt=0, lt=1)
+    fixed_sample_size: int = Field(ge=1)
+    outcome_maturity_deadline: str
+    members: tuple[OptimizationShadowSampleMember, ...]
+    plan_digest: str = ""
+
+    @field_validator("plan_id", "project_id", "epoch_id")
+    @classmethod
+    def _identity_is_stable(cls, value: str) -> str:
+        return require_machine_id(value, "shadow sample plan identity")
+
+    @field_validator("outcome_maturity_deadline")
+    @classmethod
+    def _deadline_is_utc(cls, value: str) -> str:
+        parse_utc(value)
+        return value
+
+    @model_validator(mode="after")
+    def _verify_plan(self) -> Self:
+        if not self.finalist_candidate_digest or not self.statistics_policy_digest:
+            raise ValueError("shadow sample plan lineage is incomplete")
+        if len(self.members) != self.fixed_sample_size:
+            raise ValueError("shadow sample plan size diverged")
+        order = tuple(
+            (item.session_sequence, item.session_id) for item in self.members
+        )
+        if order != tuple(sorted(set(order))):
+            raise ValueError("shadow sample plan members are not canonical")
+        if len({item.session_id for item in self.members}) != len(self.members):
+            raise ValueError("shadow sample plan sessions are not unique")
+        return fill_artifact_digest(self, "plan_digest")
+
+
 class ShadowProviderSpec(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -130,6 +201,13 @@ class ProspectiveShadowResult(BaseModel):
     late_critical_event_digest: str = ""
 
 
+class ProspectiveShadowPrepared(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    assignment: OptimizationShadowAssignment
+    invocation: ProviderInvocationRequest
+
+
 LateCriticalRecorder = Callable[[OptimizationShadowAssignment, ProviderSubmission], str]
 
 
@@ -152,6 +230,43 @@ class OptimizationShadowAssignmentStore:
             lock_timeout_seconds=lock_timeout_seconds,
         )
         self.lock_timeout_seconds = lock_timeout_seconds
+
+    def sample_plan(
+        self,
+        epoch_id: str,
+    ) -> OptimizationShadowSamplePlan | None:
+        stable = require_machine_id(epoch_id, "epoch_id")
+        path = self.root / "shadow-sample-plans" / f"{stable}.json"
+        if not path.is_file():
+            return None
+        return OptimizationShadowSamplePlan.model_validate(read_json_object(path))
+
+    def commit_sample_plan(
+        self,
+        plan: OptimizationShadowSamplePlan,
+    ) -> OptimizationShadowSamplePlan:
+        trusted = OptimizationShadowSamplePlan.model_validate(
+            plan.model_dump(mode="json")
+        )
+        if trusted.project_id != self.project_id:
+            raise SharedStateIntegrityError(
+                "shadow sample plan project identity diverged"
+            )
+        path = self.root / "shadow-sample-plans" / f"{trusted.epoch_id}.json"
+        with self._locked(f"shadow-sample-plan-{trusted.epoch_id}"):
+            if self.accounting.persist_json_exclusive(
+                path,
+                trusted.model_dump(mode="json"),
+            ):
+                return trusted
+            existing = OptimizationShadowSamplePlan.model_validate(
+                read_json_object(path)
+            )
+            if existing != trusted:
+                raise SharedStateIntegrityError(
+                    "shadow sample plan is immutable"
+                )
+            return existing
 
     def assign(
         self,
@@ -198,7 +313,7 @@ class OptimizationShadowAssignmentStore:
             return None
         return OptimizationShadowAssignment.model_validate(read_json_object(path))
 
-    def record_late_critical(
+    def _record_late_critical(
         self,
         assignment: OptimizationShadowAssignment,
         submission: ProviderSubmission,
@@ -264,7 +379,44 @@ class ProspectiveShadowService:
         validator: ProviderOutputValidator,
         reservation_id: str,
         lease_owner: str,
+        runtime_bundle_manifest_digest: str,
+        authorize_dispatch: Callable[[], None],
     ) -> ProspectiveShadowResult:
+        prepared = self.prepare(
+            epoch_id=epoch_id,
+            finalist_candidate_digest=finalist_candidate_digest,
+            session=session,
+            epoch_session_sequence_high_watermark=(
+                epoch_session_sequence_high_watermark
+            ),
+            provider=provider,
+            reservation_id=reservation_id,
+            lease_owner=lease_owner,
+            runtime_bundle_manifest_digest=runtime_bundle_manifest_digest,
+        )
+        return self.resume(
+            prepared,
+            driver=driver,
+            validator=validator,
+            lease_owner=lease_owner,
+            expected_runtime_bundle_manifest_digest=(
+                runtime_bundle_manifest_digest
+            ),
+            authorize_dispatch=authorize_dispatch,
+        )
+
+    def prepare(
+        self,
+        *,
+        epoch_id: str,
+        finalist_candidate_digest: str,
+        session: ShadowSessionInput,
+        epoch_session_sequence_high_watermark: int,
+        provider: ShadowProviderSpec,
+        reservation_id: str,
+        lease_owner: str,
+        runtime_bundle_manifest_digest: str,
+    ) -> ProspectiveShadowPrepared:
         assignment = self.store.assign(
             epoch_id=epoch_id,
             finalist_candidate_digest=finalist_candidate_digest,
@@ -278,19 +430,49 @@ class ProspectiveShadowService:
             or reservation.lease_owner != lease_owner
         ):
             raise SharedStateIntegrityError("shadow reservation is unavailable")
-        invocation = self._resolve_invocation(assignment, provider, reservation)
+        invocation = self._resolve_invocation(
+            assignment,
+            provider,
+            reservation,
+            runtime_bundle_manifest_digest=runtime_bundle_manifest_digest,
+        )
         prepared = self.journal.prepare(invocation, lease_owner=lease_owner)
         if prepared.invocation is None:
             raise SharedStateIntegrityError("shadow provider preparation failed")
+        return ProspectiveShadowPrepared(
+            assignment=assignment,
+            invocation=prepared.invocation.request,
+        )
+
+    def resume(
+        self,
+        prepared: ProspectiveShadowPrepared,
+        *,
+        driver: ProviderInvocationDriver,
+        validator: ProviderOutputValidator,
+        lease_owner: str,
+        expected_runtime_bundle_manifest_digest: str,
+        authorize_dispatch: Callable[[], None],
+    ) -> ProspectiveShadowResult:
+        if (
+            prepared.invocation.runtime_bundle_manifest_digest
+            != expected_runtime_bundle_manifest_digest
+        ):
+            raise SharedStateIntegrityError("shadow runtime manifest diverged")
         result = self.journal.resume(
-            invocation.invocation_id,
+            prepared.invocation.invocation_id,
             driver=driver,
             validator=validator,
             lease_owner=lease_owner,
+            authorize_dispatch=authorize_dispatch,
         )
-        signal = self._record_confirmed_critical(assignment, result)
+        signal = self._record_confirmed_critical(
+            prepared.assignment,
+            result,
+            authorize_dispatch=authorize_dispatch,
+        )
         return ProspectiveShadowResult(
-            assignment=assignment,
+            assignment=prepared.assignment,
             invocation_result=result,
             late_critical_event_digest=(
                 "" if signal is None else signal.late_critical_event_digest
@@ -302,6 +484,8 @@ class ProspectiveShadowService:
         assignment: OptimizationShadowAssignment,
         provider: ShadowProviderSpec,
         reservation: ResourceReservation,
+        *,
+        runtime_bundle_manifest_digest: str,
     ) -> ProviderInvocationRequest:
         epoch_id = assignment.epoch_id
         idempotency_key = stable_id("shadow-query", assignment.assignment_id)
@@ -333,18 +517,30 @@ class ProspectiveShadowService:
             command_id=stable_id("shadow-query-command", assignment.assignment_id),
             idempotency_key=idempotency_key,
             authorization_scope="optimization_shadow",
+            runtime_bundle_manifest_digest=runtime_bundle_manifest_digest,
         )
 
     def _record_confirmed_critical(
         self,
         assignment: OptimizationShadowAssignment,
         result: ProviderJournalResult,
+        *,
+        authorize_dispatch: Callable[[], None],
     ) -> ShadowLateCriticalSignal | None:
         submission = result.submission
         if submission is None or not _is_confirmed_critical(submission):
             return None
-        return self.store.record_late_critical(
-            assignment, submission, self.late_critical_recorder
+        if not isinstance(authorize_dispatch, EpochRuntimeAuthorizer):
+            raise TypeError(
+                "late critical publication requires EpochRuntimeAuthorizer"
+            )
+        return commit_effect(
+            authorize_dispatch,
+            lambda: self.store._record_late_critical(
+                assignment,
+                submission,
+                self.late_critical_recorder,
+            ),
         )
 
 

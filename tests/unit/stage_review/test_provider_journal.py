@@ -445,22 +445,14 @@ def test_parallel_resume_claims_one_dispatch_before_provider_call(
     driver = FakeProviderDriver(capabilities)
     journal.prepare(request, lease_owner=_OWNER, now=_now())
     ready = threading.Barrier(2)
-    dispatches_ready = threading.Barrier(2)
     release_provider = threading.Event()
     provider_entered = threading.Event()
     original_resource_ready = journal._resource_ready
-    original_advance = journal._store.advance
     original_invoke = driver.invoke
 
     def synchronized_resource_check(*args: object, **kwargs: object) -> bool:
         result = original_resource_ready(*args, **kwargs)  # type: ignore[arg-type]
         ready.wait(timeout=2)
-        return result
-
-    def synchronized_dispatch(*args: object, **kwargs: object) -> object:
-        result = original_advance(*args, **kwargs)  # type: ignore[arg-type]
-        if len(args) > 1 and args[1] == "dispatched":
-            dispatches_ready.wait(timeout=2)
         return result
 
     def blocked_invoke(target: ProviderInvocationRequest) -> ProviderSubmission:
@@ -469,7 +461,6 @@ def test_parallel_resume_claims_one_dispatch_before_provider_call(
         return original_invoke(target)
 
     monkeypatch.setattr(journal, "_resource_ready", synchronized_resource_check)
-    monkeypatch.setattr(journal._store, "advance", synchronized_dispatch)
     monkeypatch.setattr(driver, "invoke", blocked_invoke)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [
@@ -601,22 +592,14 @@ def test_query_only_parallel_resume_waits_for_active_dispatch_owner(
     driver = FakeProviderDriver(capabilities)
     journal.prepare(request, lease_owner=_OWNER, now=_now())
     ready = threading.Barrier(2)
-    dispatches_ready = threading.Barrier(2)
     provider_entered = threading.Event()
     release_provider = threading.Event()
     original_ready = journal._resource_ready
-    original_advance = journal._store.advance
     original_invoke = driver.invoke
 
     def synchronized_resource_check(*args: object, **kwargs: object) -> bool:
         result = original_ready(*args, **kwargs)  # type: ignore[arg-type]
         ready.wait(timeout=2)
-        return result
-
-    def synchronized_dispatch(*args: object, **kwargs: object) -> object:
-        result = original_advance(*args, **kwargs)  # type: ignore[arg-type]
-        if len(args) > 1 and args[1] == "dispatched":
-            dispatches_ready.wait(timeout=2)
         return result
 
     def blocked_invoke(target: ProviderInvocationRequest) -> ProviderSubmission:
@@ -625,7 +608,6 @@ def test_query_only_parallel_resume_waits_for_active_dispatch_owner(
         return original_invoke(target)
 
     monkeypatch.setattr(journal, "_resource_ready", synchronized_resource_check)
-    monkeypatch.setattr(journal._store, "advance", synchronized_dispatch)
     monkeypatch.setattr(driver, "invoke", blocked_invoke)
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = [

@@ -15,9 +15,15 @@ from ai_sdlc.core.stage_review.optimization.candidate_domain_registry import (
 from ai_sdlc.core.stage_review.optimization.controller_models import (
     OptimizationConstitution,
 )
-from ai_sdlc.core.stage_review.optimization.evaluators import EvaluatorContract
+from ai_sdlc.core.stage_review.optimization.evaluators import (
+    EvaluatorContract,
+    fixed_holdout_evaluator_contract,
+)
 from ai_sdlc.core.stage_review.optimization.promotion import AutoPromotionPolicy
 from ai_sdlc.core.stage_review.optimization.snapshot_models import OptimizationSnapshot
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    baseline_statistics_policy,
+)
 from ai_sdlc.core.stage_review.optimization.storage_models import (
     OptimizationStoragePolicy,
 )
@@ -118,7 +124,16 @@ def baseline_constitution() -> OptimizationConstitution:
     promotion = baseline_auto_promotion_policy()
     storage = _baseline_storage_policy()
     evaluator_digest = canonical_digest(
-        (_baseline_evaluator_contract(domains.domain_ids),), CanonicalizationPolicy()
+        tuple(
+            sorted(
+                (
+                    _baseline_evaluator_contract(domains.domain_ids),
+                    fixed_holdout_evaluator_contract(domains.domain_ids),
+                ),
+                key=lambda item: item.evaluator_kind,
+            )
+        ),
+        CanonicalizationPolicy(),
     )
     return OptimizationConstitution(
         constitution_version=_VERSION,
@@ -128,6 +143,7 @@ def baseline_constitution() -> OptimizationConstitution:
         auto_promotion_policy_digest=promotion.policy_digest,
         storage_policy_digest=canonical_digest(storage, CanonicalizationPolicy()),
         candidate_domain_registry_digest=domains.snapshot_digest,
+        statistics_policy_digest=baseline_statistics_policy().policy_digest,
     )
 
 

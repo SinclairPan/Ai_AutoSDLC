@@ -26,6 +26,9 @@ from ai_sdlc.core.stage_review.optimization.datasets import (
     OptimizationDatasetSnapshot,
     freeze_optimization_dataset,
 )
+from ai_sdlc.core.stage_review.optimization.evaluators import (
+    component_runtime_identity,
+)
 from ai_sdlc.core.stage_review.optimization.holdout_store import (
     HoldoutCommitmentStore,
 )
@@ -79,6 +82,19 @@ class LocalDatasetSnapshotPort:
         self.usage_policy_source = usage_policy_source or (
             lambda digest: _usage_policy(self.snapshots, digest)
         )
+
+    def runtime_identity(self) -> dict[str, object]:
+        return {
+            "project_id": self.project_id,
+            "dataset_policy": self.policy,
+            "clock": component_runtime_identity(self.clock),
+            "attribution_source": component_runtime_identity(
+                self.attribution_source
+            ),
+            "usage_policy_source": component_runtime_identity(
+                self.usage_policy_source
+            ),
+        }
 
     def freeze(
         self, epoch: OptimizationEpoch, authorize_effect: Callable[[], None]

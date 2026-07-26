@@ -71,6 +71,7 @@ class ProviderInvocationRequest(StageReviewArtifactModel):
         Literal["generic", "optimization_shadow", "reviewer_binding"] | None
     ) = None
     epoch_id: str = ""
+    runtime_bundle_manifest_digest: str = ""
     provider_id: str
     request_digest: str
     reservation_id: str
@@ -110,6 +111,10 @@ class ProviderInvocationRequest(StageReviewArtifactModel):
         effective_scope = self.authorization_scope or "generic"
         if is_reviewer_assignment != (effective_scope == "reviewer_binding"):
             raise ValueError("provider invocation assignment authority is invalid")
+        if effective_scope == "optimization_shadow" and not (
+            self.epoch_id.strip() and self.runtime_bundle_manifest_digest.strip()
+        ):
+            raise ValueError("optimization shadow runtime authority is missing")
         if not _complete_anticipated_usage(self.anticipated_usage):
             raise ValueError("provider invocation anticipated usage is incomplete")
         expected_id = stable_id(

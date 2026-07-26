@@ -30,6 +30,7 @@ class OptimizationSnapshot(ArtifactCompatibility):
     stable_fallback_digest: str = ""
     candidate_digest: str = ""
     evaluation_report_digests: tuple[str, ...] = ()
+    shadow_result_digest: str = ""
     policy_payload: dict[str, JsonValue]
     created_at: str
     is_baseline: bool = False
@@ -55,6 +56,7 @@ class OptimizationSnapshot(ArtifactCompatibility):
             or self.stable_fallback_digest
             or self.candidate_digest
             or self.evaluation_report_digests
+            or self.shadow_result_digest
         ):
             raise ValueError("baseline snapshot cannot depend on a challenger")
         if not self.is_baseline and (
@@ -62,6 +64,7 @@ class OptimizationSnapshot(ArtifactCompatibility):
             or not self.stable_fallback_digest
             or not self.candidate_digest
             or not self.evaluation_report_digests
+            or not self.shadow_result_digest
         ):
             raise ValueError("challenger snapshot lineage is incomplete")
         return fill_artifact_digest(self, "snapshot_digest")

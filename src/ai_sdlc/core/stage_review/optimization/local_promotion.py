@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 
+from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
 from ai_sdlc.core.stage_review.optimization.attribution import FindingAttribution
 from ai_sdlc.core.stage_review.optimization.candidate_domain_registry import (
     CandidateDomainRegistry,
@@ -12,6 +13,9 @@ from ai_sdlc.core.stage_review.optimization.candidate_policy import (
     CandidatePolicyApplier,
 )
 from ai_sdlc.core.stage_review.optimization.controller_models import OptimizationEpoch
+from ai_sdlc.core.stage_review.optimization.evaluators import (
+    component_runtime_identity,
+)
 from ai_sdlc.core.stage_review.optimization.models import (
     OptimizationCandidate,
     OptimizationEvaluationReport,
@@ -54,6 +58,24 @@ class LocalPromotionEvaluationPort:
         self.domain_registry = domain_registry
         self.applier = CandidatePolicyApplier(domain_registry)
 
+    def runtime_identity(self) -> dict[str, object]:
+        return {
+            "snapshot_source": component_runtime_identity(
+                self.snapshot_source
+            ),
+            "attribution_source": component_runtime_identity(
+                self.attribution_source
+            ),
+            "promotion_policy_digest": self.gate.policy.policy_digest,
+            "resource_capacity": self.resource_capacity,
+            "clock": component_runtime_identity(self.clock),
+            "domain_registry_digest": self.domain_registry.snapshot_digest,
+        }
+
+    @property
+    def policy_digest(self) -> str:
+        return self.gate.policy.policy_digest
+
     def evaluate(
         self,
         epoch: OptimizationEpoch,
@@ -69,6 +91,7 @@ class LocalPromotionEvaluationPort:
             base_snapshot=baseline,
             attributions=attributions,
             evaluation_report_digests=digests,
+            shadow_result_digest=shadow.shadow_result_digest,
             created_at=self.clock(),
         )
         domain_guards = self.domain_registry.promotion_guards(
@@ -87,7 +110,61 @@ class LocalPromotionEvaluationPort:
             evidence,
             decision_id=stable_id("auto-promotion", candidate.candidate_digest),
         )
-        return PipelinePromotionPackage(decision=decision, snapshot=snapshot)
+        return PipelinePromotionPackage(
+            epoch_id=epoch.epoch_id,
+            constitution_digest=epoch.constitution_digest,
+            decision=decision,
+            evidence=evidence,
+            snapshot=snapshot,
+        )
+
+    def validate_cached(
+        self,
+        epoch: OptimizationEpoch,
+        candidate: OptimizationCandidate,
+        reports: tuple[OptimizationEvaluationReport, ...],
+        shadow: PipelineShadowResult,
+        package: PipelinePromotionPackage,
+    ) -> None:
+        baseline = self.snapshot_source(epoch.baseline_snapshot_digest)
+        expected_snapshot = self.applier.apply(
+            candidate,
+            base_snapshot=baseline,
+            attributions=_candidate_attributions(
+                candidate,
+                self.attribution_source(),
+            ),
+            evaluation_report_digests=tuple(
+                sorted(item.report_digest for item in reports)
+            ),
+            shadow_result_digest=shadow.shadow_result_digest,
+            created_at=package.snapshot.created_at,
+        )
+        expected_evidence = _promotion_evidence(
+            epoch,
+            candidate,
+            reports,
+            shadow,
+            expected_snapshot,
+            self.resource_capacity,
+            self.domain_registry.promotion_guards(
+                candidate,
+                reports,
+                shadow,
+            ),
+        )
+        expected_decision = self.gate.evaluate(
+            expected_evidence,
+            decision_id=package.decision.decision_id,
+        )
+        if (
+            package.snapshot != expected_snapshot
+            or package.evidence != expected_evidence
+            or package.decision != expected_decision
+        ):
+            raise SharedStateIntegrityError(
+                "promotion package deterministic decision diverged"
+            )
 
 
 def _candidate_attributions(
@@ -125,6 +202,7 @@ def _promotion_evidence(
         "evaluation_report_digests": tuple(
             sorted(item.report_digest for item in reports)
         ),
+        "shadow_result_digest": shadow.shadow_result_digest,
         "invariant_results": guards,
         **_quality_evidence(holdout, shadow),
         "holdout_session_count": len(holdout.comparison_session_ids),

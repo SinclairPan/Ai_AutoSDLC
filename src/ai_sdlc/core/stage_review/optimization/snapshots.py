@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
 from ai_sdlc.core.stage_review.artifacts import (
@@ -13,7 +13,15 @@ from ai_sdlc.core.stage_review.artifacts import (
 from ai_sdlc.core.stage_review.optimization.commit_fencing import (
     OptimizationCommitLeaseHandle,
 )
-from ai_sdlc.core.stage_review.optimization.promotion import AutoPromotionDecision
+from ai_sdlc.core.stage_review.optimization.pipeline_contracts import (
+    PipelinePromotionPackage,
+    PromotionAuthorizationPort,
+)
+from ai_sdlc.core.stage_review.optimization.promotion import (
+    AutoPromotionGate,
+    AutoPromotionPolicy,
+    bundled_auto_promotion_policies,
+)
 from ai_sdlc.core.stage_review.optimization.snapshot_binding import (
     _pointer_after as pointer_after,
 )
@@ -75,9 +83,13 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
         project_id: str,
         baseline_snapshot: OptimizationSnapshot,
         resource_governor: ResourceGovernor,
+        promotion_authority: PromotionAuthorizationPort,
         storage_policy: OptimizationStoragePolicy | None = None,
         lock_timeout_seconds: float = 2,
         retry_policy: SnapshotControlRetryPolicy | None = None,
+        promotion_policy_bundles: Mapping[
+            str, AutoPromotionPolicy
+        ] | None = None,
         monotonic: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
@@ -96,6 +108,42 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
             monotonic=monotonic or time.monotonic,
             sleeper=sleeper or time.sleep,
         )
+        self.promotion_policies = {
+            policy.policy_digest: policy
+            for policy in (
+                *bundled_auto_promotion_policies(),
+                *tuple((promotion_policy_bundles or {}).values()),
+            )
+        }
+        if any(
+            digest != policy.policy_digest
+            for digest, policy in (promotion_policy_bundles or {}).items()
+        ):
+            raise ValueError("snapshot promotion policy bundle diverged")
+        self.promotion_authority = promotion_authority
+
+    def runtime_identity(self) -> dict[str, object]:
+        from ai_sdlc.core.stage_review.optimization.evaluators import (
+            component_runtime_identity,
+        )
+
+        return {
+            "project_id": self.project_id,
+            "baseline_snapshot_digest": self.store.baseline_digest,
+            "storage_policy": self.storage_policy.model_dump(mode="json"),
+            "retry_policy": {
+                "maximum_attempts": self.retry.policy.maximum_attempts,
+                "maximum_active_seconds": (
+                    self.retry.policy.maximum_active_seconds
+                ),
+            },
+            "promotion_policy_digests": tuple(
+                sorted(self.promotion_policies)
+            ),
+            "promotion_authority": component_runtime_identity(
+                self.promotion_authority
+            ),
+        }
 
     def resolve_snapshot(self) -> SnapshotSelectionToken:
         try:
@@ -119,18 +167,54 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
         ) as lease:
             return selection_token(self._recover_safety_locked(lease, bundle))
 
-    def promote(
+    def _promote_committed_package(
         self,
         snapshot_digest: str,
         *,
-        decision: AutoPromotionDecision,
+        promotion_package_digest: str,
+        promotion_authorization_digest: str,
         operation_id: str,
     ) -> SnapshotControlEvent | None:
-        trusted = AutoPromotionDecision.model_validate(decision.model_dump(mode="json"))
+        package = self.store.promotion_package(promotion_package_digest)
+        if package is None:
+            raise SharedStateIntegrityError(
+                "committed promotion package is unavailable"
+            )
+        authority = self.promotion_authority
+        authorization = authority.promotion_authorization(package.package_digest)
+        if (
+            authorization is None
+            or authorization.authorization_digest
+            != promotion_authorization_digest
+            or self.store.promotion_authorization_digest(package.package_digest)
+            != promotion_authorization_digest
+        ):
+            raise SharedStateIntegrityError(
+                "snapshot promotion authorization is unavailable"
+            )
+        authority.verify_promotion_authorization(authorization, package)
+        try:
+            policy = self.promotion_policies[package.decision.policy_digest]
+        except KeyError as exc:
+            raise SharedStateIntegrityError(
+                "snapshot promotion policy is unavailable"
+            ) from exc
+        expected_decision = AutoPromotionGate(policy).evaluate(
+            package.evidence,
+            decision_id=package.decision.decision_id,
+        )
+        if expected_decision != package.decision:
+            raise SharedStateIntegrityError(
+                "committed promotion package policy decision diverged"
+            )
         try:
             return self.retry.run(
                 operation_id,
-                lambda _: self._promote_once(snapshot_digest, trusted, operation_id),
+                lambda _: self._promote_once(
+                    snapshot_digest,
+                    package,
+                    operation_id,
+                ),
             )
         except (SnapshotControlBusyError, StorageBundleUnavailableError):
             return None
@@ -138,7 +222,7 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
     def _promote_once(
         self,
         snapshot_digest: str,
-        decision: AutoPromotionDecision,
+        package: PipelinePromotionPackage,
         operation_id: str,
     ) -> SnapshotControlEvent | None:
         self._resolve_snapshot_once()
@@ -149,11 +233,17 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
             if existing is not None:
                 return existing
             snapshot = self._require_snapshot(snapshot_digest)
+            decision = package.decision
             expected = (
                 decision.approved,
+                self.store.promotion_package(package.package_digest) == package,
+                package.snapshot == snapshot,
                 decision.challenger_snapshot_digest == snapshot_digest,
                 decision.baseline_snapshot_digest == pointer.active_snapshot_digest,
                 decision.candidate_digest == snapshot.candidate_digest,
+                decision.evaluation_report_digests
+                == snapshot.evaluation_report_digests,
+                decision.shadow_result_digest == snapshot.shadow_result_digest,
                 snapshot_digest not in pointer.revoked_snapshot_digests,
             )
             if not all(expected):
@@ -167,6 +257,7 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
                 ),
                 lease,
                 None,
+                event_extensions=_promotion_event_extensions(package),
             )
 
     def mark_stable(
@@ -390,6 +481,8 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
         effect: SnapshotEffect,
         lease: OptimizationCommitLeaseHandle,
         resource_bundle: StorageBundleHandle | None,
+        *,
+        event_extensions: dict[str, object] | None = None,
     ) -> SnapshotControlEvent:
         existing = self.store.event_for_operation(effect.operation_id)
         if existing is not None:
@@ -413,9 +506,25 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
             session_binding_sequence=projected.session_binding_sequence,
             commit_fencing_epoch=lease.claim.fencing_epoch,
             commit_claim_digest=lease.claim.claim_digest,
+            extensions=event_extensions or {},
         )
         return self.store.append_event(
             event,
             lease=lease,
             resource_bundle=resource_bundle,
         )
+
+
+def _promotion_event_extensions(
+    package: PipelinePromotionPackage,
+) -> dict[str, object]:
+    return {
+        "promotion_package_digest": package.package_digest,
+        "promotion_evidence_digest": package.evidence.evidence_digest,
+        "promotion_decision_digest": package.decision.decision_digest,
+        "promotion_policy_digest": package.decision.policy_digest,
+        "shadow_result_digest": package.snapshot.shadow_result_digest,
+        "evaluation_report_digests": list(
+            package.snapshot.evaluation_report_digests
+        ),
+    }

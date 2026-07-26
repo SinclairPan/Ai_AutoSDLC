@@ -15,6 +15,9 @@ from ai_sdlc.core.stage_review.optimization.commit_fencing import (
     OptimizationCommitLeaseHandle,
     OptimizationCommitLeaseStore,
 )
+from ai_sdlc.core.stage_review.optimization.pipeline_contracts import (
+    PipelinePromotionPackage,
+)
 from ai_sdlc.core.stage_review.optimization.snapshot_models import (
     OptimizationSnapshot,
     SessionSnapshotBindingOperation,
@@ -90,9 +93,85 @@ class SnapshotControlStore:
             return None
         return OptimizationSnapshot.model_validate(read_json_object(path))
 
+    def register_promotion_package(
+        self,
+        package: PipelinePromotionPackage,
+        *,
+        authorization_digest: str,
+    ) -> PipelinePromotionPackage:
+        trusted = PipelinePromotionPackage.model_validate(
+            package.model_dump(mode="json")
+        )
+        if trusted.snapshot.project_id != self.project_id:
+            raise SharedStateIntegrityError(
+                "promotion package project identity diverged"
+            )
+        if not authorization_digest.strip():
+            raise SharedStateIntegrityError(
+                "promotion authorization digest is required"
+            )
+        path = self._promotion_package_path(trusted.package_digest)
+        created = self.storage.accounting.persist_json_exclusive(
+            path,
+            trusted.model_dump(mode="json"),
+        )
+        existing = (
+            trusted
+            if created
+            else PipelinePromotionPackage.model_validate(read_json_object(path))
+        )
+        if existing != trusted:
+            raise SharedStateIntegrityError(
+                "promotion package digest content diverged"
+            )
+        binding_path = self._promotion_authorization_path(trusted.package_digest)
+        binding = {
+            "promotion_package_digest": trusted.package_digest,
+            "promotion_authorization_digest": authorization_digest,
+        }
+        if (
+            not self.storage.accounting.persist_json_exclusive(
+                binding_path,
+                binding,
+            )
+            and read_json_object(binding_path) != binding
+        ):
+            raise SharedStateIntegrityError(
+                "promotion authorization binding diverged"
+            )
+        return existing
+
+    def promotion_package(
+        self,
+        digest: str,
+    ) -> PipelinePromotionPackage | None:
+        path = self._promotion_package_path(digest)
+        if not path.is_file():
+            return None
+        return PipelinePromotionPackage.model_validate(read_json_object(path))
+
+    def promotion_authorization_digest(self, package_digest: str) -> str:
+        path = self._promotion_authorization_path(package_digest)
+        if not path.is_file():
+            return ""
+        payload = read_json_object(path)
+        if payload.get("promotion_package_digest") != package_digest:
+            raise SharedStateIntegrityError(
+                "promotion authorization binding diverged"
+            )
+        return str(payload.get("promotion_authorization_digest", ""))
+
     def _snapshot_path(self, digest: str) -> Path:
         name = portable_content_digest_name(digest)
         return self.root / "snapshots" / f"{name}.json"
+
+    def _promotion_package_path(self, digest: str) -> Path:
+        name = portable_content_digest_name(digest)
+        return self.root / "promotion-packages" / f"{name}.json"
+
+    def _promotion_authorization_path(self, digest: str) -> Path:
+        name = portable_content_digest_name(digest)
+        return self.root / "promotion-authorizations" / f"{name}.json"
 
     def events(self) -> tuple[SnapshotControlEvent, ...]:
         events = tuple(
@@ -141,6 +220,16 @@ class SnapshotControlStore:
             key=operation_id,
         )
         return None if record is None else _snapshot_event(record)
+
+    def event(self, event_digest: str) -> SnapshotControlEvent | None:
+        return next(
+            (
+                event
+                for event in self.events()
+                if event.event_digest == event_digest
+            ),
+            None,
+        )
 
     def persist_revocation(
         self,

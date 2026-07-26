@@ -1,3 +1,7 @@
+from tests.unit.stage_review.optimization.shadow_fixture import (
+    InMemoryShadowObservationStore,
+)
+
 from ai_sdlc.core.stage_review.canonical import CanonicalizationPolicy, canonical_digest
 from ai_sdlc.core.stage_review.optimization.candidate_dataset import (
     CandidateDatasetView,
@@ -48,7 +52,6 @@ from ai_sdlc.core.stage_review.optimization.shadow import (
     OptimizationShadowAssignmentStore,
 )
 from ai_sdlc.core.stage_review.optimization.shadow_observations import (
-    OptimizationShadowObservationStore,
     ShadowOutcome,
 )
 from ai_sdlc.core.stage_review.optimization.shadow_observations import (
@@ -56,6 +59,10 @@ from ai_sdlc.core.stage_review.optimization.shadow_observations import (
 )
 from ai_sdlc.core.stage_review.optimization.statistics import (
     _apply_holm_bonferroni as apply_holm_bonferroni,
+)
+from ai_sdlc.core.stage_review.optimization.statistics import (
+    baseline_statistics_policy,
+    required_sample_size,
 )
 from ai_sdlc.core.stage_review.provider_usage_models import metered_provider_usage
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
@@ -97,6 +104,7 @@ def test_budget_exhaustion_generates_five_bounded_policy_adjustments() -> None:
         base_snapshot=baseline,
         attributions=(),
         evaluation_report_digests=("sha256:report",),
+        shadow_result_digest="sha256:shadow-result",
         created_at="2026-07-22T00:00:00Z",
     )
     policy = snapshot.policy_payload["budget_policy"]["medium"]
@@ -149,6 +157,12 @@ def test_budget_replay_uses_exhaustion_outcomes_not_attribution_shortcut() -> No
         evaluation_provider_id="provider.local-evaluator",
         provider_capabilities=("local-read-only", "read-only"),
         resource_reservation_digest="sha256:reservation",
+        statistics_policy_digest=(
+            baseline_statistics_policy().policy_digest
+        ),
+        statistical_alpha=(
+            baseline_statistics_policy().familywise_alpha
+        ),
     )
     report = LocalCandidateEvaluator(
         dataset_source=lambda _: dataset,
@@ -159,10 +173,13 @@ def test_budget_replay_uses_exhaustion_outcomes_not_attribution_shortcut() -> No
     assert report.quality_deltas["critical_detection"] == 0
     assert report.quality_deltas["budget_exhaustion_recovery"] == 1
     assert report.guard_results["metric_evidence_authorized"] is True
-    assert adjusted.recommendation == "finalist_eligible"
+    assert adjusted.recommendation == "reject"
+    assert adjusted.statistical_power < 0.8
 
 
 def test_budget_shadow_compares_future_exhaustion_outcomes(tmp_path) -> None:
+    policy = baseline_statistics_policy()
+    sample_count = required_sample_size(policy, alpha=policy.shadow_alpha)
     baseline = baseline_optimization_snapshot("project.shared")
     dataset = _dataset(baseline.snapshot_digest)
     view = build_candidate_dataset_view(dataset, ())
@@ -184,10 +201,8 @@ def test_budget_shadow_compares_future_exhaustion_outcomes(tmp_path) -> None:
     assignments = OptimizationShadowAssignmentStore(
         tmp_path, project_id="project.shared"
     )
-    shadow_observations = OptimizationShadowObservationStore(
-        tmp_path, project_id="project.shared"
-    )
-    for index in range(10):
+    shadow_observations = InMemoryShadowObservationStore()
+    for index in range(sample_count):
         binding = _future_binding(index, baseline.snapshot_digest)
         bindings.append(binding)
         observations.append(
@@ -208,12 +223,13 @@ def test_budget_shadow_compares_future_exhaustion_outcomes(tmp_path) -> None:
         minimum_sessions=10,
         minimum_days=14,
         usage_policy_source=lambda _: baseline_usage_estimate_policy(),
+        statistics_policy=policy,
     )
     assert port.observe(epoch, candidate, allow_effect).complete is False
-    for index in range(10):
+    for index in range(sample_count):
         assignment = assignments.read_session(f"session.future-{index:02d}")
         assert assignment is not None
-        shadow_observations.append(
+        shadow_observations.add(
             build_shadow_observation(
                 assignment,
                 baseline=ShadowOutcome(
@@ -319,6 +335,7 @@ def _dataset(
 
 
 def _epoch(baseline_digest: str) -> OptimizationEpoch:
+    policy = baseline_statistics_policy()
     return OptimizationEpoch(
         epoch_id="optimization-epoch.budget",
         project_id="project.shared",
@@ -327,6 +344,9 @@ def _epoch(baseline_digest: str) -> OptimizationEpoch:
         constitution_digest="sha256:constitution",
         baseline_snapshot_digest=baseline_digest,
         candidate_domain_registry_digest="sha256:registry",
+        statistics_policy_digest=policy.policy_digest,
+        evaluator_registry_digest="sha256:evaluator-registry",
+        auto_promotion_policy_digest="sha256:promotion-policy",
         session_sequence_high_watermark=20,
         new_session_count=20,
         state="generating",

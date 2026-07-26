@@ -7,7 +7,9 @@ from pathlib import Path
 from tests.unit.stage_review.optimization.test_snapshots import (
     _binding,
     _promotion_evidence,
+    _promotion_package,
     _promotion_policy,
+    _register_promotion,
     _service,
     _snapshot,
 )
@@ -38,18 +40,38 @@ def test_barrier_serializes_promotion_revocation_and_sixteen_bindings(
     )
     service = _service(tmp_path, baseline)
     service.register_snapshot(active)
-    service.promote(
-        active.snapshot_digest,
-        decision=_decision(
+    active_package = _promotion_package(
+        active,
+        _decision(
             baseline.snapshot_digest,
             active.snapshot_digest,
             active.candidate_digest,
             "activate",
+            shadow_result_digest=active.shadow_result_digest,
+            evaluation_report_digests=active.evaluation_report_digests,
         ),
+    )
+    active_authorization = _register_promotion(service, active_package)
+    service._promote_committed_package(
+        active.snapshot_digest,
+        promotion_package_digest=active_package.package_digest,
+        promotion_authorization_digest=active_authorization,
         operation_id="operation.activate",
     )
     service.mark_stable(active.snapshot_digest, operation_id="operation.stable")
     service.register_snapshot(challenger)
+    challenger_package = _promotion_package(
+        challenger,
+        _decision(
+            active.snapshot_digest,
+            challenger.snapshot_digest,
+            challenger.candidate_digest,
+            "concurrent",
+            shadow_result_digest=challenger.shadow_result_digest,
+            evaluation_report_digests=challenger.evaluation_report_digests,
+        ),
+    )
+    challenger_authorization = _register_promotion(service, challenger_package)
     token = service.resolve_snapshot()
     barrier = threading.Barrier(18)
 
@@ -66,14 +88,10 @@ def test_barrier_serializes_promotion_revocation_and_sixteen_bindings(
     def promote() -> object:
         barrier.wait()
         try:
-            return service.promote(
+            return service._promote_committed_package(
                 challenger.snapshot_digest,
-                decision=_decision(
-                    active.snapshot_digest,
-                    challenger.snapshot_digest,
-                    challenger.candidate_digest,
-                    "concurrent",
-                ),
+                promotion_package_digest=challenger_package.package_digest,
+                promotion_authorization_digest=challenger_authorization,
                 operation_id="operation.concurrent-promotion",
             )
         except SharedStateIntegrityError as exc:
@@ -142,12 +160,17 @@ def _decision(
     challenger_digest: str,
     candidate_digest: str,
     suffix: str,
+    *,
+    shadow_result_digest: str,
+    evaluation_report_digests: tuple[str, ...],
 ) -> AutoPromotionDecision:
     return AutoPromotionGate(_promotion_policy()).evaluate(
         _promotion_evidence(
             baseline_digest=baseline_digest,
             challenger_digest=challenger_digest,
             candidate_digest=candidate_digest,
+            shadow_result_digest=shadow_result_digest,
+            evaluation_report_digests=evaluation_report_digests,
         ),
         decision_id=f"decision.{suffix}",
     )

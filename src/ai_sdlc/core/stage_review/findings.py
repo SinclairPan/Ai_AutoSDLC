@@ -7,6 +7,7 @@ from typing import TypeAlias
 from ai_sdlc.core.stage_review import finding_lineage
 from ai_sdlc.core.stage_review.activation_fence import (
     activation_safety_mutation_fence,
+    activation_safety_read_lease,
 )
 from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
 from ai_sdlc.core.stage_review.finding_authorization import FindingAuthorizer
@@ -101,7 +102,10 @@ class FindingLedgerService:
             return self._append(command)
 
     def read(self, scope: FindingScope) -> FindingLedger:
-        with self._store.lock(scope):
+        with (
+            activation_safety_read_lease(self._root, self._project_id),
+            self._store.lock(scope),
+        ):
             self._store.bind_project()
             trust = self._trusted(scope)
             return self._rebuild(scope, trust)

@@ -14,7 +14,15 @@ from typing import (
     TypeVar,
 )
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    PrivateAttr,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 from typing_extensions import TypeAliasType
 
 from ai_sdlc.core.stage_review.canonical import (
@@ -154,6 +162,7 @@ class ArtifactCompatibility(BaseModel):
     canonicalization_version: Literal["canonical-json.v1"] = "canonical-json.v1"
     compatibility_mode: Literal["strict", "read-only-legacy"] = "strict"
     extensions: dict[str, JsonValue] = Field(default_factory=dict)
+    _legacy_source_verified: bool = PrivateAttr(default=False)
 
     @field_validator("extensions", mode="before")
     @classmethod
@@ -162,8 +171,24 @@ class ArtifactCompatibility(BaseModel):
         return value
 
     @model_validator(mode="after")
-    def _freeze_extensions(self) -> Self:
+    def _freeze_extensions(self, info: ValidationInfo) -> Self:
         object.__setattr__(self, "extensions", freeze_json_mapping(self.extensions))
+        context = info.context if isinstance(info.context, Mapping) else {}
+        verified = context.get("verified_legacy_source_digest")
+        verified_many = context.get("verified_legacy_source_digests", ())
+        if not isinstance(verified_many, (list, tuple, set, frozenset)):
+            verified_many = ()
+        source_digest = self.extensions.get("source_digest")
+        if (
+            self.compatibility_mode == "read-only-legacy"
+            and isinstance(source_digest, str)
+            and source_digest
+            and (
+                source_digest == verified
+                or source_digest in verified_many
+            )
+        ):
+            object.__setattr__(self, "_legacy_source_verified", True)
         return self
 
 
@@ -171,9 +196,13 @@ def fill_artifact_digest(value: _ModelT, digest_field: str) -> _ModelT:
     current = getattr(value, digest_field)
     if getattr(value, "compatibility_mode", "strict") == "read-only-legacy":
         extensions = getattr(value, "extensions", {})
-        if current and extensions.get("source_digest") == current:
+        if (
+            current
+            and extensions.get("source_digest") == current
+            and getattr(value, "_legacy_source_verified", False)
+        ):
             return value
-        raise ValueError(f"{digest_field} lacks verified legacy source digest")
+        raise ValueError(f"{digest_field} lacks trusted legacy source verification")
     payload = value.model_dump(exclude={digest_field}, mode="json")
     expected = canonical_digest(payload, CanonicalizationPolicy())
     if current and current != expected:

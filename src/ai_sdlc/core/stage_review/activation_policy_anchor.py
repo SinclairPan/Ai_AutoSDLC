@@ -51,20 +51,38 @@ def select_local_activation_policy(
     anchor_policy: StageGateActivationPolicy | None,
     baseline: StageGateActivationPolicy,
 ) -> StageGateActivationPolicy:
+    trusted_anchor = anchor_policy or baseline
     if pointer_policy is None:
-        return anchor_policy or baseline
-    if anchor_policy is None or pointer_policy.policy_digest == anchor_policy.policy_digest:
+        if trusted_anchor.active_phase > baseline.active_phase:
+            raise ValueError(
+                "tracked activation policy promotion is not trusted locally"
+            )
+        return trusted_anchor
+    if pointer_policy.policy_digest == trusted_anchor.policy_digest:
         return pointer_policy
-    return _newer_policy(pointer_policy, anchor_policy)
+    if pointer_policy.active_phase < trusted_anchor.active_phase:
+        raise ValueError("tracked activation policy cannot supersede local policy")
+    if pointer_policy.active_phase == trusted_anchor.active_phase:
+        return _newer_policy(pointer_policy, trusted_anchor)
+    _require_same_trust_root(pointer_policy, trusted_anchor)
+    return pointer_policy
 
 
 def read_ci_activation_policy(
     root: Path,
     base_commit: str,
     baseline: StageGateActivationPolicy,
+    *,
+    candidate_base_commit: str | None = None,
 ) -> tuple[StageGateActivationPolicy, ActivationPolicySource]:
     base = _read_git_anchor(root, base_commit)
     candidate = read_activation_policy_anchor(root)
+    if candidate_base_commit is not None:
+        candidate_base = _read_git_anchor(root, candidate_base_commit)
+        if _same_policy(candidate, candidate_base):
+            if base is None:
+                raise ValueError("protected activation policy anchor is missing")
+            return base, "protected-base-anchor"
     if candidate is None:
         if base is None:
             raise ValueError("protected activation policy anchor is missing")
@@ -76,14 +94,25 @@ def read_ci_activation_policy(
     return candidate, "protected-candidate-anchor"
 
 
+def _same_policy(
+    first: StageGateActivationPolicy | None,
+    second: StageGateActivationPolicy | None,
+) -> bool:
+    return first is None and second is None or (
+        first is not None
+        and second is not None
+        and first.policy_digest == second.policy_digest
+    )
+
+
 def _newer_policy(
     first: StageGateActivationPolicy,
     second: StageGateActivationPolicy,
 ) -> StageGateActivationPolicy:
     if first.active_phase == second.active_phase:
-        if _is_strict_schema_upgrade(first, second):
+        if is_strict_activation_policy_schema_upgrade(first, second):
             return first
-        if _is_strict_schema_upgrade(second, first):
+        if is_strict_activation_policy_schema_upgrade(second, first):
             return second
         raise ValueError("activation policy anchor and pointer diverged")
     newer, older = (
@@ -104,9 +133,16 @@ def _require_not_weaker(
     if candidate.active_phase < base.active_phase:
         raise ValueError("activation policy candidate downgrades protected base")
     if candidate.active_phase == base.active_phase:
-        if _is_strict_schema_upgrade(candidate, base):
+        if is_strict_activation_policy_schema_upgrade(candidate, base):
             return
         raise ValueError("activation policy changed without a phase transition")
+    raise ValueError("tracked activation policy promotion is not trusted")
+
+
+def _require_same_trust_root(
+    candidate: StageGateActivationPolicy,
+    base: StageGateActivationPolicy,
+) -> None:
     if not set(base.enabled_stages).issubset(candidate.enabled_stages):
         raise ValueError("activation policy candidate removes an enabled stage")
     if not set(base.enabled_risk_levels).issubset(candidate.enabled_risk_levels):
@@ -121,7 +157,7 @@ def _require_not_weaker(
         raise ValueError("activation policy candidate changes the evidence trust root")
 
 
-def _is_strict_schema_upgrade(
+def is_strict_activation_policy_schema_upgrade(
     candidate: StageGateActivationPolicy,
     base: StageGateActivationPolicy,
 ) -> bool:
@@ -171,6 +207,7 @@ def _read_git_anchor(
 
 __all__ = [
     "ACTIVATION_POLICY_ANCHOR",
+    "is_strict_activation_policy_schema_upgrade",
     "read_activation_policy_anchor",
     "read_ci_activation_policy",
     "select_local_activation_policy",

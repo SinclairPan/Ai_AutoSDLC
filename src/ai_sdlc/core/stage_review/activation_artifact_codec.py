@@ -69,7 +69,12 @@ def decode_activation_policy(payload: object) -> StageGateActivationPolicy:
             "attribution_policy_digest": attribution_policy.policy_digest,
         }
     )
-    return StageGateActivationPolicy.model_validate(migrated)
+    return StageGateActivationPolicy.model_validate(
+        migrated,
+        context={
+            "verified_legacy_source_digest": legacy["policy_digest"]
+        },
+    )
 
 
 def decode_activation_session_record(
@@ -100,7 +105,12 @@ def decode_activation_session_record(
     migrated["close_proof_id"] = migrated.pop("attestation_id")
     migrated["close_proof_digest"] = migrated.pop("attestation_digest")
     migrated["scope"] = scope.model_dump(mode="json")
-    return ActivationSessionRecord.model_validate(migrated)
+    return ActivationSessionRecord.model_validate(
+        migrated,
+        context={
+            "verified_legacy_source_digest": legacy["record_digest"]
+        },
+    )
 
 
 def read_activation_session_records(
@@ -204,7 +214,12 @@ def decode_stage_close_gate_attestation(
         ).model_dump(mode="json")
     else:
         migrated["review_scope"] = None
-    return StageCloseGateAttestation.model_validate(migrated)
+    return StageCloseGateAttestation.model_validate(
+        migrated,
+        context={
+            "verified_legacy_source_digest": legacy["attestation_digest"]
+        },
+    )
 
 
 def decode_activation_evidence(payload: object) -> ActivationEvidence:

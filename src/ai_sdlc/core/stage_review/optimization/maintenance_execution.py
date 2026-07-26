@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from datetime import datetime
 from typing import Protocol, cast
 
@@ -38,7 +38,9 @@ from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
 from ai_sdlc.core.stage_review.resource_runtime import utc_now
 from ai_sdlc.core.stage_review.resources import ResourceGovernor
 
-TERMINAL_EPOCH_STATES = frozenset({"promoted", "no_change", "failed"})
+TERMINAL_EPOCH_STATES = frozenset(
+    {"promoted", "no_change", "failed", "superseded_runtime_upgrade"}
+)
 _NEXT_PIPELINE_STATE = {
     "snapshotting": "generating",
     "generating": "replaying",
@@ -67,14 +69,16 @@ class OptimizationMaintenanceRunner:
         project_id: str,
         store: OptimizationControllerStore,
         resource_governor: ResourceGovernor,
-        budget_policy: ReviewerBudgetPolicy,
+        budget_policies: Mapping[str, ReviewerBudgetPolicy],
         step_executor: OptimizationStepExecutor,
         foreground_requested: Callable[[], bool],
     ) -> None:
         self.project_id = project_id
         self.store = store
         self.resource_governor = resource_governor
-        self.budget_policy = budget_policy
+        self.budget_policies = dict(budget_policies)
+        if not self.budget_policies:
+            raise ValueError("optimization budget policy registry is empty")
         self.step_executor = step_executor
         self.foreground_requested = foreground_requested
 
@@ -99,6 +103,53 @@ class OptimizationMaintenanceRunner:
             result = self._advance_claimed(epoch, budget, guard, now=now)
             failed = False
             return result
+        finally:
+            try:
+                guard.release()
+            except SharedStateIntegrityError:
+                if not failed:
+                    raise
+
+    def supersede_runtime_upgrade(
+        self,
+        epoch: OptimizationEpoch,
+        budget: MaintenanceBudget,
+        *,
+        owner_id: str,
+        now: datetime | None,
+    ) -> OptimizationMaintenanceResult:
+        """在新运行时接管前，受 fencing 保护地回收旧 epoch 的全部资源。"""
+        try:
+            epoch, guard = self._claim_and_resume(
+                epoch, budget=budget, owner_id=owner_id, now=now
+            )
+        except OptimizationEpochLeaseBusyError:
+            return OptimizationMaintenanceResult(
+                result_code="paused", epoch=epoch, reason="epoch_lease_busy"
+            )
+        failed = True
+        try:
+            guard.authorize()
+            recover_resource_windows(
+                self.resource_governor,
+                epoch,
+                self.store.lease_claims(epoch.epoch_id),
+                authorize_effect=guard.authorize,
+            )
+            terminal = self._append_epoch_guarded(
+                epoch,
+                guard,
+                state="superseded_runtime_upgrade",
+                reservation_id="",
+                reservation_fencing_token=0,
+                cumulative_usage=self._epoch_usage(epoch.epoch_id),
+                terminal_at=utc_iso(now or utc_now(None)),
+            )
+            failed = False
+            return _maintenance_result(
+                terminal,
+                reason="runtime_bundle_manifest_upgraded",
+            )
         finally:
             try:
                 guard.release()
@@ -145,7 +196,8 @@ class OptimizationMaintenanceRunner:
                 epoch, guard, state="paused", resume_state=epoch.state
             )
             return _maintenance_result(paused)
-        if _epoch_budget_exhausted(epoch, self.budget_policy):
+        policy = self._budget_policy(epoch)
+        if _epoch_budget_exhausted(epoch, policy):
             stopped = self._append_epoch_guarded(
                 epoch,
                 guard,
@@ -154,7 +206,7 @@ class OptimizationMaintenanceRunner:
             )
             return _maintenance_result(stopped, reason="epoch_budget_exhausted")
         bound, reservation = self._open_resource_window(
-            epoch, budget, guard, now=now
+            epoch, budget, guard, policy=policy, now=now
         )
         try:
             step = self.step_executor.advance(
@@ -173,6 +225,7 @@ class OptimizationMaintenanceRunner:
         budget: MaintenanceBudget,
         guard: EpochLeaseGuard,
         *,
+        policy: ReviewerBudgetPolicy,
         now: datetime | None,
     ) -> tuple[OptimizationEpoch, ResourceReservation]:
         guard.authorize()
@@ -192,7 +245,7 @@ class OptimizationMaintenanceRunner:
             guard.claim,
             budget,
             project_id=self.project_id,
-            policy=self.budget_policy,
+            policy=policy,
             authorize_effect=guard.authorize,
             now=now,
         )
@@ -203,6 +256,14 @@ class OptimizationMaintenanceRunner:
             reservation_fencing_token=reservation.fencing_token,
         )
         return bound, reservation
+
+    def _budget_policy(self, epoch: OptimizationEpoch) -> ReviewerBudgetPolicy:
+        try:
+            return self.budget_policies[epoch.constitution_digest]
+        except KeyError as exc:
+            raise SharedStateIntegrityError(
+                "optimization epoch budget policy is unavailable"
+            ) from exc
 
     def _commit_step(
         self,
@@ -292,7 +353,19 @@ class OptimizationMaintenanceRunner:
     ) -> OptimizationEpoch:
         payload = epoch.model_dump(mode="json")
         payload.update(changes)
+        extensions = dict(epoch.extensions)
+        if (
+            epoch.schema_version == "optimization-epoch.v1"
+            and extensions.get("legacy_source_digest") == epoch.epoch_digest
+        ):
+            extensions.pop("legacy_source_digest", None)
+            extensions.pop("legacy_source_schema_version", None)
+            extensions.pop("legacy_source_extensions", None)
+            extensions["migrated_from_digest"] = epoch.epoch_digest
         payload.update(
+            schema_version="optimization-epoch.v2",
+            compatibility_mode="strict",
+            extensions=extensions,
             revision=epoch.revision + 1,
             previous_epoch_digest=epoch.epoch_digest,
             epoch_digest="",

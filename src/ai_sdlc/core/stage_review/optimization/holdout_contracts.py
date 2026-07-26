@@ -27,6 +27,10 @@ class HoldoutQueryRequest(BaseModel):
     baseline_snapshot_digest: str
     finalist_candidate_digest: str
     holdout_session_ids: tuple[str, ...]
+    statistics_policy_digest: str
+    holdout_alpha_ledger_id: str
+    holdout_alpha_ledger_limit: float = Field(gt=0, lt=1)
+    familywise_alpha: float = Field(gt=0, lt=1)
     provider_query_idempotency_key: str
     epoch_lease_fencing_epoch: int = Field(ge=1)
     epoch_lease_claim_digest: str
@@ -44,6 +48,11 @@ class HoldoutQueryRequest(BaseModel):
             sorted(set(self.holdout_session_ids))
         ):
             raise ValueError("holdout sessions must be canonical and non-empty")
+        if not (
+            self.statistics_policy_digest.strip()
+            and self.holdout_alpha_ledger_id.strip()
+        ):
+            raise ValueError("holdout statistics policy is required")
         return self
 
 
@@ -61,6 +70,10 @@ class HoldoutQueryCommitment(ArtifactCompatibility):
     baseline_snapshot_digest: str
     finalist_candidate_digest: str
     holdout_session_ids: tuple[str, ...]
+    statistics_policy_digest: str
+    holdout_alpha_ledger_id: str
+    holdout_alpha_ledger_limit: float = Field(gt=0, lt=1)
+    familywise_alpha: float = Field(gt=0, lt=1)
     provider_query_idempotency_key: str
     test_sequence: int = Field(ge=1)
     alpha_i: float = Field(gt=0)
@@ -84,6 +97,11 @@ class HoldoutQueryCommitment(ArtifactCompatibility):
             raise ValueError("holdout commitment predecessor is required")
         if not self.commit_claim_digest or not self.epoch_lease_claim_digest:
             raise ValueError("holdout commitment fencing claim is required")
+        if not (
+            self.statistics_policy_digest.strip()
+            and self.holdout_alpha_ledger_id.strip()
+        ):
+            raise ValueError("holdout commitment statistics policy is required")
         return fill_artifact_digest(self, "commitment_digest")
 
 

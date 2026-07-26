@@ -50,6 +50,7 @@ class CandidatePolicyApplier:
         base_snapshot: OptimizationSnapshot,
         attributions: tuple[FindingAttribution, ...],
         evaluation_report_digests: tuple[str, ...],
+        shadow_result_digest: str,
         created_at: str,
     ) -> OptimizationSnapshot:
         trusted = OptimizationCandidate.model_validate(
@@ -76,6 +77,7 @@ class CandidatePolicyApplier:
             stable_fallback_digest=baseline.snapshot_digest,
             candidate_digest=trusted.candidate_digest,
             evaluation_report_digests=evaluation_report_digests,
+            shadow_result_digest=shadow_result_digest,
             policy_payload=payload,
             created_at=created_at,
         )

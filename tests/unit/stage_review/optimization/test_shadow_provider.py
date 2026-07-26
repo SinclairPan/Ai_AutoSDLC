@@ -127,6 +127,7 @@ def _request(spec, payload: dict[str, object]):
         candidate_digest="sha256:candidate",
         assignment_digest="sha256:assignment",
         authorization_scope="optimization_shadow",
+        runtime_bundle_manifest_digest="sha256:test-runtime-bundle",
         epoch_id="optimization-epoch.shadow-provider",
         provider_id=spec.provider_id,
         request_digest=spec.request_digest,

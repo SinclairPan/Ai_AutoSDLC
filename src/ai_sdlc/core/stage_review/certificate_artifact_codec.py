@@ -17,7 +17,15 @@ def _decode_certificate_artifact(
         return StageCloseCertificate.model_validate(payload)
     if version != _PREVIOUS_VERSION:
         raise ValueError(f"unknown stage close certificate schema: {version}")
-    return StageCloseCertificate.model_validate(_migrate_previous(payload))
+    migrated = _migrate_previous(payload)
+    extensions = migrated["extensions"]
+    assert isinstance(extensions, dict)
+    return StageCloseCertificate.model_validate(
+        migrated,
+        context={
+            "verified_legacy_source_digest": extensions["source_digest"]
+        },
+    )
 
 
 def _migrate_previous(payload: dict[str, object]) -> dict[str, object]:

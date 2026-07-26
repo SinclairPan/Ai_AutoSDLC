@@ -19,7 +19,6 @@ from ai_sdlc.core.stage_review.artifacts import (
     ShortFileLock,
     _clear_dead_owner,
     _unlink_with_retry,
-    cleanup_resolved_path,
     create_json_exclusive,
     read_json_object,
     resolve_canonical_shared_state,
@@ -85,6 +84,9 @@ def activation_safety_read_lease(
     if state["mutation_depth"]:
         yield
         return
+    if state["readers"]:
+        yield
+        return
     registry_lock = fence_root / "registry.lock"
     writer_intent = fence_root / "writer-intent.lock"
     lease_token = secrets.token_hex(32)
@@ -97,6 +99,7 @@ def activation_safety_read_lease(
     lease_path = fence_root / "readers" / f"{lease_id}.json"
     owner_lock_path = _lease_owner_lock_path(fence_root, lease_token)
     owner_lock = ShortFileLock(owner_lock_path, timeout_seconds=5)
+    _clear_orphan_owner_locks(fence_root)
     owner_lock.__enter__()
     _set_lease_token_active(lease_token, active=True)
     acquired = False
@@ -133,15 +136,12 @@ def activation_safety_read_lease(
             owner_lock.__exit__(None, None, None)
         except Exception as cleanup_error:
             _note_deferred_marker_cleanup(primary_error, cleanup_error)
-        owner_lock_removed = _cleanup_owner_lock_file(
-            owner_lock_path,
-            primary_error,
-        )
-        if acquired and owner_lock_removed:
+        if acquired:
             try:
                 _unlink_owned_marker(lease_path, lease_token)
             except Exception as cleanup_error:
                 _note_deferred_marker_cleanup(primary_error, cleanup_error)
+        _cleanup_owner_lock_file(owner_lock_path, primary_error)
 
 
 @contextmanager
@@ -171,6 +171,7 @@ def activation_safety_mutation_fence(
     lease_token = secrets.token_hex(32)
     owner_lock_path = _lease_owner_lock_path(fence_root, lease_token)
     owner_lock = ShortFileLock(owner_lock_path, timeout_seconds=5)
+    _clear_orphan_owner_locks(fence_root)
     owner_lock.__enter__()
     _set_lease_token_active(lease_token, active=True)
     primary_error: BaseException | None = None
@@ -218,16 +219,13 @@ def activation_safety_mutation_fence(
             owner_lock.__exit__(None, None, None)
         except Exception as cleanup_error:
             _note_deferred_marker_cleanup(primary_error, cleanup_error)
-        owner_lock_removed = _cleanup_owner_lock_file(
-            owner_lock_path,
-            primary_error,
-        )
-        if intent_owned and owner_lock_removed:
+        if intent_owned:
             try:
                 with ShortFileLock(registry_lock, timeout_seconds=5):
                     _unlink_owned_marker(writer_intent, lease_token)
             except Exception as cleanup_error:
                 _note_deferred_marker_cleanup(primary_error, cleanup_error)
+        _cleanup_owner_lock_file(owner_lock_path, primary_error)
 
 
 def _fence_root(root: Path, project_id: str) -> Path:
@@ -309,6 +307,24 @@ def _clear_completed_reader_markers(fence_root: Path) -> None:
         _clear_stale_owner(marker)
 
 
+def _clear_orphan_owner_locks(fence_root: Path) -> None:
+    """清理已无持有者的 lock 文件；失败不得阻塞已完成租约的 marker 回收。"""
+    for index, owner_lock_path in enumerate(
+        (fence_root / "owner-locks").glob("*.lock"),
+        start=1,
+    ):
+        if index > 8:
+            break
+        probe = ShortFileLock(owner_lock_path, timeout_seconds=0)
+        try:
+            probe.__enter__()
+        except ResourceLockUnavailableError:
+            continue
+        else:
+            probe.__exit__(None, None, None)
+        _cleanup_owner_lock_file(owner_lock_path, None)
+
+
 def _lease_owner_lock_is_active(path: Path, lease_token: str) -> bool:
     try:
         owner_lock_path = _lease_owner_lock_path(
@@ -332,7 +348,7 @@ def _cleanup_owner_lock_file(
     primary_error: BaseException | None,
 ) -> bool:
     try:
-        removed = cleanup_resolved_path(path)
+        removed = _unlink_with_retry(path, missing_ok=True)
     except Exception as cleanup_error:
         _note_deferred_marker_cleanup(primary_error, cleanup_error)
         return not path.exists()
@@ -380,13 +396,11 @@ def _clear_stale_owner(path: Path) -> bool:
             locally_active = False
         if locally_active or _lease_owner_lock_is_active(path, lease_token):
             return False
-        owner_lock_removed = _cleanup_owner_lock_file(
+        removed = _unlink_owned_marker(path, lease_token)
+        _cleanup_owner_lock_file(
             _lease_owner_lock_path(_marker_fence_root(path), lease_token),
             None,
         )
-        if not owner_lock_removed:
-            return False
-        removed = _unlink_owned_marker(path, lease_token)
         return removed
     if _clear_dead_owner(path):
         return True

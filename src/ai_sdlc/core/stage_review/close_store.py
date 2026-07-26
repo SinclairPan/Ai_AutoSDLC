@@ -84,7 +84,16 @@ class StageCloseStore:
         return existing
 
     def load_state(self, claim: CloseConsumptionClaim) -> CloseConsumptionState:
-        trusted = CloseConsumptionClaim.model_validate(claim.model_dump(mode="json"))
+        if claim.compatibility_mode == "read-only-legacy":
+            trusted = self.read_claim(claim.certificate_id)
+            if trusted is None or trusted != claim:
+                raise SharedStateIntegrityError(
+                    "close claim is not the persisted authority"
+                )
+        else:
+            trusted = CloseConsumptionClaim.model_validate(
+                claim.model_dump(mode="json")
+            )
         events = self._read_events(trusted.certificate_id)
         state = _rebuild_state(trusted, events)
         self._verify_projection(trusted.certificate_id, state)
@@ -94,6 +103,8 @@ class StageCloseStore:
         self,
         claim: CloseConsumptionClaim,
     ) -> CloseConsumptionState:
+        if claim.compatibility_mode != "strict":
+            raise SharedStateIntegrityError("previous close schema is read-only")
         trusted = CloseConsumptionClaim.model_validate(claim.model_dump(mode="json"))
         persisted = self.read_claim(trusted.certificate_id)
         if persisted != trusted:
@@ -126,6 +137,8 @@ class StageCloseStore:
         governance_decision_digest: str = "",
         authorize_write: Callable[[], object],
     ) -> CloseConsumptionState:
+        if claim.compatibility_mode != "strict":
+            raise SharedStateIntegrityError("previous close schema is read-only")
         claim = CloseConsumptionClaim.model_validate(claim.model_dump(mode="json"))
         state = CloseConsumptionState.model_validate(state.model_dump(mode="json"))
         existing_events = self._read_events(claim.certificate_id)
