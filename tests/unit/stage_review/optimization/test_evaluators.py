@@ -1272,6 +1272,56 @@ def test_identity_measurement_kernel_is_excluded_from_product_semantic_scope() -
     )[0] == "identity-kernel-callable"
 
 
+def test_identity_measurement_kernel_rejects_spoofed_callable_metadata() -> None:
+    canonical = evaluators_module._bounded_builtin_identity
+
+    def first_spoof(_value: object) -> object:
+        return {"spoof": "first"}
+
+    def second_spoof(_value: object) -> object:
+        return {"spoof": "second"}
+
+    for spoof in (first_spoof, second_spoof):
+        spoof.__module__ = canonical.__module__
+        spoof.__name__ = canonical.__name__
+        spoof.__qualname__ = canonical.__qualname__
+        assert not evaluators_module._is_identity_measurement_kernel_callable(spoof)
+        assert (
+            evaluators_module._release_dependency_fast_token(
+                evaluators_module._validate_invocation,
+                "spoofed_kernel_helper",
+                spoof,
+                set(),
+            )[0]
+            != "identity-kernel-callable"
+        )
+
+    first_identity = evaluators_module._bounded_release_dependency(
+        evaluators_module._validate_invocation,
+        "spoofed_kernel_helper",
+        first_spoof,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    second_identity = evaluators_module._bounded_release_dependency(
+        evaluators_module._validate_invocation,
+        "spoofed_kernel_helper",
+        second_spoof,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert first_identity != second_identity
+
+
+def test_identity_measurement_kernel_trusts_bound_wrapper_chain() -> None:
+    wrapper = evaluators_module._cached_optimization_dependency_scope
+    wrapped = wrapper.__wrapped__
+
+    assert evaluators_module._is_identity_measurement_kernel_callable(wrapper)
+    assert evaluators_module._is_identity_measurement_kernel_callable(wrapped)
+
+
 def test_release_class_members_exclude_injected_third_party_methods() -> None:
     assert all(
         str(getattr(member, "__module__", "") or "").startswith("ai_sdlc.")

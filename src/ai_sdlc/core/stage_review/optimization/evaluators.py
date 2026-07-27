@@ -1228,10 +1228,19 @@ def _is_runtime_identity_infrastructure_name(name: str) -> bool:
 
 def _is_identity_measurement_kernel_callable(value: object) -> bool:
     candidate = value.__func__ if inspect.ismethod(value) else value
-    return (
-        str(getattr(candidate, "__module__", "") or "") == __name__
-        and str(getattr(candidate, "__name__", "") or "")
-        in _IDENTITY_MEASUREMENT_KERNEL_CALLABLES
+    name = str(getattr(candidate, "__name__", "") or "")
+    if name not in _IDENTITY_MEASUREMENT_KERNEL_CALLABLES:
+        return False
+    binding = vars(sys.modules[__name__]).get(name)
+    if not callable(binding):
+        return False
+    try:
+        chain = _identity_measurement_callable_chain(binding)
+    except ValueError:
+        return False
+    return any(
+        candidate is (item.__func__ if inspect.ismethod(item) else item)
+        for item in chain
     )
 
 

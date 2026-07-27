@@ -12,6 +12,7 @@ from tests.unit.stage_review.optimization.test_shadow_provider import (
 
 from ai_sdlc.core.stage_review import codex_review_runtime
 from ai_sdlc.core.stage_review.artifacts import (
+    ResourceLockUnavailableError,
     SharedStateIntegrityError,
     create_json_exclusive,
     resolve_canonical_shared_state,
@@ -208,6 +209,58 @@ def test_product_shadow_executor_commits_provider_and_label_lineage(
     assert result.challenger.unconfirmed_finding is False
     assert result.provider_submission_digest
     assert journal.get(result.provider_invocation_id).state == "committed"
+
+
+def test_product_shadow_retries_authorized_journal_lock_contention(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project_id = "project.shared"
+    candidate, epoch, assignments, assignment, observations, governor = (
+        _prepared_product_shadow(tmp_path, project_id)
+    )
+    broker = _RemoteShadowBroker()
+    executor, journal, results = _executor(
+        tmp_path,
+        project_id,
+        assignments,
+        observations,
+        governor,
+        broker=broker,
+    )
+    original_advance = journal._store.advance
+    lock_once = True
+
+    def contended_advance(*args: object, **kwargs: object) -> object:
+        nonlocal lock_once
+        if len(args) > 1 and args[1] == "dispatched" and lock_once:
+            lock_once = False
+            raise ResourceLockUnavailableError("journal lock contention")
+        return original_advance(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(journal._store, "advance", contended_advance)
+    authorizer = _epoch_authorizer(tmp_path, epoch, allow_effect)
+
+    assert executor.execute(
+        epoch,
+        candidate,
+        assignment,
+        authorizer,
+    ) is False
+    assert _only_invocation(journal).state == "prepared"
+    assert broker.envelope is None
+
+    assert executor.execute(
+        epoch,
+        candidate,
+        assignment,
+        authorizer,
+    ) is True
+    result = results.read_assignment(assignment.assignment_id)
+
+    assert result is not None
+    assert journal.get(result.provider_invocation_id).state == "committed"
+    assert broker.envelope is not None
 
 
 def test_product_shadow_runtime_drift_leaves_prepared_outbox_without_provider_call(

@@ -9,7 +9,10 @@ from typing import TypeVar, cast
 
 from pydantic import ValidationError
 
-from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
+from ai_sdlc.core.stage_review.artifacts import (
+    ResourceLockUnavailableError,
+    SharedStateIntegrityError,
+)
 from ai_sdlc.core.stage_review.certificate_receipt_store import (
     FilesystemReviewReceiptArtifactStore,
 )
@@ -35,6 +38,12 @@ from ai_sdlc.core.stage_review.provider_journal_store import ProviderJournalStor
 from ai_sdlc.core.stage_review.resources import ResourceGovernor
 
 T = TypeVar("T")
+
+
+class _AuthorizedOperationError(Exception):
+    def __init__(self, cause: Exception) -> None:
+        super().__init__(str(cause))
+        self.cause = cause
 
 
 @dataclass(frozen=True, slots=True)
@@ -257,8 +266,19 @@ def _commit_authorized(
     commit = getattr(authorize_dispatch, "commit", None)
     if not callable(commit):
         return build_journal_result("dispatch_unauthorized", invocation)
+
+    def authorized_operation() -> T:
+        try:
+            return operation()
+        except Exception as exc:
+            raise _AuthorizedOperationError(exc) from exc
+
     try:
-        return cast(T, commit(operation))
+        return cast(T, commit(authorized_operation))
+    except _AuthorizedOperationError as failure:
+        raise failure.cause from None
+    except ResourceLockUnavailableError:
+        raise
     except Exception:
         return build_journal_result("dispatch_unauthorized", invocation)
 
