@@ -56,7 +56,7 @@ def resolve_canonical_shared_state(root: Path, project_id: str) -> Path:
     """把所有 Git Worktree 映射到相同项目级状态根。"""
 
     stable_project_id = require_machine_id(project_id, "project_id")
-    repository_root = root.resolve()
+    repository_root = _resolve_integrity_path(root, "Repository")
     common_git_dir = _git_common_dir(repository_root)
     if common_git_dir is None:
         base = repository_root / ".ai-sdlc" / "state" / "shared"
@@ -68,7 +68,7 @@ def resolve_canonical_shared_state(root: Path, project_id: str) -> Path:
 def resolve_repository_project_id(root: Path) -> str:
     """跨 Worktree 解析同一个稳定项目身份，不依赖目录名。"""
 
-    repository_root = root.resolve()
+    repository_root = _resolve_integrity_path(root, "Repository")
     common_git_dir = _git_common_dir(repository_root)
     shared_base = (
         common_git_dir / "ai-sdlc-shared-state"
@@ -79,7 +79,10 @@ def resolve_repository_project_id(root: Path) -> str:
     if identity_path.is_file():
         project_id = str(read_json_object(identity_path).get("project_id", ""))
         return require_machine_id(project_id, "project_id")
-    seed = shared_base.resolve(strict=False).as_posix().encode("utf-8")
+    seed = _resolve_integrity_path(
+        shared_base,
+        "Shared state",
+    ).as_posix().encode("utf-8")
     return f"project.{hashlib.sha256(seed).hexdigest()[:24]}"
 
 
@@ -304,10 +307,23 @@ def _git_common_dir(root: Path) -> Path | None:
     path = Path(raw_path)
     if not path.is_absolute():
         path = root / path
-    resolved = path.resolve()
+    resolved = _resolve_integrity_path(path, "Git common-dir")
     if not resolved.exists():
         raise SharedStateIntegrityError("Git common-dir path does not exist")
     return resolved
+
+
+def _resolve_integrity_path(path: Path, label: str) -> Path:
+    try:
+        absolute = path.absolute()
+        for candidate in (*reversed(absolute.parents), absolute):
+            if os.path.lexists(candidate):
+                candidate.resolve(strict=True)
+        return path.resolve(strict=False)
+    except (OSError, RuntimeError) as exc:
+        raise SharedStateIntegrityError(
+            f"{label} path cannot be resolved"
+        ) from exc
 
 
 def _find_git_marker(root: Path) -> Path | None:

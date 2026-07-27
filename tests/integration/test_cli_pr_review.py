@@ -16,6 +16,14 @@ from ai_sdlc.core.pr_review_service import (
     PRReviewAttestResult,
     PRReviewCommandStatus,
 )
+from ai_sdlc.core.source_snapshot import (
+    SourceSnapshotOptions,
+    build_source_snapshot,
+)
+from ai_sdlc.core.stage_review.artifacts import (
+    resolve_canonical_shared_state,
+    resolve_repository_project_id,
+)
 from ai_sdlc.core.stage_review.ci_certificate import (
     CI_CERTIFICATE_BUNDLE_PATH,
 )
@@ -255,6 +263,70 @@ def test_pr_attest_non_ready_result_clears_stale_ci_bundle(tmp_path: Path) -> No
 
     assert result.exit_code == 1
     assert not bundle.exists()
+
+
+def test_pr_attest_keeps_runtime_lock_out_of_candidate_source(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write_file(tmp_path, "src/app.py", "print('candidate')\n")
+    blocked = PRReviewAttestResult(
+        status=PRReviewCommandStatus.BLOCKED,
+        blocker="review evidence changed",
+    )
+    with (
+        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
+        patch(
+            "ai_sdlc.cli.pr_review_cmd.attest_pr_review",
+            return_value=blocked,
+        ),
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    shared = resolve_canonical_shared_state(
+        tmp_path,
+        resolve_repository_project_id(tmp_path),
+    )
+    assert (shared / "locks/pr-review-attest.lock").is_file()
+    assert not (
+        tmp_path / ".ai-sdlc/attestations/.pr-review-attest.lock"
+    ).exists()
+    assert not (tmp_path / ".ai-sdlc/local").exists()
+    assert _git(
+        tmp_path,
+        "status",
+        "--porcelain",
+        "--untracked-files=all",
+    ) == "?? src/app.py"
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
+    )
+    assert snapshot.changed_files == ["src/app.py"]
+
+
+def test_pr_attest_blocks_when_shared_lock_identity_is_corrupt(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    identity = (
+        tmp_path / ".git/ai-sdlc-shared-state/repository-project.json"
+    )
+    identity.parent.mkdir(parents=True)
+    identity.write_text("{not-json", encoding="utf-8")
+
+    with patch(
+        "ai_sdlc.cli.pr_review_cmd.find_project_root",
+        return_value=tmp_path,
+    ):
+        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert "shared lock state is unavailable" in payload["blocker"]
+    assert "ai-sdlc doctor" in payload["next_action"]
+    assert "Traceback" not in result.output
 
 
 def test_pr_attest_incomplete_identity_clears_stale_ci_bundle(tmp_path: Path) -> None:

@@ -19,6 +19,7 @@ from ai_sdlc.core.stage_review.artifacts import (
     create_json_exclusive,
     read_json_object,
     resolve_canonical_shared_state,
+    resolve_repository_project_id,
 )
 from ai_sdlc.core.stage_review.canonical import CanonicalizationPolicy, canonical_digest
 from ai_sdlc.core.stage_review.finding_models import FindingScope
@@ -2319,6 +2320,51 @@ def test_git_resolution_failure_does_not_fall_back_to_worktree_local_state(
     monkeypatch.setattr("subprocess.run", timeout)
     with pytest.raises(SharedStateIntegrityError, match="Git"):
         resolve_canonical_shared_state(repository, "project.shared")
+
+
+def test_shared_state_symlink_loop_is_reported_as_integrity_failure(
+    tmp_path: Path,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    _git(repository, "init")
+    shared = repository / ".git" / "ai-sdlc-shared-state"
+    try:
+        shared.symlink_to(shared.name, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    with pytest.raises(
+        SharedStateIntegrityError,
+        match="Shared state path cannot be resolved",
+    ):
+        resolve_repository_project_id(repository)
+
+
+def test_existing_non_symlink_reparse_component_is_strictly_resolved(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    junction_like = tmp_path / "junction-like"
+    junction_like.mkdir()
+    assert not junction_like.is_symlink()
+    original_resolve = Path.resolve
+
+    def simulate_junction_loop(
+        path: Path,
+        strict: bool = False,
+    ) -> Path:
+        if path == junction_like and strict:
+            raise OSError("simulated junction loop")
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", simulate_junction_loop)
+
+    with pytest.raises(
+        SharedStateIntegrityError,
+        match="Shared state path cannot be resolved",
+    ):
+        artifacts._resolve_integrity_path(junction_like, "Shared state")
 
 
 def test_nonexistent_non_git_root_uses_local_shared_state_when_windows_rejects_cwd(

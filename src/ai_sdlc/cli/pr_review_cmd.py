@@ -27,7 +27,10 @@ from ai_sdlc.core.pr_review_service import (
 )
 from ai_sdlc.core.stage_review.artifacts import (
     ResourceLockUnavailableError,
+    SharedStateIntegrityError,
     ShortFileLock,
+    resolve_canonical_shared_state,
+    resolve_repository_project_id,
 )
 from ai_sdlc.core.stage_review.ci_certificate import (
     CI_CERTIFICATE_BUNDLE_PATH,
@@ -332,23 +335,41 @@ def pr_review_attest(
 
     root = _project_root_or_exit(json_output=json_output)
     try:
-        with ShortFileLock(
-            root / ".ai-sdlc" / "attestations" / ".pr-review-attest.lock",
-            timeout_seconds=5,
-        ):
-            result = execute_stage_close_for_cli(
-                root,
-                lambda: attest_pr_review(root),
-                json_output=json_output,
-                emit=_emit_result,
-            )
-            result = _export_pr_review_attestation_bundle(root, result)
-    except ResourceLockUnavailableError as exc:
+        shared = resolve_canonical_shared_state(
+            root,
+            resolve_repository_project_id(root),
+        )
+    except (OSError, ValueError, SharedStateIntegrityError) as exc:
         result = PRReviewAttestResult(
             status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"Another pr-review attest operation is active: {exc}",
-            next_action="Wait for that operation to finish, then rerun pr-review attest.",
+            blocker=f"PR review attest shared lock state is unavailable: {exc}",
+            next_action=(
+                "Run ai-sdlc doctor, repair Git/shared stage-review state, "
+                "then rerun pr-review attest."
+            ),
         )
+    else:
+        try:
+            with ShortFileLock(
+                shared / "locks" / "pr-review-attest.lock",
+                timeout_seconds=5,
+            ):
+                result = execute_stage_close_for_cli(
+                    root,
+                    lambda: attest_pr_review(root),
+                    json_output=json_output,
+                    emit=_emit_result,
+                )
+                result = _export_pr_review_attestation_bundle(root, result)
+        except ResourceLockUnavailableError as exc:
+            result = PRReviewAttestResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                blocker=f"Another pr-review attest operation is active: {exc}",
+                next_action=(
+                    "Wait for that operation to finish, "
+                    "then rerun pr-review attest."
+                ),
+            )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
 
