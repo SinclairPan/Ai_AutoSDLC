@@ -313,6 +313,14 @@ def test_pr_attest_blocks_when_shared_lock_identity_is_corrupt(
     tmp_path: Path,
 ) -> None:
     _init_repo(tmp_path)
+    attestation = (
+        tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json"
+    )
+    attestation.parent.mkdir(parents=True)
+    attestation.write_text('{"review_id":"stale"}\n', encoding="utf-8")
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True, exist_ok=True)
+    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
     identity = (
         tmp_path / ".git/ai-sdlc-shared-state/repository-project.json"
     )
@@ -331,6 +339,8 @@ def test_pr_attest_blocks_when_shared_lock_identity_is_corrupt(
     assert "shared lock state is unavailable" in payload["blocker"]
     assert "ai-sdlc doctor" in payload["next_action"]
     assert "Traceback" not in result.output
+    assert not attestation.exists()
+    assert not bundle.exists()
 
 
 def test_pr_attest_incomplete_identity_clears_stale_ci_bundle(tmp_path: Path) -> None:

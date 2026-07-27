@@ -1428,6 +1428,22 @@ def test_identity_kernel_rejects_drifted_stdlib_sentinel_type_binding(
         )
 
 
+def test_identity_kernel_class_export_rebinding_invalidates_fast_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _entrypoint, runtime_type = evaluators_module._FORWARD_REF_RUNTIME_TYPES[0]
+    module = sys.modules[runtime_type.__module__]
+    binding_name = runtime_type.__qualname__.split(".")[0]
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+
+    monkeypatch.setattr(module, binding_name, object())
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+
+
 def test_identity_kernel_sentinel_class_mutation_invalidates_fast_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

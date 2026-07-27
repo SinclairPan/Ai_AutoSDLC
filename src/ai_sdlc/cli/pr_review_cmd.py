@@ -39,7 +39,7 @@ from ai_sdlc.core.stage_review.ci_certificate import (
 from ai_sdlc.core.stage_review.ci_certificate_export import (
     export_ci_certificate_bundle,
 )
-from ai_sdlc.utils.helpers import find_project_root
+from ai_sdlc.utils.helpers import AI_SDLC_DIR, find_project_root
 
 pr_review_app = typer.Typer(
     help="Run local adversarial PR review loops.",
@@ -340,9 +340,20 @@ def pr_review_attest(
             resolve_repository_project_id(root),
         )
     except (OSError, ValueError, SharedStateIntegrityError) as exc:
+        cleanup_blockers = tuple(
+            item
+            for item in (
+                _clear_stale_pr_review_attestation(root),
+                _clear_stale_ci_certificate_bundle(root),
+            )
+            if item
+        )
         result = PRReviewAttestResult(
             status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"PR review attest shared lock state is unavailable: {exc}",
+            blocker=(
+                f"PR review attest shared lock state is unavailable: {exc}"
+                + (f"; {'; '.join(cleanup_blockers)}" if cleanup_blockers else "")
+            ),
             next_action=(
                 "Run ai-sdlc doctor, repair Git/shared stage-review state, "
                 "then rerun pr-review attest."
@@ -375,6 +386,15 @@ def pr_review_attest(
             )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
+
+
+def _clear_stale_pr_review_attestation(root: Path) -> str:
+    path = root / AI_SDLC_DIR / "reviews" / "pr" / "latest-attestation.json"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        return f"Unable to clear stale review attestation: {exc}"
+    return ""
 
 
 def _export_pr_review_attestation_bundle(

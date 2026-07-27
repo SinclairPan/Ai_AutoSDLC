@@ -1630,6 +1630,9 @@ def _identity_measurement_kernel_class_token(
     if len(_active) >= _IDENTITY_WRAPPER_MAX_DEPTH:
         return ("bounded-class", entrypoint)
     active = _active | {key}
+    current: object = sys.modules.get(entrypoint[0])
+    for part in entrypoint[1].split("."):
+        current = getattr(current, part, None)
     members = []
     for name, member in sorted(vars(value).items()):
         token = _identity_measurement_kernel_member_token(
@@ -1638,7 +1641,7 @@ def _identity_measurement_kernel_class_token(
         )
         if token is not None:
             members.append((name, token))
-    return tuple(members)
+    return (entrypoint, id(current), tuple(members))
 
 
 def _canonical_kernel_default_identity(
