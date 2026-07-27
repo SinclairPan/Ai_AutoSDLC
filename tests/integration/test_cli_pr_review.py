@@ -56,6 +56,9 @@ def test_pr_attest_reports_stage_review_result_and_one_next_action(
     tmp_path: Path,
 ) -> None:
     failure = StageCloseGateUnavailableError("review-provider-unavailable")
+    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
+    bundle.parent.mkdir(parents=True)
+    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
     with (
         patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
         patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", side_effect=failure),
@@ -69,6 +72,7 @@ def test_pr_attest_reports_stage_review_result_and_one_next_action(
     assert payload["request_id"]
     assert "Restore an eligible reviewer provider" in payload["next_action"]
     assert "Traceback" not in result.output
+    assert not bundle.exists()
 
 
 def test_pr_attest_text_failure_has_one_result_and_next(tmp_path: Path) -> None:

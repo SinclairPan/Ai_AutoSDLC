@@ -32,14 +32,20 @@ def execute_stage_close_for_cli(
     *,
     json_output: bool,
     emit: StageClosePayloadEmitter,
+    failure_cleanup: Callable[[], str] | None = None,
 ) -> _RESULT:
     try:
         return action()
     except StageCloseGateUnavailableError as exc:
-        emit(
-            _stage_close_failure_payload(root, str(exc)),
-            json_output=json_output,
-        )
+        payload = _stage_close_failure_payload(root, str(exc))
+        cleanup_blocker = failure_cleanup() if failure_cleanup is not None else ""
+        if cleanup_blocker:
+            payload["blocker"] = f"{payload['blocker']}; {cleanup_blocker}"
+            payload["next_action"] = (
+                "Remove stale stage-close evidence, then follow the reported "
+                "stage-review recovery action."
+            )
+        emit(payload, json_output=json_output)
         raise typer.Exit(code=2) from None
 
 

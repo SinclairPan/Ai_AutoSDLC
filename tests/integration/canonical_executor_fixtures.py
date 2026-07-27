@@ -52,8 +52,10 @@ def candidate(root: Path, *, source_kind: str = "local-unstaged"):
     _git(root, "commit", "-m", "base")
     base_commit = _git_output(root, "rev-parse", "HEAD")
     (root / "candidate.py").write_text("VALUE = 2\n", encoding="utf-8")
-    options = SourceSnapshotOptions(root=root, source_kind="local-unstaged")
-    if source_kind == "local-git-range":
+    options = SourceSnapshotOptions(root=root, source_kind=source_kind)
+    if source_kind == "local-staged":
+        _git(root, "add", "candidate.py")
+    elif source_kind == "local-git-range":
         _git(root, "add", "candidate.py")
         _git(root, "commit", "-m", "reviewed implementation")
         options = SourceSnapshotOptions(

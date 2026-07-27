@@ -359,6 +359,9 @@ def pr_review_attest(
                     lambda: attest_pr_review(root),
                     json_output=json_output,
                     emit=_emit_result,
+                    failure_cleanup=lambda: _clear_stale_ci_certificate_bundle(
+                        root
+                    ),
                 )
                 result = _export_pr_review_attestation_bundle(root, result)
         except ResourceLockUnavailableError as exc:

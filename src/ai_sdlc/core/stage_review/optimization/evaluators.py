@@ -238,6 +238,7 @@ _IDENTITY_MEASUREMENT_KERNEL_CALLABLES = frozenset(
         "_canonical_kernel_callable_identity",
         "_canonical_kernel_class_identity",
         "_canonical_kernel_default_identity",
+        "_canonical_kernel_global_sentinel_identity",
         "_canonical_kernel_marker_identity",
         "_canonical_kernel_member_identity",
         "_cached_source_path_is_release_owned",
@@ -263,6 +264,7 @@ _IDENTITY_MEASUREMENT_KERNEL_CALLABLES = frozenset(
         "_identity_measurement_kernel_binding_token",
         "_identity_measurement_kernel_callable_token",
         "_identity_measurement_kernel_class_token",
+        "_identity_measurement_kernel_default_token",
         "_identity_measurement_kernel_marker_token",
         "_identity_measurement_kernel_member_token",
         "_identity_measurement_callable_chain",
@@ -1337,15 +1339,48 @@ def _verify_canonical_kernel_export(
         raise ValueError(f"identity kernel canonical {label} drifted")
 
 
-def _identity_measurement_kernel_callable_token(value: object) -> object:
+def _identity_measurement_kernel_callable_token(
+    value: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object:
     candidate = value.__func__ if inspect.ismethod(value) else value
+    key = ("callable", id(candidate))
+    entrypoint = (
+        str(getattr(candidate, "__module__", "") or ""),
+        str(getattr(candidate, "__qualname__", "") or ""),
+        id(candidate),
+    )
+    if key in _active:
+        return ("recursive-callable", entrypoint)
+    if len(_active) >= _IDENTITY_WRAPPER_MAX_DEPTH:
+        return ("bounded-callable", entrypoint)
+    active = _active | {key}
     return (
         f"{type(candidate).__module__}:{type(candidate).__qualname__}",
-        id(candidate),
+        *entrypoint,
         id(getattr(candidate, "__code__", None)),
-        tuple(id(item) for item in (getattr(candidate, "__defaults__", None) or ())),
         tuple(
-            (name, id(item))
+            _identity_measurement_kernel_default_token(
+                candidate,
+                item,
+                slot=f"positional:{index}",
+                _active=active,
+            )
+            for index, item in enumerate(
+                getattr(candidate, "__defaults__", None) or ()
+            )
+        ),
+        tuple(
+            (
+                name,
+                _identity_measurement_kernel_default_token(
+                    candidate,
+                    item,
+                    slot=f"keyword:{name}",
+                    _active=active,
+                ),
+            )
             for name, item in sorted(
                 (getattr(candidate, "__kwdefaults__", None) or {}).items()
             )
@@ -1353,11 +1388,83 @@ def _identity_measurement_kernel_callable_token(value: object) -> object:
     )
 
 
-def _identity_measurement_kernel_member_token(member: object) -> object | None:
+def _identity_measurement_kernel_default_token(
+    function: object,
+    value: object,
+    *,
+    slot: str,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object:
+    if _is_stable_configuration_value(value):
+        return ("stable", _stable_cache_token(value))
+    if inspect.isclass(value):
+        return (
+            "type",
+            f"{value.__module__}:{value.__qualname__}",
+            id(value),
+        )
+    global_bindings = tuple(
+        (name, id(item))
+        for name, item in sorted(getattr(function, "__globals__", {}).items())
+        if item is value
+    )
+    if type(value) is object:
+        return (
+            "opaque-object",
+            id(value),
+            global_bindings,
+            None if global_bindings else slot,
+        )
+    sentinel_type = type(value)
+    module = sys.modules.get(sentinel_type.__module__)
+    current: object = module
+    for part in sentinel_type.__qualname__.split("."):
+        current = getattr(current, part, None)
+    accepted = (
+        bool(global_bindings)
+        and not callable(value)
+        and not hasattr(value, "__dict__")
+        and sentinel_type.__module__.partition(".")[0]
+        in sys.stdlib_module_names
+        and current is sentinel_type
+        and vars(sentinel_type).get("__slots__") == ()
+    )
+    return (
+        "class-backed-default",
+        f"{sentinel_type.__module__}:{sentinel_type.__qualname__}",
+        id(value),
+        id(sentinel_type),
+        global_bindings,
+        sentinel_type.__module__.partition(".")[0] in sys.stdlib_module_names,
+        id(module),
+        id(current),
+        callable(value),
+        hasattr(value, "__dict__"),
+        _stable_cache_token(vars(sentinel_type).get("__slots__")),
+        accepted,
+        (
+            _identity_measurement_kernel_class_token(
+                sentinel_type,
+                _active=_active,
+            )
+            if accepted
+            else None
+        ),
+    )
+
+
+def _identity_measurement_kernel_member_token(
+    member: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object | None:
     if isinstance(member, (classmethod, staticmethod)):
         return (
             type(member).__qualname__,
-            _identity_measurement_kernel_callable_token(member.__func__),
+            _identity_measurement_kernel_callable_token(
+                member.__func__,
+                _active=_active,
+            ),
         )
     if isinstance(member, property):
         return (
@@ -1367,7 +1474,10 @@ def _identity_measurement_kernel_member_token(member: object) -> object | None:
                 (
                     accessor_name,
                     (
-                        _identity_measurement_kernel_callable_token(accessor)
+                        _identity_measurement_kernel_callable_token(
+                            accessor,
+                            _active=_active,
+                        )
                         if accessor is not None
                         else None
                     ),
@@ -1380,7 +1490,13 @@ def _identity_measurement_kernel_member_token(member: object) -> object | None:
             ),
         )
     if inspect.isfunction(member):
-        return ("function", _identity_measurement_kernel_callable_token(member))
+        return (
+            "function",
+            _identity_measurement_kernel_callable_token(
+                member,
+                _active=_active,
+            ),
+        )
     if (
         inspect.ismethoddescriptor(member)
         or inspect.isgetsetdescriptor(member)
@@ -1400,7 +1516,10 @@ def _identity_measurement_kernel_member_token(member: object) -> object | None:
             "python-descriptor",
             id(member),
             id(type(member)),
-            _identity_measurement_kernel_callable_token(descriptor_function),
+            _identity_measurement_kernel_callable_token(
+                descriptor_function,
+                _active=_active,
+            ),
         )
     if callable(member):
         return (
@@ -1424,15 +1543,26 @@ def _identity_measurement_kernel_member_token(member: object) -> object | None:
 def _identity_measurement_kernel_marker_token(
     export_name: str,
     marker: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
 ) -> object:
     if inspect.isclass(marker):
-        behavior: object = _identity_measurement_kernel_class_token(marker)
+        behavior: object = _identity_measurement_kernel_class_token(
+            marker,
+            _active=_active,
+        )
     else:
         marker_getitem = getattr(marker, "_getitem", None)
         behavior = (
-            _identity_measurement_kernel_class_token(type(marker)),
+            _identity_measurement_kernel_class_token(
+                type(marker),
+                _active=_active,
+            ),
             (
-                _identity_measurement_kernel_callable_token(marker_getitem)
+                _identity_measurement_kernel_callable_token(
+                    marker_getitem,
+                    _active=_active,
+                )
                 if callable(marker_getitem)
                 else None
             ),
@@ -1449,19 +1579,28 @@ def _identity_measurement_kernel_marker_token(
 def _identity_measurement_kernel_value_token(
     binding_name: str,
     value: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
 ) -> object:
     if isinstance(value, tuple):
         return (
             id(value),
             tuple(
-                _identity_measurement_kernel_marker_token(name, item)
+                _identity_measurement_kernel_marker_token(
+                    name,
+                    item,
+                    _active=_active,
+                )
                 if binding_name == "_SUPPORTED_TYPE_MARKERS"
                 else (
                     name,
                     f"{type(item).__module__}:{type(item).__qualname__}",
                     id(item),
                     (
-                        _identity_measurement_kernel_class_token(item)
+                        _identity_measurement_kernel_class_token(
+                            item,
+                            _active=_active,
+                        )
                         if inspect.isclass(item)
                         else None
                     ),
@@ -1475,10 +1614,28 @@ def _identity_measurement_kernel_value_token(
     )
 
 
-def _identity_measurement_kernel_class_token(value: object) -> object:
+def _identity_measurement_kernel_class_token(
+    value: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object:
+    key = ("class", id(value))
+    entrypoint = (
+        str(getattr(value, "__module__", "") or ""),
+        str(getattr(value, "__qualname__", "") or ""),
+        id(value),
+    )
+    if key in _active:
+        return ("recursive-class", entrypoint)
+    if len(_active) >= _IDENTITY_WRAPPER_MAX_DEPTH:
+        return ("bounded-class", entrypoint)
+    active = _active | {key}
     members = []
     for name, member in sorted(vars(value).items()):
-        token = _identity_measurement_kernel_member_token(member)
+        token = _identity_measurement_kernel_member_token(
+            member,
+            _active=active,
+        )
         if token is not None:
             members.append((name, token))
     return tuple(members)
@@ -1489,6 +1646,7 @@ def _canonical_kernel_default_identity(
     value: object,
     *,
     slot: str,
+    _active: frozenset[tuple[str, int]] = frozenset(),
 ) -> object:
     if _is_stable_configuration_value(value):
         return {"stable": _stable_configuration_value(value)}
@@ -1507,11 +1665,65 @@ def _canonical_kernel_default_identity(
                 "local_slot": None if global_names else slot,
             }
         }
+    sentinel_identity = _canonical_kernel_global_sentinel_identity(
+        function,
+        value,
+        _active=_active,
+    )
+    if sentinel_identity is not None:
+        return {"opaque_sentinel": sentinel_identity}
     raise ValueError("identity kernel callable has an unsupported default value")
 
 
-def _canonical_kernel_callable_identity(value: object) -> object:
+def _canonical_kernel_global_sentinel_identity(
+    function: object,
+    value: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> dict[str, object] | None:
+    global_names = sorted(
+        name
+        for name, item in getattr(function, "__globals__", {}).items()
+        if item is value
+    )
+    sentinel_type = type(value)
+    root_module = sentinel_type.__module__.partition(".")[0]
+    module = sys.modules.get(sentinel_type.__module__)
+    current: object = module
+    for part in sentinel_type.__qualname__.split("."):
+        current = getattr(current, part, None)
+    if (
+        not global_names
+        or callable(value)
+        or hasattr(value, "__dict__")
+        or root_module not in sys.stdlib_module_names
+        or current is not sentinel_type
+        or vars(sentinel_type).get("__slots__") != ()
+    ):
+        return None
+    return {
+        "type": f"{sentinel_type.__module__}:{sentinel_type.__qualname__}",
+        "global_names": global_names,
+        "local_slot": None,
+        "class_implementation": _canonical_kernel_class_identity(
+            sentinel_type,
+            _active=_active,
+        ),
+    }
+
+
+def _canonical_kernel_callable_identity(
+    value: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object:
     candidate = value.__func__ if inspect.ismethod(value) else value
+    key = ("callable", id(candidate))
+    if key in _active:
+        raise ValueError("identity kernel callable graph is recursive")
+    if len(_active) >= _IDENTITY_WRAPPER_MAX_DEPTH:
+        raise ValueError("identity kernel callable graph exceeds bounded depth")
+    active = _active | {key}
     if inspect.isfunction(candidate):
         entrypoint, source, code = _cached_callable_static_snapshot(
             candidate,
@@ -1527,6 +1739,7 @@ def _canonical_kernel_callable_identity(value: object) -> object:
                     candidate,
                     item,
                     slot=f"positional:{index}",
+                    _active=active,
                 )
                 for index, item in enumerate(candidate.__defaults__ or ())
             ],
@@ -1535,6 +1748,7 @@ def _canonical_kernel_callable_identity(value: object) -> object:
                     candidate,
                     item,
                     slot=f"keyword:{name}",
+                    _active=active,
                 )
                 for name, item in sorted((candidate.__kwdefaults__ or {}).items())
             },
@@ -1566,18 +1780,28 @@ def _canonical_kernel_callable_identity(value: object) -> object:
     raise ValueError("identity kernel member is not a supported callable")
 
 
-def _canonical_kernel_member_identity(member: object) -> object | None:
+def _canonical_kernel_member_identity(
+    member: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object | None:
     if isinstance(member, (classmethod, staticmethod)):
         return {
             "descriptor": type(member).__qualname__,
-            "callable": _canonical_kernel_callable_identity(member.__func__),
+            "callable": _canonical_kernel_callable_identity(
+                member.__func__,
+                _active=_active,
+            ),
         }
     if isinstance(member, property):
         return {
             "descriptor": "property",
             "accessors": {
                 accessor_name: (
-                    _canonical_kernel_callable_identity(accessor)
+                    _canonical_kernel_callable_identity(
+                        accessor,
+                        _active=_active,
+                    )
                     if accessor is not None
                     else None
                 )
@@ -1589,7 +1813,7 @@ def _canonical_kernel_member_identity(member: object) -> object | None:
             },
         }
     if inspect.isfunction(member):
-        return _canonical_kernel_callable_identity(member)
+        return _canonical_kernel_callable_identity(member, _active=_active)
     if (
         inspect.ismethoddescriptor(member)
         or inspect.isgetsetdescriptor(member)
@@ -1597,22 +1821,38 @@ def _canonical_kernel_member_identity(member: object) -> object | None:
         or inspect.isbuiltin(member)
         or callable(member)
     ):
-        return _canonical_kernel_callable_identity(member)
+        return _canonical_kernel_callable_identity(member, _active=_active)
     descriptor_function = getattr(member, "func", None)
     if hasattr(type(member), "__get__") and inspect.isfunction(descriptor_function):
         return {
             "descriptor": "python-descriptor",
-            "type_implementation": _canonical_kernel_class_identity(type(member)),
-            "callable": _canonical_kernel_callable_identity(descriptor_function),
+            "type_implementation": _canonical_kernel_class_identity(
+                type(member),
+                _active=_active,
+            ),
+            "callable": _canonical_kernel_callable_identity(
+                descriptor_function,
+                _active=_active,
+            ),
         }
     if hasattr(type(member), "__get__"):
         raise ValueError("identity kernel contains an opaque descriptor")
     return None
 
 
-def _canonical_kernel_class_identity(value: object) -> object:
+def _canonical_kernel_class_identity(
+    value: object,
+    *,
+    _active: frozenset[tuple[str, int]] = frozenset(),
+) -> object:
     if not inspect.isclass(value):
         raise ValueError("identity kernel value is not a runtime class")
+    key = ("class", id(value))
+    if key in _active:
+        raise ValueError("identity kernel class graph is recursive")
+    if len(_active) >= _IDENTITY_WRAPPER_MAX_DEPTH:
+        raise ValueError("identity kernel class graph exceeds bounded depth")
+    active = _active | {key}
     current: object = sys.modules.get(value.__module__)
     for part in value.__qualname__.split("."):
         current = getattr(current, part, None)
@@ -1620,7 +1860,10 @@ def _canonical_kernel_class_identity(value: object) -> object:
         raise ValueError("identity kernel canonical runtime class drifted")
     members: dict[str, object] = {}
     for name, member in sorted(vars(value).items()):
-        identity = _canonical_kernel_member_identity(member)
+        identity = _canonical_kernel_member_identity(
+            member,
+            _active=active,
+        )
         if identity is not None:
             members[name] = identity
     root_module = value.__module__.partition(".")[0]
@@ -2001,15 +2244,7 @@ def _identity_measurement_kernel_binding_token() -> tuple[object, ...]:
                     name,
                     "class",
                     id(value),
-                    tuple(
-                        (
-                            member_name,
-                            id(member),
-                            id(getattr(member, "__code__", None)),
-                        )
-                        for _, members in _class_runtime_member_groups(value)
-                        for member_name, member in members
-                    ),
+                    _identity_measurement_kernel_class_token(value),
                 )
             )
         elif callable(value):
@@ -2019,17 +2254,7 @@ def _identity_measurement_kernel_binding_token() -> tuple[object, ...]:
                     "callable-chain",
                     tuple(
                         (
-                            f"{type(item).__module__}:{type(item).__qualname__}",
-                            str(getattr(item, "__module__", "") or ""),
-                            str(getattr(item, "__qualname__", "") or ""),
-                            id(item),
-                            id(getattr(item, "__code__", None)),
-                            _stable_cache_token(
-                                getattr(item, "__defaults__", None) or ()
-                            ),
-                            _stable_cache_token(
-                                getattr(item, "__kwdefaults__", None) or {}
-                            ),
+                            _identity_measurement_kernel_callable_token(item),
                             (
                                 _stable_cache_token(item.cache_parameters())
                                 if callable(

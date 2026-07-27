@@ -89,6 +89,23 @@ def test_ci_verifier_replays_certificate_without_writing(tmp_path: Path) -> None
     assert before == _tree_digest(tmp_path)
 
 
+def test_ci_export_rejects_non_git_range_canonical_proof(
+    tmp_path: Path,
+) -> None:
+    rig, proof_path = _authorized_proof(tmp_path, source_kind="local-staged")
+
+    with pytest.raises(ValueError, match="not exportable"):
+        export_ci_certificate_bundle(
+            tmp_path,
+            close_kind="implementation-close",
+            stage_instance_id=rig.request.candidate.stage_instance_id,
+            review_session_id=rig.request.candidate.review_session_id,
+            certificate_id=proof_path.stem,
+        )
+
+    assert not (tmp_path / CI_CERTIFICATE_BUNDLE_PATH).exists()
+
+
 def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -598,12 +615,27 @@ def test_cli_certificate_verifiers_accept_an_explicit_candidate_root(
 
 
 def _committed_bundle(root: Path) -> tuple[Path, str]:
+    rig, proof_path = _authorized_proof(root, source_kind="local-git-range")
+    bundle_path = export_ci_certificate_bundle(
+        root,
+        close_kind="implementation-close",
+        stage_instance_id=rig.request.candidate.stage_instance_id,
+        review_session_id=rig.request.candidate.review_session_id,
+        certificate_id=proof_path.stem,
+    )
+    assert bundle_path is not None
+    relative = bundle_path.relative_to(root).as_posix()
+    assert relative == CI_CERTIFICATE_BUNDLE_PATH
+    return bundle_path, _commit(root, "certificate evidence", relative)
+
+
+def _authorized_proof(root: Path, *, source_kind: str):
     sessions = []
     rig = _executor_rig(
         root,
         transport_available=True,
         on_authorized=sessions.append,
-        source_kind="local-git-range",
+        source_kind=source_kind,
     )
     persist_shadow_plan(
         root,
@@ -645,17 +677,7 @@ def _committed_bundle(root: Path) -> tuple[Path, str]:
         )
     )
     assert len(proof_paths) == 1
-    bundle_path = export_ci_certificate_bundle(
-        root,
-        close_kind="implementation-close",
-        stage_instance_id=rig.request.candidate.stage_instance_id,
-        review_session_id=rig.request.candidate.review_session_id,
-        certificate_id=proof_paths[0].stem,
-    )
-    assert bundle_path is not None
-    relative = bundle_path.relative_to(root).as_posix()
-    assert relative == CI_CERTIFICATE_BUNDLE_PATH
-    return bundle_path, _commit(root, "certificate evidence", relative)
+    return rig, proof_paths[0]
 
 
 def _trusted_test_release():

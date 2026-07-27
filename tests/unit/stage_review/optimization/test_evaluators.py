@@ -1272,6 +1272,38 @@ def test_identity_measurement_kernel_is_excluded_from_product_semantic_scope() -
     )[0] == "identity-kernel-callable"
 
 
+@pytest.mark.parametrize(
+    "helper_name",
+    [
+        "_identity_measurement_kernel_default_token",
+        "_canonical_kernel_global_sentinel_identity",
+    ],
+)
+def test_identity_kernel_sentinel_helpers_are_digest_bound_tcb(
+    monkeypatch: pytest.MonkeyPatch,
+    helper_name: str,
+) -> None:
+    helper = getattr(evaluators_module, helper_name)
+    assert evaluators_module._is_identity_measurement_kernel_callable(helper)
+    assert not evaluators_module._verified_first_party_scope_target(helper)
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+    original_digest = evaluators_module._identity_measurement_kernel_digest()
+
+    def replacement(*args: object, **kwargs: object) -> object:
+        return helper(*args, **kwargs)
+
+    replacement.__module__ = helper.__module__
+    replacement.__name__ = helper.__name__
+    replacement.__qualname__ = helper.__qualname__
+    monkeypatch.setattr(evaluators_module, helper_name, replacement)
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+    assert evaluators_module._identity_measurement_kernel_digest() != original_digest
+
+
 def test_identity_measurement_kernel_rejects_spoofed_callable_metadata() -> None:
     canonical = evaluators_module._bounded_builtin_identity
 
@@ -1320,6 +1352,210 @@ def test_identity_measurement_kernel_trusts_bound_wrapper_chain() -> None:
 
     assert evaluators_module._is_identity_measurement_kernel_callable(wrapper)
     assert evaluators_module._is_identity_measurement_kernel_callable(wrapped)
+
+
+def _forward_ref_class_backed_default_sentinel() -> tuple[object, object]:
+    function = ForwardRef._evaluate
+    defaults = function.__defaults__ or ()
+    sentinel = next(
+        (
+            value
+            for value in defaults
+            if type(value) is not object
+            and not evaluators_module._is_stable_configuration_value(value)
+            and any(item is value for item in function.__globals__.values())
+        ),
+        None,
+    )
+    if sentinel is None:
+        pytest.skip("runtime has no class-backed ForwardRef sentinel default")
+    return function, sentinel
+
+
+def test_identity_kernel_accepts_canonical_stdlib_global_sentinel_default() -> None:
+    function, sentinel = _forward_ref_class_backed_default_sentinel()
+
+    identity = evaluators_module._canonical_kernel_default_identity(
+        function,
+        sentinel,
+        slot="positional:test",
+    )
+
+    assert identity["opaque_sentinel"]["global_names"]
+    assert identity["opaque_sentinel"]["local_slot"] is None
+    assert identity["opaque_sentinel"]["class_implementation"]
+
+
+def test_identity_kernel_rejects_spoofed_stdlib_sentinel_type(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function, sentinel = _forward_ref_class_backed_default_sentinel()
+    sentinel_type = type(sentinel)
+    spoofed_type = type(
+        sentinel_type.__name__,
+        (),
+        {
+            "__module__": sentinel_type.__module__,
+            "__slots__": (),
+        },
+    )
+    spoofed_type.__qualname__ = sentinel_type.__qualname__
+    spoofed = spoofed_type()
+    monkeypatch.setitem(function.__globals__, "_AI_SDLC_SPOOFED_SENTINEL", spoofed)
+
+    with pytest.raises(ValueError, match="unsupported default value"):
+        evaluators_module._canonical_kernel_default_identity(
+            function,
+            spoofed,
+            slot="positional:test",
+        )
+
+
+def test_identity_kernel_rejects_drifted_stdlib_sentinel_type_binding(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function, sentinel = _forward_ref_class_backed_default_sentinel()
+    sentinel_type = type(sentinel)
+    module = sys.modules[sentinel_type.__module__]
+    binding_name = sentinel_type.__qualname__.split(".")[0]
+    monkeypatch.setattr(module, binding_name, object())
+
+    with pytest.raises(ValueError, match="unsupported default value"):
+        evaluators_module._canonical_kernel_default_identity(
+            function,
+            sentinel,
+            slot="positional:test",
+        )
+
+
+def test_identity_kernel_sentinel_class_mutation_invalidates_fast_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    function, sentinel = _forward_ref_class_backed_default_sentinel()
+    sentinel_type = type(sentinel)
+    original_callable_token = (
+        evaluators_module._identity_measurement_kernel_callable_token(function)
+    )
+    original_binding_token = (
+        evaluators_module._identity_measurement_kernel_binding_token()
+    )
+
+    monkeypatch.setattr(
+        sentinel_type,
+        "__call__",
+        lambda _self: None,
+        raising=False,
+    )
+
+    assert (
+        evaluators_module._identity_measurement_kernel_callable_token(function)
+        != original_callable_token
+    )
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_binding_token
+    )
+    with pytest.raises(ValueError, match="unsupported default value"):
+        evaluators_module._canonical_kernel_default_identity(
+            function,
+            sentinel,
+            slot="positional:test",
+        )
+
+
+def test_identity_kernel_bounds_self_referential_sentinel_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class SelfSentinel:
+        __slots__ = ()
+
+    SelfSentinel.__module__ = "typing"
+    SelfSentinel.__qualname__ = "_AiSdlcSelfSentinel"
+    sentinel = SelfSentinel()
+
+    def member(_self: object, default: object = sentinel) -> object:
+        return default
+
+    SelfSentinel.member = member
+    monkeypatch.setattr(
+        typing_module,
+        SelfSentinel.__qualname__,
+        SelfSentinel,
+        raising=False,
+    )
+    monkeypatch.setitem(member.__globals__, "_AI_SDLC_SELF_SENTINEL", sentinel)
+
+    def consumer(default: object = sentinel) -> object:
+        return default
+
+    token = evaluators_module._identity_measurement_kernel_callable_token(
+        consumer
+    )
+
+    assert token == evaluators_module._identity_measurement_kernel_callable_token(
+        consumer
+    )
+    assert "recursive-class" in repr(token)
+    with pytest.raises(ValueError, match="recursive"):
+        evaluators_module._canonical_kernel_callable_identity(consumer)
+
+
+def test_identity_kernel_bounds_mutually_referential_sentinel_tokens(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FirstSentinel:
+        __slots__ = ()
+
+    class SecondSentinel:
+        __slots__ = ()
+
+    FirstSentinel.__module__ = "typing"
+    FirstSentinel.__qualname__ = "_AiSdlcFirstSentinel"
+    SecondSentinel.__module__ = "typing"
+    SecondSentinel.__qualname__ = "_AiSdlcSecondSentinel"
+    first = FirstSentinel()
+    second = SecondSentinel()
+
+    def first_member(_self: object, default: object = second) -> object:
+        return default
+
+    def second_member(_self: object, default: object = first) -> object:
+        return default
+
+    FirstSentinel.member = first_member
+    SecondSentinel.member = second_member
+    monkeypatch.setattr(
+        typing_module,
+        FirstSentinel.__qualname__,
+        FirstSentinel,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        typing_module,
+        SecondSentinel.__qualname__,
+        SecondSentinel,
+        raising=False,
+    )
+    monkeypatch.setitem(first_member.__globals__, "_AI_SDLC_FIRST_SENTINEL", first)
+    monkeypatch.setitem(
+        second_member.__globals__,
+        "_AI_SDLC_SECOND_SENTINEL",
+        second,
+    )
+
+    def consumer(default: object = first) -> object:
+        return default
+
+    token = evaluators_module._identity_measurement_kernel_callable_token(
+        consumer
+    )
+
+    assert token == evaluators_module._identity_measurement_kernel_callable_token(
+        consumer
+    )
+    assert "recursive-class" in repr(token)
+    with pytest.raises(ValueError, match="recursive"):
+        evaluators_module._canonical_kernel_callable_identity(consumer)
 
 
 def test_release_class_members_exclude_injected_third_party_methods() -> None:
