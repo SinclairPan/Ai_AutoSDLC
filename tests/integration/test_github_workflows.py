@@ -590,9 +590,23 @@ def test_reviewer_isolation_workflow_requires_real_mode_specific_evidence() -> N
 def test_compatibility_gate_delegates_real_isolation_e2e_to_dedicated_gate() -> None:
     workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
 
-    assert "timeout-minutes: 120" in workflow
+    assert (
+        "timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 120 }}"
+        in workflow
+    )
     assert "uv run pytest -q --ignore=tests/e2e/stage_review" in workflow
+    assert "--durations=50" in workflow
+    assert "--junitxml=compatibility-results.xml" in workflow
+    assert "if: always()" in workflow
+    assert (
+        "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6"
+        in workflow
+    )
+    assert "name: compatibility-${{ matrix.os }}-py${{ matrix.python-version }}" in workflow
+    assert "path: compatibility-results.xml" in workflow
+    assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
+    assert "continue-on-error" not in workflow
     assert "uses: ./.github/workflows/reviewer-isolation.yml" not in workflow
 
 

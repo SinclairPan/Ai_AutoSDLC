@@ -14,7 +14,12 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
-from ai_sdlc.core.stage_review import close_gate
+from ai_sdlc.core.stage_review import (
+    close_gate,
+    close_gate_policy,
+    shadow_planning_runtime,
+    stage_review_plan_runtime,
+)
 from ai_sdlc.core.stage_review.activation import (
     ActivationAssessment,
     ActivationSessionRecord,
@@ -37,6 +42,9 @@ from ai_sdlc.core.stage_review.activation_policy import (
 from ai_sdlc.core.stage_review.activation_policy_anchor import (
     read_activation_policy_anchor,
     write_activation_policy_anchor,
+)
+from ai_sdlc.core.stage_review.activation_policy_store import (
+    _advance_activation_policy_from_evidence as advance_activation_policy_from_evidence,
 )
 from ai_sdlc.core.stage_review.activation_store import (
     _read_activation_session_records as read_activation_session_records,
@@ -80,6 +88,9 @@ from ai_sdlc.core.stage_review.stage_review_execution import (
     StageCloseGateUnavailableError,
     StageReviewExecutionOutcome,
     StageReviewExecutionRequest,
+)
+from tests.unit.stage_review.test_activation_policy_store import (
+    _eligible_evidence,
 )
 
 _CONCURRENCY_TIMEOUT_SECONDS = 30
@@ -347,6 +358,7 @@ def test_only_completed_review_execution_creates_activation_sample(
 
 def test_active_safety_hold_runs_recovery_review_and_blocks_writer(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _init_git_repo(tmp_path)
     _write(tmp_path, "src/app.py", "VALUE = 1\n")
@@ -360,7 +372,7 @@ def test_active_safety_hold_runs_recovery_review_and_blocks_writer(
     )
     policy_payload["outcome_maturity_window_days"] = 0
     policy = StageGateActivationPolicy.model_validate(policy_payload)
-    write_activation_policy_anchor(tmp_path, policy)
+    _bind_in_memory_activation_policy(monkeypatch, policy)
     project_id = resolve_repository_project_id(tmp_path)
     shared = resolve_canonical_shared_state(tmp_path, project_id)
     hold = ActivationSafetyHold(
@@ -393,7 +405,7 @@ def test_active_safety_hold_runs_recovery_review_and_blocks_writer(
     )
     with pytest.raises(
         StageCloseGateUnavailableError,
-        match="activation-safety-hold",
+        match="^activation-safety-hold-recovery-evidence-pending$",
     ):
         gateway.execute(
             prepared,
@@ -405,7 +417,7 @@ def test_active_safety_hold_runs_recovery_review_and_blocks_writer(
 
     with pytest.raises(
         StageCloseGateUnavailableError,
-        match="activation-safety-hold-recovery-evidence-pending",
+        match="^activation-safety-hold-recovery-evidence-pending$",
     ):
         gateway.execute(prepared, writer)
 
@@ -439,15 +451,15 @@ def test_active_safety_hold_runs_recovery_review_and_blocks_writer(
 
 def test_final_safety_fence_blocks_hold_created_after_initial_check(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _init_git_repo(tmp_path)
+    policy = _advance_to_verified_phase_two(tmp_path, monkeypatch)
     _write(tmp_path, "src/app.py", "VALUE = 1\n")
     prepared, _close_path = _prepared_implementation_close(
         tmp_path,
         "implementation.safety-fence",
     )
-    policy = _phase_two_policy()
-    write_activation_policy_anchor(tmp_path, policy)
     project_id = resolve_repository_project_id(tmp_path)
     shared = resolve_canonical_shared_state(tmp_path, project_id)
     hold = ActivationSafetyHold(
@@ -465,6 +477,7 @@ def test_final_safety_fence_blocks_hold_created_after_initial_check(
         minimum_recovery_sessions=2,
     )
     writes = 0
+    enforcer_calls = 0
 
     class InjectingEnforcer:
         def enforce_close(
@@ -474,6 +487,8 @@ def test_final_safety_fence_blocks_hold_created_after_initial_check(
             _preflight,
             guarded_writer,
         ):
+            nonlocal enforcer_calls
+            enforcer_calls += 1
             atomic_write_json(
                 shared / "activation/safety-holds" / f"{hold.hold_id}.json",
                 hold.model_dump(mode="json"),
@@ -487,26 +502,28 @@ def test_final_safety_fence_blocks_hold_created_after_initial_check(
 
     with pytest.raises(
         StageCloseGateUnavailableError,
-        match="activation-safety-hold",
+        match="^activation-safety-hold-blocked-product-writer$",
     ):
         StageCloseGateway(close_enforcer=InjectingEnforcer()).execute(
             prepared,
             writer,
         )
 
+    assert enforcer_calls == 1
     assert writes == 0
 
 
 def test_untrusted_ambient_read_lease_cannot_bypass_final_refresh(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _init_git_repo(tmp_path)
+    _advance_to_verified_phase_two(tmp_path, monkeypatch)
     _write(tmp_path, "src/app.py", "VALUE = 1\n")
     prepared, _close_path = _prepared_implementation_close(
         tmp_path,
         "implementation.untrusted-read-lease",
     )
-    write_activation_policy_anchor(tmp_path, _phase_two_policy())
     project_id = resolve_repository_project_id(tmp_path)
     writes = 0
 
@@ -535,6 +552,86 @@ def test_untrusted_ambient_read_lease_cannot_bypass_final_refresh(
             writer,
         )
 
+    assert writes == 0
+
+
+def test_phase_two_preclose_refresh_failure_blocks_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_git_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    prepared, _close_path = _prepared_implementation_close(
+        tmp_path,
+        "implementation.refresh-failure",
+    )
+    policy = _phase_two_policy()
+    _bind_in_memory_activation_policy(monkeypatch, policy)
+    monkeypatch.setattr(
+        close_gate,
+        "refresh_activation_policy_from_local_evidence",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+    writes = 0
+
+    def writer() -> dict[str, str]:
+        nonlocal writes
+        writes += 1
+        return {"status": "ready", "loop_status": "closed"}
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="^activation-safety-evaluation-unavailable$",
+    ):
+        StageCloseGateway(
+            close_enforcer=_PassThroughCloseEnforcer()
+        ).execute(prepared, writer)
+
+    assert writes == 0
+
+
+def test_phase_two_guarded_writer_refresh_failure_blocks_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_git_repo(tmp_path)
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    prepared, _close_path = _prepared_implementation_close(
+        tmp_path,
+        "implementation.final-refresh-failure",
+    )
+    policy = _phase_two_policy()
+    _bind_in_memory_activation_policy(monkeypatch, policy)
+    refresh_calls = 0
+
+    def refresh(_root: Path):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        if refresh_calls == 1:
+            return policy, None
+        raise RuntimeError("final refresh failed")
+
+    monkeypatch.setattr(
+        close_gate,
+        "refresh_activation_policy_from_local_evidence",
+        refresh,
+    )
+    writes = 0
+
+    def writer() -> dict[str, str]:
+        nonlocal writes
+        writes += 1
+        return {"status": "ready", "loop_status": "closed"}
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="^activation-safety-evaluation-unavailable$",
+    ):
+        StageCloseGateway(
+            close_enforcer=_PassThroughCloseEnforcer()
+        ).execute(prepared, writer)
+
+    assert refresh_calls == 2
     assert writes == 0
 
 
@@ -829,6 +926,54 @@ def _phase_two_policy():
     promoted = advance_activation_policy(baseline, assessment)
     assert promoted is not None
     return promoted
+
+
+def _bind_in_memory_activation_policy(
+    monkeypatch: pytest.MonkeyPatch,
+    policy: StageGateActivationPolicy,
+) -> None:
+    def read_policy(_root: Path) -> StageGateActivationPolicy:
+        return policy
+
+    monkeypatch.setattr(close_gate, "current_activation_policy", read_policy)
+    monkeypatch.setattr(close_gate_policy, "current_activation_policy", read_policy)
+    monkeypatch.setattr(
+        shadow_planning_runtime,
+        "current_activation_policy",
+        read_policy,
+    )
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "current_activation_policy",
+        read_policy,
+    )
+    monkeypatch.setattr(
+        close_gate,
+        "refresh_activation_policy_from_local_evidence",
+        lambda _root: (policy, None),
+    )
+
+
+def _advance_to_verified_phase_two(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> StageGateActivationPolicy:
+    _git(
+        root,
+        "remote",
+        "add",
+        "origin",
+        "https://github.com/SinclairPan/Ai_AutoSDLC.git",
+    )
+    policy, assessment = advance_activation_policy_from_evidence(
+        root,
+        _eligible_evidence(root, monkeypatch),
+    )
+    assert policy.active_phase == 2
+    assert assessment.eligible
+    (root / "activation-evidence-package.json").unlink()
+    (root / "activation-evidence-attestation.jsonl").unlink()
+    return policy
 
 
 def _digest(label: str) -> str:

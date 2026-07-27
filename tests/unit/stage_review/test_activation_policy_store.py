@@ -626,8 +626,14 @@ def test_tampered_active_policy_fails_closed(
         tmp_path,
         _eligible_evidence(tmp_path, monkeypatch),
     )
-    path = next(
-        tmp_path.rglob(f"{promoted.policy_digest.removeprefix('sha256:')}.json")
+    shared = resolve_canonical_shared_state(
+        tmp_path,
+        resolve_repository_project_id(tmp_path),
+    )
+    path = (
+        shared
+        / "activation/policies"
+        / f"{promoted.policy_digest.removeprefix('sha256:')}.json"
     )
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload["active_phase"] = 4

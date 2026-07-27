@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from functools import partial
 from operator import attrgetter
+from pathlib import Path
 from random import Random
 from types import ModuleType, SimpleNamespace
 from typing import ForwardRef, Literal, NewType
@@ -498,7 +499,7 @@ def test_component_identity_supports_nested_stdlib_module_helper() -> None:
     def join(left: str, right: str) -> str:
         return os.path.join(left, right)
 
-    assert join("left", "right").endswith("left/right")
+    assert Path(join("left", "right")).parts[-2:] == ("left", "right")
     assert component_implementation_identity(join)["source_digest"].startswith(
         "sha256:"
     )

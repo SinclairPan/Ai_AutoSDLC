@@ -295,7 +295,7 @@ def test_legacy_v1_trigger_and_epoch_preserve_source_digest_on_decode(
     assert store.accounting.persist_json_exclusive(
         store.root
         / "triggers"
-        / f"{decoded_trigger.trigger_fingerprint}.json",
+        / "legacy-trigger.json",
         legacy_trigger,
     )
     assert store.accounting.persist_json_exclusive(
@@ -996,11 +996,11 @@ def test_ambiguous_legacy_trigger_order_fails_closed_without_new_state(
         }
     )
     assert create_json_exclusive(
-        legacy_root / f"{original.trigger_fingerprint}.json",
+        legacy_root / "original.json",
         original.model_dump(mode="json"),
     )
     assert create_json_exclusive(
-        legacy_root / f"{divergent.trigger_fingerprint}.json",
+        legacy_root / "divergent.json",
         divergent.model_dump(mode="json"),
     )
     ordered_path.unlink()

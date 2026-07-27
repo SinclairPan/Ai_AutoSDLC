@@ -10,6 +10,25 @@ import ai_sdlc.core.stage_review.activation_fence as activation_fence
 import ai_sdlc.core.stage_review.artifacts as stage_review_artifacts
 
 
+def test_stale_owner_read_sharing_violation_is_deferred(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "readers" / "reader.json"
+    marker.parent.mkdir(parents=True)
+    marker.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(
+        activation_fence,
+        "read_json_object",
+        lambda _path: (_ for _ in ()).throw(
+            PermissionError(13, "simulated Windows sharing violation")
+        ),
+    )
+
+    assert activation_fence._clear_stale_owner(marker) is False
+    assert marker.is_file()
+
+
 def _complete_lease_while_process_stays_alive(
     root: str,
     project_id: str,

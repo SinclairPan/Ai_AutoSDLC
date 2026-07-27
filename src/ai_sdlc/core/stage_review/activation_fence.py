@@ -384,7 +384,7 @@ def _note_deferred_marker_cleanup(
 def _clear_stale_owner(path: Path) -> bool:
     try:
         payload = read_json_object(path)
-    except (FileNotFoundError, ValueError):
+    except (OSError, ValueError):
         return False
     pid = int(payload.get("pid", 0) or 0)
     lease_token = str(payload.get("lease_token", ""))

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -162,6 +163,67 @@ def test_codex_enforce_maps_plan_acquisition_failure_before_writer(
                 AssertionError("failed planning called the writer")
             ),
         )
+
+
+def test_codex_enforce_refresh_failure_blocks_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _CompletedExecutor:
+        def execute(self, _request: object) -> SimpleNamespace:
+            return SimpleNamespace(status="completed")
+
+    def build_executor(
+        _root: Path,
+        _request: object,
+        *,
+        executable: str,
+        release: object,
+        on_authorized,
+    ) -> _CompletedExecutor:
+        del executable, release
+        on_authorized(object())
+        return _CompletedExecutor()
+
+    runtime = SimpleNamespace(
+        execution_request=lambda *, mode: SimpleNamespace(mode=mode),
+        planned=SimpleNamespace(
+            candidate=SimpleNamespace(project_id="project.refresh-failure")
+        ),
+    )
+    monkeypatch.setattr(codex_review_runtime, "_build_executor", build_executor)
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "current_activation_policy",
+        lambda _root: SimpleNamespace(active_phase=2),
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "refresh_activation_policy_from_local_evidence",
+        lambda _root: (_ for _ in ()).throw(RuntimeError("refresh failed")),
+    )
+    writer_calls = 0
+
+    def writer() -> object:
+        nonlocal writer_calls
+        writer_calls += 1
+        return object()
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="^activation-safety-evaluation-unavailable$",
+    ):
+        codex_review_runtime._execute_enforced_close(
+            tmp_path,
+            cast(PreparedStageClose, object()),
+            cast(GateApplicabilityDecision, object()),
+            runtime,
+            writer,
+            executable="codex",
+            release=cast(object, object()),
+        )
+
+    assert writer_calls == 0
 
 
 def test_codex_enforce_surfaces_release_failure_after_writer(
