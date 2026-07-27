@@ -9,15 +9,18 @@ import inspect
 import math
 import sys
 import threading
+import typing as _typing
+from collections.abc import Callable as AbcCallable
 from collections.abc import Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass, fields, is_dataclass
+from dataclasses import dataclass, field, fields, is_dataclass
 from enum import Enum
 from functools import lru_cache, partial
 from pathlib import Path
 from types import CodeType, ModuleType, SimpleNamespace
-from typing import Literal, Protocol, Self
+from typing import Literal, Protocol, Self, get_args, get_origin
 
+import typing_extensions as _typing_extensions
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
 from ai_sdlc.core.stage_review.artifact_compat import (
@@ -88,6 +91,129 @@ _STATEFUL_STDLIB_RUNTIME_OBJECTS = frozenset(
 _BOUNDED_DEPENDENCY_MAX_NODES = 2048
 _BOUNDED_DEPENDENCY_MAX_DEPTH = 24
 _IDENTITY_WRAPPER_MAX_DEPTH = 8
+_TYPE_MARKER_BASENAMES = (
+    "Annotated",
+    "ClassVar",
+    "Concatenate",
+    "Final",
+    "Literal",
+    "LiteralString",
+    "Never",
+    "NoReturn",
+    "NotRequired",
+    "ReadOnly",
+    "Required",
+    "Self",
+    "TypeGuard",
+    "TypeIs",
+    "Union",
+    "Unpack",
+)
+_SUPPORTED_TYPE_MARKERS = tuple(
+    (f"{module_name}.{marker_name}", marker)
+    for module_name, module in (
+        ("typing", _typing),
+        ("typing_extensions", _typing_extensions),
+    )
+    for marker_name in _TYPE_MARKER_BASENAMES
+    if (marker := getattr(module, marker_name, None)) is not None
+)
+_SUPPORTED_TYPE_MARKER_NAMES = frozenset(
+    name for name, _marker in _SUPPORTED_TYPE_MARKERS
+)
+_TYPE_PARAMETER_NO_DEFAULT = _typing_extensions.NoDefault
+_NATIVE_TYPE_ALIAS_FACTORY = getattr(_typing, "TypeAliasType", None)
+_TYPE_ALIAS_RUNTIME_TYPES = tuple(
+    (
+        f"{runtime_type.__module__}:{runtime_type.__qualname__}",
+        runtime_type,
+    )
+    for runtime_type in dict.fromkeys(
+        (
+            type(_typing_extensions.TypeAliasType("_IdentityAlias", int)),
+            *(
+                (type(_NATIVE_TYPE_ALIAS_FACTORY("_IdentityAlias", int)),)
+                if _NATIVE_TYPE_ALIAS_FACTORY is not None
+                else ()
+            ),
+        )
+    )
+)
+_FORWARD_REF_RUNTIME_TYPES = tuple(
+    (
+        f"{runtime_type.__module__}:{runtime_type.__qualname__}",
+        runtime_type,
+    )
+    for runtime_type in dict.fromkeys(
+        (
+            type(_typing.ForwardRef("_IdentityForwardRef")),
+            type(_typing_extensions.ForwardRef("_IdentityForwardRef")),
+        )
+    )
+)
+_GENERIC_TYPE_EXPRESSION_RUNTIME_TYPES = tuple(
+    (
+        f"{runtime_type.__module__}:{runtime_type.__qualname__}",
+        runtime_type,
+    )
+    for runtime_type in dict.fromkeys(
+        type(expression)
+        for expression in (
+            list[int],
+            tuple[int, ...],
+            int | str,
+            _typing.Annotated[int, "identity"],
+            _typing.Callable[[int], str],
+            _typing.ClassVar[int],
+            _typing.Concatenate[int, _typing.ParamSpec("_IdentityConcatenate")],
+            _typing.List[int],  # noqa: UP006
+            _typing.Literal["identity"],
+            _typing.Union[int, str],  # noqa: UP007
+            _typing_extensions.Annotated[int, "identity"],
+            _typing_extensions.Callable[[int], str],
+            _typing_extensions.Literal["identity"],
+            _typing_extensions.Union[int, str],  # noqa: UP007
+            _typing_extensions.Unpack[tuple[int, ...]],
+            _typing_extensions.ParamSpec("_IdentityArgs").args,
+            _typing_extensions.ParamSpec("_IdentityKwargs").kwargs,
+            _typing.get_args(
+                tuple[*_typing_extensions.TypeVarTuple("_IdentityUnpack")]
+            )[0],
+            AbcCallable[[int], str],
+        )
+    )
+)
+_NEW_TYPE_RUNTIME_TYPES = tuple(
+    (
+        f"{runtime_type.__module__}:{runtime_type.__qualname__}",
+        runtime_type,
+    )
+    for runtime_type in dict.fromkeys(
+        (
+            type(_typing.NewType("_IdentityNewType", int)),
+            type(_typing_extensions.NewType("_IdentityNewType", int)),
+        )
+    )
+)
+_TYPE_PARAMETER_RUNTIME_TYPES = tuple(
+    (kind, runtime_type)
+    for kind in ("ParamSpec", "TypeVar", "TypeVarTuple")
+    for runtime_type in dict.fromkeys(
+        type(getattr(module, kind)(f"_Identity{kind}"))
+        for module in (_typing, _typing_extensions)
+    )
+)
+_IDENTITY_MEASUREMENT_KERNEL_VALUE_NAMES = frozenset(
+    {
+        "_FORWARD_REF_RUNTIME_TYPES",
+        "_GENERIC_TYPE_EXPRESSION_RUNTIME_TYPES",
+        "_NEW_TYPE_RUNTIME_TYPES",
+        "_SUPPORTED_TYPE_MARKERS",
+        "_TYPE_ALIAS_RUNTIME_TYPES",
+        "_TYPE_PARAMETER_NO_DEFAULT",
+        "_TYPE_PARAMETER_RUNTIME_TYPES",
+    }
+)
 _IDENTITY_MEASUREMENT_KERNEL_CALLABLES = frozenset(
     {
         "_BoundedDependencyState",
@@ -109,6 +235,11 @@ _IDENTITY_MEASUREMENT_KERNEL_CALLABLES = frozenset(
         "_cached_optimization_dependency_scope",
         "_cached_function_global_names",
         "_cached_referenced_module_attributes",
+        "_canonical_kernel_callable_identity",
+        "_canonical_kernel_class_identity",
+        "_canonical_kernel_default_identity",
+        "_canonical_kernel_marker_identity",
+        "_canonical_kernel_member_identity",
         "_cached_source_path_is_release_owned",
         "_cached_release_artifact_digest",
         "_callable_capture_identity",
@@ -130,14 +261,27 @@ _IDENTITY_MEASUREMENT_KERNEL_CALLABLES = frozenset(
         "_fast_dependency_state",
         "_has_opaque_native_state",
         "_identity_measurement_kernel_binding_token",
+        "_identity_measurement_kernel_callable_token",
+        "_identity_measurement_kernel_class_token",
+        "_identity_measurement_kernel_marker_token",
+        "_identity_measurement_kernel_member_token",
         "_identity_measurement_callable_chain",
         "_identity_measurement_kernel_digest",
+        "_identity_measurement_kernel_value_identity",
+        "_identity_measurement_kernel_value_token",
+        "_has_canonical_runtime_type",
         "_identity_measurement_policy_digest",
         "_installed_module_provenance",
         "_is_identity_measurement_kernel_callable",
         "_is_runtime_identity_infrastructure_name",
+        "_is_forward_ref_runtime_value",
+        "_is_new_type_runtime_value",
+        "_is_no_default_type_parameter_value",
+        "_supported_type_marker_name",
         "_is_stable_configuration_value",
         "_is_stable_configuration_value_inner",
+        "_is_type_alias_runtime_value",
+        "_is_type_parameter_runtime_value",
         "_live_callable_binding_identity",
         "_live_callable_cache_token",
         "_live_callable_capture_identity",
@@ -178,12 +322,17 @@ _IDENTITY_MEASUREMENT_KERNEL_CALLABLES = frozenset(
         "_stable_component_configuration",
         "_stable_configuration_value",
         "_stable_configuration_value_inner",
+        "_type_origin_identity",
+        "_type_expression_identity",
+        "_verify_canonical_kernel_export",
         "_verified_first_party_scope_target",
         "component_implementation_digest",
         "component_implementation_identity",
         "component_module_runtime_identity",
         "component_runtime_digest",
         "component_runtime_identity",
+        "get_args",
+        "get_origin",
         "has_explicit_runtime_identity",
         "invalidate_optimization_runtime_identity",
         "optimization_runtime_identity_snapshot",
@@ -1097,8 +1246,12 @@ def _identity_measurement_policy_digest() -> str:
                 _CLASS_CONFIGURATION_IGNORED_FIELDS
             ),
             "kernel_callables": sorted(_IDENTITY_MEASUREMENT_KERNEL_CALLABLES),
+            "kernel_values": sorted(_IDENTITY_MEASUREMENT_KERNEL_VALUE_NAMES),
             "stateful_stdlib_runtime_objects": sorted(
                 _STATEFUL_STDLIB_RUNTIME_OBJECTS
+            ),
+            "supported_type_marker_names": sorted(
+                _SUPPORTED_TYPE_MARKER_NAMES
             ),
             "transient_runtime_fields": sorted(_TRANSIENT_RUNTIME_FIELDS),
             "transitive_behavior_fields": sorted(_TRANSITIVE_BEHAVIOR_FIELDS),
@@ -1128,6 +1281,704 @@ def _identity_measurement_callable_chain(value: object) -> tuple[object, ...]:
             return tuple(chain)
         current = wrapped
     raise ValueError("identity kernel wrapper chain exceeds bounded depth")
+
+
+def _has_canonical_runtime_type(
+    value: object,
+    bindings: tuple[tuple[str, type[object]], ...],
+) -> bool:
+    return any(type(value) is runtime_type for _name, runtime_type in bindings)
+
+
+def _is_type_alias_runtime_value(value: object) -> bool:
+    return _has_canonical_runtime_type(value, _TYPE_ALIAS_RUNTIME_TYPES)
+
+
+def _is_forward_ref_runtime_value(value: object) -> bool:
+    return _has_canonical_runtime_type(value, _FORWARD_REF_RUNTIME_TYPES)
+
+
+def _is_new_type_runtime_value(value: object) -> bool:
+    return (
+        _has_canonical_runtime_type(value, _NEW_TYPE_RUNTIME_TYPES)
+        and hasattr(value, "__supertype__")
+    )
+
+
+def _is_no_default_type_parameter_value(value: object) -> bool:
+    return value is _TYPE_PARAMETER_NO_DEFAULT
+
+
+def _supported_type_marker_name(value: object) -> str | None:
+    return next(
+        (name for name, marker in _SUPPORTED_TYPE_MARKERS if value is marker),
+        None,
+    )
+
+
+def _verify_canonical_kernel_export(
+    export_name: str,
+    value: object,
+    *,
+    label: str,
+) -> None:
+    module_name, separator, attribute_name = export_name.rpartition(".")
+    module = sys.modules.get(module_name)
+    if not separator or module is None or getattr(module, attribute_name, None) is not value:
+        raise ValueError(f"identity kernel canonical {label} drifted")
+
+
+def _identity_measurement_kernel_callable_token(value: object) -> object:
+    candidate = value.__func__ if inspect.ismethod(value) else value
+    return (
+        f"{type(candidate).__module__}:{type(candidate).__qualname__}",
+        id(candidate),
+        id(getattr(candidate, "__code__", None)),
+        tuple(id(item) for item in (getattr(candidate, "__defaults__", None) or ())),
+        tuple(
+            (name, id(item))
+            for name, item in sorted(
+                (getattr(candidate, "__kwdefaults__", None) or {}).items()
+            )
+        ),
+    )
+
+
+def _identity_measurement_kernel_member_token(member: object) -> object | None:
+    if isinstance(member, (classmethod, staticmethod)):
+        return (
+            type(member).__qualname__,
+            _identity_measurement_kernel_callable_token(member.__func__),
+        )
+    if isinstance(member, property):
+        return (
+            "property",
+            id(member),
+            tuple(
+                (
+                    accessor_name,
+                    (
+                        _identity_measurement_kernel_callable_token(accessor)
+                        if accessor is not None
+                        else None
+                    ),
+                )
+                for accessor_name, accessor in (
+                    ("fget", member.fget),
+                    ("fset", member.fset),
+                    ("fdel", member.fdel),
+                )
+            ),
+        )
+    if inspect.isfunction(member):
+        return ("function", _identity_measurement_kernel_callable_token(member))
+    if (
+        inspect.ismethoddescriptor(member)
+        or inspect.isgetsetdescriptor(member)
+        or inspect.ismemberdescriptor(member)
+        or inspect.isbuiltin(member)
+    ):
+        return (
+            "native",
+            f"{type(member).__module__}:{type(member).__qualname__}",
+            id(member),
+            id(getattr(member, "__objclass__", None)),
+            str(getattr(member, "__name__", "") or ""),
+        )
+    descriptor_function = getattr(member, "func", None)
+    if hasattr(type(member), "__get__") and inspect.isfunction(descriptor_function):
+        return (
+            "python-descriptor",
+            id(member),
+            id(type(member)),
+            _identity_measurement_kernel_callable_token(descriptor_function),
+        )
+    if callable(member):
+        return (
+            "native-callable",
+            f"{type(member).__module__}:{type(member).__qualname__}",
+            id(member),
+            id(getattr(member, "__objclass__", None)),
+            str(getattr(member, "__name__", "") or ""),
+        )
+    if hasattr(type(member), "__get__"):
+        return (
+            "opaque-descriptor",
+            f"{type(member).__module__}:{type(member).__qualname__}",
+            id(member),
+            id(type(member)),
+            id(vars(type(member)).get("__get__")),
+        )
+    return None
+
+
+def _identity_measurement_kernel_marker_token(
+    export_name: str,
+    marker: object,
+) -> object:
+    if inspect.isclass(marker):
+        behavior: object = _identity_measurement_kernel_class_token(marker)
+    else:
+        marker_getitem = getattr(marker, "_getitem", None)
+        behavior = (
+            _identity_measurement_kernel_class_token(type(marker)),
+            (
+                _identity_measurement_kernel_callable_token(marker_getitem)
+                if callable(marker_getitem)
+                else None
+            ),
+            str(getattr(marker, "_name", "") or ""),
+        )
+    return (
+        export_name,
+        f"{type(marker).__module__}:{type(marker).__qualname__}",
+        id(marker),
+        behavior,
+    )
+
+
+def _identity_measurement_kernel_value_token(
+    binding_name: str,
+    value: object,
+) -> object:
+    if isinstance(value, tuple):
+        return (
+            id(value),
+            tuple(
+                _identity_measurement_kernel_marker_token(name, item)
+                if binding_name == "_SUPPORTED_TYPE_MARKERS"
+                else (
+                    name,
+                    f"{type(item).__module__}:{type(item).__qualname__}",
+                    id(item),
+                    (
+                        _identity_measurement_kernel_class_token(item)
+                        if inspect.isclass(item)
+                        else None
+                    ),
+                )
+                for name, item in value
+            ),
+        )
+    return (
+        id(value),
+        f"{type(value).__module__}:{type(value).__qualname__}",
+    )
+
+
+def _identity_measurement_kernel_class_token(value: object) -> object:
+    members = []
+    for name, member in sorted(vars(value).items()):
+        token = _identity_measurement_kernel_member_token(member)
+        if token is not None:
+            members.append((name, token))
+    return tuple(members)
+
+
+def _canonical_kernel_default_identity(
+    function: object,
+    value: object,
+    *,
+    slot: str,
+) -> object:
+    if _is_stable_configuration_value(value):
+        return {"stable": _stable_configuration_value(value)}
+    if inspect.isclass(value):
+        return {"type": f"{value.__module__}:{value.__qualname__}"}
+    if type(value) is object:
+        global_names = sorted(
+            name
+            for name, item in getattr(function, "__globals__", {}).items()
+            if item is value
+        )
+        return {
+            "opaque_sentinel": {
+                "type": "builtins:object",
+                "global_names": global_names,
+                "local_slot": None if global_names else slot,
+            }
+        }
+    raise ValueError("identity kernel callable has an unsupported default value")
+
+
+def _canonical_kernel_callable_identity(value: object) -> object:
+    candidate = value.__func__ if inspect.ismethod(value) else value
+    if inspect.isfunction(candidate):
+        entrypoint, source, code = _cached_callable_static_snapshot(
+            candidate,
+            candidate.__code__,
+        )
+        return {
+            "binding": "function",
+            "entrypoint": entrypoint,
+            "source": source,
+            "code": code,
+            "defaults": [
+                _canonical_kernel_default_identity(
+                    candidate,
+                    item,
+                    slot=f"positional:{index}",
+                )
+                for index, item in enumerate(candidate.__defaults__ or ())
+            ],
+            "kwdefaults": {
+                name: _canonical_kernel_default_identity(
+                    candidate,
+                    item,
+                    slot=f"keyword:{name}",
+                )
+                for name, item in sorted((candidate.__kwdefaults__ or {}).items())
+            },
+        }
+    if (
+        inspect.ismethoddescriptor(candidate)
+        or inspect.isgetsetdescriptor(candidate)
+        or inspect.ismemberdescriptor(candidate)
+        or inspect.isbuiltin(candidate)
+        or callable(candidate)
+    ):
+        owner = getattr(candidate, "__objclass__", None)
+        return {
+            "binding": "native-callable",
+            "type": f"{type(candidate).__module__}:{type(candidate).__qualname__}",
+            "module": str(getattr(candidate, "__module__", "") or ""),
+            "qualname": str(
+                getattr(candidate, "__qualname__", "")
+                or getattr(candidate, "__name__", "")
+                or ""
+            ),
+            "owner": (
+                f"{owner.__module__}:{owner.__qualname__}"
+                if inspect.isclass(owner)
+                else None
+            ),
+            "python_version": tuple(sys.version_info[:3]),
+        }
+    raise ValueError("identity kernel member is not a supported callable")
+
+
+def _canonical_kernel_member_identity(member: object) -> object | None:
+    if isinstance(member, (classmethod, staticmethod)):
+        return {
+            "descriptor": type(member).__qualname__,
+            "callable": _canonical_kernel_callable_identity(member.__func__),
+        }
+    if isinstance(member, property):
+        return {
+            "descriptor": "property",
+            "accessors": {
+                accessor_name: (
+                    _canonical_kernel_callable_identity(accessor)
+                    if accessor is not None
+                    else None
+                )
+                for accessor_name, accessor in (
+                    ("fget", member.fget),
+                    ("fset", member.fset),
+                    ("fdel", member.fdel),
+                )
+            },
+        }
+    if inspect.isfunction(member):
+        return _canonical_kernel_callable_identity(member)
+    if (
+        inspect.ismethoddescriptor(member)
+        or inspect.isgetsetdescriptor(member)
+        or inspect.ismemberdescriptor(member)
+        or inspect.isbuiltin(member)
+        or callable(member)
+    ):
+        return _canonical_kernel_callable_identity(member)
+    descriptor_function = getattr(member, "func", None)
+    if hasattr(type(member), "__get__") and inspect.isfunction(descriptor_function):
+        return {
+            "descriptor": "python-descriptor",
+            "type_implementation": _canonical_kernel_class_identity(type(member)),
+            "callable": _canonical_kernel_callable_identity(descriptor_function),
+        }
+    if hasattr(type(member), "__get__"):
+        raise ValueError("identity kernel contains an opaque descriptor")
+    return None
+
+
+def _canonical_kernel_class_identity(value: object) -> object:
+    if not inspect.isclass(value):
+        raise ValueError("identity kernel value is not a runtime class")
+    current: object = sys.modules.get(value.__module__)
+    for part in value.__qualname__.split("."):
+        current = getattr(current, part, None)
+    if current is not value:
+        raise ValueError("identity kernel canonical runtime class drifted")
+    members: dict[str, object] = {}
+    for name, member in sorted(vars(value).items()):
+        identity = _canonical_kernel_member_identity(member)
+        if identity is not None:
+            members[name] = identity
+    root_module = value.__module__.partition(".")[0]
+    module = sys.modules.get(value.__module__)
+    return {
+        "entrypoint": f"{value.__module__}:{value.__qualname__}",
+        "source": _cached_class_source(value),
+        "members": members,
+        "runtime_provenance": (
+            {
+                "python_version": tuple(sys.version_info[:3]),
+                "stdlib_module": root_module,
+            }
+            if root_module in sys.stdlib_module_names
+            else _installed_module_provenance(module)
+        ),
+    }
+
+
+def _canonical_kernel_marker_identity(
+    export_name: str,
+    marker: object,
+) -> object:
+    _verify_canonical_kernel_export(
+        export_name,
+        marker,
+        label="typing marker",
+    )
+    if inspect.isclass(marker):
+        behavior: object = _canonical_kernel_class_identity(marker)
+    else:
+        marker_getitem = getattr(marker, "_getitem", None)
+        if not callable(marker_getitem):
+            raise ValueError("identity kernel typing marker has no behavior")
+        behavior = {
+            "type_implementation": _canonical_kernel_class_identity(type(marker)),
+            "getitem": _canonical_kernel_callable_identity(marker_getitem),
+            "name": str(getattr(marker, "_name", "") or ""),
+        }
+    return {
+        "canonical_export": export_name,
+        "type": f"{type(marker).__module__}:{type(marker).__qualname__}",
+        "behavior": behavior,
+    }
+
+
+def _identity_measurement_kernel_value_identity(
+    binding_name: str,
+    value: object,
+) -> object:
+    if isinstance(value, tuple):
+        return [
+            _canonical_kernel_marker_identity(name, item)
+            if binding_name == "_SUPPORTED_TYPE_MARKERS"
+            else {
+                "name": name,
+                "type": f"{type(item).__module__}:{type(item).__qualname__}",
+                "class_implementation": (
+                    _canonical_kernel_class_identity(item)
+                    if inspect.isclass(item)
+                    else None
+                ),
+            }
+            for name, item in value
+        ]
+    if binding_name == "_TYPE_PARAMETER_NO_DEFAULT":
+        _verify_canonical_kernel_export(
+            "typing_extensions.NoDefault",
+            value,
+            label="NoDefault singleton",
+        )
+        return {
+            "canonical_export": "typing_extensions.NoDefault",
+            "type": f"{type(value).__module__}:{type(value).__qualname__}",
+            "python_version": tuple(sys.version_info[:3]),
+        }
+    return {
+        "type": f"{type(value).__module__}:{type(value).__qualname__}",
+        "python_version": tuple(sys.version_info[:3]),
+    }
+
+
+def _is_type_parameter_runtime_value(value: object) -> bool:
+    return _has_canonical_runtime_type(
+        value,
+        _TYPE_PARAMETER_RUNTIME_TYPES,
+    )
+
+
+def _type_origin_identity(
+    value: object,
+    state: _BoundedDependencyState,
+    *,
+    depth: int,
+) -> object:
+    state.consume(depth)
+    if _is_type_alias_runtime_value(value):
+        return _type_expression_identity(
+            value,
+            state,
+            depth=depth,
+            consume_current=False,
+        )
+    if issubclass(type(value), type):
+        return {"type": f"{value.__module__}:{value.__qualname__}"}
+    marker_name = _supported_type_marker_name(value)
+    if marker_name is not None:
+        return {
+            "typing_marker": (
+                f"{type(value).__module__}:{type(value).__qualname__}"
+            ),
+            "canonical_name": marker_name,
+        }
+    raise ValueError(
+        "type alias contains unsupported origin "
+        f"{type(value).__module__}:{type(value).__qualname__}"
+    )
+
+
+def _type_expression_identity(
+    value: object,
+    state: _BoundedDependencyState,
+    *,
+    depth: int,
+    consume_current: bool = True,
+) -> object:
+    if consume_current:
+        state.consume(depth)
+    value_type = type(value)
+    if value is Ellipsis:
+        return {"singleton": "ellipsis"}
+    if issubclass(value_type, Enum):
+        return {
+            "enum": {
+                "type": f"{type(value).__module__}:{type(value).__qualname__}",
+                "name": value.name,
+                "value": _type_expression_identity(
+                    value.value,
+                    state,
+                    depth=depth + 1,
+                ),
+            }
+        }
+    if value_type is bytes:
+        return {"bytes": value.hex()}
+    if value is None or value_type in {str, int, bool}:
+        return value
+    if value_type in {tuple, list}:
+        return {
+            "type_sequence": {
+                "kind": type(value).__qualname__,
+                "items": [
+                    _type_expression_identity(
+                        item,
+                        state,
+                        depth=depth + 1,
+                    )
+                    for item in value
+                ],
+            }
+        }
+    if _is_type_alias_runtime_value(value):
+        identity = id(value)
+        if identity in state.active:
+            return {
+                "recursive_type_alias": (
+                    f"{getattr(value, '__module__', '')}:"
+                    f"{getattr(value, '__name__', '')}"
+                )
+            }
+        state.active.add(identity)
+        declared_parameters = tuple(getattr(value, "__type_params__", ()))
+        state.type_parameter_frames.append(
+            (
+                len(state.type_parameter_frames) + 1,
+                frozenset(id(item) for item in declared_parameters),
+                {},
+                set(),
+            )
+        )
+        try:
+            type_parameters = [
+                _type_expression_identity(
+                    item,
+                    state,
+                    depth=depth + 1,
+                )
+                for item in declared_parameters
+            ]
+            return {
+                "type_alias": {
+                    "module": str(getattr(value, "__module__", "") or ""),
+                    "name": str(getattr(value, "__name__", "") or ""),
+                    "value": _type_expression_identity(
+                        value.__value__,
+                        state,
+                        depth=depth + 1,
+                    ),
+                    "type_parameters": type_parameters,
+                }
+            }
+        finally:
+            state.type_parameter_frames.pop()
+            state.active.remove(identity)
+    if _is_type_parameter_runtime_value(value):
+        if not state.type_parameter_frames:
+            raise ValueError("type parameter is outside a type alias scope")
+        identity = id(value)
+        kind = type(value).__qualname__
+        name = str(getattr(value, "__name__", "") or "")
+        frame = next(
+            (
+                item
+                for item in reversed(state.type_parameter_frames)
+                if identity in item[1]
+            ),
+            None,
+        )
+        if frame is None:
+            raise ValueError("type alias contains an undeclared type parameter")
+        scope_id, _declared, symbols, defined = frame
+        symbol_id = symbols.setdefault(
+            identity,
+            len(symbols) + 1,
+        )
+        if identity in defined or identity in state.active:
+            return {
+                "type_parameter_reference": {
+                    "scope_id": scope_id,
+                    "symbol_id": symbol_id,
+                }
+            }
+        state.active.add(identity)
+        try:
+            has_default = hasattr(value, "__default__")
+            default = getattr(value, "__default__", None)
+            if not has_default or _is_no_default_type_parameter_value(default):
+                default_identity: object = {"specified": False}
+            else:
+                default_identity = {
+                    "specified": True,
+                    "value": _type_expression_identity(
+                        default,
+                        state,
+                        depth=depth + 1,
+                    ),
+                }
+            result = {
+                "type_parameter": {
+                    "scope_id": scope_id,
+                    "symbol_id": symbol_id,
+                    "kind": kind,
+                    "name": name,
+                    "bound": _type_expression_identity(
+                        getattr(value, "__bound__", None),
+                        state,
+                        depth=depth + 1,
+                    ),
+                    "constraints": [
+                        _type_expression_identity(
+                            item,
+                            state,
+                            depth=depth + 1,
+                        )
+                        for item in getattr(value, "__constraints__", ())
+                    ],
+                    "covariant": bool(getattr(value, "__covariant__", False)),
+                    "contravariant": bool(
+                        getattr(value, "__contravariant__", False)
+                    ),
+                    "infer_variance": bool(
+                        getattr(value, "__infer_variance__", False)
+                    ),
+                    "default": default_identity,
+                }
+            }
+            defined.add(identity)
+            return result
+        finally:
+            state.active.remove(identity)
+    if _is_new_type_runtime_value(value):
+        identity = id(value)
+        if identity in state.active:
+            return {
+                "recursive_new_type": (
+                    f"{getattr(value, '__module__', '')}:"
+                    f"{getattr(value, '__name__', '')}"
+                )
+            }
+        state.active.add(identity)
+        try:
+            return {
+                "new_type": {
+                    "module": str(getattr(value, "__module__", "") or ""),
+                    "name": str(getattr(value, "__name__", "") or ""),
+                    "supertype": _type_expression_identity(
+                        value.__supertype__,
+                        state,
+                        depth=depth + 1,
+                    ),
+                }
+            }
+        finally:
+            state.active.remove(identity)
+    if _has_canonical_runtime_type(
+        value,
+        _GENERIC_TYPE_EXPRESSION_RUNTIME_TYPES,
+    ):
+        origin = get_origin(value)
+        if origin is None:
+            raise ValueError("type expression has no canonical origin")
+        return {
+            "type_origin": _type_origin_identity(
+                origin,
+                state,
+                depth=depth + 1,
+            ),
+            "arguments": [
+                _type_expression_identity(
+                    item,
+                    state,
+                    depth=depth + 1,
+                )
+                for item in get_args(value)
+            ],
+        }
+    if issubclass(value_type, type):
+        return {"type": f"{value.__module__}:{value.__qualname__}"}
+    if _is_forward_ref_runtime_value(value):
+        if (
+            any(
+                getattr(value, name, None) is not None
+                for name in (
+                    "__cell__",
+                    "__extra_names__",
+                    "__globals__",
+                    "__owner__",
+                )
+            )
+            or bool(getattr(value, "__forward_evaluated__", False))
+            or getattr(value, "__forward_value__", None) is not None
+        ):
+            raise ValueError(
+                "forward reference contains external resolution context"
+            )
+        return {
+            "forward_reference": {
+                "argument": str(getattr(value, "__forward_arg__", "") or ""),
+                "module": str(getattr(value, "__forward_module__", "") or ""),
+                "is_argument": bool(
+                    getattr(value, "__forward_is_argument__", False)
+                ),
+                "is_class": bool(getattr(value, "__forward_is_class__", False)),
+            }
+        }
+    marker_name = _supported_type_marker_name(value)
+    if marker_name is not None:
+        return {
+            "typing_marker": (
+                f"{type(value).__module__}:{type(value).__qualname__}"
+            ),
+            "canonical_name": marker_name,
+        }
+    raise ValueError(
+        "type alias contains unsupported expression "
+        f"{type(value).__module__}:{type(value).__qualname__}"
+    )
 
 
 def _identity_measurement_kernel_binding_token() -> tuple[object, ...]:
@@ -1184,6 +2035,17 @@ def _identity_measurement_kernel_binding_token() -> tuple[object, ...]:
             )
         else:
             bindings.append((name, "missing"))
+    for name in sorted(_IDENTITY_MEASUREMENT_KERNEL_VALUE_NAMES):
+        bindings.append(
+            (
+                name,
+                "value",
+                _identity_measurement_kernel_value_token(
+                    name,
+                    namespace.get(name),
+                ),
+            )
+        )
     return tuple(bindings)
 
 
@@ -1256,11 +2118,19 @@ def _identity_measurement_kernel_digest() -> str:
             callables[name] = {"wrapped_chain": chain}
         else:
             callables[name] = {"binding": "missing"}
+    values = {
+        name: _identity_measurement_kernel_value_identity(
+            name,
+            namespace.get(name),
+        )
+        for name in sorted(_IDENTITY_MEASUREMENT_KERNEL_VALUE_NAMES)
+    }
     return canonical_digest(
         {
             "identity_contract": "optimization-identity-kernel.v1",
             "policy_digest": _identity_measurement_policy_digest(),
             "callables": callables,
+            "values": values,
         },
         CanonicalizationPolicy(),
     )
@@ -1694,6 +2564,17 @@ def _release_runtime_value_fast_token(
             and type(value).__qualname__ == "Pattern"
         ):
             return ("re-pattern", value.pattern, value.flags)
+        if _is_type_alias_runtime_value(value):
+            return (
+                "type-alias",
+                _stable_cache_token(
+                    _type_expression_identity(
+                        value,
+                        _BoundedDependencyState(active=set()),
+                        depth=0,
+                    )
+                ),
+            )
         provider = getattr(value, "runtime_identity", None)
         if callable(provider):
             configuration = provider()
@@ -2414,6 +3295,9 @@ class _BoundedDependencyState:
     nodes: int = 0
     max_nodes: int = _BOUNDED_DEPENDENCY_MAX_NODES
     max_depth: int = _BOUNDED_DEPENDENCY_MAX_DEPTH
+    type_parameter_frames: list[
+        tuple[int, frozenset[int], dict[int, int], set[int]]
+    ] = field(default_factory=list)
 
     def consume(self, depth: int) -> None:
         self.nodes += 1
@@ -2444,6 +3328,13 @@ def _bounded_dependency_identity(
         result = {"singleton": "not-implemented"}
     elif _is_stable_configuration_value(value):
         result = _bounded_stable_value(value)
+    elif _is_type_alias_runtime_value(value):
+        result = _type_expression_identity(
+            value,
+            state,
+            depth=depth,
+            consume_current=False,
+        )
     elif isinstance(value, (Mapping, tuple, list, set, frozenset)):
         result = _bounded_collection_identity(value, state, depth=depth + 1)
     elif isinstance(value, ModuleType):
@@ -3286,6 +4177,12 @@ def _function_is_release_covered(function: object) -> bool:
 def _stable_callable_capture(value: object, seen: set[int]) -> object:
     if value is None or _is_stable_configuration_value(value):
         return _stable_configuration_value(value)
+    if _is_type_alias_runtime_value(value):
+        return _type_expression_identity(
+            value,
+            _BoundedDependencyState(active=set()),
+            depth=0,
+        )
     if (
         inspect.isclass(value)
         and issubclass(value, BaseModel)

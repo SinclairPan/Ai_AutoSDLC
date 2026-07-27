@@ -2,14 +2,20 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import sys
+import typing as typing_module
+from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from functools import partial
 from operator import attrgetter
 from random import Random
 from types import ModuleType, SimpleNamespace
+from typing import ForwardRef, Literal, NewType
 
 import pytest
+from typing_extensions import ParamSpec, TypeAliasType, TypeVar, TypeVarTuple, Unpack
 
 from ai_sdlc.core import git_filter_safety as git_filter_safety_module
 from ai_sdlc.core.stage_review.optimization import evaluators as evaluators_module
@@ -537,6 +543,533 @@ def test_runtime_identity_rejects_opaque_callable_without_explicit_contract() ->
         match="explicit runtime_identity",
     ):
         component_runtime_digest(attrgetter("left"))
+
+
+def test_bounded_dependency_identity_binds_type_alias_semantics() -> None:
+    first = TypeAliasType("PolicyValue", int | str)
+    second = TypeAliasType("PolicyValue", int | float)
+
+    first_identity = evaluators_module._bounded_dependency_identity(
+        first,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    second_identity = evaluators_module._bounded_dependency_identity(
+        second,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert first_identity["type_alias"]["name"] == "PolicyValue"
+    assert first_identity != second_identity
+
+
+def test_bounded_dependency_identity_binds_type_parameter_constraints() -> None:
+    string_type = TypeVar("ValueType", bound=str)
+    float_type = TypeVar("ValueType", bound=float)
+    string_alias = TypeAliasType(
+        "PolicyValues",
+        list[string_type],
+        type_params=(string_type,),
+    )
+    float_alias = TypeAliasType(
+        "PolicyValues",
+        list[float_type],
+        type_params=(float_type,),
+    )
+
+    string_identity = evaluators_module._bounded_dependency_identity(
+        string_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    float_identity = evaluators_module._bounded_dependency_identity(
+        float_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert string_identity != float_identity
+
+
+def test_type_alias_identity_binds_typing_kernel_helpers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+    original_digest = evaluators_module._identity_measurement_kernel_digest()
+
+    monkeypatch.setattr(evaluators_module, "get_args", lambda _value: ())
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+    assert evaluators_module._identity_measurement_kernel_digest() != original_digest
+
+
+def test_type_alias_identity_binds_no_default_kernel_singleton(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_TYPE_PARAMETER_NO_DEFAULT",
+        object(),
+    )
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+    with pytest.raises(ValueError, match="canonical NoDefault singleton drifted"):
+        evaluators_module._identity_measurement_kernel_digest()
+
+
+def test_type_alias_identity_rejects_spoofed_kernel_runtime_class(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+    spoofed = type("ForwardRef", (), {"__module__": "annotationlib"})
+
+    monkeypatch.setattr(
+        evaluators_module,
+        "_FORWARD_REF_RUNTIME_TYPES",
+        (("annotationlib:ForwardRef", spoofed),),
+    )
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+    with pytest.raises(ValueError, match="canonical runtime class drifted"):
+        evaluators_module._identity_measurement_kernel_digest()
+
+
+def test_type_alias_identity_binds_forward_ref_property_behavior(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    if sys.version_info < (3, 14):
+        pytest.skip("ForwardRef properties are exposed by Python 3.14+")
+    import annotationlib
+
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+    original_digest = evaluators_module._identity_measurement_kernel_digest()
+
+    monkeypatch.setattr(
+        annotationlib.ForwardRef,
+        "__forward_arg__",
+        property(lambda _self: "spoofed"),
+    )
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+    assert evaluators_module._identity_measurement_kernel_digest() != original_digest
+
+
+def test_type_alias_identity_rejects_spoofed_typing_marker_export(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_token = evaluators_module._identity_measurement_kernel_binding_token()
+
+    def ClassVar(_parameters: object) -> object:  # noqa: N802
+        return str
+
+    spoofed = type(typing_module.ClassVar)(ClassVar)
+    assert type(spoofed) is type(typing_module.ClassVar)
+    assert repr(spoofed) == repr(typing_module.ClassVar)
+    monkeypatch.setattr(
+        evaluators_module,
+        "_SUPPORTED_TYPE_MARKERS",
+        tuple(
+            (
+                name,
+                spoofed if name == "typing.ClassVar" else marker,
+            )
+            for name, marker in evaluators_module._SUPPORTED_TYPE_MARKERS
+        ),
+    )
+
+    assert (
+        evaluators_module._identity_measurement_kernel_binding_token()
+        != original_token
+    )
+    with pytest.raises(ValueError, match="canonical typing marker drifted"):
+        evaluators_module._identity_measurement_kernel_digest()
+
+
+def test_identity_measurement_kernel_digest_is_stable_across_processes() -> None:
+    script = (
+        "from ai_sdlc.core.stage_review.optimization import evaluators as e;"
+        "print(e._identity_measurement_kernel_digest())"
+    )
+
+    def digest() -> str:
+        completed = subprocess.run(
+            [sys.executable, "-c", script],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+        return completed.stdout.strip().splitlines()[-1]
+
+    assert digest() == digest()
+
+
+def test_type_alias_identity_enforces_node_budget() -> None:
+    alias = TypeAliasType("PolicyValue", Literal[0, 1, 2])
+    within_budget = evaluators_module._BoundedDependencyState(
+        active=set(),
+        max_nodes=6,
+    )
+    exceeded_budget = evaluators_module._BoundedDependencyState(
+        active=set(),
+        max_nodes=5,
+    )
+
+    evaluators_module._bounded_dependency_identity(
+        alias,
+        within_budget,
+        depth=0,
+    )
+    with pytest.raises(ValueError, match="bounded limits"):
+        evaluators_module._bounded_dependency_identity(
+            alias,
+            exceeded_budget,
+            depth=0,
+        )
+
+
+def test_type_alias_identity_supports_literal_bytes_and_enum_members() -> None:
+    class TransportMode(Enum):
+        BINARY = b"binary"
+
+    alias = TypeAliasType(
+        "PolicyValue",
+        Literal[b"payload", TransportMode.BINARY],
+    )
+
+    identity = evaluators_module._bounded_dependency_identity(
+        alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert identity["type_alias"]["name"] == "PolicyValue"
+
+
+def test_type_alias_identity_binds_new_type_supertype() -> None:
+    user_id = NewType("UserId", int)
+    external_id = NewType("UserId", str)
+    user_alias = TypeAliasType("Identifier", user_id)
+    external_alias = TypeAliasType("Identifier", external_id)
+
+    user_identity = evaluators_module._bounded_dependency_identity(
+        user_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    external_identity = evaluators_module._bounded_dependency_identity(
+        external_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert user_identity != external_identity
+
+
+def test_type_alias_identity_preserves_local_type_parameter_relationships() -> None:
+    first_left = TypeVar("ValueType")
+    first_right = TypeVar("ValueType")
+    second_left = TypeVar("ValueType")
+    second_right = TypeVar("ValueType")
+    first_alias = TypeAliasType(
+        "Relationship",
+        tuple[first_left, first_left, first_right],
+        type_params=(first_left, first_right),
+    )
+    second_alias = TypeAliasType(
+        "Relationship",
+        tuple[second_left, second_right, second_right],
+        type_params=(second_left, second_right),
+    )
+
+    first_identity = evaluators_module._bounded_dependency_identity(
+        first_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    second_identity = evaluators_module._bounded_dependency_identity(
+        second_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert first_identity != second_identity
+
+
+def test_type_alias_identity_scopes_symbols_per_alias_regardless_of_mapping_order() -> None:
+    left_parameter = TypeVar("LeftValue")
+    right_parameter = TypeVar("RightValue")
+    left_alias = TypeAliasType(
+        "LeftAlias",
+        list[left_parameter],
+        type_params=(left_parameter,),
+    )
+    right_alias = TypeAliasType(
+        "RightAlias",
+        list[right_parameter],
+        type_params=(right_parameter,),
+    )
+    forward = {"left": left_alias, "right": right_alias}
+    reverse = {"right": right_alias, "left": left_alias}
+
+    forward_identity = evaluators_module._bounded_dependency_identity(
+        forward,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    reverse_identity = evaluators_module._bounded_dependency_identity(
+        reverse,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert forward_identity == reverse_identity
+
+
+def test_type_alias_identity_does_not_accept_spoofed_no_default() -> None:
+    no_default_type = type(
+        "NoDefaultType",
+        (),
+        {"__repr__": lambda _self: "typing.NoDefault"},
+    )
+    missing_default = TypeVar("ValueType")
+    spoofed_default = TypeVar("ValueType", default=no_default_type())
+    missing_alias = TypeAliasType(
+        "PolicyValue",
+        list[missing_default],
+        type_params=(missing_default,),
+    )
+    spoofed_alias = TypeAliasType(
+        "PolicyValue",
+        list[spoofed_default],
+        type_params=(spoofed_default,),
+    )
+
+    missing_identity = evaluators_module._bounded_dependency_identity(
+        missing_alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    with pytest.raises(ValueError, match="unsupported expression"):
+        evaluators_module._bounded_dependency_identity(
+            spoofed_alias,
+            evaluators_module._BoundedDependencyState(active=set()),
+            depth=0,
+        )
+
+    assert missing_identity["type_alias"]["name"] == "PolicyValue"
+
+
+def test_type_alias_identity_rejects_unregistered_typing_object() -> None:
+    class UnsupportedTypingValue:
+        __module__ = "typing"
+
+        def __repr__(self) -> str:
+            raise AssertionError("unknown typing values must not execute repr")
+
+    alias = TypeAliasType("PolicyValue", UnsupportedTypingValue())
+
+    with pytest.raises(ValueError, match="unsupported"):
+        evaluators_module._bounded_dependency_identity(
+            alias,
+            evaluators_module._BoundedDependencyState(active=set()),
+            depth=0,
+        )
+
+
+def test_type_alias_identity_rejects_spoofed_runtime_type_names() -> None:
+    def reject_attribute_access(_self: object, name: str) -> object:
+        raise AssertionError(f"spoofed runtime value attribute accessed: {name}")
+
+    for module_name, type_name in (
+        ("typing_extensions", "TypeAliasType"),
+        ("annotationlib", "ForwardRef"),
+        ("typing", "NewType"),
+        ("typing", "TypeVar"),
+    ):
+        spoofed_type = type(
+            type_name,
+            (),
+            {
+                "__module__": module_name,
+                "__getattribute__": reject_attribute_access,
+            },
+        )
+        alias = TypeAliasType("PolicyValue", spoofed_type())
+
+        with pytest.raises(ValueError, match="unsupported"):
+            evaluators_module._bounded_dependency_identity(
+                alias,
+                evaluators_module._BoundedDependencyState(active=set()),
+                depth=0,
+            )
+
+
+def test_type_alias_identity_supports_native_forward_reference() -> None:
+    alias = TypeAliasType("PolicyValue", ForwardRef("UserRecord"))
+
+    identity = evaluators_module._bounded_dependency_identity(
+        alias,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert (
+        identity["type_alias"]["value"]["forward_reference"]["argument"]
+        == "UserRecord"
+    )
+
+
+def test_type_alias_identity_rejects_contextual_forward_reference() -> None:
+    if sys.version_info < (3, 14):
+        pytest.skip("ForwardRef owner context is exposed by Python 3.14+")
+    alias = TypeAliasType(
+        "PolicyValue",
+        ForwardRef("UserRecord", owner=object()),
+    )
+
+    with pytest.raises(ValueError, match="resolution context"):
+        evaluators_module._bounded_dependency_identity(
+            alias,
+            evaluators_module._BoundedDependencyState(active=set()),
+            depth=0,
+        )
+
+
+def test_type_alias_identity_supports_nested_generic_alias_origin() -> None:
+    inner_parameter = TypeVar("ValueType")
+    outer_parameter = TypeVar("ValueType")
+    inner = TypeAliasType(
+        "InnerValues",
+        list[inner_parameter],
+        type_params=(inner_parameter,),
+    )
+    outer = TypeAliasType(
+        "OuterValues",
+        inner[outer_parameter],
+        type_params=(outer_parameter,),
+    )
+
+    identity = evaluators_module._bounded_dependency_identity(
+        outer,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+
+    assert (
+        identity["type_alias"]["value"]["type_origin"]["type_alias"]["name"]
+        == "InnerValues"
+    )
+
+
+def test_type_alias_identity_resolves_free_parameter_from_outer_scope_only() -> None:
+    outer_parameter = TypeVar("ValueType")
+    inner = TypeAliasType("InnerValues", list[outer_parameter])
+    outer = TypeAliasType(
+        "OuterValues",
+        inner,
+        type_params=(outer_parameter,),
+    )
+
+    with pytest.raises(ValueError, match="outside|undeclared"):
+        evaluators_module._bounded_dependency_identity(
+            inner,
+            evaluators_module._BoundedDependencyState(active=set()),
+            depth=0,
+        )
+
+    identity = evaluators_module._bounded_dependency_identity(
+        outer,
+        evaluators_module._BoundedDependencyState(active=set()),
+        depth=0,
+    )
+    reference = identity["type_alias"]["value"]["type_alias"]["value"][
+        "arguments"
+    ][0]
+
+    assert reference == {
+        "type_parameter_reference": {
+            "scope_id": 1,
+            "symbol_id": 1,
+        }
+    }
+
+
+def test_type_alias_identity_supports_common_callable_and_variadic_forms() -> None:
+    parameters = ParamSpec("Parameters", default=[int, str])
+    items = TypeVarTuple("Items", default=Unpack[tuple[str, ...]])
+    aliases = (
+        TypeAliasType("Row", tuple[int, ...]),
+        TypeAliasType("Callback", Callable[[int, str], bool]),
+        TypeAliasType(
+            "GenericCallback",
+            Callable[parameters, int],
+            type_params=(parameters,),
+        ),
+        TypeAliasType(
+            "VariadicRow",
+            tuple[*items],
+            type_params=(items,),
+        ),
+    )
+
+    identities = [
+        evaluators_module._bounded_dependency_identity(
+            alias,
+            evaluators_module._BoundedDependencyState(active=set()),
+            depth=0,
+        )
+        for alias in aliases
+    ]
+
+    assert len(identities) == len(aliases)
+
+
+def test_type_alias_identity_supports_registered_typing_generic_aliases() -> None:
+    parameters = ParamSpec("Parameters")
+    aliases = (
+        TypeAliasType("LegacyList", typing_module.List[int]),  # noqa: UP006
+        TypeAliasType(
+            "LegacyDict",
+            typing_module.Dict[str, int],  # noqa: UP006
+        ),
+        TypeAliasType("ClassValue", typing_module.ClassVar[int]),
+        TypeAliasType("FinalValue", typing_module.Final[int]),
+        TypeAliasType("RequiredValue", typing_module.Required[int]),
+        TypeAliasType("OptionalValue", typing_module.NotRequired[int]),
+        TypeAliasType("GuardValue", typing_module.TypeGuard[int]),
+        TypeAliasType(
+            "PrefixedParameters",
+            typing_module.Concatenate[int, parameters],
+            type_params=(parameters,),
+        ),
+    )
+
+    identities = [
+        evaluators_module._bounded_dependency_identity(
+            alias,
+            evaluators_module._BoundedDependencyState(active=set()),
+            depth=0,
+        )
+        for alias in aliases
+    ]
+
+    assert len(identities) == len(aliases)
 
 
 def test_live_package_cache_hit_fails_closed_then_rebuilds_for_changed_token(
