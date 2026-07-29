@@ -11,6 +11,14 @@ from pathlib import Path
 from ai_sdlc.core.lean_code_callers import attach_python_callers
 from ai_sdlc.core.lean_code_classification import classify_file
 from ai_sdlc.core.lean_code_dynamic_refs import _invocation_boundary
+from ai_sdlc.core.lean_code_framework_contracts import _framework_owned_contracts
+from ai_sdlc.core.lean_code_import_fanout import (
+    _function_import_metric,
+)
+from ai_sdlc.core.lean_code_import_module_bindings import (
+    _ImportBindings,
+    _module_import_bindings,
+)
 from ai_sdlc.core.lean_code_metric_calculations import (
     _complexity,
     _decode_source,
@@ -21,6 +29,7 @@ from ai_sdlc.core.lean_code_metric_calculations import (
     _parse_python,
     _span,
 )
+from ai_sdlc.core.lean_code_metric_paths import _in_scope, _language
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     FileMetric,
@@ -30,6 +39,11 @@ from ai_sdlc.core.lean_code_models import (
 )
 from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.core.source_snapshot_view import lean_metric_source
+
+_FRAMEWORK_MODULES = frozenset({"pydantic", "typer", "typing", "typing_extensions"})
+_IGNORED_IMPORT_ROOT_PARTS = frozenset(
+    {".git", ".tmp", ".venv", "__pycache__", "node_modules", "site-packages"}
+)
 
 
 def collect_lean_metrics(
@@ -41,12 +55,14 @@ def collect_lean_metrics(
     """Collect repeatable metrics without treating unsupported syntax as zero risk."""
 
     with lean_metric_source(root, snapshot) as (versions, source_loader):
+        trusted_frameworks = _trusted_framework_imports(source_loader())
         files = [
             _file_metric(
                 path,
                 *versions[path],
                 is_deleted=path in snapshot.deleted_files,
                 is_binary=path in snapshot.binary_files,
+                trusted_frameworks=trusted_frameworks,
             )
             for path in snapshot.changed_files
         ]
@@ -93,7 +109,9 @@ def _assemble_metrics(
         test_added_lines=sum(item.added_lines for item in tests),
         test_deleted_lines=sum(item.deleted_lines for item in tests),
         test_net_lines=sum(item.added_lines - item.deleted_lines for item in tests),
-        new_file_count=sum(item.is_new for item in files),
+        new_file_count=sum(
+            item.base_lines == 0 and item.head_lines > 0 for item in files
+        ),
         changed_file_count=len(files),
         classification_counts=dict(sorted(counts.items())),
         unknown_files=[
@@ -118,11 +136,51 @@ def _task_scope_matches(
     task_scopes: dict[str, tuple[str, ...]],
 ) -> dict[str, list[str]]:
     return {
-        path: sorted(
-            task_id for task_id, scope in task_scopes.items() if _in_scope(path, scope)
-        )
+        path: _most_specific_task_ids(path, task_scopes)
         for path in snapshot.changed_files
     }
+
+
+def _most_specific_task_ids(
+    path: str,
+    task_scopes: dict[str, tuple[str, ...]],
+) -> list[str]:
+    matches = {
+        task_id: specificity
+        for task_id, scope in task_scopes.items()
+        if (specificity := _scope_specificity(path, scope)) is not None
+    }
+    if not matches:
+        return []
+    strongest = max(matches.values())
+    return sorted(task_id for task_id, value in matches.items() if value == strongest)
+
+
+def _scope_specificity(
+    path: str,
+    scope: tuple[str, ...],
+) -> tuple[int, int, int, int] | None:
+    normalized = path.replace("\\", "/")
+    matches: list[tuple[int, int, int, int]] = []
+    for item in scope:
+        pattern = item.strip().strip("`").replace("\\", "/").rstrip("/")
+        if not pattern:
+            continue
+        wildcard_count = sum(pattern.count(token) for token in "*?[")
+        literal_length = len(pattern) - wildcard_count
+        first_wildcard = min(
+            (pattern.find(token) for token in "*?[" if token in pattern),
+            default=len(pattern),
+        )
+        static_prefix = pattern[:first_wildcard].rstrip("/")
+        prefix_segments = len([part for part in static_prefix.split("/") if part])
+        if normalized == pattern:
+            matches.append((2, prefix_segments, literal_length, -wildcard_count))
+        elif fnmatch.fnmatchcase(normalized, pattern):
+            matches.append((1, prefix_segments, literal_length, -wildcard_count))
+        elif wildcard_count == 0 and normalized.startswith(f"{pattern}/"):
+            matches.append((1, prefix_segments, literal_length, 0))
+    return max(matches) if matches else None
 
 
 def _unsupported_semantic_files(files: list[FileMetric]) -> list[str]:
@@ -141,6 +199,7 @@ def _file_metric(
     *,
     is_deleted: bool,
     is_binary: bool,
+    trusted_frameworks: frozenset[str],
 ) -> FileMetric:
     provenance = before if is_deleted else after
     classification = classify_file(path, provenance, is_binary)
@@ -148,26 +207,18 @@ def _file_metric(
     after_text, after_error = _decode_source(after)
     added_lines, deleted_lines = _line_delta(before_text, after_text)
     language = _language(path)
-    functions: list[FunctionMetric] = []
-    fan_out = base_fan_out = 0
     errors = [item for item in (before_error, after_error) if item]
-    capability = MetricCapability.UNSUPPORTED
-    if language == "python" and classification in {
-        FileClassification.HANDWRITTEN_PRODUCT,
-        FileClassification.HANDWRITTEN_TEST,
-    }:
-        functions, fan_out, base_fan_out, parse_errors = _python_metrics(
-            before_text, after_text, path
+    functions, fan_out, base_fan_out, capability, parse_errors = (
+        _semantic_file_metrics(
+            path,
+            before_text,
+            after_text,
+            language=language,
+            classification=classification,
+            trusted_frameworks=trusted_frameworks,
         )
-        errors.extend(parse_errors)
-        capability = (
-            MetricCapability.EXACT if not parse_errors else MetricCapability.UNSUPPORTED
-        )
-    elif classification not in {
-        FileClassification.UNKNOWN,
-        FileClassification.HANDWRITTEN_PRODUCT,
-    }:
-        capability = MetricCapability.CONSERVATIVE
+    )
+    errors.extend(parse_errors)
     return FileMetric(
         path=path,
         classification=classification,
@@ -184,10 +235,44 @@ def _file_metric(
     )
 
 
+def _semantic_file_metrics(
+    path: str,
+    before: str,
+    after: str,
+    *,
+    language: str,
+    classification: FileClassification,
+    trusted_frameworks: frozenset[str],
+) -> tuple[list[FunctionMetric], int, int, MetricCapability, list[str]]:
+    handwritten = {
+        FileClassification.HANDWRITTEN_PRODUCT,
+        FileClassification.HANDWRITTEN_TEST,
+    }
+    if language == "python" and classification in handwritten:
+        functions, fan_out, base_fan_out, errors = _python_metrics(
+            before,
+            after,
+            path,
+            trusted_frameworks=trusted_frameworks,
+        )
+        capability = (
+            MetricCapability.EXACT if not errors else MetricCapability.UNSUPPORTED
+        )
+        return functions, fan_out, base_fan_out, capability, errors
+    if classification not in {
+        FileClassification.UNKNOWN,
+        FileClassification.HANDWRITTEN_PRODUCT,
+    }:
+        return [], 0, 0, MetricCapability.CONSERVATIVE, []
+    return [], 0, 0, MetricCapability.UNSUPPORTED, []
+
+
 def _python_metrics(
     before: str,
     after: str,
     path: str,
+    *,
+    trusted_frameworks: frozenset[str],
 ) -> tuple[list[FunctionMetric], int, int, list[str]]:
     base_tree, base_error = _parse_python(before, path)
     head_tree, head_error = _parse_python(after, path)
@@ -195,17 +280,41 @@ def _python_metrics(
     if head_tree is None:
         return [], 0, 0, errors
     base_functions = _function_nodes(base_tree) if base_tree else {}
-    framework_owned = _framework_owned_symbols(head_tree)
+    head_import_bindings = _module_import_bindings(head_tree)
+    base_import_bindings = _module_import_bindings(base_tree)
+    framework_contracts = _framework_owned_contracts(head_tree, trusted_frameworks)
     functions = [
         _function_metric(
             symbol,
             node,
             base_functions.get(symbol),
-            framework_owned=symbol in framework_owned,
+            head_import_bindings=head_import_bindings,
+            base_import_bindings=base_import_bindings,
+            framework_contract=framework_contracts.get(symbol),
         )
         for symbol, node in _function_nodes(head_tree).items()
     ]
     return functions, _import_fan_out(head_tree), _import_fan_out(base_tree), errors
+
+
+def _trusted_framework_imports(sources: dict[str, bytes]) -> frozenset[str]:
+    """Trust framework contracts only when the project cannot shadow the import."""
+
+    shadowed: set[str] = set()
+    for source_path in sources:
+        candidate = Path(source_path)
+        if any(
+            part.casefold() in _IGNORED_IMPORT_ROOT_PARTS
+            for part in candidate.parts
+        ):
+            continue
+        stem = candidate.stem.casefold()
+        parent = candidate.parent.name.casefold()
+        if stem in _FRAMEWORK_MODULES:
+            shadowed.add(stem)
+        if candidate.name.casefold() == "__init__.py" and parent in _FRAMEWORK_MODULES:
+            shadowed.add(parent)
+    return frozenset(_FRAMEWORK_MODULES - shadowed)
 
 
 def _function_nodes(
@@ -229,8 +338,16 @@ def _function_metric(
     node: ast.FunctionDef | ast.AsyncFunctionDef,
     base: ast.FunctionDef | ast.AsyncFunctionDef | None,
     *,
-    framework_owned: bool,
+    head_import_bindings: _ImportBindings,
+    base_import_bindings: _ImportBindings,
+    framework_contract: tuple[str, tuple[str, ...]] | None,
 ) -> FunctionMetric:
+    import_fan_out, capability = _function_import_metric(
+        node, head_import_bindings
+    )
+    base_import_fan_out, base_capability = _function_import_metric(
+        base, base_import_bindings
+    )
     return FunctionMetric(
         symbol=symbol,
         logical_lines=_span(node),
@@ -239,105 +356,26 @@ def _function_metric(
         base_complexity=_complexity(base),
         max_nesting=_max_nesting(node),
         base_max_nesting=_max_nesting(base),
+        import_fan_out=import_fan_out,
+        base_import_fan_out=base_import_fan_out,
         public=(
-            not framework_owned
+            framework_contract is None
             and all(not part.startswith("_") for part in symbol.split("."))
         ),
         is_new=base is None,
-        capability=MetricCapability.EXACT,
+        capability=capability,
+        base_capability=base_capability,
+        callable_contract=framework_contract[0] if framework_contract else "",
+        contract_evidence=list(framework_contract[1]) if framework_contract else [],
         invocation_boundary=_invocation_boundary(node),
         fingerprint=_function_fingerprint(node),
     )
-
-
-def _framework_owned_symbols(tree: ast.Module) -> set[str]:
-    symbols = _guarded_main_entrypoints(tree)
-    for node in tree.body:
-        if not isinstance(node, ast.ClassDef):
-            continue
-        symbols.update(
-            f"{node.name}.model_post_init"
-            for child in node.body
-            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-            and child.name == "model_post_init"
-        )
-        base_names = {_base_name(base).rsplit(".", 1)[-1] for base in node.bases}
-        if "Protocol" in base_names:
-            symbols.update(
-                f"{node.name}.{child.name}"
-                for child in node.body
-                if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef))
-            )
-    return symbols
-
-
-def _guarded_main_entrypoints(tree: ast.Module) -> set[str]:
-    names: set[str] = set()
-    for node in tree.body:
-        if not isinstance(node, ast.If) or not _is_main_guard(node.test):
-            continue
-        names.update(
-            call.func.id
-            for statement in node.body
-            for call in ast.walk(statement)
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Name)
-        )
-    return names
-
-
-def _is_main_guard(node: ast.expr) -> bool:
-    if (
-        not isinstance(node, ast.Compare)
-        or len(node.ops) != 1
-        or not isinstance(node.ops[0], ast.Eq)
-        or len(node.comparators) != 1
-    ):
-        return False
-    values = (node.left, node.comparators[0])
-    return any(
-        isinstance(value, ast.Name) and value.id == "__name__" for value in values
-    ) and any(
-        isinstance(value, ast.Constant) and value.value == "__main__" for value in values
-    )
-
-
-def _base_name(node: ast.expr) -> str:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        prefix = _base_name(node.value)
-        return f"{prefix}.{node.attr}" if prefix else node.attr
-    return ""
 
 
 def _function_fingerprint(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:
     body = ast.Module(body=node.body, type_ignores=[])
     normalized = ast.dump(body, annotate_fields=True, include_attributes=False)
     return f"sha256:{hashlib.sha256(normalized.encode('utf-8')).hexdigest()}"
-
-
-def _language(path: str) -> str:
-    suffix = Path(path).suffix.lower()
-    if suffix == ".py":
-        return "python"
-    if suffix in {".ts", ".tsx"}:
-        return "typescript"
-    return {".java": "java", ".go": "go"}.get(suffix, "unknown")
-
-
-def _in_scope(path: str, scope: tuple[str, ...]) -> bool:
-    normalized = path.replace("\\", "/")
-    for item in scope:
-        pattern = item.strip().strip("`").replace("\\", "/").rstrip("/")
-        if not pattern:
-            continue
-        if fnmatch.fnmatchcase(normalized, pattern):
-            return True
-        if not any(token in pattern for token in "*?[") and normalized.startswith(
-            f"{pattern}/"
-        ):
-            return True
-    return False
 
 
 __all__ = ["collect_lean_metrics"]

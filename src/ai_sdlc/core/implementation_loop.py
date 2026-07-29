@@ -7,12 +7,26 @@ import re
 from collections.abc import Callable
 from pathlib import Path
 
-from ai_sdlc.core.design_contract_models import DesignContractReport
+from pydantic import ValidationError
+
+from ai_sdlc.core.design_close_authority_store import (
+    _verify_design_close_authority,
+)
+from ai_sdlc.core.design_contract_checks import _verify_design_document_snapshot
+from ai_sdlc.core.design_contract_models import (
+    DesignContractClose,
+    DesignContractInput,
+    DesignContractReport,
+)
 from ai_sdlc.core.design_contract_store import (
     DesignContractArtifacts,
+    _design_contract_loop_identity_issue,
+    _resolve_design_contract_loop_run_identity,
     design_contract_artifacts,
-    resolve_design_contract_loop_run_path,
     resolve_work_item_dir,
+)
+from ai_sdlc.core.design_contract_store import (
+    _read_close as read_design_contract_close,
 )
 from ai_sdlc.core.design_contract_store import (
     read_loop_run as read_design_contract_loop_run,
@@ -78,6 +92,11 @@ from ai_sdlc.core.loop_models import (
     utc_now_iso,
 )
 from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
+from ai_sdlc.core.scope_authority_store import (
+    ScopeAuthorityIntegrityError,
+    _verify_design_scope_authority,
+)
+from ai_sdlc.core.stable_file_read import read_stable_bytes
 from ai_sdlc.core.stage_review.adapters import ImplementationStageAdapter
 from ai_sdlc.core.stage_review.close_gate import (
     execute_stage_close,
@@ -136,6 +155,7 @@ def start_implementation_loop(
     task_items, task_blocker = _parse_tasks_file(
         root=root,
         work_item_dir=work_item_dir,
+        design_contract_loop_id=design_contract_loop_id,
     )
     if task_blocker:
         return _blocked_result(
@@ -685,31 +705,11 @@ def _design_contract_gate(
     *,
     work_item_id: str,
 ) -> tuple[str, str, str, str]:
-    loop_id = design_contract_loop_id.strip()
-    if loop_id:
-        try:
-            safe_loop_id = validate_design_contract_loop_id(loop_id)
-        except ValueError as exc:
-            return (
-                "",
-                "",
-                f"Invalid design-contract loop id: {exc}",
-                ("Run ai-sdlc loop design-contract status."),
-            )
-        artifacts = design_contract_artifacts(root, safe_loop_id)
-        loop_run_path = artifacts.loop_run_path
-    else:
-        loop_run_path, blocker = resolve_design_contract_loop_run_path(root, "")
-        if blocker:
-            return (
-                "",
-                "",
-                (
-                    "A closed current design-contract loop is required before "
-                    f"implementation start: {blocker}"
-                ),
-                "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
-            )
+    loop_run_path, expected_loop_id, target_blocker, target_next = (
+        _resolve_design_gate_target(root, design_contract_loop_id)
+    )
+    if target_blocker:
+        return "", "", target_blocker, target_next
     try:
         loop_run = read_design_contract_loop_run(loop_run_path)
     except ValueError as exc:
@@ -721,19 +721,65 @@ def _design_contract_gate(
             ),
             "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
         )
-    artifacts = design_contract_artifacts(root, loop_run.loop_id)
+    identity_issue = _design_contract_loop_identity_issue(
+        root,
+        loop_run_path,
+        expected_loop_id,
+        loop_run,
+    )
+    if identity_issue:
+        return (
+            "",
+            "",
+            f"Design-contract loop identity is invalid: {identity_issue}",
+            "Run ai-sdlc loop design-contract status.",
+        )
+    artifacts = design_contract_artifacts(root, expected_loop_id)
+    if loop_run.status != LoopStatus.CLOSED or not artifacts.close_path.is_file():
+        return (
+            "",
+            "",
+            (
+                f"Design-contract loop {loop_run.loop_id} must be closed before "
+                "implementation start."
+            ),
+            "Run ai-sdlc loop design-contract close --yes.",
+        )
     try:
         report = read_design_contract_report(artifacts.report_json_path)
+        close = read_design_contract_close(artifacts.close_path)
     except ValueError as exc:
         return (
             "",
             "",
-            f"Design-contract report is malformed: {exc}",
+            f"Design-contract report or close artifact is malformed: {exc}",
             ("Run ai-sdlc loop design-contract check --wi specs/<work-item>."),
         )
-    blocker = _design_contract_blocker(loop_run, report, artifacts, work_item_id)
+    blocker = _design_contract_blocker(
+        root,
+        loop_run,
+        report,
+        close,
+        artifacts,
+        expected_loop_id,
+        work_item_id,
+    )
     if blocker:
         return "", "", blocker, "Run ai-sdlc loop design-contract close --yes."
+    authority_issue = _design_close_authority_issue(
+        root,
+        loop_run,
+        artifacts,
+        expected_loop_id,
+        work_item_id,
+    )
+    if authority_issue:
+        return (
+            "",
+            "",
+            authority_issue,
+            "Rerun ai-sdlc loop design-contract check with a new loop id.",
+        )
     return (
         loop_run.loop_id,
         repo_relative_path(root, artifacts.report_json_path),
@@ -742,10 +788,81 @@ def _design_contract_gate(
     )
 
 
+def _resolve_design_gate_target(
+    root: Path,
+    design_contract_loop_id: str,
+) -> tuple[Path, str, str, str]:
+    loop_id = design_contract_loop_id.strip()
+    if loop_id:
+        try:
+            safe_loop_id = validate_design_contract_loop_id(loop_id)
+        except ValueError as exc:
+            return (
+                root,
+                "",
+                f"Invalid design-contract loop id: {exc}",
+                "Run ai-sdlc loop design-contract status.",
+            )
+        artifacts = design_contract_artifacts(root, safe_loop_id)
+        return artifacts.loop_run_path, safe_loop_id, "", ""
+    loop_run_path, expected_loop_id, blocker = (
+        _resolve_design_contract_loop_run_identity(root, "")
+    )
+    if blocker:
+        return (
+            loop_run_path,
+            expected_loop_id,
+            (
+                "A closed current design-contract loop is required before "
+                f"implementation start: {blocker}"
+            ),
+            "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
+        )
+    return (
+        loop_run_path,
+        expected_loop_id,
+        "",
+        "",
+    )
+
+
+def _design_close_authority_issue(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: DesignContractArtifacts,
+    expected_loop_id: str,
+    work_item_id: str,
+) -> str:
+    try:
+        payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
+        contract_input = DesignContractInput.model_validate(payload)
+        _verify_design_scope_authority(
+            root,
+            contract_input,
+            loop_input_digest=loop_run.input_digest,
+            expected_loop_id=expected_loop_id,
+            expected_work_item_id=work_item_id,
+        )
+        _verify_design_document_snapshot(root, contract_input)
+        _verify_design_close_authority(root, contract_input, artifacts)
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        ValidationError,
+        ScopeAuthorityIntegrityError,
+    ) as exc:
+        return f"Design close authority verification failed: {exc}"
+    return ""
+
+
 def _design_contract_blocker(
+    root: Path,
     loop_run: LoopRun,
     report: DesignContractReport,
+    close: DesignContractClose,
     artifacts: DesignContractArtifacts,
+    expected_loop_id: str,
     work_item_id: str,
 ) -> str:
     close_path = artifacts.close_path
@@ -754,12 +871,25 @@ def _design_contract_blocker(
             f"Design-contract loop {loop_run.loop_id} must be closed before "
             "implementation start."
         )
+    expected_report_path = repo_relative_path(root, artifacts.report_json_path)
+    if (
+        report.loop_id != expected_loop_id
+        or close.loop_id != expected_loop_id
+        or close.report_path != expected_report_path
+    ):
+        return "Design-contract artifact identity does not match the confirmed loop."
     if loop_run.work_item_id != work_item_id or report.work_item_id != work_item_id:
         return (
             f"Design-contract loop {loop_run.loop_id} belongs to work item "
             f"{report.work_item_id or loop_run.work_item_id}, but implementation "
             f"work item is {work_item_id}."
         )
+    if (
+        report.status != LoopStatus.PASSED
+        or report.blocker_count != 0
+        or close.blocker_count != 0
+    ):
+        return "Design-contract report or close artifact still contains blockers."
     return ""
 
 
@@ -767,11 +897,20 @@ def _parse_tasks_file(
     *,
     root: Path,
     work_item_dir: Path,
+    design_contract_loop_id: str,
 ) -> tuple[list[ImplementationTaskItem], str]:
     tasks_path = work_item_dir / "tasks.md"
-    if not tasks_path.is_file():
-        return [], f"tasks.md is required: {repo_relative_path(root, tasks_path)}"
-    text = tasks_path.read_text(encoding="utf-8")
+    try:
+        artifacts = design_contract_artifacts(root, design_contract_loop_id)
+        payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
+        contract_input = DesignContractInput.model_validate(payload)
+        content = read_stable_bytes(root, tasks_path)
+    except (OSError, UnicodeError, ValueError, ValidationError) as exc:
+        return [], f"tasks.md is unavailable or unsafe: {exc}"
+    digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    if digest != contract_input.tasks_digest:
+        return [], "tasks.md changed after the design contract was closed."
+    text = content.decode("utf-8")
     sections = _task_sections(text)
     if not sections:
         return [], "tasks.md does not contain parseable ### Task or ### 任务 sections."

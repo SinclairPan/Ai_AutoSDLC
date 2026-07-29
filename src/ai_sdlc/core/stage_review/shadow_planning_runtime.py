@@ -40,6 +40,9 @@ from ai_sdlc.core.stage_review.resource_builders import stable_id
 from ai_sdlc.core.stage_review.risk_extractor import (
     _extract_task_risk_profile as extract_task_risk_profile,
 )
+from ai_sdlc.core.stage_review.shadow_planning_store import (
+    _persist_shadow_candidate as persist_shadow_candidate,
+)
 from ai_sdlc.core.stage_review.stage_adapter_registry import (
     default_stage_candidate_adapter_registry,
 )
@@ -123,6 +126,14 @@ def _observe_candidate_plan(
     executor: StageReviewExecutor | None,
 ) -> ShadowPlanningOutcome:
     try:
+        candidate_refs = persist_shadow_candidate(
+            prepared.root,
+            candidate,
+            source_snapshot,
+        )
+    except Exception as exc:
+        return _candidate_failure(exc)
+    try:
         runtime, execution = _run_candidate_review(
             prepared,
             decision,
@@ -137,7 +148,7 @@ def _observe_candidate_plan(
         )
     except Exception as exc:
         return ShadowPlanningOutcome(
-            candidate=_candidate_state(candidate),
+            candidate=_candidate_state(candidate, candidate_refs["candidate.json"]),
             planning=ShadowPlanningState(
                 status="failed",
                 reason_code=f"planner-{type(exc).__name__.lower()}",
@@ -335,14 +346,11 @@ def _load_review_pack(root: Path, path_text: str) -> ReviewPack:
 
 def _candidate_state(
     candidate: CandidateManifest,
-    candidate_ref: str = "",
+    candidate_ref: str,
 ) -> CandidateBindingState:
-    reference = (
-        candidate_ref or f"{candidate.review_artifact_exclusion_set[0]}/candidate.json"
-    )
     return CandidateBindingState(
         status="materialized",
-        candidate_ref=reference,
+        candidate_ref=candidate_ref,
         candidate_manifest_digest=candidate_binding_digest(candidate),
         source_snapshot_digest=candidate.source_snapshot_digest,
         adapter_contract_digest=candidate.adapter_contract_digest,

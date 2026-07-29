@@ -300,6 +300,38 @@ def test_loop_requirement_start_dry_run_skips_adapter_hook_and_reports_source(
     adapter_hook.assert_not_called()
 
 
+def test_loop_requirement_start_unknown_scope_returns_structured_json(
+    tmp_path: Path,
+) -> None:
+    with (
+        patch("ai_sdlc.cli.loop_cmd.run_ide_adapter_if_initialized") as adapter_hook,
+        patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "loop",
+                "requirement",
+                "start",
+                "--idea",
+                "Build a service.",
+                "--acceptance",
+                "Service works.",
+                "--design-scope-family",
+                "unknown",
+                "--dry-run",
+                "--json",
+            ],
+        )
+
+    assert result.exit_code == 1
+    payload = json.loads(result.output)
+    assert payload["status"] == "blocked"
+    assert payload["result"] == "Requirement input is invalid."
+    assert "unknown design scope families: unknown" in payload["blocker"]
+    adapter_hook.assert_not_called()
+
+
 def test_loop_requirement_freeze_triggers_ide_adapter_hook(
     tmp_path: Path,
 ) -> None:

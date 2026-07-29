@@ -26,6 +26,7 @@ from ai_sdlc.core.lean_code_evaluator import (
     evaluate_lean_code,
 )
 from ai_sdlc.core.lean_code_exception_review import (
+    _locator_symbol_matches,
     exact_locator_digest,
     reviewer_decision_payload_digest,
 )
@@ -33,7 +34,22 @@ from ai_sdlc.core.lean_code_findings import (
     apply_structured_exceptions,
     make_finding,
 )
+from ai_sdlc.core.lean_code_framework_aliases import (
+    _bind_live_contract_owner_aliases,
+)
+from ai_sdlc.core.lean_code_framework_state import _BindingState
 from ai_sdlc.core.lean_code_identity_flow import _trace_identity
+from ai_sdlc.core.lean_code_import_binding_flow import (
+    _assigned_dynamic_aliases,
+    _dynamic_dependency_call,
+    _dynamic_expression_kind,
+)
+from ai_sdlc.core.lean_code_import_expression_flow import (
+    _named_expression_binding_paths,
+)
+from ai_sdlc.core.lean_code_import_factory_effects import _FlowState
+from ai_sdlc.core.lean_code_import_factory_flow import _run_block
+from ai_sdlc.core.lean_code_import_module_bindings import _module_import_bindings
 from ai_sdlc.core.lean_code_models import (
     FileClassification,
     LeanException,
@@ -125,6 +141,629 @@ def test_51_line_low_complexity_function_is_advisory(tmp_path: Path) -> None:
 
     assert _severities(report, "lean.function-budget") == {FindingSeverity.ADVISORY}
     assert report.status == LoopStatus.PASSED
+
+
+def test_function_risk_uses_only_imports_referenced_by_that_function(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    imports = "\n".join(f"import dependency_{index}" for index in range(13))
+    body = "\n".join(f"    value += {index}" for index in range(51))
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{imports}\n\ndef _process():\n    value = dependency_0.VALUE\n{body}\n"
+        "    return value\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    metric = report.metrics.files[0]
+    function = metric.functions[0]
+    assert metric.import_fan_out == 13
+    assert function.import_fan_out == 1
+    assert _severities(report, "lean.function-risk") == set()
+
+
+def test_oversized_function_with_broad_import_coupling_is_required(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    imports = "\n".join(f"import dependency_{index}" for index in range(12))
+    dependencies = ", ".join(f"dependency_{index}.VALUE" for index in range(12))
+    body = "\n".join(f"    value += {index}" for index in range(51))
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{imports}\n\ndef _process():\n    value = sum(({dependencies}))\n{body}\n"
+        "    return value\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 12
+    finding = next(
+        item for item in report.findings if item.rule_id == "lean.function-risk"
+    )
+    assert "fan_out=12" in str(finding.measured_value)
+
+
+def test_function_fan_out_includes_dependencies_in_function_defaults(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    imports = "\n".join(f"import dependency_{index}" for index in range(12))
+    defaults = ", ".join(
+        f"value_{index}=dependency_{index}.VALUE" for index in range(12)
+    )
+    body = "\n".join(f"    total += value_{index % 12}" for index in range(51))
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{imports}\n\ndef _process({defaults}):\n"
+        f"    total = 0\n{body}\n    return total\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 12
+    assert _severities(report, "lean.function-risk") == {FindingSeverity.REQUIRED}
+
+
+def test_function_fan_out_counts_nested_definition_defaults_in_outer_scope(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    body = "\n".join("    total += 1" for _ in range(51))
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\n"
+        "def _process():\n"
+        "    def nested(value=dependency.VALUE):\n"
+        "        return value\n"
+        "    total = 0\n"
+        f"{body}\n"
+        "    return total\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 1
+
+
+def test_function_fan_out_resolves_default_before_parameter_shadowing(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\n"
+        "def _process(dependency=dependency.VALUE):\n"
+        "    return dependency\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 1
+
+
+def test_function_fan_out_respects_lambda_and_comprehension_shadowing(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\n"
+        "def _process():\n"
+        "    callback = lambda dependency: dependency.VALUE\n"
+        "    values = [dependency.VALUE for dependency in ()]\n"
+        "    return callback, values\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 0
+
+
+def test_oversized_function_with_star_import_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    body = "\n".join("    total += VALUE" for _ in range(51))
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"from dependency import *\n\ndef _process():\n    total = 0\n{body}\n"
+        "    return total\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.capability == "conservative"
+    assert _severities(report, "lean.function-risk") == {FindingSeverity.REQUIRED}
+
+
+def test_oversized_function_with_globals_dependency_access_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    imports = "\n".join(f"import dependency_{index}" for index in range(12))
+    dynamic_values = ", ".join(
+        f"globals()['dependency_{index}'].VALUE" for index in range(12)
+    )
+    body = "\n".join("    total += 1" for _ in range(51))
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{imports}\n\ndef _process():\n"
+        f"    values = ({dynamic_values})\n"
+        "    total = len(values)\n"
+        f"{body}\n"
+        "    return total\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.capability == "conservative"
+    assert _severities(report, "lean.function-risk") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "import_source",
+    (
+        "import importlib as loader\n",
+        "from importlib import import_module as loader\n",
+    ),
+)
+def test_dynamic_import_alias_fails_closed(
+    tmp_path: Path,
+    import_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    call = (
+        "loader.import_module('dependency')"
+        if import_source.startswith("import importlib")
+        else "loader('dependency')"
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{import_source}\ndef _process():\n    return {call}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].capability == "conservative"
+
+
+def test_assigned_importlib_callable_alias_fails_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import importlib\n"
+        "load = importlib.import_module\n\n"
+        "def _process():\n"
+        "    return load('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "import importlib\n"
+            "(load,) = (importlib.import_module,)\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import importlib\n"
+            "load = getattr(importlib, 'import_module')\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import importlib\n"
+            "load = importlib.__dict__['import_module']\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "def _process():\n"
+            "    import importlib\n"
+            "    (load,) = (importlib.import_module,)\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "def _process():\n"
+            "    import importlib\n"
+            "    load = getattr(importlib, 'import_module')\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "def _process():\n"
+            "    import importlib\n"
+            "    load = importlib.__dict__['import_module']\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import builtins as b\n"
+            "g = b.globals\n\n"
+            "def _process():\n"
+            "    return g()['dependency']\n"
+        ),
+    ),
+)
+def test_derived_dynamic_import_aliases_fail_closed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "import builtins as b\n\n"
+            "def _process():\n"
+            "    return b.__import__('dependency')\n"
+        ),
+        (
+            "import builtins as b\n\n"
+            "def _process():\n"
+            "    return b.globals()['dependency']\n"
+        ),
+        ("import builtins as b\n\ndef _process():\n    return b.eval('dependency')\n"),
+        (
+            "import importlib\n"
+            "(load, *rest) = (importlib.import_module,)\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import importlib\n"
+            "load = (importlib.import_module,)[0]\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import importlib\n"
+            "load = lambda name: importlib.import_module(name)\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import importlib\n\n"
+            "def _process(load=importlib.import_module):\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "def _process():\n"
+            "    import importlib\n"
+            "    (load, *rest) = (importlib.import_module,)\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import importlib\n\n"
+            "def _process():\n"
+            "    return (load := importlib.import_module)('dependency')\n"
+        ),
+        (
+            "import builtins\n"
+            "load = vars(builtins)['__import__']\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import builtins\n"
+            "load = builtins.getattr(builtins, '__import__')\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import builtins\n"
+            "load = object.__getattribute__(builtins, '__import__')\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import builtins\n\n"
+            "load = (lambda module: getattr(\n"
+            "    module, ''.join(('__', 'import__'))\n"
+            "))(builtins)\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import builtins\n\n"
+            "def _process(key='__import__'):\n"
+            "    return builtins.__dict__[key]('dependency')\n"
+        ),
+        (
+            "import builtins\n"
+            "key = ('_' * 2) + 'import' + ('_' * 2)\n"
+            "load = builtins.__dict__[key]\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        ("def _process():\n    return __builtins__.__import__('dependency')\n"),
+        ("def _process():\n    return __builtins__['__import__']('dependency')\n"),
+    ),
+)
+def test_wrapped_or_direct_dynamic_dependency_access_fails_closed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "vars(builtins)['__import__']",
+        "builtins.getattr(builtins, '__import__')",
+        "object.__getattribute__(builtins, '__import__')",
+        "(lambda module: getattr(module, key))(builtins)",
+        "builtins.__dict__[key]",
+        "builtins.__dict__[('_' * 2) + 'import' + ('_' * 2)]",
+    ),
+)
+def test_dynamic_extraction_lineage_is_classified_directly(expression: str) -> None:
+    value = ast.parse(expression, mode="eval").body
+
+    assert _dynamic_expression_kind(value, {"builtins"}, set()) == "callable"
+    call = ast.Call(func=value, args=[ast.Constant(value="dependency")], keywords=[])
+    assert _dynamic_dependency_call(call, {"builtins"}, set()) is True
+
+
+def test_computed_dynamic_extraction_assignment_propagates_callable_alias() -> None:
+    statement = ast.parse("load = builtins.__dict__[key]").body[0]
+
+    modules, callables = _assigned_dynamic_aliases(
+        statement,
+        {"builtins"},
+        set(),
+    )
+
+    assert modules == set()
+    assert callables == {"load"}
+
+
+def test_rebound_dunder_builtins_is_not_treated_as_runtime_builtins(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "__builtins__ = {'value': 1}\n\n"
+        "def _process():\n"
+        "    return __builtins__['value']\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].capability == "exact"
+
+
+def test_unrelated_definition_time_dynamic_import_is_binding_local(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n"
+        "import importlib\n\n"
+        "def helper(_=importlib.import_module('optional')):\n"
+        "    return None\n\n"
+        "def _process():\n"
+        "    return dependency.VALUE\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    functions = {item.symbol: item for item in report.metrics.files[0].functions}
+    assert functions["helper"].capability == "conservative"
+    assert functions["_process"].capability == "exact"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "g = globals\n\ndef _process():\n    return g()['dependency']\n",
+        "l = locals\n\ndef _process():\n    return l()['dependency']\n",
+        (
+            "from builtins import globals as g\n\n"
+            "def _process():\n"
+            "    return g()['dependency']\n"
+        ),
+    ),
+)
+def test_dynamic_namespace_accessor_alias_fails_closed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].capability == "conservative"
+
+
+def test_definition_time_dynamic_binding_marks_module_conservative(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def bind(_=globals().update(dependency=__import__('dependency'))):\n"
+        "    return None\n\n"
+        "def _process():\n"
+        "    return dependency.VALUE\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+def test_unrelated_conditional_import_does_not_pollute_other_bindings(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n"
+        "if FLAG:\n"
+        "    import unrelated\n\n"
+        "def _process():\n"
+        "    return dependency.VALUE\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 1
+    assert function.capability == "exact"
+
+
+def test_unchanged_historical_conservative_coupling_is_not_new_required_debt(
+    tmp_path: Path,
+) -> None:
+    body = "\n".join("    total += VALUE" for _ in range(51))
+    source = (
+        f"from dependency import *\n\ndef _process():\n    total = 0\n{body}\n"
+        "    return total\n"
+    )
+    _init_repo(tmp_path, {"src/app.py": source})
+    _write(tmp_path, "src/app.py", source + "\nUNRELATED = 1\n")
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.capability == "conservative"
+    assert function.base_capability == "conservative"
+    assert _severities(report, "lean.function-risk") == set()
+
+
+def test_head_and_base_capabilities_are_reported_independently(
+    tmp_path: Path,
+) -> None:
+    _init_repo(
+        tmp_path,
+        {
+            "src/app.py": (
+                "from dependency import *\n\ndef _process():\n    return VALUE\n"
+            )
+        },
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\ndef _process():\n    return dependency.VALUE\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.capability == "exact"
+    assert function.base_capability == "conservative"
+
+
+def test_nested_class_body_dependency_counts_toward_outer_function_fan_out(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\n"
+        "def _process():\n"
+        "    class Runtime:\n"
+        "        value = dependency.VALUE\n"
+        "    return Runtime.value\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert report.metrics.files[0].functions[0].import_fan_out == 1
+
+
+def test_class_comprehension_resolves_global_import_not_class_shadow(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\n"
+        "def _process():\n"
+        "    class Runtime:\n"
+        "        dependency = object()\n"
+        "        values = [dependency.VALUE for _ in (0,)]\n"
+        "    return Runtime.values\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 1
+    assert function.capability == "exact"
+
+
+def test_class_comprehension_outer_iterable_uses_class_scope(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import dependency\n\n"
+        "def _process():\n"
+        "    class Runtime:\n"
+        "        dependency = (1,)\n"
+        "        values = [value for value in dependency]\n"
+        "    return Runtime.values\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.import_fan_out == 0
+    assert function.capability == "exact"
 
 
 def test_oversized_complex_function_is_required(tmp_path: Path) -> None:
@@ -272,6 +911,969 @@ def test_decorated_framework_entries_are_not_treated_as_zero_callers(
     assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
     assert _severities(report, "lean.invocation-boundary") == {FindingSeverity.ADVISORY}
     assert report.status == LoopStatus.NEEDS_USER
+
+
+def test_verified_typer_command_is_not_counted_as_a_public_abstraction(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is False
+    assert function.callable_contract == "typer-command"
+    assert function.contract_evidence == ["typer-app=app", "decorator=app.command"]
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_builtin_container_override_is_not_counted_as_a_public_abstraction(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/frozen.py",
+        "class FrozenDict(dict):\n"
+        "    def clear(self):\n"
+        "        raise TypeError('frozen')\n\n"
+        "    def custom_api(self):\n"
+        "        return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/frozen.py",))
+
+    functions = {
+        function.symbol: function for function in report.metrics.files[0].functions
+    }
+    assert functions["FrozenDict.clear"].public is False
+    assert functions["FrozenDict.clear"].callable_contract == "builtin-override"
+    assert functions["FrozenDict.custom_api"].public is True
+    findings = [
+        item.symbol for item in report.findings if item.rule_id == "lean.public-callers"
+    ]
+    assert findings == ["FrozenDict.custom_api"]
+
+
+def test_rebound_typer_app_does_not_forge_a_command_contract(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n"
+        "app = object()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_project_local_typer_module_does_not_forge_command_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "typer.py",
+        "class Typer:\n"
+        "    def command(self):\n"
+        "        return lambda function: function\n",
+    )
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("typer.py", "src/command.py"))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "deploy"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_case_variant_local_typer_module_is_portably_untrusted(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "TyPer.py",
+        "class Typer:\n"
+        "    def command(self):\n"
+        "        return lambda function: function\n",
+    )
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "deploy"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_setattr_rebinding_does_not_forge_typer_contract(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n"
+        "setattr(app, 'command', lambda: lambda function: function)\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_unknown_call_with_framework_proof_does_not_forge_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        "def poison(value):\n"
+        "    value.command = lambda: lambda function: function\n\n"
+        "poison(app)\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "poison_source",
+    (
+        (
+            "def poison(_=setattr(app, 'command', "
+            "lambda: lambda function: function)):\n"
+            "    return None\n"
+        ),
+        (
+            "class Poison:\n"
+            "    setattr(app, 'command', lambda: lambda function: function)\n"
+        ),
+    ),
+)
+def test_definition_time_rebinding_does_not_forge_framework_contract(
+    tmp_path: Path,
+    poison_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        f"{poison_source}\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "poison_source",
+    (
+        ("def poison():\n    globals()['deploy'] = lambda: 0\n\npoison()\n"),
+        "from custom import poison\n\npoison(deploy)\n",
+        ("from custom import poison\n\ndef trigger(_=poison()):\n    return None\n"),
+        ("from custom import poison\n\nclass Trigger:\n    poison()\n"),
+        "from custom import poison\n\npoison()\n",
+    ),
+)
+def test_pre_main_unknown_effects_do_not_forge_guarded_main_contract(
+    tmp_path: Path,
+    poison_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        f"{poison_source}\n"
+        "if __name__ == '__main__':\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert deploy.public is True
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_dead_code_after_raise_does_not_forge_guarded_main_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise RuntimeError('stop')\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = report.metrics.files[0].functions[0]
+    assert deploy.public is True
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_unknown_call_inside_main_guard_invalidates_later_entrypoint(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "from custom import poison\n\n"
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    poison()\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert deploy.public is True
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "import plugin\n\n"
+            "def deploy():\n"
+            "    return 0\n\n"
+            "if __name__ == '__main__':\n"
+            "    plugin.poison()\n"
+            "    deploy()\n"
+        ),
+        (
+            "import builtins\n\n"
+            "def deploy():\n"
+            "    return 0\n\n"
+            "if __name__ == '__main__':\n"
+            "    builtins.exec('deploy = lambda: 99')\n"
+            "    deploy()\n"
+        ),
+    ),
+)
+def test_unknown_attribute_call_inside_main_guard_invalidates_entrypoint(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "scripts/tool.py", source)
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert deploy.public is True
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "conditional_effect",
+    (
+        "plugin.poison()",
+        "builtins.exec('deploy = lambda: 99')",
+        "builtins.eval('deploy')",
+        "builtins.globals()",
+        "builtins.locals()",
+    ),
+)
+def test_conditional_effect_inside_main_guard_invalidates_entrypoint(
+    tmp_path: Path,
+    conditional_effect: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "import builtins\n"
+        "import plugin\n\n"
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    if FLAG:\n"
+        f"        {conditional_effect}\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert deploy.public is True
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "guard_body",
+    (
+        (
+            "    def poison():\n"
+            "        global deploy\n"
+            "        deploy = lambda: 99\n"
+            "    if FLAG:\n"
+            "        poison()\n"
+        ),
+        (
+            "    def poison():\n"
+            "        global deploy\n"
+            "        deploy = lambda: 99\n"
+            "    poison()\n"
+        ),
+        ("    class Poison:\n        global deploy\n        deploy = lambda: 99\n"),
+        "    if poison_condition:\n        pass\n",
+        "    for _ in poison_iter:\n        pass\n",
+        "    with poison_context:\n        pass\n",
+        "    if plugin.poison() and FLAG:\n        pass\n",
+        "    if FLAG and plugin.poison():\n        pass\n",
+        "    value = 1 if plugin.poison() else 0\n",
+        "    values = [plugin.poison() for _ in items]\n",
+    ),
+)
+def test_may_execute_effect_inside_main_guard_invalidates_entrypoint(
+    tmp_path: Path,
+    guard_body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "import plugin\n\n"
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        f"{guard_body}"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    "raise_expression",
+    (
+        "plugin.poison(deploy())",
+        "handlers['poison'](deploy())",
+        "factory()(deploy())",
+    ),
+)
+def test_unknown_raise_effect_does_not_forge_guarded_main_contract(
+    tmp_path: Path,
+    raise_expression: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "import plugin\n\n"
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        f"    raise {raise_expression}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    deploy = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert deploy.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_rebound_system_exit_does_not_wrap_a_guarded_main_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "import plugin\n\n"
+        "def main():\n"
+        "    return 0\n\n"
+        "def SystemExit(value):\n"
+        "    plugin.poison()\n"
+        "    return value\n\n"
+        "if __name__ == '__main__':\n"
+        "    raise SystemExit(main())\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    main = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "main"
+    )
+    assert main.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_globals_accessor_alias_does_not_forge_typer_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n"
+        "g = globals\n"
+        "g()['app'] = object()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_called_helper_rebinding_does_not_forge_typer_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        "def poison():\n"
+        "    global app\n"
+        "    app = object()\n\n"
+        "poison()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_decorator_replacement_does_not_propagate_pydantic_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/model.py",
+        "from pydantic import BaseModel\n"
+        "from custom import replace\n\n"
+        "@replace\n"
+        "class Child(BaseModel):\n"
+        "    pass\n\n"
+        "class Grand(Child):\n"
+        "    def model_post_init(self, context):\n"
+        "        return context\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/model.py",))
+
+    hook = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Grand.model_post_init"
+    )
+    assert hook.public is True
+    assert hook.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    ("source", "symbol"),
+    (
+        (
+            "from custom import replace\n"
+            "from pydantic import BaseModel\n\n"
+            "@replace\n"
+            "class Child(BaseModel):\n"
+            "    def model_post_init(self, context):\n"
+            "        return context\n",
+            "Child.model_post_init",
+        ),
+        (
+            "from custom import replace\n"
+            "from typing import Protocol\n\n"
+            "@replace\n"
+            "class Child(Protocol):\n"
+            "    def execute(self):\n"
+            "        return None\n",
+            "Child.execute",
+        ),
+        (
+            "from custom import replace\n\n"
+            "@replace\n"
+            "class Child(dict):\n"
+            "    def clear(self):\n"
+            "        return None\n",
+            "Child.clear",
+        ),
+    ),
+)
+def test_decorated_class_cannot_forge_a_framework_contract(
+    tmp_path: Path,
+    source: str,
+    symbol: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/framework.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/framework.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == symbol
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    ("source", "symbol"),
+    (
+        (
+            "from custom import replace\n"
+            "from pydantic import BaseModel\n\n"
+            "class Child(BaseModel):\n"
+            "    @replace\n"
+            "    def model_post_init(self, context):\n"
+            "        return context\n",
+            "Child.model_post_init",
+        ),
+        (
+            "from custom import replace\n"
+            "from typing import Protocol\n\n"
+            "class Child(Protocol):\n"
+            "    @replace\n"
+            "    def execute(self):\n"
+            "        return None\n",
+            "Child.execute",
+        ),
+        (
+            "from custom import replace\n\n"
+            "class Child(dict):\n"
+            "    @replace\n"
+            "    def clear(self):\n"
+            "        return None\n",
+            "Child.clear",
+        ),
+    ),
+)
+def test_decorated_method_cannot_forge_a_framework_contract(
+    tmp_path: Path,
+    source: str,
+    symbol: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/framework.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/framework.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == symbol
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    ("decorator_import", "decorator", "signature"),
+    (
+        ("", "property", "def value(self):"),
+        ("", "classmethod", "def build(cls):"),
+        ("", "staticmethod", "def ping():"),
+        ("from builtins import property as prop\n", "prop", "def value(self):"),
+        ("import builtins as bi\n", "bi.property", "def value(self):"),
+        ("from abc import abstractmethod\n", "abstractmethod", "def execute(self):"),
+    ),
+)
+def test_proven_standard_protocol_decorator_preserves_member_contract(
+    tmp_path: Path,
+    decorator_import: str,
+    decorator: str,
+    signature: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/protocols.py",
+        "from typing import Protocol\n"
+        f"{decorator_import}\n"
+        "class Service(Protocol):\n"
+        f"    @{decorator}\n"
+        f"    {signature}\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/protocols.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.callable_contract == "protocol-member"
+    assert _severities(report, "lean.public-callers") == set()
+
+
+def test_rebound_standard_protocol_decorator_does_not_preserve_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/protocols.py",
+        "from custom import replace\n"
+        "from typing import Protocol\n\n"
+        "property = replace\n\n"
+        "class Service(Protocol):\n"
+        "    @property\n"
+        "    def value(self):\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/protocols.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    ("source", "symbol"),
+    (
+        (
+            "from custom import replace\n"
+            "from pydantic import BaseModel\n\n"
+            "class Child(BaseModel):\n"
+            "    def model_post_init(self, context):\n"
+            "        return context\n\n"
+            "Child.model_post_init = replace(Child.model_post_init)\n",
+            "Child.model_post_init",
+        ),
+        (
+            "from typing import Protocol\n\n"
+            "class Child(Protocol):\n"
+            "    def execute(self):\n"
+            "        return None\n\n"
+            "del Child.execute\n",
+            "Child.execute",
+        ),
+        (
+            "class Child(dict):\n"
+            "    def clear(self):\n"
+            "        return None\n\n"
+            "Child = object\n",
+            "Child.clear",
+        ),
+        (
+            "from pydantic import BaseModel\n\n"
+            "class Child(BaseModel):\n"
+            "    def model_post_init(self, context):\n"
+            "        return context\n\n"
+            "if FLAG:\n"
+            "    Child.model_post_init = replacement\n",
+            "Child.model_post_init",
+        ),
+    ),
+)
+def test_post_definition_mutation_revokes_framework_member_contract(
+    tmp_path: Path,
+    source: str,
+    symbol: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/framework.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/framework.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == symbol
+    )
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_typer_contract_requires_registration_decorator_to_be_innermost(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n"
+        "from custom import replace\n\n"
+        "app = typer.Typer()\n\n"
+        "@app.command()\n"
+        "@replace\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_shadowed_builtin_does_not_forge_an_override_contract(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/frozen.py",
+        "class dict:\n"
+        "    pass\n\n"
+        "class FakeDict(dict):\n"
+        "    def clear(self):\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/frozen.py",))
+
+    function = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "FakeDict.clear"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_fake_protocol_name_does_not_forge_a_protocol_contract(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/ports.py",
+        "class Protocol:\n"
+        "    pass\n\n"
+        "class Service(Protocol):\n"
+        "    def execute(self):\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/ports.py",))
+
+    function = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.execute"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_plain_model_post_init_does_not_forge_pydantic_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/model.py",
+        "class Plain:\n"
+        "    def model_post_init(self, context):\n"
+        "        return context\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/model.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+@pytest.mark.parametrize(
+    ("source", "symbol"),
+    [
+        (
+            "from custom import dict\n\n"
+            "class FakeDict(dict):\n"
+            "    def clear(self):\n"
+            "        return None\n",
+            "FakeDict.clear",
+        ),
+        (
+            "from typing import Protocol\n"
+            "Protocol = object\n\n"
+            "class Service(Protocol):\n"
+            "    def execute(self):\n"
+            "        return None\n",
+            "Service.execute",
+        ),
+        (
+            "from .typing import Protocol\n\n"
+            "class Service(Protocol):\n"
+            "    def execute(self):\n"
+            "        return None\n",
+            "Service.execute",
+        ),
+        (
+            "from pydantic import BaseModel\n"
+            "BaseModel = object\n\n"
+            "class Plain(BaseModel):\n"
+            "    def model_post_init(self, context):\n"
+            "        return context\n",
+            "Plain.model_post_init",
+        ),
+        (
+            "from typing import Protocol\n"
+            "from custom import *\n\n"
+            "class Service(Protocol):\n"
+            "    def execute(self):\n"
+            "        return None\n",
+            "Service.execute",
+        ),
+    ],
+)
+def test_rebound_or_ambiguous_framework_sources_fail_closed(
+    tmp_path: Path,
+    source: str,
+    symbol: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/contracts.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/contracts.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == symbol
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_conditional_import_rebinding_invalidates_builtin_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/frozen.py",
+        "if FLAG:\n"
+        "    from custom import dict\n\n"
+        "class FakeDict(dict):\n"
+        "    def clear(self):\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/frozen.py",))
+
+    function = report.metrics.files[0].functions[0]
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
 
 
 def test_language_decorator_does_not_exempt_unused_public_abstraction(
@@ -606,6 +2208,44 @@ def test_task_scope_matches_expose_historical_scope_without_changing_wi_union(
     path = "src/ai_sdlc/core/unrelated_new.py"
     assert report.metrics.scope_drift == []
     assert report.metrics.task_scope_matches[path] == ["T503"]
+
+
+def test_task_scope_matches_prefer_the_most_specific_current_task(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    path = "src/ai_sdlc/core/lean_code_callers.py"
+    _write(tmp_path, path, "VALUE = 1\n")
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/ai_sdlc/core",),
+        task_scopes={
+            "T503": ("src/ai_sdlc/core",),
+            "T1102": (path,),
+        },
+    )
+
+    assert report.metrics.task_scope_matches[path] == ["T1102"]
+
+
+def test_task_scope_matches_prefer_narrow_directory_over_broad_glob(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    path = "src/ai_sdlc/core/lean_code_callers.py"
+    _write(tmp_path, path, "VALUE = 1\n")
+
+    report = _evaluate(
+        tmp_path,
+        scope=("src/ai_sdlc/core",),
+        task_scopes={
+            "broad": ("**/*.py",),
+            "narrow": ("src/ai_sdlc/core",),
+        },
+    )
+
+    assert report.metrics.task_scope_matches[path] == ["narrow"]
 
 
 def test_structured_exception_cannot_waive_scope_integrity_blocker(
@@ -1022,9 +2662,7 @@ def test_exception_rejects_self_declared_reviewer_strings_without_execution(
         previous_report_digest=stable_artifact_digest(first),
     )
 
-    assert _severities(report, "lean.exception-invalid") == {
-        FindingSeverity.BLOCKER
-    }
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
     assert report.risk_accepted is False
 
 
@@ -1050,17 +2688,11 @@ def test_exception_rejects_two_declared_reviewers_sharing_one_execution(
         ):
             payload[field] = first_payload[field]
 
-    exception = _mutate_reviewer_artifact(
-        tmp_path, exception, 1, share_execution
-    )
-    report = _evaluate_trusted_bug_exception(
-        tmp_path, snapshot, first, exception
-    )
+    exception = _mutate_reviewer_artifact(tmp_path, exception, 1, share_execution)
+    report = _evaluate_trusted_bug_exception(tmp_path, snapshot, first, exception)
 
     assert finding.resolution == "unresolved"
-    assert _severities(report, "lean.exception-invalid") == {
-        FindingSeverity.BLOCKER
-    }
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
     assert report.risk_accepted is False
 
 
@@ -1074,16 +2706,10 @@ def test_exception_rejects_generic_verified_risk_acceptance_contract(
     def use_generic_contract(payload):
         payload["decisions"][0]["contract_kind"] = "verified_risk_acceptance"
 
-    exception = _mutate_reviewer_artifact(
-        tmp_path, exception, 0, use_generic_contract
-    )
-    report = _evaluate_trusted_bug_exception(
-        tmp_path, snapshot, first, exception
-    )
+    exception = _mutate_reviewer_artifact(tmp_path, exception, 0, use_generic_contract)
+    report = _evaluate_trusted_bug_exception(tmp_path, snapshot, first, exception)
 
-    assert _severities(report, "lean.exception-invalid") == {
-        FindingSeverity.BLOCKER
-    }
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
     assert report.risk_accepted is False
 
 
@@ -1100,14 +2726,22 @@ def test_exception_rejects_tampered_exact_contract_locator(
         decision["exact_locator_digests"][locator] = "sha256:" + "0" * 64
 
     exception = _mutate_reviewer_artifact(tmp_path, exception, 0, tamper_locator)
-    report = _evaluate_trusted_bug_exception(
-        tmp_path, snapshot, first, exception
-    )
+    report = _evaluate_trusted_bug_exception(tmp_path, snapshot, first, exception)
 
-    assert _severities(report, "lean.exception-invalid") == {
-        FindingSeverity.BLOCKER
-    }
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
     assert report.risk_accepted is False
+
+
+@pytest.mark.parametrize("suffix", (".py", ".PY", ".Py", ".pY"))
+def test_python_exception_locator_is_case_insensitive_and_exact(
+    suffix: str,
+) -> None:
+    assert not _locator_symbol_matches(
+        Path(f"contract{suffix}"),
+        "NOT_A_SYMBOL = 1\n",
+        "SYMBOL",
+        1,
+    )
 
 
 def test_exception_rejects_decision_not_emitted_by_bound_review_pass(
@@ -1129,13 +2763,9 @@ def test_exception_rejects_decision_not_emitted_by_bound_review_pass(
     exception = _mutate_reviewer_artifact(
         tmp_path, exception, 0, replace_decision_after_execution
     )
-    report = _evaluate_trusted_bug_exception(
-        tmp_path, snapshot, first, exception
-    )
+    report = _evaluate_trusted_bug_exception(tmp_path, snapshot, first, exception)
 
-    assert _severities(report, "lean.exception-invalid") == {
-        FindingSeverity.BLOCKER
-    }
+    assert _severities(report, "lean.exception-invalid") == {FindingSeverity.BLOCKER}
     assert report.risk_accepted is False
 
 
@@ -2090,9 +3720,7 @@ def test_renamed_function_reexport_resolves_callback_reference(
     assert helper.invocation_boundary == ""
     assert helper.invocation_evidence == []
     assert helper.reference_evidence
-    assert _severities(report, "lean.public-callers") == {
-        FindingSeverity.REQUIRED
-    }
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
 
 
 def test_module_rebinding_does_not_preserve_target_class_alias(tmp_path: Path) -> None:
@@ -3131,9 +4759,7 @@ def test_unresolved_dynamic_calls_are_advisory_with_caller_evidence(
         f"{call_line}:11:{call_line}:{4 + len(dynamic_source)}"
     )
     assert (
-        helper.invocation_evidence
-        if target_linked
-        else helper.unlinked_evidence
+        helper.invocation_evidence if target_linked else helper.unlinked_evidence
     ) == [evidence]
     boundary = next(
         item for item in report.findings if item.rule_id == "lean.invocation-boundary"
@@ -5685,6 +7311,53 @@ def test_inherited_pydantic_model_post_init_is_a_framework_hook(
     assert _severities(report, "lean.public-callers") == set()
 
 
+@pytest.mark.parametrize(
+    ("shadow_path", "shadow_source"),
+    (
+        (
+            "TYPER.PY",
+            "class Typer:\n"
+            "    def command(self):\n"
+            "        return lambda function: function\n",
+        ),
+        (
+            "TYPER/__INIT__.PY",
+            "class Typer:\n"
+            "    def command(self):\n"
+            "        return lambda function: function\n",
+        ),
+    ),
+)
+def test_uppercase_python_extension_shadows_framework_portably(
+    tmp_path: Path,
+    shadow_path: str,
+    shadow_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, shadow_path, shadow_source)
+    _write(
+        tmp_path,
+        "src/command.py",
+        "import typer\n\n"
+        "app = typer.Typer()\n\n"
+        "@app.command()\n"
+        "def deploy():\n"
+        "    return 1\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/command.py",))
+
+    function = next(
+        item
+        for metric in report.metrics.files
+        for item in metric.functions
+        if item.symbol == "deploy"
+    )
+    assert function.public is True
+    assert function.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
 def test_guarded_main_function_is_a_module_entrypoint_not_a_public_api(
     tmp_path: Path,
 ) -> None:
@@ -5713,10 +7386,7 @@ def test_not_equal_name_check_does_not_hide_import_entrypoint(
     _write(
         tmp_path,
         "scripts/tool.py",
-        "def main():\n"
-        "    return 0\n\n"
-        "if __name__ != '__main__':\n"
-        "    main()\n",
+        "def main():\n    return 0\n\nif __name__ != '__main__':\n    main()\n",
     )
 
     report = _evaluate(tmp_path, scope=("scripts/tool.py",))
@@ -5724,9 +7394,144 @@ def test_not_equal_name_check_does_not_hide_import_entrypoint(
     entrypoint = report.metrics.files[0].functions[0]
     assert entrypoint.symbol == "main"
     assert entrypoint.public is True
-    assert _severities(report, "lean.public-callers") == {
-        FindingSeverity.REQUIRED
-    }
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_dead_code_inside_main_guard_does_not_forge_entrypoint_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    if False:\n"
+        "        deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.symbol == "deploy"
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_rebound_main_name_does_not_forge_entrypoint_contract(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "__name__ = '__main__'\n"
+        "if __name__ == '__main__':\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_assert_message_inside_main_guard_is_not_an_entrypoint_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    assert True, deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_try_star_branch_inside_main_guard_is_not_an_entrypoint_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    try:\n"
+        "        raise ExceptionGroup('errors', [ValueError()])\n"
+        "    except* ValueError:\n"
+        "        deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_conditional_dynamic_rebinding_inside_main_guard_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    if FLAG:\n"
+        "        globals()['deploy'] = lambda: None\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = report.metrics.files[0].functions[0]
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
+
+
+def test_dynamic_helper_inside_main_guard_invalidates_entrypoint_proof(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def deploy():\n"
+        "    return 0\n\n"
+        "def poison():\n"
+        "    globals()['deploy'] = lambda: None\n\n"
+        "if __name__ == '__main__':\n"
+        "    poison()\n"
+        "    deploy()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "deploy"
+    )
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
 
 
 def test_sibling_script_imports_resolve_to_exact_public_callers(tmp_path: Path) -> None:
@@ -5940,16 +7745,12 @@ def test_sibling_callable_arguments_keep_distinct_expression_evidence(
         for function in metric.functions
     }
     assert metrics["target"].invocation_evidence == []
-    assert metrics["target"].reference_evidence == [
-        "src/caller.py:_call:4:5:19:5:25"
-    ]
+    assert metrics["target"].reference_evidence == ["src/caller.py:_call:4:5:19:5:25"]
     assert metrics["anticipated_usage"].invocation_evidence == []
     assert metrics["anticipated_usage"].reference_evidence == [
         "src/caller.py:_call:4:5:27:5:44"
     ]
-    assert _severities(report, "lean.public-callers") == {
-        FindingSeverity.REQUIRED
-    }
+    assert _severities(report, "lean.public-callers") == {FindingSeverity.REQUIRED}
 
 
 def test_shadowed_callable_name_cannot_claim_imported_target_evidence(
@@ -6086,6 +7887,355 @@ def test_deleted_generated_file_keeps_before_view_provenance(tmp_path: Path) -> 
     metric = report.metrics.files[0]
     assert metric.classification == FileClassification.GENERATED
     assert report.status == LoopStatus.PASSED
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "key = '__import__'\n\n"
+            "def _process():\n"
+            "    return __builtins__[key]('dependency')\n"
+        ),
+        (
+            "key = '__import__'\n"
+            "load = __builtins__[key]\n\n"
+            "def _process():\n"
+            "    return load('dependency')\n"
+        ),
+        (
+            "import sys\n\n"
+            "def _process():\n"
+            "    return sys.modules['builtins'].__import__('dependency')\n"
+        ),
+        (
+            "import sys\n\n"
+            "def _process():\n"
+            "    return sys.modules['importlib'].import_module('dependency')\n"
+        ),
+        ("def _process():\n    return __loader__.load_module('dependency')\n"),
+        (
+            "import importlib\n"
+            "setattr(importlib, 'load', importlib.import_module)\n\n"
+            "def _process():\n"
+            "    return importlib.load('dependency')\n"
+        ),
+        (
+            "import importlib\n\n"
+            "class Box:\n"
+            "    pass\n\n"
+            "box = Box()\n"
+            "box.load = importlib.import_module\n\n"
+            "def _process():\n"
+            "    return box.load('dependency')\n"
+        ),
+    ),
+)
+def test_private_dynamic_loader_lineage_fails_closed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        (
+            "from typing import Protocol\n\n"
+            "class Service(Protocol):\n"
+            "    def run(self): ...\n"
+            "    run = lambda self: 1\n"
+        ),
+        (
+            "from typing import Protocol\n\n"
+            "class Service(Protocol):\n"
+            "    def run(self): ...\n"
+            "    del run\n"
+        ),
+        (
+            "from typing import Protocol\n\n"
+            "class Service(Protocol):\n"
+            "    def run(self): ...\n"
+            "    if FLAG:\n"
+            "        run = lambda self: 1\n"
+        ),
+        (
+            "from typing import Protocol\n\n"
+            "class Meta(type):\n"
+            "    pass\n\n"
+            "class Service(Protocol, metaclass=Meta):\n"
+            "    def run(self): ...\n"
+        ),
+        (
+            "from typing import Protocol\n\n"
+            "class Base:\n"
+            "    pass\n\n"
+            "class Service(Protocol, Base):\n"
+            "    def run(self): ...\n"
+        ),
+    ),
+)
+def test_unproved_class_lifecycle_does_not_forge_framework_contract(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/framework.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/framework.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_unrelated_module_call_preserves_proven_framework_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/framework.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "print('loaded')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/framework.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is False
+    assert method.callable_contract == "protocol-member"
+
+
+@pytest.mark.parametrize(
+    "preamble,raise_line",
+    (
+        ("", "raise SystemExit(main())"),
+        ("from builtins import SystemExit as Exit\n\n", "raise Exit(main())"),
+        ("import builtins as runtime\n\n", "raise runtime.SystemExit(main())"),
+    ),
+)
+def test_inert_guard_statements_and_standard_exit_aliases_preserve_entrypoint(
+    tmp_path: Path,
+    preamble: str,
+    raise_line: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        f"{preamble}"
+        "def main():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    if True:\n"
+        "        pass\n"
+        f"    {raise_line}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "main"
+    )
+    assert entrypoint.public is False
+    assert entrypoint.callable_contract == "guarded-main"
+
+
+def test_unproved_helper_effect_inside_main_guard_revokes_entrypoint(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "def main():\n"
+        "    return 0\n\n"
+        "def activate(plugin):\n"
+        "    plugin.install()\n\n"
+        "if __name__ == '__main__':\n"
+        "    activate(plugin)\n"
+        "    main()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "main"
+    )
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+
+
+def test_indirect_module_rebinding_inside_main_guard_revokes_entrypoint(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "scripts/tool.py",
+        "import sys\n\n"
+        "def main():\n"
+        "    return 0\n\n"
+        "if __name__ == '__main__':\n"
+        "    sys.modules[__name__].main = lambda: 1\n"
+        "    main()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("scripts/tool.py",))
+
+    entrypoint = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "main"
+    )
+    assert entrypoint.public is True
+    assert entrypoint.callable_contract == ""
+    assert entrypoint.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "    return factory()('dependency')\n",
+        "    loader = factory()\n    return loader('dependency')\n",
+    ),
+)
+def test_dynamic_import_factory_return_fails_closed(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"def factory():\n    return __import__\n\ndef _process():\n{body}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+def test_unrelated_definition_time_call_preserves_protocol_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import logging\n"
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "logging.info('loaded')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is False
+    assert method.callable_contract == "protocol-member"
+
+
+@pytest.mark.parametrize(
+    "statement",
+    ("import importlib.util", "import importlib.machinery"),
+)
+def test_dotted_importlib_binding_fails_closed(
+    tmp_path: Path,
+    statement: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{statement}\n\n"
+        "def _process():\n"
+        "    return importlib.import_module('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+def test_protocol_property_setter_preserves_proven_contract(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    @property\n"
+        "    def value(self): ...\n\n"
+        "    @value.setter\n"
+        "    def value(self, new_value): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.public is False
+    assert method.callable_contract == "protocol-member"
+
+
+def test_protocol_property_setter_after_rebinding_is_not_trusted(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    @property\n"
+        "    def value(self): ...\n\n"
+        "    value = replacement\n\n"
+        "    @value.setter\n"
+        "    def value(self, new_value): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
 
 
 def _evaluate(
@@ -6559,3 +8709,8145 @@ def _git(root: Path, *args: str) -> str:
     if result.returncode:
         raise AssertionError(result.stderr)
     return result.stdout.strip()
+
+
+@pytest.mark.parametrize(
+    ("factory_body", "process_body"),
+    (
+        (
+            "def factory():\n    return (__import__,)[0]\n",
+            "    return factory()('dependency')\n",
+        ),
+        (
+            "def factory():\n    return [__import__][0]\n",
+            "    return factory()('dependency')\n",
+        ),
+        (
+            "def ident(value):\n"
+            "    return value\n\n"
+            "def factory():\n"
+            "    return ident(__import__)\n",
+            "    return factory()('dependency')\n",
+        ),
+        (
+            "def factory(flag):\n    return __import__ if flag else print\n",
+            "    loader = factory(True)\n    return loader('dependency')\n",
+        ),
+        (
+            "def outer():\n"
+            "    def factory():\n"
+            "        return (__import__,)[0]\n"
+            "    return factory\n",
+            "    return outer()()('dependency')\n",
+        ),
+    ),
+)
+def test_wrapped_dynamic_import_factory_return_fails_closed(
+    tmp_path: Path,
+    factory_body: str,
+    process_body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{factory_body}\ndef _process():\n{process_body}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "alias_statement, call_statement",
+    (
+        ("Alias = Service", "configure(Alias)"),
+        ("owners = [Service]", "configure(owners)"),
+        ("Alias, other = (Service, object())", "configure(Alias)"),
+        ("holder = {'owner': Service}", "configure(holder)"),
+    ),
+)
+def test_unknown_call_through_framework_owner_alias_revokes_contract(
+    tmp_path: Path,
+    alias_statement: str,
+    call_statement: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        f"{alias_statement}\n"
+        f"{call_statement}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_rebound_framework_owner_alias_does_not_revoke_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "Alias = Service\n"
+        "Alias = object()\n"
+        "configure(Alias)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is False
+    assert method.callable_contract == "protocol-member"
+
+
+@pytest.mark.parametrize("lifecycle", ("getter", "deleter"))
+def test_protocol_property_lifecycle_preserves_proven_contract(
+    tmp_path: Path,
+    lifecycle: str,
+) -> None:
+    _init_repo(tmp_path)
+    arguments = "self" if lifecycle != "setter" else "self, new_value"
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    @property\n"
+        "    def value(self): ...\n\n"
+        f"    @value.{lifecycle}\n"
+        f"    def value({arguments}): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.public is False
+    assert method.callable_contract == "protocol-member"
+
+
+@pytest.mark.parametrize(
+    "initial_decorator",
+    ("", "@classmethod\n    ", "@staticmethod\n    ", "@abstractmethod\n    "),
+)
+def test_protocol_property_lifecycle_requires_proven_property(
+    tmp_path: Path,
+    initial_decorator: str,
+) -> None:
+    _init_repo(tmp_path)
+    abc_import = "from abc import abstractmethod\n" if initial_decorator else ""
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{abc_import}"
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        f"    {initial_decorator}def value(self): ...\n\n"
+        "    @value.setter\n"
+        "    def value(self, new_value): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_partial_container_mutation_keeps_framework_owner_taint(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "owners = {'service': Service, 'other': 0}\n"
+        "owners['other'] = 1\n"
+        "configure(owners)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "(Alias := Service)\nconfigure(Alias)\n",
+        "if (Alias := Service):\n    configure(Alias)\n",
+    ),
+)
+def test_named_expression_propagates_framework_owner_taint(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        f"{binding}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_class_local_property_rebind_cannot_forge_protocol_lifecycle(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class FakeProperty:\n"
+        "    def __call__(self, function): return self\n"
+        "    def setter(self, function): return function\n\n"
+        "fake = FakeProperty()\n\n"
+        "class Service(Protocol):\n"
+        "    property = fake\n"
+        "    @property\n"
+        "    def value(self): ...\n\n"
+        "    @value.setter\n"
+        "    def value(self, new_value): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "    def factory():\n"
+        "        return __import__\n"
+        "    return factory()('dependency')\n",
+        "    def factory():\n"
+        "        return __import__\n"
+        "    loader = factory()\n"
+        "    return loader('dependency')\n",
+        "    class Factory:\n"
+        "        def factory():\n"
+        "            return __import__\n"
+        "    return Factory.factory()('dependency')\n",
+    ),
+)
+def test_local_dynamic_import_factory_fails_closed(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"def _process():\n{body}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+def test_class_local_builtin_property_import_preserves_protocol_contract(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    from builtins import property as trusted_property\n"
+        "    @trusted_property\n"
+        "    def value(self): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.callable_contract == "protocol-member"
+
+
+def test_class_local_builtin_property_import_rebind_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class FakeProperty:\n"
+        "    def __call__(self, function): return self\n"
+        "    def setter(self, function): return function\n\n"
+        "fake = FakeProperty()\n\n"
+        "class Service(Protocol):\n"
+        "    from builtins import property as trusted_property\n"
+        "    trusted_property = fake\n"
+        "    @trusted_property\n"
+        "    def value(self): ...\n\n"
+        "    @value.setter\n"
+        "    def value(self, new_value): ...\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.value"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+@pytest.mark.parametrize(
+    ("class_body", "invocation"),
+    (
+        (
+            "    @staticmethod\n    def factory():\n        return __import__\n",
+            "Factory.factory()('dependency')",
+        ),
+        (
+            "    @classmethod\n    def factory(cls):\n        return __import__\n",
+            "FactoryAlias.factory()('dependency')",
+        ),
+        (
+            "    def factory(self):\n        return __import__\n",
+            "Factory().factory()('dependency')",
+        ),
+    ),
+)
+def test_module_class_dynamic_import_factory_fails_closed(
+    tmp_path: Path,
+    class_body: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        f"{class_body}\n"
+        "FactoryAlias = Factory\n\n"
+        "def _process():\n"
+        f"    return {invocation}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "owners = []\nowners += [Service]\nconfigure(owners)\n",
+        "for Alias in [Service]:\n    pass\nconfigure(Alias)\n",
+        "from contextlib import nullcontext\n"
+        "with nullcontext(Service) as Alias:\n"
+        "    pass\n"
+        "configure(Alias)\n",
+    ),
+)
+def test_control_flow_binding_preserves_framework_owner_taint(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        f"{binding}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+@pytest.mark.parametrize(
+    "factory_source",
+    (
+        "class Fake:\n"
+        "    import_module = print\n\n"
+        "def factory(importlib):\n"
+        "    return importlib.import_module\n",
+        "class Fake:\n"
+        "    import_module = print\n\n"
+        "def factory():\n"
+        "    importlib = Fake()\n"
+        "    return importlib.import_module\n",
+        "def outer():\n"
+        "    def factory():\n"
+        "        return importlib.import_module\n"
+        "    return factory\n\n"
+        "def factory():\n"
+        "    return print\n",
+    ),
+)
+def test_shadowed_dynamic_factory_name_preserves_exact_capability(
+    tmp_path: Path,
+    factory_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    arguments = "Fake()" if "factory(importlib)" in factory_source else ""
+    _write(
+        tmp_path,
+        "src/app.py",
+        "import importlib\n\n"
+        f"{factory_source}\n"
+        "def _process():\n"
+        f"    return factory({arguments})('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "exact"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "class DynamicFactory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class SafeFactory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "def _process():\n"
+        "    return SafeFactory.factory()('dependency')\n",
+        "def _process():\n"
+        "    def factory():\n"
+        "        return __import__\n"
+        "    def factory():\n"
+        "        return print\n"
+        "    return factory()('dependency')\n",
+        "def _process():\n"
+        "    def factory():\n"
+        "        return __import__\n"
+        "    factory = lambda: print\n"
+        "    return factory()('dependency')\n",
+    ),
+)
+def test_rebound_or_unrelated_dynamic_factory_preserves_exact_capability(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "exact"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "for Alias in [Service]:\n"
+        "    for Alias2 in [Alias]:\n"
+        "        configure(Alias2)\n",
+        "for Alias in [Service]:\n    owners = [Alias]\n    configure(owners)\n",
+        "match Service:\n    case Alias:\n        configure(Alias)\n",
+    ),
+)
+def test_nested_control_flow_preserves_framework_owner_taint(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        f"{binding}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+@pytest.mark.parametrize(
+    "factory_source",
+    (
+        "import importlib\n\n"
+        "def factory(importlib=importlib):\n"
+        "    return importlib.import_module\n",
+        "def factory(loader=__import__):\n    return loader\n",
+        "import importlib\n\n"
+        "def factory():\n"
+        "    loader = importlib.import_module\n"
+        "    return loader\n",
+    ),
+)
+def test_dynamic_factory_default_or_local_alias_fails_closed(
+    tmp_path: Path,
+    factory_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{factory_source}\ndef _process():\n    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "derived_source, invocation",
+    (
+        ("class Derived(Base):\n    pass\n", "Derived.factory()"),
+        (
+            "class Middle(Base):\n    pass\n\nclass Derived(Middle):\n    pass\n",
+            "DerivedAlias.factory()",
+        ),
+        (
+            "class Other:\n    pass\n\nclass Derived(Other, Base):\n    pass\n",
+            "Derived().factory()",
+        ),
+    ),
+)
+def test_inherited_dynamic_import_factory_fails_closed(
+    tmp_path: Path,
+    derived_source: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Base:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        f"{derived_source}\n"
+        "DerivedAlias = Derived\n\n"
+        "def _process():\n"
+        f"    return {invocation}('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "derived_source",
+    (
+        "class Derived(Base):\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "class Derived(Safe, Base):\n"
+        "    pass\n",
+    ),
+)
+def test_safe_inheritance_override_preserves_exact_capability(
+    tmp_path: Path,
+    derived_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Base:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        f"{derived_source}\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "exact"
+
+
+@pytest.mark.parametrize(
+    "binding, invocation",
+    (
+        ("Alias, other = (Factory, object())", "Alias.factory()"),
+        ("item, other = (Factory(), 0)", "item.factory()"),
+        ("(Alias := Factory)", "Alias.factory()"),
+        (
+            "flag = bool(input())\nAlias = Factory if flag else Safe",
+            "Alias.factory()",
+        ),
+    ),
+)
+def test_dynamic_class_expression_alias_fails_closed(
+    tmp_path: Path,
+    binding: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        f"    return {invocation}('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+def test_class_scope_binding_does_not_mutate_enclosing_factory_state(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    class Config:\n"
+        "        Factory = object()\n"
+        "    return Factory.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "wrapper_source",
+    (
+        "def wrapper(factory):\n    return factory()('dependency')\n",
+        "def wrapper():\n"
+        "    factory = lambda: print\n"
+        "    return factory()('dependency')\n",
+    ),
+)
+def test_nested_factory_shadow_preserves_exact_capability(
+    tmp_path: Path,
+    wrapper_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    arguments = "(lambda: print)" if "wrapper(factory)" in wrapper_source else "()"
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def outer():\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        f"    {wrapper_source.replace(chr(10), chr(10) + '    ')}\n"
+        f"    return wrapper{arguments}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "outer"
+    )
+    assert function.capability == "exact"
+
+
+def test_module_factory_call_before_safe_rebind_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "_process()\n\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "factory_source",
+    (
+        "if True:\n"
+        "    class Factory:\n"
+        "        @staticmethod\n"
+        "        def factory():\n"
+        "            return __import__\n",
+        "def build():\n"
+        "    if True:\n"
+        "        class Factory:\n"
+        "            @staticmethod\n"
+        "            def factory():\n"
+        "                return __import__\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "Factory = build\n",
+        "try:\n"
+        "    class Factory:\n"
+        "        @staticmethod\n"
+        "        def factory():\n"
+        "            return __import__\n"
+        "except Exception:\n"
+        "    Factory = object\n",
+        "for _ in [0]:\n"
+        "    class Factory:\n"
+        "        @staticmethod\n"
+        "        def factory():\n"
+        "            return __import__\n",
+        "from contextlib import nullcontext\n"
+        "with nullcontext():\n"
+        "    class Factory:\n"
+        "        @staticmethod\n"
+        "        def factory():\n"
+        "            return __import__\n",
+        "match 1:\n"
+        "    case _:\n"
+        "        class Factory:\n"
+        "            @staticmethod\n"
+        "            def factory():\n"
+        "                return __import__\n",
+    ),
+)
+def test_branch_defined_dynamic_factory_fails_closed(
+    tmp_path: Path,
+    factory_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    invocation = (
+        "Factory()" if "Factory = build" in factory_source else "Factory.factory()"
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{factory_source}\n\ndef _process():\n    return {invocation}('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == "conservative"
+
+
+@pytest.mark.parametrize(
+    "class_source, expected",
+    (
+        (
+            "class Factory:\n"
+            "    def factory():\n"
+            "        return __import__\n"
+            "    def factory():\n"
+            "        return print\n",
+            "exact",
+        ),
+        (
+            "def dynamic_factory():\n"
+            "    return __import__\n\n"
+            "class Factory:\n"
+            "    factory = staticmethod(dynamic_factory)\n",
+            "conservative",
+        ),
+    ),
+)
+def test_class_factory_binding_order_is_respected(
+    tmp_path: Path,
+    class_source: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{class_source}\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    function = next(
+        item for item in report.metrics.files[0].functions if item.symbol == "_process"
+    )
+    assert function.capability == expected
+
+
+@pytest.mark.parametrize(
+    "binding, expected_public",
+    (
+        (
+            "Alias = Service\n"
+            "if bool(input()):\n"
+            "    Alias = object()\n"
+            "configure(Alias)\n",
+            True,
+        ),
+        (
+            "Alias = Service\nfor Alias in []:\n    pass\nconfigure(Alias)\n",
+            True,
+        ),
+        (
+            "Alias = Service\nwhile False:\n    Alias = object()\nconfigure(Alias)\n",
+            True,
+        ),
+        (
+            "for Alias in [Service]:\n    Alias = object()\nconfigure(Alias)\n",
+            False,
+        ),
+        ("if False:\n    configure(Service)\n", False),
+    ),
+)
+def test_framework_owner_branch_state_respects_reachability_and_kills(
+    tmp_path: Path,
+    binding: str,
+    expected_public: bool,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        f"{binding}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is expected_public
+    assert bool(method.callable_contract) is (not expected_public)
+
+
+@pytest.mark.parametrize(
+    "bindings",
+    (
+        {"Alias": {"Service"}, "Service": {"Service"}},
+        {"Service": {"Service"}, "Alias": {"Service"}},
+    ),
+)
+def test_live_framework_owner_alias_binding_is_order_independent(
+    bindings: dict[str, set[str]],
+) -> None:
+    state = _BindingState(frozenset({"typing"}))
+    state.bind_contract_owner_alias("Service", {"Service"})
+
+    _bind_live_contract_owner_aliases(
+        bindings,
+        state,
+        {"Service.run": object()},
+    )
+
+    assert state.contract_owner_aliases == {
+        "Service": {"Service"},
+        "Alias": {"Service"},
+    }
+
+
+@pytest.mark.parametrize(
+    "body, expected",
+    (
+        (
+            "    if True:\n"
+            "        def factory():\n"
+            "            return __import__\n"
+            "    else:\n"
+            "        def factory():\n"
+            "            return print\n"
+            "    return factory()('dependency')\n",
+            "conservative",
+        ),
+        (
+            "    if bool(input()):\n"
+            "        def factory():\n"
+            "            return __import__\n"
+            "    else:\n"
+            "        def factory():\n"
+            "            return print\n"
+            "    return factory()('dependency')\n",
+            "conservative",
+        ),
+        (
+            "    if True:\n"
+            "        def factory():\n"
+            "            return print\n"
+            "    else:\n"
+            "        def factory():\n"
+            "            return __import__\n"
+            "    return factory()('dependency')\n",
+            "exact",
+        ),
+        (
+            "    match Factory:\n"
+            "        case Alias:\n"
+            "            return Alias.factory()('dependency')\n",
+            "conservative",
+        ),
+    ),
+)
+def test_function_factory_branch_state_is_path_sensitive(
+    tmp_path: Path,
+    body: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        f"{body}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "factory_source, expected",
+    (
+        (
+            "def factory():\n    if (loader := __import__):\n        return loader\n",
+            "conservative",
+        ),
+        (
+            "def factory():\n    return print\n    return __import__\n",
+            "exact",
+        ),
+        (
+            "def factory():\n"
+            "    loader = __import__\n"
+            "    try:\n"
+            "        pass\n"
+            "    finally:\n"
+            "        loader = print\n"
+            "    return loader\n",
+            "exact",
+        ),
+        (
+            "from contextlib import nullcontext\n\n"
+            "def factory():\n"
+            "    loader = __import__\n"
+            "    with nullcontext():\n"
+            "        loader = print\n"
+            "    return loader\n",
+            "exact",
+        ),
+    ),
+)
+def test_factory_flow_respects_conditions_termination_and_finalization(
+    tmp_path: Path,
+    factory_source: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{factory_source}\n\ndef _process():\n    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "classes, expected",
+    (
+        (
+            "class A:\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return print\n\n"
+            "class B(A):\n"
+            "    pass\n\n"
+            "class C(A):\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return __import__\n\n"
+            "class D(B, C):\n"
+            "    pass\n",
+            "conservative",
+        ),
+        (
+            "class A:\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return __import__\n\n"
+            "class B(A):\n"
+            "    pass\n\n"
+            "class C(A):\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return print\n\n"
+            "class D(B, C):\n"
+            "    pass\n",
+            "exact",
+        ),
+        (
+            "class Base:\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return __import__\n\n"
+            "Alias = Base\n\n"
+            "class D(Alias):\n"
+            "    pass\n",
+            "conservative",
+        ),
+        (
+            "class Base:\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return __import__\n\n"
+            "class D(Base):\n"
+            "    factory = print\n"
+            "    del factory\n",
+            "conservative",
+        ),
+    ),
+)
+def test_class_factory_resolution_uses_identity_and_c3_mro(
+    tmp_path: Path,
+    classes: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{classes}\n\ndef _process():\n    return D.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "process_source",
+    (
+        "def _process(factory=Factory):\n    return factory.factory()('dependency')\n",
+        "def _process(factory=Factory()):\n"
+        "    return factory.factory()('dependency')\n",
+        "class Box:\n"
+        "    Alias = Factory\n\n"
+        "def _process():\n"
+        "    return Box.Alias.factory()('dependency')\n",
+        "class Box:\n"
+        "    pass\n\n"
+        "Box.factory = Factory.factory\n\n"
+        "def _process():\n"
+        "    return Box.factory()('dependency')\n",
+    ),
+)
+def test_dynamic_class_capability_survives_defaults_and_class_storage(
+    tmp_path: Path,
+    process_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        f"{process_source}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "runner = _process\nrunner()\n",
+        "runner, other = (_process, print)\nrunner()\n",
+        "(lambda: _process())()\n",
+        "def trigger(value=_process()):\n    pass\n",
+        "class Trigger:\n    value = _process()\n",
+    ),
+)
+def test_indirect_definition_time_dynamic_call_is_historical(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    ("_process()\n", "if False:\n    _process()\n"),
+)
+def test_safe_or_unreachable_definition_time_call_preserves_exact_capability(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        f"{trigger}",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_known_safe_conditional_class_alias_preserves_exact_capability(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "Alias = Safe if Factory else Safe\n\n"
+        "def _process():\n"
+        "    return Alias.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize("terminal", ("break", "continue"))
+def test_factory_loop_terminal_preserves_reachable_dynamic_binding(
+    tmp_path: Path,
+    terminal: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    for _ in [0]:\n"
+        "        loader = __import__\n"
+        f"        {terminal}\n"
+        "        loader = print\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize("terminal", ("break", "continue"))
+def test_framework_owner_loop_terminal_preserves_reachable_alias(
+    tmp_path: Path,
+    terminal: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "for Alias in [Service]:\n"
+        f"    {terminal}\n"
+        "    Alias = object()\n"
+        "configure(Alias)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_framework_owner_try_else_runs_only_on_normal_path(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "try:\n"
+        "    raise RuntimeError\n"
+        "except RuntimeError:\n"
+        "    Alias = Service\n"
+        "else:\n"
+        "    Alias = object()\n"
+        "configure(Alias)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_function_try_paths_preserve_dynamic_factory_candidate(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "def _process():\n"
+        "    try:\n"
+        "        Alias = Factory\n"
+        "    except Exception:\n"
+        "        Alias = Safe\n"
+        "    return Alias.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "(runner := _process)()\n",
+        "(_process,)[0]()\n",
+        "{'run': _process}['run']()\n",
+        "runner = lambda: _process()\nrunner()\n",
+        "def trigger(run=_process):\n    return run()\ntrigger()\n",
+        "class Box:\n    run = staticmethod(_process)\nBox.run()\n",
+    ),
+)
+def test_definition_time_callable_identity_survives_indirection(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "try:\n    maybe()\n    Base = Dynamic\nexcept Exception:\n    Base = Safe\n",
+        "match subject:\n"
+        "    case True:\n"
+        "        Base = Dynamic\n"
+        "    case _:\n"
+        "        Base = Safe\n",
+        "Base = Dynamic\nfor _ in []:\n    Base = Safe\n",
+    ),
+)
+def test_class_base_control_flow_unions_reachable_candidates(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe, subject\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        f"{binding}\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_possible_base_mros_are_preserved_through_descendants(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "Base = Safe if flag else Dynamic\n\n"
+        "class C(Base):\n"
+        "    pass\n\n"
+        "class D(C):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return D.factory()('dependency')\n",
+    )
+
+    capabilities = {
+        _metric_capability(_evaluate(tmp_path, scope=("src/app.py",)), "_process")
+        for _ in range(4)
+    }
+
+    assert capabilities == {"conservative"}
+
+
+@pytest.mark.parametrize(
+    "factory_source",
+    (
+        "def factory():\n    return print\n    __import__('dependency')\n",
+        "def factory():\n    raise RuntimeError\n    return __import__\n",
+    ),
+)
+def test_unreachable_dynamic_factory_code_preserves_exact_capability(
+    tmp_path: Path,
+    factory_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{factory_source}\ndef _process():\n    return factory()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_constant_literal_subscript_selects_only_safe_class(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "Alias = (Dynamic, Safe)[1]\n\n"
+        "def _process():\n"
+        "    return Alias.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    (
+        (
+            "class Factory:\n"
+            "    @staticmethod\n"
+            "    def factory():\n"
+            "        return __import__\n\n"
+            "def _process():\n"
+            "    match 0:\n"
+            "        case 1:\n"
+            "            return Factory.factory()('dependency')\n"
+            "    return print('safe')\n",
+            "exact",
+        ),
+        (
+            "from typing import Protocol\n\n"
+            "class Service(Protocol):\n"
+            "    def run(self): ...\n\n"
+            "match 0:\n"
+            "    case 1:\n"
+            "        configure(Service)\n",
+            "protocol-member",
+        ),
+    ),
+)
+def test_literal_match_skips_unreachable_case(
+    tmp_path: Path,
+    source: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    if expected == "exact":
+        assert _metric_capability(report, "_process") == expected
+    else:
+        method = next(
+            item
+            for item in report.metrics.files[0].functions
+            if item.symbol == "Service.run"
+        )
+        assert method.public is False
+        assert method.callable_contract == expected
+
+
+@pytest.mark.parametrize(
+    "first_case",
+    (
+        "case 0 if flag:\n            return print('safe')",
+        "case str():\n            return print('safe')",
+    ),
+)
+def test_constant_match_unknown_case_keeps_later_dynamic_case(
+    tmp_path: Path,
+    first_case: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process(flag=False):\n"
+        "    match 0:\n"
+        f"        {first_case}\n"
+        "        case _:\n"
+        "            return Factory.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_constant_match_unknown_guard_keeps_later_framework_owner_effect(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "match 1:\n"
+        "    case 1 if flag:\n"
+        "        pass\n"
+        "    case _:\n"
+        "        configure(Service)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_constant_match_unknown_guard_keeps_later_dynamic_class_base(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "match 1:\n"
+        "    case 1 if flag:\n"
+        "        Base = Safe\n"
+        "    case _:\n"
+        "        Base = Dynamic\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_duplicate_dict_key_uses_last_definition_time_callable(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "{'run': print, 'run': _process}['run']()\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_duplicate_dict_key_uses_last_class_candidate(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "Base = {'base': Safe, 'base': Dynamic}['base']\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_factory_try_handler_preserves_prefix_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        loader = __import__\n"
+        "        maybe()\n"
+        "        loader = print\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_framework_owner_try_handler_preserves_prefix_alias(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe\n"
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "Alias = object()\n"
+        "try:\n"
+        "    Alias = Service\n"
+        "    maybe()\n"
+        "    Alias = object()\n"
+        "except Exception:\n"
+        "    pass\n"
+        "configure(Alias)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_class_base_try_handler_preserves_prefix_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "Base = Safe\n"
+        "try:\n"
+        "    Base = Dynamic\n"
+        "    maybe()\n"
+        "    Base = Safe\n"
+        "except Exception:\n"
+        "    pass\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_class_base_loop_break_skips_unreachable_tail_and_else(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "Base = Safe\n"
+        "for _ in [0]:\n"
+        "    Base = Dynamic\n"
+        "    break\n"
+        "    Base = Safe\n"
+        "else:\n"
+        "    Base = Safe\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("trigger", "expected"),
+    (
+        (
+            "def trigger(run=print):\n    return run()\ntrigger(_process)\n",
+            "conservative",
+        ),
+        ("runner = lambda run: run()\nrunner(_process)\n", "conservative"),
+        ("def trigger(run=_process):\n    return run()\ntrigger(print)\n", "exact"),
+    ),
+)
+def test_definition_time_callable_binds_actual_arguments(
+    tmp_path: Path,
+    trigger: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "class Box:\n    run = staticmethod(_process)\nAlias = Box\nAlias.run()\n",
+        "class Box:\n"
+        "    run = staticmethod(_process)\n"
+        "class Child(Box):\n"
+        "    pass\n"
+        "Child.run()\n",
+        "class Box:\n    run = staticmethod(_process)\nBox().run()\n",
+        "class Trigger:\n    runner = _process\n    runner()\n",
+    ),
+)
+def test_definition_time_class_callable_identity_survives_aliasing(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_known_dynamic_base_survives_unknown_mro_slot(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import UnknownBase\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Derived(UnknownBase, Dynamic):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_infinite_continue_keeps_following_factory_code_unreachable(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    while True:\n"
+        "        continue\n"
+        "    return __import__\n\n"
+        "def _process():\n"
+        "    return factory()\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "def trigger():\n    return _process()\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n"
+        "trigger()\n",
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n"
+        "if True:\n"
+        "    runner = _process\n"
+        "    runner()\n",
+    ),
+)
+def test_definition_time_callable_resolves_runtime_binding_order(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "failure",
+    (
+        "        [][0]\n",
+        "        assert False\n",
+    ),
+)
+def test_factory_try_tracks_non_call_exception_prefix(
+    tmp_path: Path,
+    failure: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        loader = __import__\n"
+        f"{failure}"
+        "        loader = print\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_factory_try_tracks_intra_statement_exception_prefix(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (loader := __import__, maybe(), (loader := print))\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_framework_owner_try_tracks_intra_statement_exception_prefix(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe\n"
+        "from typing import Protocol\n\n"
+        "class Service(Protocol):\n"
+        "    def run(self): ...\n\n"
+        "Alias = object()\n"
+        "try:\n"
+        "    (Alias := Service, maybe(), (Alias := object()))\n"
+        "except Exception:\n"
+        "    pass\n"
+        "configure(Alias)\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    method = next(
+        item
+        for item in report.metrics.files[0].functions
+        if item.symbol == "Service.run"
+    )
+    assert method.public is True
+    assert method.callable_contract == ""
+
+
+def test_class_try_tracks_intra_statement_exception_prefix(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import maybe\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "Base = Safe\n"
+        "try:\n"
+        "    (Base := Dynamic, maybe(), (Base := Safe))\n"
+        "except Exception:\n"
+        "    pass\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "Base = Safe\nif (Base := Dynamic):\n    pass\n",
+        "Base = Safe\nfor Base in [Dynamic]:\n    pass\n",
+        "Base = Safe\nmatch (Base := Dynamic):\n    case _:\n        pass\n",
+        "Base = Safe\nmatch 0:\n    case 0 if (Base := Dynamic):\n        pass\n",
+        "Base = Safe\nfor _ in [0]:\n"
+        "    try:\n"
+        "        break\n"
+        "    finally:\n"
+        "        Base = Dynamic\n",
+    ),
+)
+def test_class_compound_paths_preserve_header_and_finally_effects(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        f"{binding}\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_dict_unpack_can_override_earlier_definition_time_callable(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "{'run': print, **{'run': _process}}['run']()\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_dict_unpack_can_override_earlier_class_candidate(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "Base = {'base': Safe, **{'base': Dynamic}}['base']\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "def trigger(run):\n    return run()\ntrigger(*(_process,))\n",
+        "def trigger(*, run):\n    return run()\ntrigger(**{'run': _process})\n",
+        "def trigger(**values):\n    return values['run']()\ntrigger(run=_process)\n",
+        "def trigger(values):\n    return values[0]()\ntrigger((_process,))\n",
+        "def trigger(values=(_process,)):\n    return values[0]()\ntrigger()\n",
+        "def trigger(*values):\n    return values[0]()\ntrigger(_process)\n",
+    ),
+)
+def test_definition_time_invocation_preserves_structured_arguments(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "match 0:\n    case _:\n        runner = _process\nrunner()\n",
+        "try:\n    runner = _process\nexcept Exception:\n    runner = print\nrunner()\n",
+        "for runner in [_process]:\n    pass\nrunner()\n",
+        "flag = object()\n"
+        "if flag:\n"
+        "    def trigger():\n"
+        "        return _process()\n"
+        "else:\n"
+        "    def trigger():\n"
+        "        return print()\n"
+        "trigger()\n",
+        "flag = object()\n"
+        "if flag:\n"
+        "    class Box:\n"
+        "        run = staticmethod(_process)\n"
+        "else:\n"
+        "    class Box:\n"
+        "        run = staticmethod(print)\n"
+        "Box.run()\n",
+        "flag = object()\n"
+        "class Box:\n"
+        "    if flag:\n"
+        "        run = staticmethod(_process)\n"
+        "    else:\n"
+        "        run = staticmethod(print)\n"
+        "Box.run()\n",
+        "def trigger():\n"
+        "    try:\n"
+        "        runner = _process\n"
+        "    except Exception:\n"
+        "        runner = print\n"
+        "    return runner()\n"
+        "trigger()\n",
+    ),
+)
+def test_definition_time_compound_bindings_persist(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_unknown_base_before_safe_base_is_conservative(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import External\n\n"
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "class Derived(External, Safe):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_mismatched_exception_handler_does_not_create_dynamic_return(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    try:\n"
+        "        raise ValueError\n"
+        "    except TypeError:\n"
+        "        return __import__\n"
+        "    return print\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_definition_time_class_mro_respects_first_safe_base(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "class DynamicBox:\n"
+        "    run = staticmethod(_process)\n\n"
+        "class SafeBox:\n"
+        "    run = staticmethod(print)\n\n"
+        "class Child(SafeBox, DynamicBox):\n"
+        "    pass\n\n"
+        "Child.run()\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_direct_infinite_continue_keeps_dynamic_call_unreachable(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def _process():\n"
+        "    while True:\n"
+        "        continue\n"
+        "    return __import__('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "def trigger(run):\n    return run()\ntrigger(*list((_process,)))\n",
+        "def trigger(*, run):\n    return run()\ntrigger(**dict(run=_process))\n",
+    ),
+)
+def test_definition_time_computed_unpack_preserves_callable_identity(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "for runner in [print, _process]:\n    pass\nrunner()\n",
+        "runner = print\n"
+        "for _ in [0]:\n"
+        "    runner = _process\n"
+        "    break\n"
+        "    runner = print\n"
+        "runner()\n",
+        "def trigger():\n"
+        "    for runner in [print, _process]:\n"
+        "        pass\n"
+        "    return runner()\n"
+        "trigger()\n",
+        "runner = print\n"
+        "for _ in [0]:\n"
+        "    try:\n"
+        "        runner = _process\n"
+        "        break\n"
+        "    finally:\n"
+        "        pass\n"
+        "runner()\n",
+    ),
+)
+def test_definition_time_loop_preserves_runtime_control_flow(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_definition_time_try_preserves_exception_prefix_state(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "runner = print\n"
+        "try:\n"
+        "    runner = _process\n"
+        "    missing()\n"
+        "    runner = print\n"
+        "except Exception:\n"
+        "    pass\n"
+        "runner()\n\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "if (runner := _process):\n    pass\nrunner()\n",
+        "while (runner := _process):\n    break\nrunner()\n",
+        "match (runner := _process):\n    case _:\n        pass\nrunner()\n",
+        "match _process:\n    case runner:\n        pass\nrunner()\n",
+    ),
+)
+def test_definition_time_compound_headers_and_patterns_persist(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "factory",
+    (
+        "def factory():\n"
+        "    try:\n"
+        "        1 / 0\n"
+        "    except ZeroDivisionError:\n"
+        "        return __import__\n"
+        "    return print\n",
+        "def factory():\n"
+        "    try:\n"
+        "        raise FileNotFoundError\n"
+        "    except OSError:\n"
+        "        return __import__\n"
+        "    return print\n",
+        "Alias = OSError\n"
+        "def factory():\n"
+        "    try:\n"
+        "        raise FileNotFoundError\n"
+        "    except Alias:\n"
+        "        return __import__\n"
+        "    return print\n",
+    ),
+)
+def test_factory_exception_matching_is_fail_closed(
+    tmp_path: Path,
+    factory: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{factory}\ndef _process():\n    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "class Box:\n    for run in [_process]:\n        pass\n",
+        "class Box:\n    match _process:\n        case run:\n            pass\n",
+    ),
+)
+def test_class_compound_targets_become_members(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{body}\n"
+        "Box.run()\n\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "base",
+    (
+        "External",
+        "bases[0]",
+    ),
+)
+def test_unknown_only_base_member_is_conservative(
+    tmp_path: Path,
+    base: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import External\n"
+        "bases = [External]\n\n"
+        f"class Derived({base}):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "branch",
+    (
+        "(loader := __import__) if flag else (loader := print)",
+        "flag and (loader := __import__) or (loader := print)",
+    ),
+)
+def test_factory_expression_branches_preserve_dynamic_path(
+    tmp_path: Path,
+    branch: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(flag=True):\n"
+        f"    {branch}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_factory_branch_state_growth_is_deduplicated() -> None:
+    branches = "".join(
+        "    if flag:\n        loader = __import__\n    else:\n        loader = print\n"
+        for _ in range(18)
+    )
+    function = ast.parse(
+        f"def factory(flag):\n    loader = print\n{branches}    return loader\n"
+    ).body[0]
+    assert isinstance(function, ast.FunctionDef)
+
+    outcomes = _run_block(
+        function.body,
+        (_FlowState(set(), {"__import__"}),),
+        frozenset({"__import__"}),
+    )
+
+    assert len(outcomes) <= 2
+    assert any(outcome.returned for outcome in outcomes)
+
+
+@pytest.mark.parametrize(
+    "prefix",
+    (
+        "holder = None\n"
+        "loader = print\n"
+        "try:\n"
+        "    holder[1] = (loader := __import__)\n"
+        "except TypeError:\n"
+        "    pass\n",
+        "loader = print\n"
+        "def boom():\n"
+        "    raise ValueError\n"
+        "try:\n"
+        "    {0: (loader := __import__), boom(): None}\n"
+        "except ValueError:\n"
+        "    pass\n",
+    ),
+)
+def test_factory_exception_prefix_respects_python_evaluation_order(
+    tmp_path: Path,
+    prefix: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        + "".join(f"    {line}\n" for line in prefix.splitlines())
+        + "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_direct_function_mismatched_handler_keeps_call_unreachable(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def _process():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        loader = __import__\n"
+        "        raise ValueError\n"
+        "    except TypeError:\n"
+        "        pass\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "def trigger():\n    return\n    _process()\ntrigger()\n",
+        "def trigger():\n"
+        "    while True:\n"
+        "        continue\n"
+        "    _process()\n"
+        "trigger()\n",
+        "def trigger():\n"
+        "    try:\n"
+        "        raise ValueError\n"
+        "    except TypeError:\n"
+        "        pass\n"
+        "    _process()\n"
+        "trigger()\n",
+    ),
+)
+def test_definition_time_terminal_control_skips_unreachable_call(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        f"{trigger}\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("helper", "invocation"),
+    (
+        ("def make_args():\n    return (_process,)\n", "trigger(*make_args())"),
+        (
+            "def make_kwargs():\n    return {'run': _process}\n",
+            "trigger(**make_kwargs())",
+        ),
+    ),
+)
+def test_definition_time_helper_unpack_is_fail_closed(
+    tmp_path: Path,
+    helper: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "def trigger(run):\n"
+        "    return run()\n\n"
+        f"{helper}\n{invocation}\n\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_expression_path_overflow_is_fail_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        (
+            "        (loader := print) if flag0 else (loader := __import__)",
+            *(
+                f"        (value{index} := print) if flag{index} "
+                f"else (value{index} := len)"
+                for index in range(1, 8)
+            ),
+        )
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(flag0=False, flag1=False, flag2=False, flag3=False,\n"
+        "            flag4=False, flag5=False, flag6=False, flag7=False):\n"
+        f"    values = (\n{branches},\n    )\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "loader = Derived.factory",
+        "loaders = {'selected': Derived.factory}\nloader = loaders['selected']",
+    ),
+)
+def test_unknown_mro_member_alias_is_fail_closed(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import External\n\n"
+        "class Derived(External):\n"
+        "    pass\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "expression", "result"),
+    (
+        ("loader = print", "(loader := __import__, missing())", "loader('math')"),
+        (
+            "Alias = object",
+            "(Alias := Factory, missing())",
+            "Alias.factory()('math')",
+        ),
+    ),
+)
+def test_function_try_preserves_intra_expression_prefix(
+    tmp_path: Path,
+    setup: str,
+    expression: str,
+    result: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        f"    {setup}\n"
+        "    try:\n"
+        f"        {expression}\n"
+        "    except Exception:\n"
+        f"        return {result}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_factory_destructuring_exception_preserves_dynamic_return(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    try:\n"
+        "        first, second = [1]\n"
+        "        loader = print\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "((loader := __import__) if True else (loader := print))[0]",
+        "(True and (loader := __import__) or (loader := print))[0]",
+    ),
+)
+def test_factory_exception_prefix_preserves_short_circuit_path(
+    tmp_path: Path,
+    expression: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        {expression}\n"
+        "        loader = print\n"
+        "    except TypeError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_exception_prefix_path_overflow_is_fail_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        (
+            "            (loader := print) if flag0 else (loader := __import__)",
+            *(
+                f"            (value{index} := print) if flag{index} "
+                f"else (value{index} := len)"
+                for index in range(1, 8)
+            ),
+        )
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(flag0=False, flag1=False, flag2=False, flag3=False,\n"
+        "            flag4=False, flag5=False, flag6=False, flag7=False):\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        values = (\n{branches},\n        )[99]\n"
+        "    except IndexError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "signature",
+    (
+        "value: __import__('dependency')",
+        "*values: __import__('dependency')",
+        "**values: __import__('dependency')",
+        "value=None) -> __import__('dependency'",
+    ),
+)
+def test_factory_nested_function_annotations_execute_at_definition(
+    tmp_path: Path,
+    signature: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    try:\n"
+        f"        def nested({signature}):\n"
+        "            return print\n"
+        "    except ModuleNotFoundError:\n"
+        "        pass\n"
+        "    return print\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_factory_future_annotations_are_not_executed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from __future__ import annotations\n\n"
+        "def factory():\n"
+        "    def nested(value: __import__('dependency')):\n"
+        "        return print\n"
+        "    return print\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        raise ValueError\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+        "def _process():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        raise ValueError\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        loader = __import__\n"
+        "    return loader('dependency')\n",
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return __import__\n\n"
+        "def _process():\n"
+        "    return Factory.factory()('dependency')\n\n"
+        "def trigger():\n"
+        "    try:\n"
+        "        raise ValueError\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    except ValueError:\n"
+        "        _process()\n\n"
+        "trigger()\n\n"
+        "class Factory:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n",
+        "class Base:\n"
+        "    try:\n"
+        "        raise ValueError\n"
+        "    except Exception:\n"
+        "        @staticmethod\n"
+        "        def factory():\n"
+        "            return print\n"
+        "    except ValueError:\n"
+        "        @staticmethod\n"
+        "        def factory():\n"
+        "            return __import__\n\n"
+        "class Derived(Base):\n"
+        "    pass\n\n"
+        "def _process():\n"
+        "    return Derived.factory()('dependency')\n",
+    ),
+)
+def test_first_matching_exception_handler_wins(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("helper", "trigger", "invocation"),
+    (
+        (
+            "def make_args():\n    return (__import__,)\n",
+            "def trigger(run):\n    return run('dependency')\n",
+            "trigger(*make_args())",
+        ),
+        (
+            "def make_kwargs():\n    return {'run': __import__}\n",
+            "def trigger(*, run):\n    return run('dependency')\n",
+            "trigger(**make_kwargs())",
+        ),
+    ),
+)
+def test_definition_time_helper_unpack_preserves_builtin_dynamic_callable(
+    tmp_path: Path,
+    helper: str,
+    trigger: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{helper}\n{trigger}\n{invocation}\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "trigger") == "conservative"
+
+
+def test_definition_time_helper_unpack_respects_safe_builtin_rebinding(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "__import__ = print\n\n"
+        "def make_args():\n"
+        "    return (__import__,)\n\n"
+        "def trigger(run):\n"
+        "    return run('dependency')\n\n"
+        "trigger(*make_args())\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "trigger") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected"),
+    (
+        ("loader = getattr(Derived, 'factory')", "conservative"),
+        ("loader = vars(Derived)['factory']", "exact"),
+    ),
+)
+def test_unknown_mro_reflective_member_alias_is_fail_closed(
+    tmp_path: Path,
+    binding: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import External\n\n"
+        "class Derived(External):\n"
+        "    pass\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+def test_known_mro_reflective_member_alias_remains_exact(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory():\n"
+        "        return print\n\n"
+        "loader = getattr(Safe, 'factory')\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "first, second = 1",
+        "for first, second in [1]:\n            pass",
+    ),
+)
+def test_factory_destructuring_type_error_preserves_dynamic_return(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    operation_lines = "\n".join(f"        {line}" for line in operation.splitlines())
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    try:\n"
+        f"{operation_lines}\n"
+        "        loader = print\n"
+        "    except TypeError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_exact_destructuring_does_not_create_exception_path(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        first, second = (1, 2)\n"
+        "    except (TypeError, ValueError):\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_factory_comprehension_exception_uses_runtime_order(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        [missing() for _ in ((loader := __import__),)]\n"
+        "        loader = print\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_comprehension_prefix_preserves_later_safe_overwrite(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        [missing() for _ in ((loader := __import__),)\n"
+        "         if ((loader := print) or True)]\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize("raises", (False, True))
+def test_overflow_paths_preserve_alias_chain(
+    tmp_path: Path,
+    raises: bool,
+) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        f"        ((b{index} := __import__) if f{index} else (b{index} := print))"
+        for index in range(6)
+    )
+    suffix = "[999]" if raises else ""
+    handler = (
+        "        loader = print\n    except IndexError:\n        pass\n"
+        if raises
+        else ""
+    )
+    expression = (
+        "    try:\n"
+        "        (\n"
+        "            (a := __import__),\n"
+        f"{branches},\n"
+        "            ((loader := print) if choose else (loader := a)),\n"
+        f"        ){suffix}\n"
+        f"{handler}"
+        if raises
+        else "    (\n"
+        "        (a := __import__),\n"
+        f"{branches},\n"
+        "        ((loader := print) if choose else (loader := a)),\n"
+        "    )\n"
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(f0=True, f1=True, f2=True, f3=True, f4=True, f5=True,\n"
+        "            choose=False):\n"
+        "    a = print\n"
+        "    loader = print\n"
+        f"{expression}"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_exception_overflow_preserves_must_overwrite(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        f"            ((b{index} := len) if f{index} else (b{index} := print))"
+        for index in range(7)
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(f0=True, f1=True, f2=True, f3=True, f4=True, f5=True,\n"
+        "            f6=True, choose=True):\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (\n"
+        f"{branches},\n"
+        "            (((loader := __import__), (loader := print))\n"
+        "             if choose else (loader := print)),\n"
+        "        )[999]\n"
+        "    except IndexError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("binding", "expected"),
+    (
+        (
+            "name = 'factory'\nloader = getattr(Derived, name)",
+            "conservative",
+        ),
+        ("loader = type.__getattribute__(Derived, 'factory')", "conservative"),
+        ("loader = vars(Derived).get('factory')", "exact"),
+    ),
+)
+def test_unknown_mro_extended_reflection_is_fail_closed(
+    tmp_path: Path,
+    binding: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from dependency import External\n\n"
+        "class Derived(External):\n"
+        "    pass\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+def test_nested_destructuring_value_error_preserves_dynamic_return(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    try:\n"
+        "        first, (second, third) = (1, (2,))\n"
+        "        loader = print\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_unknown_iterator_exception_preserves_dynamic_return(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Broken:\n"
+        "    def __iter__(self):\n"
+        "        raise KeyError('broken')\n\n"
+        "broken = Broken()\n\n"
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    try:\n"
+        "        first, second = broken\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_false_comprehension_filter_skips_terminal_overwrite(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (\n"
+        "            [(loader := print) for _ in [1]\n"
+        "             if ((loader := __import__) and False)],\n"
+        "            [][0],\n"
+        "        )\n"
+        "        loader = print\n"
+        "    except IndexError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_unconsumed_generator_does_not_execute_terminal(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (missing() for _ in [1])\n"
+        "    except Exception:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize("raises", (False, True))
+def test_overflow_paths_preserve_same_target_self_reference(
+    tmp_path: Path,
+    raises: bool,
+) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        f"        ((b{index} := len) if f{index} else (b{index} := print))"
+        for index in range(1, 7)
+    )
+    suffix = "[999]" if raises else ""
+    expression = (
+        "    try:\n"
+        "        (\n"
+        "            ((loader := print) if f0 else (loader := __import__)),\n"
+        f"{branches.replace('        ', '            ')},\n"
+        "            (loader := loader),\n"
+        f"        ){suffix}\n"
+        "    except IndexError:\n"
+        "        pass\n"
+        if raises
+        else "    (\n"
+        "        ((loader := print) if f0 else (loader := __import__)),\n"
+        f"{branches},\n"
+        "        (loader := loader),\n"
+        "    )\n"
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(f0=False, f1=True, f2=True, f3=True, f4=True, f5=True,\n"
+        "            f6=True):\n"
+        "    loader = print\n"
+        f"{expression}"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_expression_overflow_does_not_invent_empty_path(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        f"        ((b{index} := len) if f{index} else (b{index} := print))"
+        for index in range(1, 8)
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(f1=True, f2=True, f3=True, f4=True, f5=True, f6=True,\n"
+        "            f7=True):\n"
+        "    loader = __import__\n"
+        "    (\n"
+        f"{branches},\n"
+        "        (loader := print),\n"
+        "    )\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_overflow_safe_overwrite_then_self_reference_remains_exact(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        f"        ((b{index} := len) if f{index} else (b{index} := print))"
+        for index in range(1, 8)
+    )
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(f1=True, f2=True, f3=True, f4=True, f5=True, f6=True,\n"
+        "            f7=True):\n"
+        "    loader = __import__\n"
+        "    (\n"
+        f"{branches},\n"
+        "        (loader := print),\n"
+        "        (loader := loader),\n"
+        "    )\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "name = 'factory'\nloader = getattr(Safe, name)",
+        "loader = type.__getattribute__(Safe, 'factory')",
+        "loader = vars(Safe).get('factory')",
+    ),
+)
+def test_known_mro_extended_reflection_remains_exact(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Safe:\n"
+        "    @staticmethod\n"
+        "    def factory(value):\n"
+        "        return value\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_exact_nested_destructuring_does_not_create_exception_path(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        first, (second, third) = (1, (2, 3))\n"
+        "    except (TypeError, ValueError):\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_empty_comprehension_does_not_execute_terminal_overwrite(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    try:\n"
+        "        ([(loader := print) for _ in []], [][0])\n"
+        "        loader = print\n"
+        "    except IndexError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_generator_outer_iterator_executes_at_creation(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (value for value in missing())\n"
+        "    except Exception:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_generator_outer_binding_can_be_safely_overwritten(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (value for value in ((loader := __import__),))\n"
+        "        loader = print\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "expression",
+    (
+        "((loader := print) for _ in [1])",
+        "[(loader := print) for _ in []]",
+        "[(loader := print) for _ in [1] if False]",
+    ),
+)
+def test_deferred_or_skipped_comprehension_binding_does_not_execute(
+    tmp_path: Path,
+    expression: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = __import__\n"
+        f"    {expression}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_lambda_default_binding_executes_at_definition(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    (lambda value=(loader := __import__): value)\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "for value in broken:\n            pass",
+        "[value for value in broken]",
+        "(value for value in broken)",
+    ),
+)
+def test_iterator_protocol_exception_reaches_handler(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    operation_lines = "\n".join(f"        {line}" for line in operation.splitlines())
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Broken:\n"
+        "    def __iter__(self):\n"
+        "        raise KeyError('broken')\n\n"
+        "broken = Broken()\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"{operation_lines}\n"
+        "    except KeyError:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    (
+        ("first, second = 'x'", "conservative"),
+        ("first, second = 'xy'", "exact"),
+        ("first, *rest = (1, 2)", "exact"),
+        ("first, *rest = ()", "conservative"),
+    ),
+)
+def test_static_unpack_shape_matches_python(
+    tmp_path: Path,
+    operation: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        {operation}\n"
+        "    except (TypeError, ValueError):\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "name = 'factory'\nloader = getattr(Dynamic, name)",
+        "def member():\n    return 'factory'\n"
+        "loader = type.__getattribute__(Dynamic, member())",
+        "def member():\n    return 'factory'\nloader = vars(Dynamic).get(member())",
+    ),
+)
+def test_known_dynamic_member_unknown_reflection_is_fail_closed(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_overflow_dependency_summary_has_bounded_ast_size() -> None:
+    branches = ",".join(
+        f"((b{index} := len) if f{index} else (b{index} := print))"
+        for index in range(7)
+    )
+    repeated = ",".join("(value := (value, value))" for _ in range(14))
+    expression = ast.parse(
+        f"({branches}, (value := print), {repeated})",
+        mode="eval",
+    ).body
+
+    paths = _named_expression_binding_paths(expression)
+    node_count = sum(1 for path in paths for _, value in path for _ in ast.walk(value))
+
+    assert len(paths) <= 65
+    assert node_count < 10_000
+
+
+@pytest.mark.parametrize(
+    ("setup", "operation", "handler"),
+    (
+        (
+            "class Broken:\n"
+            "    def __iter__(self):\n"
+            "        raise KeyError('broken')\n",
+            "[value for value in [*Broken()]]",
+            "KeyError",
+        ),
+        ("", "{[]}", "TypeError"),
+    ),
+)
+def test_container_construction_protocol_exception_reaches_handler(
+    tmp_path: Path,
+    setup: str,
+    operation: str,
+    handler: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        {operation}\n"
+        f"    except {handler}:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_starred_empty_comprehension_does_not_execute_terminal(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    [(loader := print) for _ in [*()]]\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "for value in broken():\n            loader = __import__",
+        "[value for value in broken() if (loader := __import__)]",
+    ),
+)
+def test_later_iterator_advance_preserves_body_state(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    operation_lines = "\n".join(f"        {line}" for line in operation.splitlines())
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def broken():\n"
+        "    yield 1\n"
+        "    raise KeyError('broken')\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"{operation_lines}\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_starred_target_nested_unpack_exception_reaches_handler(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        first, *(second, third) = [1, 2]\n"
+        "    except ValueError:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "async for value in [1]:\n            pass",
+        "[value async for value in [1]]",
+        "(value async for value in [1])",
+    ),
+)
+def test_async_iterator_protocol_is_not_sync_literal_safe(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    operation_lines = "\n".join(f"        {line}" for line in operation.splitlines())
+    _write(
+        tmp_path,
+        "src/app.py",
+        "async def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"{operation_lines}\n"
+        "    except TypeError:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "async def _process():\n"
+        "    return (await factory())('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_set_unpack_does_not_assume_ast_iteration_order(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        (first, second), third = {(0, 0), 1}\n"
+        "    except (TypeError, ValueError):\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_module_lambda_default_binding_executes_at_definition(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "loader = print\n"
+        "(lambda value=(loader := __import__): value)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "instance = Dynamic()\nloader = instance.__getattribute__('factory')",
+        "loader = Dynamic.__dict__.get('factory')",
+    ),
+)
+def test_additional_known_class_reflection_is_fail_closed(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize("iterable", ("''", "b''", "{}"))
+def test_known_empty_iterable_does_not_execute_terminal(
+    tmp_path: Path,
+    iterable: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        f"    [(loader := __import__) for _ in {iterable}]\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_overflow_summary_preserves_eager_listcomp_capture(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    branches = ",\n".join(
+        f"        ((b{index} := len) if f{index} else (b{index} := print))"
+        for index in range(1, 7)
+    )
+    source = (
+        "def factory(f0=False, f1=True, f2=True, f3=True, f4=True, f5=True,\n"
+        "            f6=True):\n"
+        "    source = print\n"
+        "    loader = print\n"
+        "    (\n"
+        "        ((source := print) if f0 else (source := __import__)),\n"
+        f"{branches},\n"
+        "        (captured := [source for _ in [1]]),\n"
+        "        (source := print),\n"
+        "        (loader := captured[0]),\n"
+        "    )\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "tail",
+    (
+        "(loader := (lambda value=loader: value)())",
+        "(loader := next(value for value in (loader,)))",
+    ),
+    ids=("lambda-default", "generator-outer-iterable"),
+)
+def test_overflow_summary_preserves_deferred_node_eager_dependency(
+    tmp_path: Path,
+    tail: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory(f0=False, f1=False, f2=False, f3=False,\n"
+        "            f4=False, f5=False, f6=True):\n"
+        "    loader = __import__\n"
+        "    (\n"
+        "        ((loader := print) if f0 else None),\n"
+        "        ((loader := print) if f1 else None),\n"
+        "        ((loader := print) if f2 else None),\n"
+        "        ((loader := print) if f3 else None),\n"
+        "        ((loader := print) if f4 else None),\n"
+        "        ((loader := print) if f5 else None),\n"
+        "        ((branch := len) if f6 else (branch := print)),\n"
+        f"        {tail},\n"
+        "    )\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize("kind", ("sync", "async"))
+def test_later_iterator_advance_carries_plain_assignment_state(
+    tmp_path: Path,
+    kind: str,
+) -> None:
+    _init_repo(tmp_path)
+    if kind == "sync":
+        source = (
+            "def broken():\n"
+            "    yield 1\n"
+            "    raise KeyError('broken')\n\n"
+            "def factory():\n"
+            "    loader = print\n"
+            "    try:\n"
+            "        for _ in broken():\n"
+            "            loader = __import__\n"
+            "        loader = print\n"
+            "    except KeyError:\n"
+            "        pass\n"
+            "    return loader\n\n"
+            "def _process():\n"
+            "    return factory()('dependency')\n"
+        )
+    else:
+        source = (
+            "class Broken:\n"
+            "    def __init__(self):\n"
+            "        self.index = 0\n\n"
+            "    def __aiter__(self):\n"
+            "        return self\n\n"
+            "    async def __anext__(self):\n"
+            "        if self.index == 0:\n"
+            "            self.index += 1\n"
+            "            return 1\n"
+            "        raise KeyError('broken')\n\n"
+            "async def factory():\n"
+            "    loader = print\n"
+            "    try:\n"
+            "        async for _ in Broken():\n"
+            "            loader = __import__\n"
+            "        loader = print\n"
+            "    except KeyError:\n"
+            "        pass\n"
+            "    return loader\n\n"
+            "async def _process():\n"
+            "    return (await factory())('dependency')\n"
+        )
+    _write(tmp_path, "src/app.py", source)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "loader, (first, second) = (__import__, (1,))",
+        "loader, *(first, second) = [__import__, 1]",
+    ),
+)
+def test_unpack_failure_preserves_completed_left_bindings(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        {operation}\n"
+        "        loader = print\n"
+        "    except ValueError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("operation", "expected"),
+    (
+        ("first, second = {'same': 1, 'same': 2}", "conservative"),
+        ("first, second = {**{'first': 1, 'second': 2}}", "exact"),
+    ),
+)
+def test_dict_unpack_uses_runtime_unique_keys(
+    tmp_path: Path,
+    operation: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        f"    loader = {'__import__' if expected == 'conservative' else 'print'}\n"
+        "    try:\n"
+        f"        {operation}\n"
+        "        loader = print\n"
+        "    except ValueError:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "{**[]}",
+        "{[] for _ in [1]}",
+        "{[]: 1 for _ in [1]}",
+    ),
+)
+def test_mapping_and_comprehension_insertion_protocol_reaches_handler(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        {operation}\n"
+        "    except TypeError:\n"
+        "        loader = __import__\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "definition",
+    (
+        "callback = lambda value=(loader := __import__): value",
+        "def callback(value=(loader := __import__)):\n    return value",
+    ),
+)
+def test_module_definition_defaults_apply_eager_walrus_binding(
+    tmp_path: Path,
+    definition: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "loader = print\n"
+        f"{definition}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "body",
+    (
+        "    next((loader := __import__) for _ in [1])\n",
+        "    values = ((loader := __import__) for _ in [1])\n"
+        "    for _ in values:\n"
+        "        pass\n",
+        "    try:\n"
+        "        [*((loader := __import__) for _ in broken())]\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n",
+    ),
+    ids=("next", "for-bound-generator", "starred-display"),
+)
+def test_generator_consumer_applies_deferred_body_effects(
+    tmp_path: Path,
+    body: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def broken():\n"
+        "    yield 1\n"
+        "    raise KeyError('broken')\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        f"{body}"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "reflect = getattr\nloader = reflect(Dynamic, 'factory')",
+        "reflect = vars\nloader = reflect(Dynamic).get('factory')",
+        "loader = object.__getattribute__(Dynamic(), 'factory')",
+        "import builtins\nloader = builtins.getattr(Dynamic, 'factory')",
+    ),
+    ids=("getattr-alias", "vars-alias", "temporary-instance", "builtins-getattr"),
+)
+def test_reflection_identity_and_temporary_owner_are_fail_closed(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "source",
+    (
+        "class Descriptor:\n"
+        "    def __get__(self, instance, owner):\n"
+        "        return __import__\n\n"
+        "class Dynamic:\n"
+        "    factory = Descriptor()\n",
+        "class Meta(type):\n"
+        "    def __getattribute__(cls, name):\n"
+        "        if name == 'factory':\n"
+        "            return __import__\n"
+        "        return type.__getattribute__(cls, name)\n\n"
+        "class Dynamic(metaclass=Meta):\n"
+        "    pass\n",
+    ),
+    ids=("descriptor", "metaclass"),
+)
+def test_descriptor_and_metaclass_attribute_protocols_are_fail_closed(
+    tmp_path: Path,
+    source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{source}\n"
+        "loader = getattr(Dynamic, 'factory')\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "instance = Dynamic()\nloader = instance.__dict__.get('factory', print)",
+        "loader = Derived.__dict__.get('factory', print)",
+    ),
+    ids=("instance-namespace", "inherited-class-namespace"),
+)
+def test_namespace_mapping_does_not_apply_descriptor_or_mro_lookup(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "class Derived(Dynamic):\n"
+        "    pass\n\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_dict_insertion_exception_follows_value_side_effects(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class BrokenKey:\n"
+        "    def __hash__(self):\n"
+        "        raise KeyError('broken')\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        {BrokenKey(): (loader := __import__)}\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_attribute_store_exception_preserves_rhs_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Target:\n"
+        "    def __setattr__(self, name, value):\n"
+        "        raise KeyError('broken')\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    target = Target()\n"
+        "    try:\n"
+        "        target.value = (loader := __import__)\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_later_iterator_advance_carries_loop_target_binding(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def broken():\n"
+        "    yield __import__\n"
+        "    raise KeyError('broken')\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        for loader in broken():\n"
+        "            pass\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("definition", "future_import", "expected"),
+    (
+        (
+            "def callback(value: (loader := __import__)):\n    return value",
+            "",
+            "conservative",
+        ),
+        (
+            "def callback() -> (loader := __import__):\n    return None",
+            "",
+            "conservative",
+        ),
+        (
+            "value: (loader := __import__) = 1",
+            "",
+            "conservative",
+        ),
+        (
+            "def callback(value: (loader := __import__)):\n    return value",
+            "from __future__ import annotations\n",
+            "exact",
+        ),
+    ),
+)
+def test_module_annotation_evaluation_respects_runtime_mode(
+    tmp_path: Path,
+    definition: str,
+    future_import: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{future_import}"
+        "loader = print\n"
+        f"{definition}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+def test_function_local_variable_annotation_is_not_evaluated(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    value: missing() = 1\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("future_import", "historically_dynamic"),
+    (
+        ("", True),
+        ("from __future__ import annotations\n", False),
+    ),
+)
+def test_annotation_call_observer_respects_runtime_mode(
+    future_import: str,
+    historically_dynamic: bool,
+) -> None:
+    tree = ast.parse(
+        f"{future_import}"
+        "loader = __import__\n"
+        "def callback():\n"
+        "    return loader('dependency')\n\n"
+        "value: callback() = 1\n"
+        "loader = print\n"
+    )
+    callback = next(node for node in tree.body if isinstance(node, ast.FunctionDef))
+
+    bindings = _module_import_bindings(tree)
+
+    assert (
+        id(callback) in bindings.historically_dynamic_function_nodes
+    ) is historically_dynamic
+
+
+def test_local_annotation_does_not_create_exception_handler_state(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        value: (loader := __import__)() = 1\n"
+        "    except TypeError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("setup", "call", "expected"),
+    (
+        (
+            "consume = next\n",
+            "consume((loader := __import__) for _ in [1])",
+            "conservative",
+        ),
+        (
+            "import builtins\n",
+            "builtins.next((loader := __import__) for _ in [1])",
+            "conservative",
+        ),
+        (
+            "def no_consume(values):\n    return None\n",
+            "next = no_consume\n    next((loader := __import__) for _ in [1])",
+            "exact",
+        ),
+    ),
+    ids=("alias", "builtins", "shadowed"),
+)
+def test_generator_consumer_uses_callable_identity(
+    tmp_path: Path,
+    setup: str,
+    call: str,
+    expected: str,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {call}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == expected
+
+
+def test_structured_reflection_value_preserves_builtin_identity(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @staticmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "reflect = (getattr,)[0]\n"
+        "loader = reflect(Dynamic, 'factory')\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_instance_getattr_fallback_is_fail_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    def __getattr__(self, name):\n"
+        "        if name == 'factory':\n"
+        "            return __import__\n"
+        "        raise AttributeError(name)\n\n"
+        "loader = getattr(Dynamic(), 'factory')\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_class_namespace_preserves_raw_classmethod_descriptor(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(cls, value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__.get('factory', print)\n\n"
+        "def _process():\n"
+        "    try:\n"
+        "        return loader('dependency')\n"
+        "    except TypeError:\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("setup", "operation"),
+    (
+        (
+            "class Broken:\n"
+            "    def __getattribute__(self, name):\n"
+            "        raise KeyError(name)\n"
+            "broken = Broken()\n",
+            "((loader := __import__), broken.value)",
+        ),
+        (
+            "class Broken:\n"
+            "    def keys(self):\n"
+            "        raise KeyError('broken')\n"
+            "broken = Broken()\n",
+            "{'safe': (loader := __import__), **broken}",
+        ),
+        (
+            "class Broken:\n"
+            "    def __hash__(self):\n"
+            "        raise KeyError('broken')\n"
+            "broken = Broken()\n",
+            "{((loader := __import__) and broken) for _ in [1]}",
+        ),
+        (
+            "class Broken:\n"
+            "    def __hash__(self):\n"
+            "        raise KeyError('broken')\n"
+            "broken = Broken()\n",
+            "{broken: (loader := __import__) for _ in [1]}",
+        ),
+    ),
+    ids=("attribute-load", "dict-unpack", "setcomp-hash", "dictcomp-hash"),
+)
+def test_user_protocol_exception_preserves_prior_binding(
+    tmp_path: Path,
+    setup: str,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        f"        {operation}\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "consumer_body",
+    (
+        "[*values]",
+        "[value for value in values]",
+        "values.__next__()",
+        "first, *rest = values",
+    ),
+    ids=("starred-display", "comprehension", "dunder-next", "unpack"),
+)
+def test_user_consumer_effect_is_fail_closed(
+    tmp_path: Path,
+    consumer_body: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def consume(values):\n"
+        f"    {consumer_body}\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    consume((loader := __import__) for _ in [1])\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "factory_prefix"),
+    (
+        (
+            "def ignore(values):\n    return None\n",
+            "    consume = ignore\n    if True:\n        consume = next\n",
+        ),
+        (
+            "def ignore(values):\n"
+            "    return None\n\n"
+            "consume = ignore\n"
+            "def update(value=(consume := next)):\n"
+            "    return value\n",
+            "",
+        ),
+        (
+            "def ignore(values):\n"
+            "    return None\n\n"
+            "consume = ignore\n"
+            "def update():\n"
+            "    global consume\n"
+            "    consume = next\n"
+            "update()\n",
+            "",
+        ),
+        (
+            "def replace(function):\n"
+            "    return next\n\n"
+            "@replace\n"
+            "def consume(values):\n"
+            "    return None\n",
+            "",
+        ),
+    ),
+    ids=("branch", "default-walrus", "global-effect", "decorator"),
+)
+def test_consumer_identity_invalidates_after_runtime_rebinding(
+    tmp_path: Path,
+    setup: str,
+    factory_prefix: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        f"{factory_prefix}"
+        "    consume((loader := __import__) for _ in [1])\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "call"),
+    (
+        (
+            "def consume(*, values):\n    return next(values)\n",
+            "consume(values=((loader := __import__) for _ in [1]))",
+        ),
+        (
+            "def identity(values):\n    return values\n",
+            "next(identity((loader := __import__) for _ in [1]))",
+        ),
+    ),
+    ids=("keyword", "passthrough"),
+)
+def test_generator_identity_flows_into_consumer(
+    tmp_path: Path,
+    setup: str,
+    call: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {call}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_literal_loop_body_uses_current_iteration_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        for loader in [__import__, print]:\n"
+        "            raise KeyError('broken')\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_raw_classmethod_descriptor_retains_bound_identity(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(cls, value):\n"
+        "        return __import__(value)\n\n"
+        "descriptor = Dynamic.__dict__['factory']\n"
+        "loader = descriptor.__get__(None, Dynamic)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("class_body", "binding"),
+    (
+        (
+            "    @staticmethod\n"
+            "    def factory(value):\n"
+            "        return __import__(value)\n",
+            "reflect = getattr if True else vars\nloader = reflect(Dynamic, 'factory')",
+        ),
+        (
+            "    @staticmethod\n"
+            "    def factory(value):\n"
+            "        return __import__(value)\n",
+            "*ignored, reflect = (None, getattr)\nloader = reflect(Dynamic, 'factory')",
+        ),
+        (
+            "    def __getattr__(self, name):\n        return __import__\n",
+            "instance = (Dynamic(),)[0]\nloader = getattr(instance, 'factory')",
+        ),
+    ),
+    ids=("ifexp-reflection", "starred-reflection", "container-instance"),
+)
+def test_structured_identity_is_independent_of_outer_ast_shape(
+    tmp_path: Path,
+    class_body: str,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Dynamic:\n"
+        f"{class_body}\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_decorated_getattr_binding_is_fail_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def replace(function):\n"
+        "    def dynamic(self, name):\n"
+        "        return __import__\n"
+        "    return dynamic\n\n"
+        "class Dynamic:\n"
+        "    @replace\n"
+        "    def __getattr__(self, name):\n"
+        "        raise AttributeError(name)\n\n"
+        "loader = getattr(Dynamic(), 'factory')\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "version_sensitive"),
+    (
+        (
+            "def configure(function):\n"
+            "    global consume\n"
+            "    consume = next\n"
+            "    return function\n\n"
+            "@configure\n"
+            "def configured():\n"
+            "    return None\n",
+            False,
+        ),
+        (
+            "class Configure:\n    global consume\n    consume = next\n",
+            False,
+        ),
+        (
+            "def update():\n"
+            "    global consume\n"
+            "    consume = next\n"
+            "    return int\n\n"
+            "def configured(value: update()):\n"
+            "    return value\n",
+            True,
+        ),
+    ),
+    ids=("decorator-side-effect", "class-body-side-effect", "annotation-side-effect"),
+)
+def test_definition_time_effect_invalidates_consumer_identity(
+    tmp_path: Path,
+    setup: str,
+    version_sensitive: bool,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def ignore(values):\n"
+        "    return None\n\n"
+        "consume = ignore\n"
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    consume((loader := __import__) for _ in [1])\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<runtime>", "exec", dont_inherit=True), namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    runtime_dynamic = namespace["factory"]() is __import__  # type: ignore[operator]
+    assert runtime_dynamic is (not version_sensitive or sys.version_info < (3, 14))
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "call"),
+    (
+        (
+            "",
+            "values = ((loader := __import__) for _ in [1])\n    next(values)",
+        ),
+        (
+            "",
+            "values = ((loader := __import__) for _ in [1])\n    next(*(values,))",
+        ),
+        (
+            "def consume(*, values):\n    return next(values)\n",
+            "values = ((loader := __import__) for _ in [1])\n"
+            "    consume(**{'values': values})",
+        ),
+        (
+            "def identity(values):\n"
+            "    def inner(value=values):\n"
+            "        return value\n"
+            "    return inner()\n",
+            "next(identity((loader := __import__) for _ in [1]))",
+        ),
+        (
+            "def consume(values):\n"
+            "    def inner():\n"
+            "        next(values)\n"
+            "    inner()\n",
+            "consume(*[((loader := __import__) for _ in [1])])",
+        ),
+    ),
+    ids=("assigned", "starred", "double-starred", "nested-default", "called-closure"),
+)
+def test_generator_lineage_survives_storage_and_escape(
+    tmp_path: Path,
+    setup: str,
+    call: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {call}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "call"),
+    (
+        ("def identity(values):\n    return values\n", "identity"),
+        ("", "map"),
+        ("", "iter"),
+    ),
+    ids=("passthrough", "map", "iter"),
+)
+def test_unknown_or_lazy_consumer_preserves_unconsumed_path(
+    tmp_path: Path,
+    setup: str,
+    call: str,
+) -> None:
+    _init_repo(tmp_path)
+    invocation = (
+        f"{call}((loader := print for _ in [1]))"
+        if call != "map"
+        else "map(lambda value: value, ((loader := print) for _ in [1]))"
+    )
+    source = (
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = __import__\n"
+        f"    {invocation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_future_annotations_do_not_invalidate_safe_consumer(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n\n"
+        "def ignore(values):\n"
+        "    return None\n\n"
+        "consume = ignore\n"
+        "def update():\n"
+        "    global consume\n"
+        "    consume = next\n"
+        "    return int\n\n"
+        "def configured(value: update()):\n"
+        "    return value\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    consume((loader := __import__) for _ in [1])\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(compile(source, "<runtime>", "exec", dont_inherit=True), namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is print  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "[(loader := value) for value in [__import__, print]]",
+        "list((loader := value for value in [__import__, print]))",
+        "next((loader := value for value in [print, __import__]))",
+    ),
+    ids=("list-comprehension", "generator-list", "generator-next"),
+)
+def test_comprehension_consumption_respects_final_or_first_value(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = __import__\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is print  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "list((loader := value for value in [print, __import__]))",
+        "[(loader := value) for value in [print, __import__]]",
+        "next((loader := value for value in [__import__, print]))",
+    ),
+    ids=("generator-list", "list-comprehension", "generator-next"),
+)
+def test_comprehension_target_carries_literal_iterable_identity(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "operation", "raised"),
+    (
+        (
+            "class Broken:\n"
+            "    def __index__(self):\n"
+            "        raise KeyError('broken')\n"
+            "broken = Broken()\n",
+            "[0][broken]",
+            "KeyError",
+        ),
+        (
+            "class Broken:\n"
+            "    def __hash__(self):\n"
+            "        raise ValueError('broken')\n"
+            "broken = Broken()\n",
+            "{'x': 1}[broken]",
+            "ValueError",
+        ),
+        (
+            "class Broken:\n"
+            "    def __truediv__(self, other):\n"
+            "        raise KeyError('broken')\n"
+            "broken = Broken()\n",
+            "broken / 1",
+            "KeyError",
+        ),
+        (
+            "class Broken:\n"
+            "    def __bool__(self):\n"
+            "        raise KeyError('broken')\n"
+            "broken = Broken()\n",
+            "if broken:\n            pass",
+            "KeyError",
+        ),
+    ),
+    ids=("index", "hash", "binary", "truth"),
+)
+def test_adjacent_user_protocol_exception_preserves_prior_binding(
+    tmp_path: Path,
+    setup: str,
+    operation: str,
+    raised: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        f"{setup}\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        loader = __import__\n"
+        f"        {operation}\n"
+        "        loader = print\n"
+        f"    except {raised}:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize("failure_point", ("enter", "exit"))
+def test_context_manager_protocol_exception_preserves_prior_binding(
+    tmp_path: Path,
+    failure_point: str,
+) -> None:
+    _init_repo(tmp_path)
+    enter = (
+        "        raise KeyError('broken')"
+        if failure_point == "enter"
+        else "        return self"
+    )
+    exit_body = (
+        "        return False"
+        if failure_point == "enter"
+        else "        raise KeyError('broken')"
+    )
+    source = (
+        "class Broken:\n"
+        "    def __enter__(self):\n"
+        f"{enter}\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        f"{exit_body}\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        loader = __import__\n"
+        "        with Broken():\n"
+        "            pass\n"
+        "        loader = print\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize("decorator_name", ("classmethod", "property"))
+def test_shadowed_descriptor_name_uses_runtime_binding(
+    tmp_path: Path,
+    decorator_name: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        f"{decorator_name} = identity\n\n"
+        "class Dynamic:\n"
+        f"    @{decorator_name}\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    (
+        "configure()",
+        "configure_alias = configure\nconfigure_alias()",
+        "def wrapper():\n    configure()\nwrapper()",
+        "@configure\ndef marker():\n    pass",
+        "class Configure:\n    global classmethod\n    classmethod = identity",
+    ),
+    ids=("direct", "alias", "wrapper", "decorator", "class-global"),
+)
+def test_definition_time_call_can_shadow_descriptor_binding(
+    tmp_path: Path,
+    trigger: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure(function=None):\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return function\n\n"
+        f"{trigger}\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_future_annotation_does_not_shadow_descriptor_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    _write(
+        tmp_path,
+        "src/app.py",
+        "from __future__ import annotations\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(cls, value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__.get('factory', print)\n\n"
+        "def _process():\n"
+        "    try:\n"
+        "        return loader('dependency')\n"
+        "    except TypeError:\n"
+        "        return None\n",
+    )
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_custom_descriptor_explicit_get_retains_dynamic_identity(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Descriptor:\n"
+        "    def __get__(self, instance, owner):\n"
+        "        return __import__\n\n"
+        "class Dynamic:\n"
+        "    factory = Descriptor()\n\n"
+        "descriptor = Dynamic.__dict__['factory']\n"
+        "loader = descriptor.__get__(None, Dynamic)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("class_body", "binding"),
+    (
+        (
+            "    @staticmethod\n"
+            "    def factory(value):\n"
+            "        return __import__(value)\n",
+            "reflect = True and getattr\nloader = reflect(Dynamic, 'factory')",
+        ),
+        (
+            "    def __getattr__(self, name):\n        return __import__\n",
+            "instance = Dynamic() if True else None\n"
+            "loader = getattr(instance, 'factory')",
+        ),
+    ),
+    ids=("boolop-reflection", "ifexp-instance"),
+)
+def test_structured_identity_covers_boolop_and_conditional_instance(
+    tmp_path: Path,
+    class_body: str,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Dynamic:\n"
+        f"{class_body}\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize("binding_count", (10, 20, 40, 80, 160, 320))
+def test_overflow_linear_dependency_summary_is_bounded(
+    binding_count: int,
+) -> None:
+    probe = r"""
+import ast
+import json
+import sys
+import time
+
+from ai_sdlc.core.lean_code_import_expression_flow import (
+    _named_expression_binding_paths,
+)
+
+binding_count = int(sys.argv[1])
+parts = [
+    f"((b{index} := len) if f{index} else (b{index} := print))"
+    for index in range(7)
+]
+parts.append("(x0 := seed0)")
+parts.extend(
+    f"(x{index} := (x{index - 1}, seed{index}))"
+    for index in range(1, binding_count)
+)
+expression = ast.parse("(" + ",".join(parts) + ")", mode="eval").body
+started = time.perf_counter()
+paths = _named_expression_binding_paths(expression)
+elapsed = time.perf_counter() - started
+node_count = sum(
+    1
+    for path in paths
+    for _, value in path
+    for _ in ast.walk(value)
+)
+print(json.dumps({"elapsed": elapsed, "paths": len(paths), "nodes": node_count}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe, str(binding_count)],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=5.0,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["paths"] <= 65
+    assert payload["nodes"] <= max(10_000, binding_count * 512)
+    assert payload["elapsed"] < 2.0
+
+
+@pytest.mark.parametrize(
+    ("initial", "branch"),
+    (
+        (
+            "values = ((loader := __import__) for _ in [1])",
+            "    if False:\n        values = iter(())",
+        ),
+        (
+            "values = iter(())",
+            "    if True:\n        values = ((loader := __import__) for _ in [1])",
+        ),
+    ),
+    ids=("dead-branch-keeps-lineage", "live-branch-creates-lineage"),
+)
+def test_compound_statement_preserves_generator_lineage(
+    tmp_path: Path,
+    initial: str,
+    branch: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {initial}\n"
+        f"{branch}\n"
+        "    next(values)\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_next_default_generator_is_not_consumed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    next((value for value in [1]), "
+        "((loader := print) for _ in [1]))\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "values = ((loader := value) for value in [print, __import__])\n"
+        "    next(values)\n"
+        "    next(values)",
+        "next((loader := value) for value in [print, __import__] "
+        "if value is __import__)",
+        "any((loader := value) is __import__ for value in [__import__, print])",
+        "all((loader := value) is print for value in [__import__, print])",
+    ),
+    ids=("repeated-next", "filtered-next", "any-short-circuit", "all-short-circuit"),
+)
+def test_generator_consumption_tracks_cursor_and_short_circuit(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "binding",
+    (
+        "for property in [dynamic]:\n    pass",
+        "with Manager() as property:\n    pass",
+        "match [dynamic]:\n    case [property]:\n        pass",
+    ),
+    ids=("for-target", "with-target", "match-target"),
+)
+def test_descriptor_scope_tracks_compound_target_binding(
+    tmp_path: Path,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def dynamic(function):\n"
+        "    def replacement(self, value):\n"
+        "        return __import__(value)\n"
+        "    return replacement\n\n"
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        return dynamic\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        f"{binding}\n\n"
+        "class Dynamic:\n"
+        "    @property\n"
+        "    def factory(self):\n"
+        "        return print\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader(None, 'dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"](None, "builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("class_body", "binding"),
+    (
+        (
+            "    @staticmethod\n"
+            "    def factory(value):\n"
+            "        return __import__(value)\n",
+            "reflect = (alias := getattr)\nloader = reflect(Dynamic, 'factory')",
+        ),
+        (
+            "    def __getattr__(self, name):\n        return __import__\n",
+            "instance = (alias := Dynamic())\nloader = getattr(instance, 'factory')",
+        ),
+    ),
+    ids=("named-reflection", "named-instance"),
+)
+def test_named_expression_preserves_structured_identity(
+    tmp_path: Path,
+    class_body: str,
+    binding: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Dynamic:\n"
+        f"{class_body}\n"
+        f"{binding}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_complex_modulo_type_error_preserves_prior_binding(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        loader = __import__\n"
+        "        1j % 1j\n"
+        "        loader = print\n"
+        "    except TypeError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_with_enter_result_binds_target_before_body_exception(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        return __import__\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        "    try:\n"
+        "        with Manager() as loader:\n"
+        "            raise KeyError('broken')\n"
+        "    except KeyError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_higher_order_call_propagates_descriptor_mutator(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    action()\n\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_outer_decorator_can_unwrap_builtin_descriptor(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def unwrap(descriptor):\n"
+        "    return descriptor.__func__\n\n"
+        "class Dynamic:\n"
+        "    @unwrap\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_explicit_type_hint_evaluation_applies_latent_mutator(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "typing.get_type_hints(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "values = ((loader := __import__) for _ in [1])\n"
+        "    while False:\n"
+        "        values = iter(())\n"
+        "    next(values)",
+        "values = ((loader := __import__) for _ in [1])\n"
+        "    for _ in []:\n"
+        "        values = iter(())\n"
+        "    next(values)",
+        "values = ((loader := value) for value in [print, __import__])\n"
+        "    for _ in [0, 1]:\n"
+        "        next(values)",
+        "values = ((loader := value) for value in [print, __import__])\n"
+        "    for _ in [1]:\n"
+        "        next(values)\n"
+        "    next(values)",
+        "values = ((loader := value) for value in [print, __import__])\n"
+        "    with Manager():\n"
+        "        next(values)\n"
+        "    next(values)",
+        "values = ((loader := value) for value in [print, __import__])\n"
+        "    for _ in [0, 1]:\n"
+        "        next(values)\n"
+        "        break\n"
+        "    next(values)",
+    ),
+    ids=(
+        "dead-while",
+        "empty-for",
+        "repeated-loop-consumption",
+        "loop-then-consume",
+        "with-then-consume",
+        "break-then-consume",
+    ),
+)
+def test_loop_execution_preserves_generator_state(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        return self\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_starred_next_arguments_preserve_default_non_consumption(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = __import__\n"
+        "    values = (value for value in [1])\n"
+        "    default = ((loader := print) for _ in [1])\n"
+        "    next(*(values, default))\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_generator_exception_flow_uses_shared_cursor(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        "    values = (((loader := value) and (1 / 0)) "
+        "for value in [None, __import__])\n"
+        "    try:\n"
+        "        next(values)\n"
+        "        next(values)\n"
+        "        loader = print\n"
+        "    except ZeroDivisionError:\n"
+        "        pass\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("parameters", "invocation"),
+    (
+        ("action", "invoke(action=configure)"),
+        ("*, action", "invoke(action=configure)"),
+        ("action=configure", "invoke()"),
+        ("action", "invoke(**{'action': configure})"),
+        ("action", "invoke(*(configure,))"),
+        ("action", "invoke(lambda: configure())"),
+        ("action", "invoke(Configure())"),
+    ),
+    ids=(
+        "keyword",
+        "keyword-only",
+        "default",
+        "static-kwargs",
+        "static-starargs",
+        "lambda",
+        "callable-object",
+    ),
+)
+def test_higher_order_descriptor_effect_uses_signature_binding(
+    tmp_path: Path,
+    parameters: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "class Configure:\n"
+        "    def __call__(self):\n"
+        "        configure()\n\n"
+        f"def invoke({parameters}):\n"
+        "    action()\n\n"
+        f"{invocation}\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("typing_import", "evaluation"),
+    (
+        (
+            "from typing import get_type_hints as hints",
+            "hints(documented)",
+        ),
+        (
+            "import typing",
+            "typing.get_type_hints(obj=documented)",
+        ),
+        (
+            "import typing",
+            "hints = typing.get_type_hints\nhints(documented)",
+        ),
+        (
+            "import typing",
+            "hints = [typing.get_type_hints][0]\nhints(documented)",
+        ),
+        (
+            "import typing",
+            "typing.get_type_hints(*(documented,))",
+        ),
+        (
+            "import typing",
+            "typing.get_type_hints(**{'obj': documented})",
+        ),
+    ),
+    ids=(
+        "import-alias",
+        "keyword-obj",
+        "assignment-alias",
+        "subscript-alias",
+        "static-starargs",
+        "static-kwargs",
+    ),
+)
+def test_type_hint_evaluation_tracks_callable_identity(
+    tmp_path: Path,
+    typing_import: str,
+    evaluation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        f"{typing_import}\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        f"{evaluation}\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "any((loader := value) is __import__ for value in [print, __import__, int])",
+        "all((loader := value) is not __import__ "
+        "for value in [print, __import__, int])",
+    ),
+    ids=("any-middle-stop", "all-middle-stop"),
+)
+def test_generator_short_circuit_includes_intermediate_prefixes(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_except_target_binds_descriptor_inside_handler(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "class DynamicError(Exception):\n"
+        "    def __call__(self, function):\n"
+        "        def replacement(self, value):\n"
+        "            return __import__(value)\n"
+        "        return replacement\n\n"
+        "try:\n"
+        "    raise DynamicError()\n"
+        "except DynamicError as property:\n"
+        "    class Dynamic:\n"
+        "        @property\n"
+        "        def factory(self):\n"
+        "            return print\n"
+        "    loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader(None, 'dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"](None, "builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "try:\n        next(values)\n    finally:\n        pass\n    next(values)",
+        "for _ in [1]:\n"
+        "        next(values)\n"
+        "        continue\n"
+        "        next(values)\n"
+        "    next(values)",
+        "for _ in [1]:\n"
+        "        next(values)\n"
+        "        break\n"
+        "        next(values)\n"
+        "    next(values)",
+        "for _ in [1]:\n"
+        "        next(values)\n"
+        "        break\n"
+        "    else:\n"
+        "        next(values)\n"
+        "    next(values)",
+        "count = 0\n    while count < 2:\n        next(values)\n        count += 1",
+        "count = 0\n"
+        "    while count < 2:\n"
+        "        next(values)\n"
+        "        count += 1\n"
+        "        if count > 3:\n"
+        "            break",
+        "for _ in [1]:\n"
+        "        if True:\n"
+        "            break\n"
+        "        next(values)\n"
+        "    next(values)\n"
+        "    next(values)",
+    ),
+    ids=(
+        "try-cursor",
+        "continue-unreachable-tail",
+        "break-unreachable-tail",
+        "break-skips-else",
+        "while-multiple-iterations",
+        "while-conditional-break",
+        "nested-break-unreachable-tail",
+    ),
+)
+def test_generator_compound_control_flow_fails_closed(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        "    values = ((loader := value) for value in [print, __import__])\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("manager", "operation"),
+    (
+        ("", "for current in [values]:\n        next(current)"),
+        (
+            "class Manager:\n"
+            "    def __init__(self, value):\n"
+            "        self.value = value\n"
+            "    def __enter__(self):\n"
+            "        return self.value\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n",
+            "with Manager(values) as current:\n        next(current)",
+        ),
+    ),
+    ids=("for-target-lineage", "with-target-lineage"),
+)
+def test_compound_target_generator_lineage_fails_closed(
+    tmp_path: Path,
+    manager: str,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        manager + "def factory():\n"
+        "    loader = print\n"
+        "    values = ((loader := __import__) for _ in [1])\n"
+        f"    {operation}\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_nested_generator_cursor_counts_terminal_yields(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        "    values = ((loader := value) for _ in [0] "
+        "for value in [print, __import__])\n"
+        "    next(values)\n"
+        "    next(values)\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "operation",
+    (
+        "for current in [values]:\n    next(current)",
+        "next(values)\nnext(values)",
+    ),
+    ids=("module-for-target", "module-nested-cursor"),
+)
+def test_module_generator_consumption_fails_closed(
+    tmp_path: Path,
+    operation: str,
+) -> None:
+    _init_repo(tmp_path)
+    nested = " for value in [print, __import__]" if "next(values)" in operation else ""
+    terminal = "value" if nested else "__import__"
+    source = (
+        "loader = print\n"
+        f"values = ((loader := {terminal}) for _ in [1]{nested})\n"
+        f"{operation}\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_with_enter_return_generator_lineage_fails_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        return values\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        "with Manager() as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("binding", "context_expression"),
+    (
+        ("Alias = Manager", "Alias()"),
+        ("manager = Manager()", "manager"),
+        ("flag = True\nAlias = Manager if flag else object", "Alias()"),
+    ),
+    ids=("class-alias", "instance-name", "conditional-class-alias"),
+)
+def test_with_enter_generator_lineage_survives_manager_bindings(
+    tmp_path: Path,
+    binding: str,
+    context_expression: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        return values\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        f"{binding}\n"
+        f"with {context_expression} as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_static_safe_manager_branch_does_not_inherit_dynamic_lineage(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        return values\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        "class Safe:\n"
+        "    def __enter__(self):\n"
+        "        return iter([1])\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        "Alias = Safe if True else Manager\n"
+        "with Alias() as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is print
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "manager_definition",
+    (
+        (
+            "class Manager:\n"
+            "    def __enter__(self):\n"
+            "        return values\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "class Child(Manager):\n"
+            "    pass\n"
+        ),
+        (
+            "class Child:\n"
+            "    def __enter__(self):\n"
+            "        alias = values\n"
+            "        return alias\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n"
+        ),
+    ),
+    ids=("inherited-enter", "enter-local-alias"),
+)
+def test_with_enter_inherited_or_local_generator_lineage_fails_closed(
+    tmp_path: Path,
+    manager_definition: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        f"{manager_definition}\n"
+        "with Child() as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "manager_definition",
+    (
+        (
+            "class Manager:\n"
+            "    def __enter__(self):\n"
+            "        return values\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "class Child(Manager):\n"
+            "    def __enter__(self):\n"
+            "        return iter([1])\n"
+        ),
+        (
+            "class Child:\n"
+            "    def __enter__(self):\n"
+            "        alias = iter([1])\n"
+            "        return alias\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n"
+        ),
+    ),
+    ids=("safe-enter-override", "safe-enter-local-alias"),
+)
+def test_with_enter_safe_override_or_local_alias_stays_exact(
+    tmp_path: Path,
+    manager_definition: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        f"{manager_definition}\n"
+        "with Child() as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is print
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_with_enter_ignores_nested_deferred_return_lineage(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        "class Manager:\n"
+        "    def __enter__(self):\n"
+        "        def deferred():\n"
+        "            return values\n"
+        "        return iter([1])\n"
+        "    def __exit__(self, exc_type, exc, traceback):\n"
+        "        return False\n\n"
+        "with Manager() as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is print
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_generator_handler_inherits_exception_point_cursor(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def factory():\n"
+        "    loader = print\n"
+        "    values = ((loader := value) for value in [print, __import__])\n"
+        "    try:\n"
+        "        next(values)\n"
+        "        raise ValueError\n"
+        "    except ValueError:\n"
+        "        next(values)\n"
+        "    return loader\n\n"
+        "def _process():\n"
+        "    return factory()('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["factory"]() is __import__  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "invocation",
+    (
+        "action = Configure()\naction()",
+        "def invoke(*actions):\n    actions[0]()\ninvoke(configure)",
+        "def invoke(**actions):\n    actions['action']()\ninvoke(action=configure)",
+        "def invoke(action):\n    alias = action\n    alias()\ninvoke(configure)",
+        "flag = False\n"
+        "if flag:\n"
+        "    def invoke(first, second):\n"
+        "        first()\n"
+        "else:\n"
+        "    def invoke(first, second):\n"
+        "        second()\n"
+        "invoke(lambda: None, configure)",
+    ),
+    ids=(
+        "direct-callable-instance",
+        "varargs-projection",
+        "kwargs-projection",
+        "local-alias",
+        "branch-summary-union",
+    ),
+)
+def test_callback_descriptor_effect_fails_closed(
+    tmp_path: Path,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "class Configure:\n"
+        "    def __call__(self):\n"
+        "        configure()\n\n"
+        f"{invocation}\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "evaluation",
+    (
+        "hints = (alias := typing.get_type_hints)\nhints(documented)",
+        "flag = True\ntyping.get_type_hints(documented if flag else safe)",
+        "def hints(obj):\n    return typing.get_type_hints(obj)\nhints(documented)",
+        "hints = lambda obj: typing.get_type_hints(obj)\nhints(documented)",
+    ),
+    ids=("named-expression-alias", "conditional-target", "wrapper", "lambda-wrapper"),
+)
+def test_wrapped_type_hint_effect_fails_closed(
+    tmp_path: Path,
+    evaluation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def safe(value: int):\n"
+        "    return value\n\n"
+        f"{evaluation}\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    ("setup", "invocation"),
+    (
+        (
+            "def invoke(action):\n"
+            "    action()\n\n"
+            "def safe(action):\n"
+            "    return None\n\n"
+            "flag = True\n"
+            "selected = invoke if flag else safe\n",
+            "selected(configure)",
+        ),
+        (
+            "def invoke(action):\n"
+            "    action()\n\n"
+            "def safe(action):\n"
+            "    return None\n\n"
+            "selected = [safe, invoke][1]\n",
+            "selected(configure)",
+        ),
+        (
+            "def invoke(action):\n"
+            "    action()\n\n"
+            "def safe(action):\n"
+            "    return None\n\n"
+            "flag = True\n"
+            "selected = flag and invoke or safe\n",
+            "selected(configure)",
+        ),
+        (
+            "def invoke(action):\n"
+            "    action()\n\n"
+            "def safe(action):\n"
+            "    return None\n\n"
+            "flag = True\n",
+            "(invoke if flag else safe)(configure)",
+        ),
+    ),
+    ids=(
+        "assigned-if-expression",
+        "assigned-constant-subscript",
+        "assigned-bool-operation",
+        "direct-structured-callee",
+    ),
+)
+def test_structured_callback_summary_fails_closed(
+    tmp_path: Path,
+    setup: str,
+    invocation: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        f"{setup}"
+        f"{invocation}\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_structured_type_hint_callback_summary_fails_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def hints(obj):\n"
+        "    return typing.get_type_hints(obj)\n\n"
+        "def noop(obj):\n"
+        "    return None\n\n"
+        "flag = True\n"
+        "selected = hints if flag else noop\n"
+        "selected(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_structured_callback_parameter_fails_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    (action if True else (lambda: None))()\n\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_structured_type_hint_parameter_fails_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def safe(value: int):\n"
+        "    return value\n\n"
+        "def hints(obj):\n"
+        "    return typing.get_type_hints(obj if True else safe)\n\n"
+        "hints(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_static_safe_callback_branch_stays_exact(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    (action if False else (lambda: None))()\n\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return value\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert isinstance(namespace["Dynamic"].__dict__["factory"], classmethod)  # type: ignore[attr-defined]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    if flag:\n"
+            "        alias = lambda: None\n"
+            "    alias()\n\n"
+            "flag = False\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    for alias in [action, lambda: None]:\n"
+            "        break\n"
+            "    alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    while True:\n"
+            "        break\n"
+            "        alias = lambda: None\n"
+            "    alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    if flag:\n"
+            "        alias = action\n"
+            "    else:\n"
+            "        alias = lambda: None\n"
+            "    alias()\n\n"
+            "flag = True\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    for _ in []:\n"
+            "        alias = lambda: None\n"
+            "    alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    while False:\n"
+            "        alias = lambda: None\n"
+            "    alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    try:\n"
+            "        if flag:\n"
+            "            raise ValueError\n"
+            "        alias = lambda: None\n"
+            "    except ValueError:\n"
+            "        pass\n"
+            "    alias()\n\n"
+            "flag = True\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    match flag:\n"
+            "        case True:\n"
+            "            alias = lambda: None\n"
+            "    alias()\n\n"
+            "flag = False\n"
+        ),
+    ),
+    ids=(
+        "if-fallthrough",
+        "for-break",
+        "while-break",
+        "if-else",
+        "empty-for-fallthrough",
+        "false-while-fallthrough",
+        "try-handler-fallthrough",
+        "match-fallthrough",
+    ),
+)
+def test_wrapper_statement_control_flow_parameter_fails_closed(
+    tmp_path: Path,
+    wrapper: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        f"{wrapper}"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_statement_control_flow_type_hint_fails_closed(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def safe(value: int):\n"
+        "    return value\n\n"
+        "def hints(obj):\n"
+        "    alias = obj\n"
+        "    if flag:\n"
+        "        alias = safe\n"
+        "    return typing.get_type_hints(alias)\n\n"
+        "flag = False\n"
+        "hints(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        ("def invoke(action):\n    selected, = [action]\n    selected()\n"),
+        ("def invoke(action):\n    [selected] = [action]\n    selected()\n"),
+        ("def invoke(action):\n    selected, *rest = [action]\n    selected()\n"),
+    ),
+    ids=("tuple-target", "list-target", "starred-target"),
+)
+def test_wrapper_unpack_parameter_fails_closed(
+    tmp_path: Path,
+    wrapper: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        f"{wrapper}\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_unpack_type_hint_parameter_fails_closed(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def hints(obj):\n"
+        "    selected, = [obj]\n"
+        "    return typing.get_type_hints(selected)\n\n"
+        "hints(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    if True:\n"
+            "        alias = lambda: None\n"
+            "    alias()\n"
+        ),
+        ("def invoke(action):\n    selected, = [lambda: None]\n    selected()\n"),
+        ("def invoke(action):\n    selected, *rest = [lambda: None]\n    selected()\n"),
+        ("def invoke(action):\n    False and action()\n"),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    match 1:\n"
+            "        case _:\n"
+            "            alias = lambda: None\n"
+            "    alias()\n"
+        ),
+    ),
+    ids=(
+        "static-safe-if",
+        "safe-unpack",
+        "safe-starred-unpack",
+        "safe-bool-op",
+        "safe-exhaustive-match",
+    ),
+)
+def test_wrapper_static_safe_statement_or_unpack_stays_exact(
+    tmp_path: Path,
+    wrapper: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        f"{wrapper}\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return value\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert isinstance(namespace["Dynamic"].__dict__["factory"], classmethod)  # type: ignore[attr-defined]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        (
+            "def invoke(action):\n"
+            "    alias = lambda: None\n"
+            "    try:\n"
+            "        alias = action\n"
+            "        raise ValueError\n"
+            "    except ValueError:\n"
+            "        alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    for _ in [0]:\n"
+            "        if flag:\n"
+            "            break\n"
+            "        alias = lambda: None\n"
+            "    alias()\n\n"
+            "flag = True\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    alias = action\n"
+            "    for _ in [0]:\n"
+            "        if flag:\n"
+            "            continue\n"
+            "        alias = lambda: None\n"
+            "    alias()\n\n"
+            "flag = True\n"
+        ),
+        (
+            "class Box:\n"
+            "    def __init__(self, value):\n"
+            "        self.value = value\n"
+            "    def __enter__(self):\n"
+            "        return self.value\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "def invoke(action):\n"
+            "    with Box(action) as alias:\n"
+            "        alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    match action:\n"
+            "        case alias:\n"
+            "            alias()\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    for alias in (value for value in [action]):\n"
+            "        alias()\n"
+        ),
+    ),
+    ids=(
+        "try-exception-prefix",
+        "nested-break",
+        "nested-continue",
+        "with-enter-result",
+        "match-capture",
+        "generator-target",
+    ),
+)
+def test_wrapper_runtime_control_target_projection_fails_closed(
+    tmp_path: Path,
+    wrapper: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        f"{wrapper}\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_type_hint_handler_inherits_exception_prefix(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def safe(value: int):\n"
+        "    return value\n\n"
+        "def hints(obj):\n"
+        "    alias = safe\n"
+        "    try:\n"
+        "        alias = obj\n"
+        "        raise ValueError\n"
+        "    except ValueError:\n"
+        "        return typing.get_type_hints(alias)\n\n"
+        "hints(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+@pytest.mark.parametrize(
+    "wrapper",
+    (
+        (
+            "def invoke(action):\n"
+            "    try:\n"
+            "        return None\n"
+            "    finally:\n"
+            "        action()\n\n"
+            "invoke(configure)\n"
+        ),
+        (
+            "def invoke(action):\n"
+            "    try:\n"
+            "        raise ValueError\n"
+            "    finally:\n"
+            "        action()\n\n"
+            "try:\n"
+            "    invoke(configure)\n"
+            "except ValueError:\n"
+            "    pass\n"
+        ),
+    ),
+    ids=("return-finally", "raise-finally"),
+)
+def test_wrapper_finally_runs_after_terminal_control(
+    tmp_path: Path,
+    wrapper: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        f"{wrapper}\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_type_hint_finally_runs_after_return(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "from __future__ import annotations\n"
+        "import typing\n\n"
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n"
+        "    return int\n\n"
+        "def documented(value: configure()):\n"
+        "    return value\n\n"
+        "def hints(obj):\n"
+        "    try:\n"
+        "        return {}\n"
+        "    finally:\n"
+        "        typing.get_type_hints(obj)\n\n"
+        "hints(documented)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_generator_target_ignores_non_yielded_parameter(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    for alias in (lambda: None for _ in [action]):\n"
+        "        alias()\n\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return value\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert isinstance(namespace["Dynamic"].__dict__["factory"], classmethod)  # type: ignore[attr-defined]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+@pytest.mark.parametrize(
+    ("source", "expected_dynamic"),
+    (
+        (
+            "loader = print\n"
+            "values = ((loader := __import__) for _ in [1])\n\n"
+            "class Base:\n"
+            "    def __enter__(self):\n"
+            "        return values\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "class Child(Base):\n"
+            "    async def __aenter__(self):\n"
+            "        return iter([1])\n\n"
+            "with Child() as current:\n"
+            "    next(current)\n",
+            True,
+        ),
+        (
+            "import asyncio\n\n"
+            "loader = print\n"
+            "values = ((loader := __import__) for _ in [1])\n\n"
+            "class Base:\n"
+            "    async def __aenter__(self):\n"
+            "        return values\n"
+            "    async def __aexit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "class Child(Base):\n"
+            "    def __enter__(self):\n"
+            "        return iter([1])\n\n"
+            "async def _process():\n"
+            "    async with Child() as current:\n"
+            "        next(current)\n"
+            "    return loader\n\n"
+            "asyncio.run(_process())\n",
+            True,
+        ),
+        (
+            "loader = print\n"
+            "values = ((loader := __import__) for _ in [1])\n\n"
+            "class Manager:\n"
+            "    def __enter__(self):\n"
+            "        return values\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "def pick():\n"
+            "    return Manager\n\n"
+            "class Child(pick()):\n"
+            "    pass\n\n"
+            "with Child() as current:\n"
+            "    next(current)\n",
+            True,
+        ),
+        (
+            "loader = print\n"
+            "values = ((loader := __import__) for _ in [1])\n\n"
+            "class Safe:\n"
+            "    def __enter__(self):\n"
+            "        return iter([1])\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n\n"
+            "class Dynamic:\n"
+            "    def __enter__(self):\n"
+            "        return values\n\n"
+            "class Child(Safe, Dynamic):\n"
+            "    pass\n\n"
+            "with Child() as current:\n"
+            "    next(current)\n",
+            False,
+        ),
+    ),
+    ids=(
+        "sync-protocol-inherited-beside-async-override",
+        "async-protocol-inherited-beside-sync-override",
+        "unknown-base-factory",
+        "safe-first-mro",
+    ),
+)
+def test_context_manager_protocol_mro_is_sound(
+    tmp_path: Path,
+    source: str,
+    expected_dynamic: bool,
+) -> None:
+    _init_repo(tmp_path)
+    if "async def _process" not in source:
+        source += (
+            "\ndef _process():\n"
+            "    return loader('dependency') if loader is __import__ else loader\n"
+        )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert (namespace["loader"] is __import__) is expected_dynamic
+    expected = "conservative" if expected_dynamic else "exact"
+    assert _metric_capability(report, "_process") == expected
+
+
+@pytest.mark.parametrize(
+    "manager",
+    (
+        (
+            "class Manager:\n"
+            "    def __enter__(self):\n"
+            "        return iter([1])\n"
+            "    __enter__ = Dynamic.__enter__\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n"
+        ),
+        (
+            "def replace_enter(cls):\n"
+            "    cls.__enter__ = Dynamic.__enter__\n"
+            "    return cls\n\n"
+            "@replace_enter\n"
+            "class Manager:\n"
+            "    def __enter__(self):\n"
+            "        return iter([1])\n"
+            "    def __exit__(self, exc_type, exc, traceback):\n"
+            "        return False\n"
+        ),
+    ),
+    ids=("class-body-rebinding", "class-decorator-rebinding"),
+)
+def test_context_manager_protocol_mutation_fails_closed(
+    tmp_path: Path,
+    manager: str,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "loader = print\n"
+        "values = ((loader := __import__) for _ in [1])\n\n"
+        "class Dynamic:\n"
+        "    def __enter__(self):\n"
+        "        return values\n\n"
+        f"{manager}\n"
+        "with Manager() as current:\n"
+        "    next(current)\n\n"
+        "def _process():\n"
+        "    return loader('dependency') if loader is __import__ else loader\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_local_manager_projects_enter_closure(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    class Manager:\n"
+        "        def __enter__(self):\n"
+        "            return action\n"
+        "        def __exit__(self, exc_type, exc, traceback):\n"
+        "            return False\n"
+        "    with Manager() as alias:\n"
+        "        alias()\n\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return __import__(value)\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"]("builtins") is __import__("builtins")  # type: ignore[operator]
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_wrapper_local_manager_safe_enter_stays_exact(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    class Manager:\n"
+        "        def __enter__(self):\n"
+        "            return lambda: None\n"
+        "        def __exit__(self, exc_type, exc, traceback):\n"
+        "            return False\n"
+        "    with Manager() as alias:\n"
+        "        alias()\n\n"
+        "invoke(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return value\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert isinstance(namespace["Dynamic"].__dict__["factory"], classmethod)  # type: ignore[attr-defined]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_callback_projection_dependency_direction_is_acyclic() -> None:
+    root = Path(__file__).parents[2]
+    directory = root / "src/ai_sdlc/core"
+    modules = {
+        path.stem: path
+        for path in directory.glob("lean_code_callback_projection*.py")
+    }
+    graph: dict[str, set[str]] = {}
+    for name, path in modules.items():
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        graph[name] = {
+            node.module.rsplit(".", 1)[-1]
+            for node in ast.walk(tree)
+            if isinstance(node, ast.ImportFrom)
+            and node.module is not None
+            and node.module.rsplit(".", 1)[-1] in modules
+        }
+
+    def visit(name: str, trail: tuple[str, ...]) -> None:
+        assert name not in trail, " -> ".join((*trail, name))
+        for dependency in graph[name]:
+            visit(dependency, (*trail, name))
+
+    for name in graph:
+        visit(name, ())
+    from ai_sdlc.core.lean_code_callback_projection_flow import _parameter_effects
+
+    assert callable(_parameter_effects)
+
+
+def test_structured_callback_constant_subscript_can_select_safe_branch(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    source = (
+        "def identity(function):\n"
+        "    return function\n\n"
+        "def configure():\n"
+        "    global classmethod\n"
+        "    classmethod = identity\n\n"
+        "def invoke(action):\n"
+        "    action()\n\n"
+        "def safe(action):\n"
+        "    return None\n\n"
+        "selected = [invoke, safe][1]\n"
+        "selected(configure)\n\n"
+        "class Dynamic:\n"
+        "    @classmethod\n"
+        "    def factory(value):\n"
+        "        return value\n\n"
+        "loader = Dynamic.__dict__['factory']\n\n"
+        "def _process():\n"
+        "    return loader\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert isinstance(namespace["Dynamic"].__dict__["factory"], classmethod)  # type: ignore[attr-defined]
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_deep_comprehension_summary_keeps_all_terminal_values() -> None:
+    from ai_sdlc.core.lean_code_import_expression_flow import (
+        _named_expression_binding_paths,
+    )
+
+    generators = [
+        ast.comprehension(
+            target=ast.Name(id=f"value{index}", ctx=ast.Store()),
+            iter=ast.List(
+                elts=(
+                    [ast.Name(id="print", ctx=ast.Load())]
+                    if index < 64
+                    else [
+                        ast.Name(id="print", ctx=ast.Load()),
+                        ast.Name(id="__import__", ctx=ast.Load()),
+                    ]
+                ),
+                ctx=ast.Load(),
+            ),
+            ifs=[],
+            is_async=0,
+        )
+        for index in range(65)
+    ]
+    expression = ast.ListComp(
+        elt=ast.NamedExpr(
+            target=ast.Name(id="loader", ctx=ast.Store()),
+            value=ast.Name(id="value64", ctx=ast.Load()),
+        ),
+        generators=generators,
+    )
+    ast.fix_missing_locations(expression)
+
+    paths = _named_expression_binding_paths(expression)
+
+    assert any(
+        isinstance(target, ast.Name)
+        and target.id == "value64"
+        and any(
+            isinstance(component, ast.Name) and component.id == "__import__"
+            for component in ast.walk(value)
+        )
+        for path in paths
+        for target, value in path
+    )
+
+
+def test_deep_comprehension_summary_is_consumed_end_to_end(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    generators = " ".join(
+        [
+            *(f"for value{index} in [None]" for index in range(64)),
+            "for value64 in [print, __import__]",
+        ]
+    )
+    source = (
+        "loader = print\n"
+        f"values = [(loader := value64) {generators}]\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is __import__
+    assert _metric_capability(report, "_process") == "conservative"
+
+
+def test_deep_comprehension_safe_summary_stays_exact(tmp_path: Path) -> None:
+    _init_repo(tmp_path)
+    generators = " ".join(
+        [
+            *(f"for value{index} in [None]" for index in range(64)),
+            "for value64 in [print, len]",
+        ]
+    )
+    source = (
+        "loader = print\n"
+        f"values = [(loader := value64) {generators}]\n\n"
+        "def _process():\n"
+        "    return loader('dependency')\n"
+    )
+    _write(tmp_path, "src/app.py", source)
+    namespace: dict[str, object] = {}
+    exec(source, namespace)
+
+    report = _evaluate(tmp_path, scope=("src/app.py",))
+
+    assert namespace["loader"] is len
+    assert _metric_capability(report, "_process") == "exact"
+
+
+def test_deep_comprehension_uses_bounded_iteration() -> None:
+    from ai_sdlc.core.lean_code_import_expression_flow import (
+        _named_expression_binding_paths,
+    )
+
+    expression = ast.ListComp(
+        elt=ast.NamedExpr(
+            target=ast.Name(id="loader", ctx=ast.Store()),
+            value=ast.Name(id="value799", ctx=ast.Load()),
+        ),
+        generators=[
+            ast.comprehension(
+                target=ast.Name(id=f"value{index}", ctx=ast.Store()),
+                iter=ast.List(
+                    elts=[ast.Constant(value=1)],
+                    ctx=ast.Load(),
+                ),
+                ifs=[],
+                is_async=0,
+            )
+            for index in range(800)
+        ],
+    )
+    ast.fix_missing_locations(expression)
+    started = time.perf_counter()
+
+    paths = _named_expression_binding_paths(expression)
+
+    assert len(paths) <= 65
+    assert time.perf_counter() - started < 2.0
+
+
+def test_nested_literal_comprehension_work_is_bounded() -> None:
+    probe = r"""
+import ast
+import json
+import time
+
+from ai_sdlc.core.lean_code_import_expression_flow import (
+    _named_expression_binding_paths,
+)
+
+values = ", ".join(str(index) for index in range(80))
+expression = ast.parse(
+    f"[(loader := a) for a in [{values}] for b in [{values}]]",
+    mode="eval",
+).body
+started = time.perf_counter()
+paths = _named_expression_binding_paths(expression)
+elapsed = time.perf_counter() - started
+print(json.dumps({"elapsed": elapsed, "paths": len(paths)}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=Path(__file__).parents[2],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=8.0,
+    )
+    payload = json.loads(completed.stdout)
+
+    assert payload["paths"] <= 65
+    assert payload["elapsed"] < 2.0
+
+
+def _metric_capability(report, symbol: str) -> str:
+    return next(
+        item.capability
+        for item in report.metrics.files[0].functions
+        if item.symbol == symbol
+    )

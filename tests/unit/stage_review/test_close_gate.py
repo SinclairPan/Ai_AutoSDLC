@@ -263,6 +263,35 @@ def test_enforce_cannot_use_an_unmaterialized_shadow_route(tmp_path: Path) -> No
     assert (tmp_path / "requirement-freeze.json").exists() is False
 
 
+def test_activation_preflight_failure_is_a_structured_gate_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepare_requirement_close(tmp_path, next_action="blocked")
+    called = False
+
+    def malformed_policy(_root: Path):
+        raise ValueError("activation policy pointer is malformed")
+
+    def writer() -> dict[str, str]:
+        nonlocal called
+        called = True
+        return {"status": "ready"}
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.stage_review.close_gate.current_activation_policy",
+        malformed_policy,
+    )
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="activation-safety-evaluation-unavailable",
+    ):
+        StageCloseGateway().execute(prepared, writer)
+
+    assert called is False
+
+
 def test_enforce_delegates_to_the_canonical_close_enforcer(tmp_path: Path) -> None:
     prepared = _prepare_enforce_close(tmp_path)
     enforcer = _RecordingCloseEnforcer()

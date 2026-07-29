@@ -6,6 +6,9 @@ from pathlib import Path
 import pytest
 
 from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
+from ai_sdlc.core.stage_review.optimization.commit_fencing import (
+    OptimizationCommitLeaseHandle,
+)
 from ai_sdlc.core.stage_review.optimization.observations import (
     CommittedSessionBindingStore,
     OptimizationObservationStore,
@@ -230,6 +233,45 @@ def test_same_session_binding_retry_does_not_create_second_control_event(
 
     assert second == first
     assert service.events() == (first,)
+
+
+def test_session_binding_retries_an_expired_commit_lease_without_duplicates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _snapshot("baseline", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    token = service.resolve_snapshot()
+    operation = _binding("session.lease-retry", token)
+    monotonic_values = iter((0.0, 2.001))
+    service.retry.monotonic = lambda: next(monotonic_values)
+    original = OptimizationCommitLeaseHandle.assert_current
+    current_checks = 0
+
+    def expire_once(
+        current: OptimizationCommitLeaseHandle,
+        *,
+        now=None,
+    ) -> None:
+        nonlocal current_checks
+        current_checks += 1
+        if current_checks == 1:
+            raise SharedStateIntegrityError("optimization commit lease expired")
+        original(current, now=now)
+
+    monkeypatch.setattr(OptimizationCommitLeaseHandle, "assert_current", expire_once)
+
+    event = service.bind_session(operation, token)
+
+    claims = service.store.commit_leases.claims()
+    assert len(claims) == 2
+    assert claims[1].fencing_epoch > claims[0].fencing_epoch
+    assert current_checks >= 2
+    assert event.event_kind == "session_binding"
+    assert service.events() == (event,)
+    binding_operations = service.store.binding_operations()
+    assert len(binding_operations) == 1
+    assert binding_operations[0].session_id == operation.session_id
 
 
 def test_visible_revocation_is_recovered_before_new_session_and_rolls_back(

@@ -20,6 +20,7 @@ _RETRYABLE_INTEGRITY_MARKERS = (
     "expected head is stale",
     "commit claim collided",
     "commit fencing is stale",
+    "optimization commit lease expired",
     "commit lease plan is stale",
     "record sequence collided",
     "snapshot control sequence collided",
@@ -57,6 +58,7 @@ class SnapshotControlRetryExecutor:
 
     def run(self, operation_id: str, action: Callable[[int], T]) -> T:
         started = self.monotonic()
+        lease_recovery_available = True
         for attempt in range(1, self.policy.maximum_attempts + 1):
             try:
                 return action(attempt)
@@ -65,6 +67,9 @@ class SnapshotControlRetryExecutor:
                     raise
                 if attempt == self.policy.maximum_attempts:
                     break
+                if _is_expired_commit_lease(exc) and lease_recovery_available:
+                    lease_recovery_available = False
+                    continue
                 remaining = self.policy.maximum_active_seconds - (
                     self.monotonic() - started
                 )
@@ -87,3 +92,7 @@ def _is_retryable(exc: BaseException) -> bool:
     if isinstance(exc, ResourceLockUnavailableError):
         return True
     return any(marker in str(exc) for marker in _RETRYABLE_INTEGRITY_MARKERS)
+
+
+def _is_expired_commit_lease(exc: BaseException) -> bool:
+    return "optimization commit lease expired" in str(exc)

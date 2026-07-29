@@ -396,7 +396,10 @@ def _clear_stale_owner(path: Path) -> bool:
             locally_active = False
         if locally_active or _lease_owner_lock_is_active(path, lease_token):
             return False
-        removed = _unlink_owned_marker(path, lease_token)
+        try:
+            removed = _unlink_owned_marker(path, lease_token)
+        except OSError:
+            return False
         _cleanup_owner_lock_file(
             _lease_owner_lock_path(_marker_fence_root(path), lease_token),
             None,

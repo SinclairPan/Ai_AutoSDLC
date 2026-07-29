@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import multiprocessing
+import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -27,6 +29,39 @@ def test_stale_owner_read_sharing_violation_is_deferred(
 
     assert activation_fence._clear_stale_owner(marker) is False
     assert marker.is_file()
+
+
+def test_stale_owner_second_read_sharing_violation_is_deferred(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    marker = tmp_path / "readers" / "reader.json"
+    marker.parent.mkdir(parents=True)
+    payload = {"pid": os.getpid(), "lease_token": "a" * 64}
+    marker.write_text(json.dumps(payload), encoding="utf-8")
+    original_read = activation_fence.read_json_object
+    reads = 0
+
+    def fail_second_read(path: Path):
+        nonlocal reads
+        reads += 1
+        if reads == 2:
+            raise PermissionError(13, "simulated Windows sharing violation")
+        return original_read(path)
+
+    monkeypatch.setattr(activation_fence, "read_json_object", fail_second_read)
+    monkeypatch.setattr(
+        activation_fence,
+        "_lease_owner_lock_is_active",
+        lambda *_args: False,
+    )
+
+    assert activation_fence._clear_stale_owner(marker) is False
+    assert marker.is_file()
+
+    monkeypatch.setattr(activation_fence, "read_json_object", original_read)
+    assert activation_fence._clear_stale_owner(marker) is True
+    assert marker.exists() is False
 
 
 def _complete_lease_while_process_stays_alive(

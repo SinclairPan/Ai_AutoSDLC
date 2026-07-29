@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from ai_sdlc.core.loop_models import (
     LoopArtifactModel,
@@ -56,16 +56,48 @@ class DesignContractInput(LoopArtifactModel):
     work_item_id: str
     work_item_path: str
     spec_path: str
+    spec_digest: str
     plan_path: str
+    plan_digest: str
     tasks_path: str
+    tasks_digest: str
     requirement_loop_id: str = ""
+    authorized_scope_families: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+    )
+    scope_authority_ref: str = Field(
+        default="",
+        exclude_if=lambda value: not value,
+    )
+    scope_authority_digest: str = Field(
+        default="",
+        exclude_if=lambda value: not value,
+    )
 
-    @field_validator("loop_id", "work_item_id", "work_item_path")
+    @field_validator(
+        "loop_id",
+        "work_item_id",
+        "work_item_path",
+        "spec_digest",
+        "plan_digest",
+        "tasks_digest",
+    )
     @classmethod
     def _require_text(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("field must not be empty")
         return value
+
+    @model_validator(mode="after")
+    def _scope_authority_is_complete(self) -> DesignContractInput:
+        has_ref = bool(self.scope_authority_ref)
+        has_digest = bool(self.scope_authority_digest)
+        if has_ref != has_digest:
+            raise ValueError("scope authority binding is incomplete")
+        if self.authorized_scope_families and not has_ref:
+            raise ValueError("authorized scope families require authority binding")
+        return self
 
 
 class ContractCoverageItem(BaseModel):

@@ -515,10 +515,10 @@ def _refresh_activation_safely(root: Path) -> None:
 
 
 def _refresh_activation_before_close(root: Path) -> None:
-    policy = current_activation_policy(root)
-    if policy.active_phase == 1:
-        return
     try:
+        policy = current_activation_policy(root)
+        if policy.active_phase == 1:
+            return
         refresh_activation_policy_from_local_evidence(root)
     except Exception as exc:
         raise StageCloseGateUnavailableError(

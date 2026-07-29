@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass
@@ -14,11 +15,13 @@ from pydantic import ValidationError
 from ai_sdlc.core.design_contract_models import (
     CURRENT_DESIGN_CONTRACT_PATH,
     DesignContractArtifactRef,
+    DesignContractClose,
     DesignContractInput,
     DesignContractReport,
 )
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType, utc_now_iso
+from ai_sdlc.core.stable_file_read import read_stable_bytes
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -66,15 +69,25 @@ def build_contract_input(
 ) -> DesignContractInput:
     """Build a persisted input model from resolved paths."""
 
+    spec_path = work_item_dir / "spec.md"
+    plan_path = work_item_dir / "plan.md"
+    tasks_path = work_item_dir / "tasks.md"
     return DesignContractInput(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
         work_item_path=repo_relative_path(root, work_item_dir),
-        spec_path=repo_relative_path(root, work_item_dir / "spec.md"),
-        plan_path=repo_relative_path(root, work_item_dir / "plan.md"),
-        tasks_path=repo_relative_path(root, work_item_dir / "tasks.md"),
+        spec_path=repo_relative_path(root, spec_path),
+        spec_digest=_document_digest(read_stable_bytes(root, spec_path)),
+        plan_path=repo_relative_path(root, plan_path),
+        plan_digest=_document_digest(read_stable_bytes(root, plan_path)),
+        tasks_path=repo_relative_path(root, tasks_path),
+        tasks_digest=_document_digest(read_stable_bytes(root, tasks_path)),
         requirement_loop_id=requirement_loop_id.strip(),
     )
+
+
+def _document_digest(content: bytes) -> str:
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
 
 
 def resolve_loop_id(loop_id: str) -> str:
@@ -141,20 +154,37 @@ def resolve_design_contract_loop_run_path(
     root: Path,
     loop_id: str,
 ) -> tuple[Path, str]:
-    """Resolve an explicit or current design-contract loop-run path."""
+    """Resolve a design-contract loop-run path with the stable public signature."""
+
+    path, _expected_loop_id, blocker = _resolve_design_contract_loop_run_identity(
+        root,
+        loop_id,
+    )
+    return path, blocker
+
+
+def _resolve_design_contract_loop_run_identity(
+    root: Path,
+    loop_id: str,
+) -> tuple[Path, str, str]:
+    """Resolve a loop-run path together with its trusted expected identity."""
 
     text = loop_id.strip()
     if text:
         try:
             safe_loop_id = validate_explicit_loop_id(text)
         except ValueError as exc:
-            return root / CURRENT_DESIGN_CONTRACT_PATH, f"Invalid design-contract loop id: {exc}"
+            return (
+                root / CURRENT_DESIGN_CONTRACT_PATH,
+                "",
+                f"Invalid design-contract loop id: {exc}",
+            )
         artifacts = design_contract_artifacts(root, safe_loop_id)
         current_path, current_loop_id, blocker = _current_design_contract_loop_run_path(
             root
         )
         if blocker:
-            return current_path, blocker
+            return current_path, safe_loop_id, blocker
         if (
             current_loop_id != safe_loop_id
             or current_path.resolve(strict=False)
@@ -162,11 +192,11 @@ def resolve_design_contract_loop_run_path(
         ):
             return (
                 artifacts.loop_run_path,
+                safe_loop_id,
                 "Only the current design-contract loop can be closed.",
             )
-        return artifacts.loop_run_path, ""
-    current_path, _current_loop_id, blocker = _current_design_contract_loop_run_path(root)
-    return current_path, blocker
+        return artifacts.loop_run_path, safe_loop_id, ""
+    return _current_design_contract_loop_run_path(root)
 
 
 def _current_design_contract_loop_run_path(root: Path) -> tuple[Path, str, str]:
@@ -180,6 +210,14 @@ def _current_design_contract_loop_run_path(root: Path) -> tuple[Path, str, str]:
     loop_id = payload.get("loop_id")
     if not isinstance(loop_id, str) or not loop_id.strip():
         return pointer_path, "", "Current design-contract pointer is missing loop_id."
+    try:
+        safe_loop_id = validate_explicit_loop_id(loop_id.strip())
+    except ValueError as exc:
+        return (
+            pointer_path,
+            "",
+            f"Current design-contract pointer loop identity is invalid: {exc}",
+        )
     path_text = payload.get("loop_run_path")
     if not isinstance(path_text, str) or not path_text.strip():
         return pointer_path, "", "Current design-contract pointer is missing loop_run_path."
@@ -191,7 +229,16 @@ def _current_design_contract_loop_run_path(root: Path) -> tuple[Path, str, str]:
         candidate.relative_to(root.resolve(strict=False))
     except ValueError:
         return pointer_path, "", "Current design-contract pointer path must stay within project."
-    return candidate, loop_id.strip(), ""
+    canonical = design_contract_artifacts(root, safe_loop_id).loop_run_path.resolve(
+        strict=False
+    )
+    if candidate != canonical:
+        return (
+            candidate,
+            safe_loop_id,
+            "Current design-contract pointer identity does not match its loop-run path.",
+        )
+    return candidate, safe_loop_id, ""
 
 
 def read_loop_run(path: Path) -> LoopRun:
@@ -210,6 +257,23 @@ def read_loop_run(path: Path) -> LoopRun:
     return loop_run
 
 
+def _design_contract_loop_identity_issue(
+    root: Path,
+    loop_run_path: Path,
+    expected_loop_id: str,
+    loop_run: LoopRun,
+) -> str:
+    canonical = design_contract_artifacts(
+        root,
+        expected_loop_id,
+    ).loop_run_path.resolve(strict=False)
+    if loop_run_path.resolve(strict=False) != canonical:
+        return "Design-contract loop identity path is not canonical."
+    if loop_run.loop_id != expected_loop_id:
+        return "Design-contract loop identity does not match the confirmed target."
+    return ""
+
+
 def read_report(path: Path) -> DesignContractReport:
     """Read and validate a design-contract report artifact."""
 
@@ -221,6 +285,19 @@ def read_report(path: Path) -> DesignContractReport:
         return DesignContractReport.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(f"design-contract-report.json is invalid: {exc}") from exc
+
+
+def _read_close(path: Path) -> DesignContractClose:
+    """Read and validate a design-contract close artifact."""
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        raise ValueError(f"design-contract-close.json is not readable: {exc}") from exc
+    try:
+        return DesignContractClose.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"design-contract-close.json is invalid: {exc}") from exc
 
 
 def artifact_ref(root: Path, kind: str, path: Path) -> DesignContractArtifactRef:

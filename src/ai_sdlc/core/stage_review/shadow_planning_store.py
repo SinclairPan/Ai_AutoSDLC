@@ -57,6 +57,28 @@ def _artifact_entries(
 ) -> tuple[_ArtifactEntry, ...]:
     candidate = value.candidate
     return (
+        *_candidate_entries(candidate, source_snapshot),
+        *_planning_entries(value, plan),
+    )
+
+
+def _persist_shadow_candidate(
+    root: Path,
+    candidate: CandidateManifest,
+    source_snapshot: SourceSnapshot,
+) -> dict[str, str]:
+    artifacts = _candidate_entries(candidate, source_snapshot)
+    physical_root = _physical_root(root, candidate)
+    for name, artifact, digest, digest_reader in artifacts:
+        _persist_artifact(physical_root / name, artifact, digest, digest_reader)
+    return _logical_refs(candidate, artifacts)
+
+
+def _candidate_entries(
+    candidate: CandidateManifest,
+    source_snapshot: SourceSnapshot,
+) -> tuple[_ArtifactEntry, ...]:
+    return (
         (
             "source-snapshot.json",
             source_snapshot,
@@ -76,7 +98,7 @@ def _artifact_entries(
                 CandidateManifest.model_validate(item)
             ),
         ),
-        *_planning_entries(value, plan),
+        # Candidate 必须先于 Planner 独立落盘；完整计划仍由 _artifact_entries 组合。
     )
 
 
@@ -123,6 +145,14 @@ def _physical_root(root: Path, candidate: CandidateManifest) -> Path:
     shared = resolve_canonical_shared_state(root, candidate.project_id)
     bind_repository_project(shared, candidate.project_id)
     return shared / "shadow-planning" / candidate.review_session_id
+
+
+def _logical_refs(
+    candidate: CandidateManifest,
+    artifacts: tuple[_ArtifactEntry, ...],
+) -> dict[str, str]:
+    logical_root = candidate.review_artifact_exclusion_set[0]
+    return {name: f"{logical_root}/{name}" for name, *_rest in artifacts}
 
 
 def _persist_artifact(

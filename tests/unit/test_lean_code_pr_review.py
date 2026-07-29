@@ -1621,9 +1621,35 @@ def _seed_risk_accepted_loop(
         _write(root, "src/app.py", "def _small():\n    return 1\n")
     if rename_source:
         (root / "src/app.py").rename(root / "src/old.py")
-        _git(root, "add", "src/old.py")
+        _git(root, "add", "-A", "--", "src/app.py", "src/old.py")
         _git(root, "commit", "-m", "add rename source")
         (root / "src/old.py").rename(root / "src/app.py")
+        _git(root, "add", "-A", "--", "src/app.py", "src/old.py")
+        rename_status = _git_output(
+            root,
+            "diff",
+            "--cached",
+            "--name-status",
+            "-M",
+            "HEAD",
+            "--",
+            "src/app.py",
+            "src/old.py",
+        ).decode("utf-8")
+        assert rename_status.startswith("R"), rename_status
+        _git(root, "reset", "HEAD", "--", "src/app.py", "src/old.py")
+        _git(root, "add", "-N", "--", "src/app.py")
+        worktree_rename_status = _git_output(
+            root,
+            "diff",
+            "--name-status",
+            "-M",
+            "HEAD",
+            "--",
+            "src/app.py",
+            "src/old.py",
+        ).decode("utf-8")
+        assert worktree_rename_status.startswith("R"), worktree_rename_status
     if untracked_path:
         _write(root, untracked_path, "print('new untracked verification helper')\n")
     _write(root, "tests/risk_probe.py", "print('risk path verified')\n")
@@ -1676,6 +1702,8 @@ def _seed_risk_accepted_loop(
             "utf-8"
         )
     )
+    if rename_source:
+        assert snapshot["renamed_files"] == {"src/app.py": "src/old.py"}
     finding = next(
         item
         for item in first_report.findings
@@ -1723,7 +1751,7 @@ def _seed_risk_accepted_loop(
             test_source_ref="tests/risk_probe.py",
         )
     )
-    assert verified.status == "ready"
+    assert verified.status == "ready", verified.blocker
     store.write_json_artifact(
         artifacts.progress_path,
         ImplementationProgress(
@@ -1741,7 +1769,25 @@ def _seed_risk_accepted_loop(
     second = run_lean_check(
         LeanCheckOptions(root=root, loop_id=loop_id, exception_paths=(exception_ref,))
     )
-    assert second.status == "ready", second
+    second_snapshot = json.loads(
+        (
+            artifacts.loop_dir / "lean" / "round-002" / "source-snapshot.json"
+        ).read_text("utf-8")
+    )
+    identity_fields = (
+        "base_commit",
+        "head_commit",
+        "diff_hash",
+        "changed_files",
+        "deleted_files",
+        "renamed_files",
+        "raw_change_identities",
+        "portable_change_identities",
+    )
+    assert {
+        field: second_snapshot[field] for field in identity_fields
+    } == {field: snapshot[field] for field in identity_fields}
+    assert second.status == "ready", _lean_check_diagnostic(root, second)
 
 
 def _risk_reviewer_decisions(
@@ -1943,6 +1989,19 @@ def _write(root: Path, relative: str, content: str) -> None:
 
 def _file_digest(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _lean_check_diagnostic(root: Path, result) -> str:
+    findings: list[str] = []
+    if result.report_path:
+        report = LeanEvaluationReport.model_validate_json(
+            (root / result.report_path).read_text(encoding="utf-8")
+        )
+        findings = [
+            f"{item.rule_id}: {item.claim} [{item.resolution}]"
+            for item in report.findings
+        ]
+    return f"{result}; findings={findings}"
 
 
 def _git(root: Path, *args: str) -> None:

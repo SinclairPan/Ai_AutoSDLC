@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from ai_sdlc.core.lean_code_models import LeanReviewerDecisionArtifact
+from ai_sdlc.core.lean_code_reviewer_models import LeanReviewerDecisionArtifact
 from ai_sdlc.core.stage_review.artifacts import (
     SharedStateIntegrityError,
     read_json_object,

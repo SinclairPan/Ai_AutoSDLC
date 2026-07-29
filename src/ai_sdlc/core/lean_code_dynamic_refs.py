@@ -17,6 +17,59 @@ _DIRECT_DECORATORS = {
     "property",
     "staticmethod",
 }
+_BUILTIN_PUBLIC_METHODS = {
+    "dict": frozenset(
+        {
+            "clear",
+            "copy",
+            "fromkeys",
+            "get",
+            "items",
+            "keys",
+            "pop",
+            "popitem",
+            "setdefault",
+            "update",
+            "values",
+        }
+    ),
+    "list": frozenset(
+        {
+            "append",
+            "clear",
+            "copy",
+            "count",
+            "extend",
+            "index",
+            "insert",
+            "pop",
+            "remove",
+            "reverse",
+            "sort",
+        }
+    ),
+    "set": frozenset(
+        {
+            "add",
+            "clear",
+            "copy",
+            "difference",
+            "difference_update",
+            "discard",
+            "intersection",
+            "intersection_update",
+            "isdisjoint",
+            "issubset",
+            "issuperset",
+            "pop",
+            "remove",
+            "symmetric_difference",
+            "symmetric_difference_update",
+            "union",
+            "update",
+        }
+    ),
+}
 
 
 def _invocation_boundary(node: ast.FunctionDef | ast.AsyncFunctionDef) -> str:

@@ -41,6 +41,10 @@ _SourceLoader = Callable[[], dict[str, bytes]]
 _MetricSource = tuple[_FileVersions, _SourceLoader]
 
 
+def _is_python_source_path(path: str) -> bool:
+    return path.casefold().endswith(".py")
+
+
 def file_versions(
     root: Path, snapshot: SourceSnapshot, path: str
 ) -> tuple[bytes, bytes]:
@@ -95,7 +99,7 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
     return {
         path: _worktree_blob(root, path)
         for path in sorted(paths)
-        if path.endswith(".py")
+        if _is_python_source_path(path)
         and not _is_runtime_artifact(path)
         and ((root / path).is_symlink() or (root / path).is_file())
     }
@@ -208,7 +212,7 @@ def _unstaged_python_sources(
         change = changes.get(path)
         if change is None:
             raise ValueError(f"source state is missing for changed path: {path}")
-        if path.endswith(".py") and change.after.mode in {
+        if _is_python_source_path(path) and change.after.mode in {
             "100644",
             "100755",
             "120000",
@@ -232,7 +236,7 @@ def _worktree_python_sources_from_head(
         change = changes.get(path)
         if change is None:
             raise ValueError(f"source state is missing for changed path: {path}")
-        if path.endswith(".py") and change.after.mode in {
+        if _is_python_source_path(path) and change.after.mode in {
             "100644",
             "100755",
             "120000",
@@ -362,7 +366,7 @@ def _revision_python_sources(root: Path, revision: str) -> dict[str, bytes]:
     python_paths = [
         path
         for path in paths
-        if path.endswith(".py") and not _is_runtime_artifact(path)
+        if _is_python_source_path(path) and not _is_runtime_artifact(path)
     ]
     states = read_tree_states(root, revision, python_paths)
     return {path: states[path].payload for path in python_paths if path in states}
@@ -375,7 +379,7 @@ def _index_python_sources(
     python_paths = [
         path
         for path in paths
-        if path.endswith(".py") and not _is_runtime_artifact(path)
+        if _is_python_source_path(path) and not _is_runtime_artifact(path)
     ]
     states = read_index_states(root, python_paths, env=env)
     return {path: states[path].payload for path in python_paths if path in states}
@@ -522,6 +526,7 @@ def _index_worktree(
             )
         entries = _git(root, "ls-files", "-s", "-z", env=source_env)
         flags = _git(root, "ls-files", "-v", "-z", env=source_env)
+        intent_to_add_paths = _index_intent_to_add_paths(root, source_env)
         captured_identity = _index_payload_identity(entries, flags)
         if expected_index_identity and captured_identity != expected_index_identity:
             raise ValueError(
@@ -587,7 +592,43 @@ def _index_worktree(
         )
         _checkout_index(target, target, env=selected_env)
         _restore_regular_index_blobs(target, target, selected_env)
+        for path in intent_to_add_paths:
+            _git(target, "update-index", "--force-remove", "--", path, env=selected_env)
+            _git(target, "add", "--intent-to-add", "--", path, env=selected_env)
         yield selected_env
+
+
+def _index_intent_to_add_paths(root: Path, env: dict[str, str]) -> tuple[str, ...]:
+    """保留 intent-to-add 标志，避免未暂存重命名在隔离视图中退化为普通修改。"""
+
+    payload = _git(root, "ls-files", "--debug", "-z", env=env)
+    separator = payload.find(b"\0")
+    if separator < 0:
+        return ()
+    raw_path = payload[:separator]
+    cursor = separator + 1
+    paths: list[str] = []
+    while raw_path:
+        marker = payload.find(b"flags: ", cursor)
+        line_end = payload.find(b"\n", marker)
+        if marker < 0 or line_end < 0:
+            raise ValueError("malformed index debug record")
+        raw_flags = payload[marker + len(b"flags: ") : line_end]
+        try:
+            entry_flags = int(raw_flags, 16)
+        except ValueError as exc:
+            raise ValueError("malformed index debug flags") from exc
+        if entry_flags & 0x20000000:
+            paths.append(raw_path.decode("utf-8", errors="strict"))
+        cursor = line_end + 1
+        if cursor >= len(payload):
+            break
+        separator = payload.find(b"\0", cursor)
+        if separator < 0:
+            raise ValueError("malformed index debug path")
+        raw_path = payload[cursor:separator]
+        cursor = separator + 1
+    return tuple(paths)
 
 
 def _clean_git_environment(empty_config: Path) -> dict[str, str]:

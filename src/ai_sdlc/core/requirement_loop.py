@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -20,17 +22,31 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.scope_authority_store import (
+    RequirementScopeAuthorityAnchor,
+    ScopeAuthorityIntegrityError,
+    _commit_requirement_scope_authority,
+    _record_requirement_scope_authority_intent,
+    _requirement_scope_authority_intent_approval,
+    _verify_requirement_scope_authority_intent,
+)
+from ai_sdlc.core.stable_file_read import read_stable_text
 from ai_sdlc.core.stage_review.adapters import RequirementStageAdapter
 from ai_sdlc.core.stage_review.close_gate import (
     execute_stage_close,
     prepare_loop_stage_close,
 )
+from ai_sdlc.core.stage_review.close_gate_models import PreparedStageClose
+from ai_sdlc.core.stage_review.close_gate_observation import stage_close_operation_id
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REQUIREMENT_PATH = (
     Path(AI_SDLC_DIR) / "loops" / LoopType.REQUIREMENT.value / "current-requirement.json"
 )
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_DESIGN_SCOPE_FAMILIES = frozenset(
+    {"frontend-evidence", "implementation", "pr-review"}
+)
 
 
 class RequirementSourceKind(StrEnum):
@@ -61,12 +77,28 @@ class RequirementIntake(LoopArtifactModel):
     summary: str
     clarification_questions: list[str] = Field(default_factory=list)
     acceptance_criteria: list[str] = Field(default_factory=list)
+    design_scope_families: list[str] = Field(
+        default_factory=list,
+        exclude_if=lambda value: not value,
+    )
 
     @field_validator("loop_id", "raw_text", "summary")
     @classmethod
     def _require_text(cls, value: str) -> str:
         if not value.strip():
             raise ValueError("field must not be empty")
+        return value
+
+    @field_validator("design_scope_families")
+    @classmethod
+    def _require_known_scope_families(cls, value: list[str]) -> list[str]:
+        if len(value) != len(set(value)):
+            raise ValueError("design scope families must be unique")
+        invalid = sorted(set(value) - _DESIGN_SCOPE_FAMILIES)
+        if invalid:
+            raise ValueError(
+                f"unknown design scope families: {', '.join(invalid)}"
+            )
         return value
 
 
@@ -78,6 +110,7 @@ class RequirementFreeze(LoopArtifactModel):
     accepted_by: str = "local-user"
     accepted_at: str = Field(default_factory=utc_now_iso)
     intake_path: str
+    intake_digest: str = Field(default="", exclude_if=lambda value: not value)
     acceptance_count: int = Field(ge=1)
     next_loop_type: LoopType = LoopType.DESIGN_CONTRACT
 
@@ -142,6 +175,7 @@ class RequirementStartOptions:
     idea: str = ""
     input_file: str = ""
     acceptance: tuple[str, ...] = ()
+    design_scope_families: tuple[str, ...] = ()
     work_item_id: str = ""
     loop_id: str = ""
     dry_run: bool = False
@@ -189,33 +223,105 @@ def start_requirement_loop(
     """Create a local requirement loop from idea text or a local input file."""
 
     root = options.root.resolve()
+    prepared = _prepare_requirement_start(options, root)
+    if isinstance(prepared, RequirementLoopCommandResult):
+        return prepared
+    loop_id, artifacts, existing_intake, source = prepared
+    source_text, source_kind, source_path = source
+    try:
+        intake, loop_status, next_action = _build_requirement_intake(
+            options,
+            loop_id,
+            existing_intake,
+            source_text,
+            source_kind,
+            source_path,
+        )
+    except (ValueError, ValidationError) as exc:
+        return RequirementLoopCommandResult(
+            status=RequirementCommandStatus.BLOCKED,
+            result="Requirement input is invalid.",
+            loop_id=loop_id,
+            blocker=str(exc),
+            next_action="Correct the requirement input and rerun requirement start.",
+        )
+    if options.dry_run:
+        return _requirement_start_result(
+            intake,
+            loop_status,
+            next_action,
+            artifacts.refs(root),
+            dry_run=True,
+        )
+    _write_requirement_start(root, artifacts, intake, loop_status, next_action)
+    return _requirement_start_result(
+        intake,
+        loop_status,
+        next_action,
+        artifacts.refs(root),
+    )
+
+
+def _prepare_requirement_start(
+    options: RequirementStartOptions,
+    root: Path,
+) -> (
+    tuple[
+        str,
+        _RequirementArtifacts,
+        RequirementIntake | None,
+        tuple[str, RequirementSourceKind, str],
+    ]
+    | RequirementLoopCommandResult
+):
+    resolved = _resolve_requirement_start_artifacts(options, root)
+    if isinstance(resolved, RequirementLoopCommandResult):
+        return resolved
+    loop_id, artifacts = resolved
+    existing_intake, existing_blocker = _existing_intake_for_start(options, artifacts)
+    if existing_blocker:
+        return _blocked_requirement_start(
+            loop_id,
+            existing_blocker,
+            artifacts=artifacts.refs(root),
+        )
+    source_text, source_kind, source_path, blocker = _read_requirement_source(
+        options,
+        root,
+        existing_intake,
+    )
+    if blocker:
+        return _blocked_requirement_start(
+            loop_id,
+            blocker,
+            artifacts=artifacts.refs(root),
+        )
+    return (
+        loop_id,
+        artifacts,
+        existing_intake,
+        (source_text, source_kind, source_path),
+    )
+
+
+def _resolve_requirement_start_artifacts(
+    options: RequirementStartOptions,
+    root: Path,
+) -> tuple[str, _RequirementArtifacts] | RequirementLoopCommandResult:
     try:
         loop_id = _resolve_loop_id(options.loop_id)
     except ValueError as exc:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.BLOCKED,
-            result="Requirement loop could not start.",
-            loop_id=options.loop_id.strip(),
-            blocker=f"Invalid requirement loop id: {exc}",
-            next_action=(
-                "Run ai-sdlc loop requirement start --idea "
-                '"<需求描述>" --acceptance "<验收标准>".'
-            ),
+        return _blocked_requirement_start(
+            options.loop_id.strip(),
+            f"Invalid requirement loop id: {exc}",
         )
     try:
         artifacts = _requirement_artifacts(root, loop_id)
     except ValueError as exc:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.BLOCKED,
-            result="Requirement loop could not start.",
-            loop_id=loop_id,
-            blocker=f"Invalid requirement loop id: {exc}",
-            next_action=(
-                "Run ai-sdlc loop requirement start --idea "
-                '"<需求描述>" --acceptance "<验收标准>".'
-            ),
+        return _blocked_requirement_start(
+            loop_id,
+            f"Invalid requirement loop id: {exc}",
         )
-    planned_refs = artifacts.refs(root)
     if artifacts.freeze_path.is_file() or _closed_loop_run_exists(artifacts):
         return RequirementLoopCommandResult(
             status=RequirementCommandStatus.BLOCKED,
@@ -225,40 +331,26 @@ def start_requirement_loop(
             next_action=_design_contract_next_action(loop_id),
             artifacts=artifacts.refs(root, include_freeze=True),
         )
-    existing_intake, existing_blocker = _existing_intake_for_start(options, artifacts)
-    if existing_blocker:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.BLOCKED,
-            result="Requirement loop could not start.",
-            loop_id=loop_id,
-            blocker=existing_blocker,
-            next_action=(
-                "Run ai-sdlc loop requirement start --idea "
-                '"<需求描述>" --acceptance "<验收标准>".'
-            ),
-            artifacts=planned_refs,
-        )
-    source_text, source_kind, source_path, blocker = _read_requirement_source(
-        options,
-        root,
-        existing_intake,
-    )
-    if blocker:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.BLOCKED,
-            result="Requirement loop could not start.",
-            loop_id=loop_id,
-            blocker=blocker,
-            next_action=(
-                "Run ai-sdlc loop requirement start --idea "
-                '"<需求描述>" --acceptance "<验收标准>".'
-            ),
-            artifacts=planned_refs,
-        )
+    return loop_id, artifacts
 
+
+def _build_requirement_intake(
+    options: RequirementStartOptions,
+    loop_id: str,
+    existing_intake: RequirementIntake | None,
+    source_text: str,
+    source_kind: RequirementSourceKind,
+    source_path: str,
+) -> tuple[RequirementIntake, LoopStatus, str]:
+    reuse_existing = existing_intake is not None and not _has_explicit_source(options)
     existing_acceptance = (
         tuple(existing_intake.acceptance_criteria)
-        if existing_intake is not None and not _has_explicit_source(options)
+        if reuse_existing and existing_intake is not None
+        else ()
+    )
+    existing_scope_families = (
+        tuple(existing_intake.design_scope_families)
+        if reuse_existing and existing_intake is not None
         else ()
     )
     acceptance = _clean_items((*existing_acceptance, *options.acceptance))
@@ -266,7 +358,7 @@ def start_requirement_loop(
     summary = _summarize_requirement(source_text)
     loop_status = LoopStatus.NEEDS_REVIEW if acceptance else LoopStatus.NEEDS_USER
     next_action = _next_action_for_requirement(loop_status, loop_id)
-    intake = RequirementIntake(
+    return RequirementIntake(
         loop_id=loop_id,
         work_item_id=options.work_item_id.strip()
         or (existing_intake.work_item_id if existing_intake is not None else ""),
@@ -276,26 +368,21 @@ def start_requirement_loop(
         summary=summary,
         clarification_questions=questions,
         acceptance_criteria=acceptance,
-    )
-    if options.dry_run:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.DRY_RUN,
-            result="Requirement loop dry run.",
-            loop_id=loop_id,
-            loop_status=loop_status,
-            summary=summary,
-            source_kind=source_kind,
-            source_path=source_path,
-            clarification_count=len(questions),
-            acceptance_count=len(acceptance),
-            dry_run=True,
-            next_action=next_action,
-            artifacts=planned_refs,
-            requirement=_command_requirement_summary(intake),
-        )
+        design_scope_families=_clean_scope_families(
+            (*existing_scope_families, *options.design_scope_families)
+        ),
+    ), loop_status, next_action
 
+
+def _write_requirement_start(
+    root: Path,
+    artifacts: _RequirementArtifacts,
+    intake: RequirementIntake,
+    loop_status: LoopStatus,
+    next_action: str,
+) -> None:
     store = LoopArtifactStore(root)
-    store.create_loop_run_dir(loop_id, loop_type=LoopType.REQUIREMENT.value)
+    store.create_loop_run_dir(intake.loop_id, loop_type=LoopType.REQUIREMENT.value)
     store.write_json_artifact(artifacts.intake_path, intake)
     store.write_markdown_artifact(artifacts.brief_path, _render_requirement_brief(intake))
     store.write_markdown_artifact(
@@ -319,28 +406,59 @@ def start_requirement_loop(
         {
             "schema_version": "1",
             "artifact_kind": "current-requirement-pointer",
-            "loop_id": loop_id,
+            "loop_id": intake.loop_id,
             "loop_run_path": _repo_relative_path(root, artifacts.loop_run_path),
         },
     )
 
+
+def _requirement_start_result(
+    intake: RequirementIntake,
+    loop_status: LoopStatus,
+    next_action: str,
+    artifacts: list[RequirementArtifactRef],
+    *,
+    dry_run: bool = False,
+) -> RequirementLoopCommandResult:
     return RequirementLoopCommandResult(
         status=(
-            RequirementCommandStatus.READY
+            RequirementCommandStatus.DRY_RUN
+            if dry_run
+            else RequirementCommandStatus.READY
             if loop_status == LoopStatus.NEEDS_REVIEW
             else RequirementCommandStatus.NEEDS_USER
         ),
-        result="Requirement loop started.",
-        loop_id=loop_id,
+        result="Requirement loop dry run." if dry_run else "Requirement loop started.",
+        loop_id=intake.loop_id,
         loop_status=loop_status,
-        summary=summary,
-        source_kind=source_kind,
-        source_path=source_path,
-        clarification_count=len(questions),
-        acceptance_count=len(acceptance),
+        summary=intake.summary,
+        source_kind=intake.source_kind,
+        source_path=intake.source_path,
+        clarification_count=len(intake.clarification_questions),
+        acceptance_count=len(intake.acceptance_criteria),
+        dry_run=dry_run,
         next_action=next_action,
-        artifacts=artifacts.refs(root),
+        artifacts=artifacts,
         requirement=_command_requirement_summary(intake),
+    )
+
+
+def _blocked_requirement_start(
+    loop_id: str,
+    blocker: str,
+    *,
+    artifacts: list[RequirementArtifactRef] | None = None,
+) -> RequirementLoopCommandResult:
+    return RequirementLoopCommandResult(
+        status=RequirementCommandStatus.BLOCKED,
+        result="Requirement loop could not start.",
+        loop_id=loop_id,
+        blocker=blocker,
+        next_action=(
+            "Run ai-sdlc loop requirement start --idea "
+            '"<需求描述>" --acceptance "<验收标准>".'
+        ),
+        artifacts=artifacts or [],
     )
 
 
@@ -349,8 +467,44 @@ def freeze_requirement_loop(
 ) -> RequirementLoopCommandResult:
     """Freeze the current requirement loop after explicit user confirmation."""
 
+    request = _prepare_requirement_freeze_request(options)
+    if isinstance(request, RequirementLoopCommandResult):
+        return request
+    root, loop_run_path, expected_loop_id = request
+    target = _load_requirement_freeze_target(
+        root,
+        loop_run_path,
+        expected_loop_id,
+    )
+    if isinstance(target, RequirementLoopCommandResult):
+        return target
+    loop_run, artifacts = target
+    intake = _load_requirement_freeze_intake(
+        root,
+        loop_run,
+        expected_loop_id,
+        artifacts,
+    )
+    if isinstance(intake, RequirementLoopCommandResult):
+        return intake
+    acceptance_result = _requirement_acceptance_result(
+        loop_run,
+        intake,
+        artifacts,
+        root,
+    )
+    if acceptance_result is not None:
+        return acceptance_result
+    if loop_run.status == LoopStatus.CLOSED and artifacts.freeze_path.is_file():
+        return _refreeze_closed_requirement(root, loop_run, intake, artifacts)
+    return _freeze_open_requirement(root, options, loop_run, intake, artifacts)
+
+
+def _prepare_requirement_freeze_request(
+    options: RequirementFreezeOptions,
+) -> tuple[Path, Path, str] | RequirementLoopCommandResult:
     root = options.root.resolve()
-    loop_run_path, pointer_blocker = _resolve_requirement_loop_run_path(
+    loop_run_path, expected_loop_id, pointer_blocker = _resolve_requirement_loop_run_path(
         root,
         options.loop_id,
     )
@@ -368,7 +522,29 @@ def freeze_requirement_loop(
             blocker="Pass --yes after confirming the requirement and acceptance criteria.",
             next_action="Run ai-sdlc loop requirement freeze --yes.",
         )
+    return root, loop_run_path, expected_loop_id
 
+
+def _load_requirement_freeze_target(
+    root: Path,
+    loop_run_path: Path,
+    expected_loop_id: str,
+) -> tuple[LoopRun, _RequirementArtifacts] | RequirementLoopCommandResult:
+    artifacts = _requirement_artifacts(root, expected_loop_id)
+    path_issue = _requirement_artifact_path_issue(
+        root,
+        loop_run_path,
+        artifacts.loop_run_path,
+        "loop-run",
+    )
+    if path_issue:
+        return RequirementLoopCommandResult(
+            status=RequirementCommandStatus.BLOCKED,
+            result="Requirement loop artifact is malformed.",
+            loop_id=expected_loop_id,
+            blocker=path_issue,
+            next_action="Rerun ai-sdlc loop requirement start.",
+        )
     try:
         loop_run = _read_loop_run(loop_run_path)
     except ValueError as exc:
@@ -378,17 +554,44 @@ def freeze_requirement_loop(
             blocker=str(exc),
             next_action="Rerun ai-sdlc loop requirement start.",
         )
-    try:
-        _validate_explicit_loop_id(loop_run.loop_id)
-    except ValueError as exc:
+    identity_issue = _requirement_loop_identity_issue(
+        root,
+        loop_run_path,
+        expected_loop_id,
+        loop_run,
+    )
+    if identity_issue:
         return RequirementLoopCommandResult(
             status=RequirementCommandStatus.BLOCKED,
             result="Requirement loop artifact is malformed.",
-            loop_id=loop_run.loop_id,
-            blocker=f"Stored requirement loop id is invalid: {exc}",
+            loop_id=expected_loop_id,
+            blocker=identity_issue,
             next_action="Rerun ai-sdlc loop requirement start.",
         )
-    artifacts = _requirement_artifacts(root, loop_run.loop_id)
+    return loop_run, artifacts
+
+
+def _load_requirement_freeze_intake(
+    root: Path,
+    loop_run: LoopRun,
+    expected_loop_id: str,
+    artifacts: _RequirementArtifacts,
+) -> RequirementIntake | RequirementLoopCommandResult:
+    path_issue = _requirement_artifact_path_issue(
+        root,
+        artifacts.intake_path,
+        artifacts.intake_path,
+        "intake",
+    )
+    if path_issue:
+        return RequirementLoopCommandResult(
+            status=RequirementCommandStatus.BLOCKED,
+            result="Requirement intake artifact is malformed.",
+            loop_id=expected_loop_id,
+            blocker=path_issue,
+            next_action="Rerun ai-sdlc loop requirement start.",
+            artifacts=artifacts.refs(root),
+        )
     try:
         intake = _read_intake(artifacts.intake_path)
     except ValueError as exc:
@@ -400,7 +603,27 @@ def freeze_requirement_loop(
             next_action="Rerun ai-sdlc loop requirement start.",
             artifacts=artifacts.refs(root),
         )
+    if (
+        intake.loop_id != expected_loop_id
+        or intake.work_item_id != loop_run.work_item_id
+    ):
+        return RequirementLoopCommandResult(
+            status=RequirementCommandStatus.BLOCKED,
+            result="Requirement intake artifact is malformed.",
+            loop_id=expected_loop_id,
+            blocker="Requirement intake identity does not match the confirmed loop.",
+            next_action="Rerun ai-sdlc loop requirement start.",
+            artifacts=artifacts.refs(root),
+        )
+    return intake
 
+
+def _requirement_acceptance_result(
+    loop_run: LoopRun,
+    intake: RequirementIntake,
+    artifacts: _RequirementArtifacts,
+    root: Path,
+) -> RequirementLoopCommandResult | None:
     if not intake.acceptance_criteria:
         return RequirementLoopCommandResult(
             status=RequirementCommandStatus.NEEDS_USER,
@@ -420,40 +643,147 @@ def freeze_requirement_loop(
             artifacts=artifacts.refs(root),
             requirement=_command_requirement_summary(intake),
         )
+    return None
 
-    if loop_run.status == LoopStatus.CLOSED and artifacts.freeze_path.is_file():
-        result = RequirementLoopCommandResult(
-            status=RequirementCommandStatus.READY,
-            result="Requirement loop is already frozen.",
-            loop_id=loop_run.loop_id,
-            loop_status=LoopStatus.CLOSED,
-            summary=intake.summary,
-            source_kind=intake.source_kind,
-            source_path=intake.source_path,
-            clarification_count=len(intake.clarification_questions),
-            acceptance_count=len(intake.acceptance_criteria),
-            frozen=True,
-            next_action=loop_run.next_action,
-            artifacts=artifacts.refs(root, include_freeze=True),
-            requirement=_command_requirement_summary(intake, frozen=True),
-        )
-        prepared = prepare_loop_stage_close(
-            root=root,
-            adapter=RequirementStageAdapter(),
-            loop_run=loop_run,
-            close_kind="requirement-freeze",
-            target_status=LoopStatus.CLOSED.value,
-            close_artifact_path=artifacts.freeze_path,
-        )
-        return execute_stage_close(prepared, lambda: result)
 
+def _refreeze_closed_requirement(
+    root: Path,
+    loop_run: LoopRun,
+    intake: RequirementIntake,
+    artifacts: _RequirementArtifacts,
+) -> RequirementLoopCommandResult:
+    path_issue = _requirement_artifact_path_issue(
+        root,
+        artifacts.freeze_path,
+        artifacts.freeze_path,
+        "freeze",
+    )
+    if path_issue:
+        return _malformed_requirement_freeze_result(
+            root, loop_run, artifacts, path_issue
+        )
+    try:
+        freeze = _read_freeze(artifacts.freeze_path)
+    except ValueError as exc:
+        return _malformed_requirement_freeze_result(
+            root, loop_run, artifacts, str(exc)
+        )
+    if freeze.loop_id != loop_run.loop_id:
+        return _malformed_requirement_freeze_result(
+            root,
+            loop_run,
+            artifacts,
+            "Requirement freeze identity does not match the confirmed loop.",
+        )
+    result = _existing_requirement_freeze_result(root, loop_run, intake, artifacts)
+    prepared = _prepare_requirement_freeze_close(root, loop_run, artifacts)
+    return _execute_requirement_freeze_close(
+        root,
+        prepared,
+        intake,
+        freeze,
+        artifacts,
+        lambda _freeze: result,
+        create_anchor=False,
+    )
+
+
+def _malformed_requirement_freeze_result(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: _RequirementArtifacts,
+    blocker: str,
+) -> RequirementLoopCommandResult:
+    return RequirementLoopCommandResult(
+        status=RequirementCommandStatus.BLOCKED,
+        result="Requirement freeze artifact is malformed.",
+        loop_id=loop_run.loop_id,
+        blocker=blocker,
+        next_action="Start and freeze a new requirement loop.",
+        artifacts=artifacts.refs(root, include_freeze=True),
+    )
+
+
+def _existing_requirement_freeze_result(
+    root: Path,
+    loop_run: LoopRun,
+    intake: RequirementIntake,
+    artifacts: _RequirementArtifacts,
+) -> RequirementLoopCommandResult:
+    return RequirementLoopCommandResult(
+        status=RequirementCommandStatus.READY,
+        result="Requirement loop is already frozen.",
+        loop_id=loop_run.loop_id,
+        loop_status=LoopStatus.CLOSED,
+        summary=intake.summary,
+        source_kind=intake.source_kind,
+        source_path=intake.source_path,
+        clarification_count=len(intake.clarification_questions),
+        acceptance_count=len(intake.acceptance_criteria),
+        frozen=True,
+        next_action=loop_run.next_action,
+        artifacts=artifacts.refs(root, include_freeze=True),
+        requirement=_command_requirement_summary(intake, frozen=True),
+    )
+
+
+def _freeze_open_requirement(
+    root: Path,
+    options: RequirementFreezeOptions,
+    loop_run: LoopRun,
+    intake: RequirementIntake,
+    artifacts: _RequirementArtifacts,
+) -> RequirementLoopCommandResult:
+    try:
+        intent_approval = _requirement_scope_authority_intent_approval(
+            root,
+            loop_run.loop_id,
+        )
+    except ScopeAuthorityIntegrityError as exc:
+        return RequirementLoopCommandResult(
+            status=RequirementCommandStatus.BLOCKED,
+            result="Requirement freeze authority is unavailable.",
+            loop_id=intake.loop_id,
+            blocker=str(exc),
+            next_action="Start and freeze a new requirement loop.",
+            artifacts=artifacts.refs(root),
+        )
+    accepted_by, accepted_at = intent_approval or (
+        options.accepted_by.strip() or "local-user",
+        utc_now_iso(),
+    )
     freeze = RequirementFreeze(
         loop_id=loop_run.loop_id,
-        accepted_by=options.accepted_by.strip() or "local-user",
+        accepted_by=accepted_by,
+        accepted_at=accepted_at,
         intake_path=_repo_relative_path(root, artifacts.intake_path),
+        intake_digest=_requirement_intake_digest(intake),
         acceptance_count=len(intake.acceptance_criteria),
     )
-    prepared = prepare_loop_stage_close(
+    prepared = _prepare_requirement_freeze_close(root, loop_run, artifacts)
+    return _execute_requirement_freeze_close(
+        root,
+        prepared,
+        intake,
+        freeze,
+        artifacts,
+        lambda authoritative_freeze: _write_requirement_freeze(
+            root,
+            loop_run,
+            intake,
+            authoritative_freeze,
+            artifacts,
+        ),
+        create_anchor=True,
+    )
+
+
+def _prepare_requirement_freeze_close(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: _RequirementArtifacts,
+) -> PreparedStageClose:
+    return prepare_loop_stage_close(
         root=root,
         adapter=RequirementStageAdapter(),
         loop_run=loop_run,
@@ -461,10 +791,104 @@ def freeze_requirement_loop(
         target_status=LoopStatus.CLOSED.value,
         close_artifact_path=artifacts.freeze_path,
     )
-    return execute_stage_close(
-        prepared,
-        lambda: _write_requirement_freeze(root, loop_run, intake, freeze, artifacts),
+
+
+def _execute_requirement_freeze_close(
+    root: Path,
+    prepared: PreparedStageClose,
+    intake: RequirementIntake,
+    freeze: RequirementFreeze,
+    artifacts: _RequirementArtifacts,
+    writer: Callable[[RequirementFreeze], RequirementLoopCommandResult],
+    *,
+    create_anchor: bool,
+) -> RequirementLoopCommandResult:
+    try:
+        values, authoritative_freeze = _bind_requirement_scope_authority(
+            root,
+            prepared,
+            intake,
+            freeze,
+            artifacts,
+            create_anchor=create_anchor,
+        )
+    except ScopeAuthorityIntegrityError as exc:
+        return RequirementLoopCommandResult(
+            status=RequirementCommandStatus.BLOCKED,
+            result="Requirement freeze authority is unavailable.",
+            loop_id=intake.loop_id,
+            blocker=str(exc),
+            next_action="Start and freeze a new requirement loop.",
+            artifacts=artifacts.refs(root, include_freeze=artifacts.freeze_path.is_file()),
+        )
+    result = execute_stage_close(prepared, lambda: writer(authoritative_freeze))
+    if result.status != RequirementCommandStatus.READY or not result.frozen:
+        return result
+    try:
+        _commit_requirement_scope_authority(root, **values)
+    except ScopeAuthorityIntegrityError as exc:
+        return result.model_copy(
+            update={
+                "status": RequirementCommandStatus.BLOCKED,
+                "result": "Requirement freeze authority commit is unavailable.",
+                "blocker": str(exc),
+                "next_action": "Rerun requirement freeze to recover the commit.",
+            }
+        )
+    return result
+
+
+def _bind_requirement_scope_authority(
+    root: Path,
+    prepared: PreparedStageClose,
+    intake: RequirementIntake,
+    freeze: RequirementFreeze,
+    artifacts: _RequirementArtifacts,
+    *,
+    create_anchor: bool,
+) -> tuple[dict[str, str], RequirementFreeze]:
+    values = {
+        "loop_id": intake.loop_id,
+        "work_item_id": intake.work_item_id,
+        "intake_path": _repo_relative_path(root, artifacts.intake_path),
+        "intake_digest": _requirement_intake_digest(intake),
+        "freeze_path": _repo_relative_path(root, artifacts.freeze_path),
+        "freeze_digest": _requirement_freeze_digest(freeze),
+        "accepted_by": freeze.accepted_by,
+        "accepted_at": freeze.accepted_at,
+        "stage_close_operation_id": stage_close_operation_id(prepared),
+    }
+    if create_anchor:
+        anchor = _record_requirement_scope_authority_intent(root, **values)
+    else:
+        anchor = _verify_requirement_scope_authority_intent(root, **values)
+    authoritative_freeze = freeze.model_copy(
+        update={
+            "accepted_by": anchor.accepted_by,
+            "accepted_at": anchor.accepted_at,
+        }
     )
+    if _requirement_freeze_digest(authoritative_freeze) != anchor.freeze_digest:
+        raise ScopeAuthorityIntegrityError(
+            "requirement scope authority intent approval is inconsistent"
+        )
+    return _requirement_authority_values(anchor), authoritative_freeze
+
+
+def _requirement_authority_values(
+    anchor: RequirementScopeAuthorityAnchor,
+) -> dict[str, str]:
+    return {
+        "loop_id": anchor.loop_id,
+        "work_item_id": anchor.work_item_id,
+        "intake_path": anchor.intake_path,
+        "intake_digest": anchor.intake_digest,
+        "freeze_path": anchor.freeze_path,
+        "freeze_digest": anchor.freeze_digest,
+        "accepted_by": anchor.accepted_by,
+        "accepted_at": anchor.accepted_at,
+        "stage_close_operation_id": anchor.stage_close_operation_id,
+    }
 
 
 def _write_requirement_freeze(
@@ -673,45 +1097,147 @@ def _requirement_artifacts(root: Path, loop_id: str) -> _RequirementArtifacts:
 def _resolve_requirement_loop_run_path(
     root: Path,
     loop_id: str,
-) -> tuple[Path, str]:
+) -> tuple[Path, str, str]:
     text = loop_id.strip()
     if text:
-        try:
-            safe_loop_id = _validate_explicit_loop_id(text)
-        except ValueError as exc:
-            return root / CURRENT_REQUIREMENT_PATH, f"Invalid requirement loop id: {exc}"
-        try:
-            return (
-                _requirement_artifacts(root, safe_loop_id).loop_run_path,
-                "",
-            )
-        except ValueError as exc:
-            return root / CURRENT_REQUIREMENT_PATH, f"Invalid requirement loop id: {exc}"
+        return _resolve_explicit_requirement_loop_run_path(root, text)
+    return _resolve_current_requirement_loop_run_path(root)
+
+
+def _resolve_explicit_requirement_loop_run_path(
+    root: Path,
+    loop_id: str,
+) -> tuple[Path, str, str]:
+    try:
+        safe_loop_id = _validate_explicit_loop_id(loop_id)
+        path = _requirement_artifacts(root, safe_loop_id).loop_run_path
+    except ValueError as exc:
+        return (
+            root / CURRENT_REQUIREMENT_PATH,
+            "",
+            f"Invalid requirement loop id: {exc}",
+        )
+    return path, safe_loop_id, ""
+
+
+def _resolve_current_requirement_loop_run_path(
+    root: Path,
+) -> tuple[Path, str, str]:
     pointer_path = root / CURRENT_REQUIREMENT_PATH
     if not pointer_path.is_file():
-        return pointer_path, "No current requirement loop exists."
+        return pointer_path, "", "No current requirement loop exists."
+    safe_loop_id, path_text, blocker = _read_requirement_pointer(
+        root,
+        pointer_path,
+    )
+    if blocker:
+        return pointer_path, "", blocker
+    return _canonical_requirement_pointer_path(root, safe_loop_id, path_text)
+
+
+def _read_requirement_pointer(
+    root: Path,
+    pointer_path: Path,
+) -> tuple[str, str, str]:
     try:
         payload = LoopArtifactStore(root).read_json_artifact(pointer_path)
     except (OSError, ValueError) as exc:
-        return pointer_path, f"Current requirement pointer is malformed: {exc}"
+        return "", "", f"Current requirement pointer is malformed: {exc}"
+    loop_id_value = payload.get("loop_id")
+    if not isinstance(loop_id_value, str) or not loop_id_value.strip():
+        return "", "", "Current requirement pointer is missing loop_id."
+    try:
+        safe_loop_id = _validate_explicit_loop_id(loop_id_value.strip())
+    except ValueError as exc:
+        return "", "", f"Current requirement pointer loop identity is invalid: {exc}"
     path_text = payload.get("loop_run_path")
     if not isinstance(path_text, str) or not path_text.strip():
-        return pointer_path, "Current requirement pointer is missing loop_run_path."
+        return "", "", "Current requirement pointer is missing loop_run_path."
+    return safe_loop_id, path_text, ""
+
+
+def _canonical_requirement_pointer_path(
+    root: Path,
+    safe_loop_id: str,
+    path_text: str,
+) -> tuple[Path, str, str]:
     path = Path(path_text)
     if path.is_absolute() or ".." in path.parts:
-        return pointer_path, "Current requirement pointer path must be project-relative."
+        return (
+            root / CURRENT_REQUIREMENT_PATH,
+            "",
+            "Current requirement pointer path must be project-relative.",
+        )
     candidate = (root / path).resolve(strict=False)
     try:
         candidate.relative_to(root.resolve(strict=False))
     except ValueError:
-        return pointer_path, "Current requirement pointer path must stay within project."
-    return candidate, ""
+        return (
+            root / CURRENT_REQUIREMENT_PATH,
+            "",
+            "Current requirement pointer path must stay within project.",
+        )
+    canonical = _requirement_artifacts(root, safe_loop_id).loop_run_path.resolve(
+        strict=False
+    )
+    if candidate != canonical:
+        return (
+            candidate,
+            safe_loop_id,
+            "Current requirement pointer identity does not match its loop-run path.",
+        )
+    return candidate, safe_loop_id, ""
+
+
+def _requirement_loop_identity_issue(
+    root: Path,
+    loop_run_path: Path,
+    expected_loop_id: str,
+    loop_run: LoopRun,
+) -> str:
+    canonical = _requirement_artifacts(root, expected_loop_id).loop_run_path.resolve(
+        strict=False
+    )
+    if loop_run_path.resolve(strict=False) != canonical:
+        return "Requirement loop identity path is not canonical."
+    if loop_run.loop_id != expected_loop_id:
+        return "Requirement loop identity does not match the confirmed target."
+    return ""
+
+
+def _requirement_artifact_path_issue(
+    root: Path,
+    candidate: Path,
+    expected: Path,
+    artifact_name: str,
+) -> str:
+    root_path = root.absolute()
+    candidate_path = candidate.absolute()
+    expected_path = expected.absolute()
+    if candidate_path != expected_path:
+        return f"Requirement {artifact_name} artifact path is not canonical."
+    try:
+        relative = expected_path.relative_to(root_path)
+    except ValueError:
+        return f"Requirement {artifact_name} artifact must stay within project."
+    current = root_path
+    for part in relative.parts:
+        current = current / part
+        if current.is_symlink():
+            return f"Requirement {artifact_name} artifact cannot be a symlink."
+    try:
+        expected_path.resolve(strict=False).relative_to(root.resolve(strict=False))
+    except ValueError:
+        return f"Requirement {artifact_name} artifact must stay within project."
+    return ""
 
 
 def _read_loop_run(path: Path) -> LoopRun:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        payload = json.loads(
+            read_stable_text(_artifact_root(path), path, encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"Requirement loop-run.json is not readable: {exc}") from exc
     try:
         loop_run = LoopRun.model_validate(payload)
@@ -724,13 +1250,28 @@ def _read_loop_run(path: Path) -> LoopRun:
 
 def _read_intake(path: Path) -> RequirementIntake:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        payload = json.loads(
+            read_stable_text(_artifact_root(path), path, encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError) as exc:
         raise ValueError(f"requirement-intake.json is not readable: {exc}") from exc
     try:
         return RequirementIntake.model_validate(payload)
     except ValidationError as exc:
         raise ValueError(f"requirement-intake.json is invalid: {exc}") from exc
+
+
+def _read_freeze(path: Path) -> RequirementFreeze:
+    try:
+        payload = json.loads(
+            read_stable_text(_artifact_root(path), path, encoding="utf-8")
+        )
+    except (json.JSONDecodeError, OSError, UnicodeError, ValueError) as exc:
+        raise ValueError(f"requirement-freeze.json is not readable: {exc}") from exc
+    try:
+        return RequirementFreeze.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(f"requirement-freeze.json is invalid: {exc}") from exc
 
 
 def _clean_items(values: tuple[str, ...]) -> list[str]:
@@ -740,6 +1281,49 @@ def _clean_items(values: tuple[str, ...]) -> list[str]:
         if text and text not in items:
             items.append(text)
     return items
+
+
+def _clean_scope_families(values: tuple[str, ...]) -> list[str]:
+    scopes = _clean_items(values)
+    invalid = sorted(set(scopes) - _DESIGN_SCOPE_FAMILIES)
+    if invalid:
+        raise ValueError(
+            f"unknown design scope families: {', '.join(invalid)}"
+        )
+    return scopes
+
+
+def _requirement_intake_digest(intake: RequirementIntake) -> str:
+    return _requirement_artifact_digest(intake)
+
+
+def _requirement_freeze_digest(freeze: RequirementFreeze) -> str:
+    return _requirement_artifact_digest(freeze)
+
+
+def _requirement_artifact_digest(
+    artifact: RequirementIntake | RequirementFreeze,
+) -> str:
+    payload = artifact.model_dump(mode="json")
+    return _requirement_payload_digest(payload)
+
+
+def _requirement_payload_digest(payload: dict[str, object]) -> str:
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return f"sha256:{hashlib.sha256(encoded.encode()).hexdigest()}"
+
+
+def _artifact_root(path: Path) -> Path:
+    absolute = path.absolute()
+    for parent in absolute.parents:
+        if parent.name == ".ai-sdlc":
+            return parent.parent
+    raise ValueError(f"trusted requirement artifact is outside .ai-sdlc: {path}")
 
 
 def _summarize_requirement(text: str) -> str:

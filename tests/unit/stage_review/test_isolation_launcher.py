@@ -926,6 +926,32 @@ def test_boundary_probe_moves_program_and_payload_off_command_line(
     )
 
 
+def test_boundary_probe_closes_listener_when_bind_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.core.stage_review import codex_isolation_boundary as boundary
+
+    class BindFailureSocket:
+        closed = False
+
+        def bind(self, _address: object) -> None:
+            raise OSError("bind denied")
+
+        def listen(self, _backlog: int) -> None:
+            raise AssertionError("listen must not run after bind failure")
+
+        def close(self) -> None:
+            self.closed = True
+
+    listener = BindFailureSocket()
+    monkeypatch.setattr(boundary.socket, "socket", lambda *_args: listener)
+
+    with pytest.raises(OSError, match="bind denied"), boundary._controlled_listeners():
+        pass
+
+    assert listener.closed is True
+
+
 def test_boundary_probe_payload_uses_host_verified_calibration_targets(
     tmp_path: Path,
 ) -> None:

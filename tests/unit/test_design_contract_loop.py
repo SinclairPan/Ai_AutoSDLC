@@ -14,12 +14,25 @@ from ai_sdlc.core.design_contract_loop import (
     check_design_contract_loop,
     close_design_contract_loop,
 )
+from ai_sdlc.core.design_contract_store import resolve_design_contract_loop_run_path
+from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.requirement_loop import (
     RequirementFreezeOptions,
+    RequirementIntake,
     RequirementStartOptions,
+    _requirement_intake_digest,
     freeze_requirement_loop,
     start_requirement_loop,
 )
+
+
+def test_public_design_contract_resolver_keeps_two_value_signature(
+    tmp_path: Path,
+) -> None:
+    path, blocker = resolve_design_contract_loop_run_path(tmp_path, "")
+
+    assert path == tmp_path / CURRENT_DESIGN_CONTRACT_PATH
+    assert blocker == "No current design-contract loop exists."
 
 
 def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> None:
@@ -78,7 +91,9 @@ def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> N
         "FR-DEMO-001": ["T11"],
         "SC-DEMO-001": ["T11"],
     }
-    coverage = json.loads((loop_dir / "coverage-matrix.json").read_text(encoding="utf-8"))
+    coverage = json.loads(
+        (loop_dir / "coverage-matrix.json").read_text(encoding="utf-8")
+    )
     assert coverage["artifact_kind"] == "coverage-matrix"
     assert coverage["created_by"] == "ai-sdlc"
     assert coverage["created_at"]
@@ -917,6 +932,38 @@ def test_check_design_contract_loop_requires_verification_command(
     }
 
 
+def test_check_design_contract_loop_accepts_canonical_verify_label(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(
+        tmp_path,
+        verification_label="- verify",
+    )
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-canonical-verify-label",
+        )
+    )
+
+    assert result.status == "ready"
+    report = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "design-contract"
+            / "dc-canonical-verify-label"
+            / "design-contract-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert "task_verification_gap" not in {
+        finding["code"] for finding in report["findings"]
+    }
+
+
 def test_check_design_contract_loop_checks_plan_scope_drift(tmp_path: Path) -> None:
     _write_work_item(tmp_path, plan_extra="Touch implementation_loop.py.")
 
@@ -944,6 +991,22 @@ def test_check_design_contract_loop_checks_plan_scope_drift(tmp_path: Path) -> N
     ]
     assert scope_findings
     assert scope_findings[0]["path"] == "specs/demo-contract/plan.md"
+
+
+def test_check_design_contract_loop_detects_case_variant_scope_drift(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path, plan_extra="Touch IMPLEMENTATION_LOOP.PY.")
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-case-variant-drift",
+        )
+    )
+
+    assert result.status == "needs_fix"
 
 
 def test_check_design_contract_loop_checks_local_review_scope_drift(
@@ -1008,7 +1071,7 @@ def test_check_design_contract_loop_checks_frontend_command_scope_drift(
     assert "ai-sdlc loop frontend-evidence" in scope_findings[0]["message"]
 
 
-def test_check_design_contract_loop_allows_active_work_item_scope(
+def test_check_design_contract_loop_rejects_scope_inferred_only_from_work_item_path(
     tmp_path: Path,
 ) -> None:
     _write_work_item(
@@ -1025,7 +1088,7 @@ def test_check_design_contract_loop_allows_active_work_item_scope(
         )
     )
 
-    assert result.status == "ready"
+    assert result.status == "needs_fix"
     report = json.loads(
         (
             tmp_path
@@ -1036,7 +1099,402 @@ def test_check_design_contract_loop_allows_active_work_item_scope(
             / "design-contract-report.json"
         ).read_text(encoding="utf-8")
     )
+    assert "scope_drift" in {finding["code"] for finding in report["findings"]}
+
+
+def test_check_design_contract_loop_allows_scope_authorized_by_frozen_requirement(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_work_item(
+        tmp_path,
+        requirement_scope_families=(
+            "implementation",
+            "frontend-evidence",
+            "pr-review",
+        ),
+        plan_extra="\n".join(
+            [
+                "Touch implementation_loop.py.",
+                "Touch frontend_evidence_loop.py.",
+                "Touch pr_review_service.py.",
+            ]
+        ),
+    )
+    spec_path = work_item / "spec.md"
+    spec_path.write_text(
+        "---\n"
+        "design_scope_families:\n"
+        "  - implementation\n"
+        "  - frontend-evidence\n"
+        "  - pr-review\n"
+        "---\n"
+        f"{spec_path.read_text(encoding='utf-8')}",
+        encoding="utf-8",
+    )
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-declared-scope",
+        )
+    )
+
+    assert result.status == "ready"
+    report = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "design-contract"
+            / "dc-declared-scope"
+            / "design-contract-report.json"
+        ).read_text(encoding="utf-8")
+    )
     assert "scope_drift" not in {finding["code"] for finding in report["findings"]}
+
+
+def test_check_design_contract_uses_the_validated_requirement_scope_snapshot(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(
+        tmp_path,
+        requirement_scope_families=("implementation",),
+    )
+    original_read = LoopArtifactStore.read_json_artifact
+    intake_reads = 0
+
+    def counted_read(store: LoopArtifactStore, path: Path) -> object:
+        nonlocal intake_reads
+        if path.name == "requirement-intake.json":
+            intake_reads += 1
+        return original_read(store, path)
+
+    monkeypatch.setattr(LoopArtifactStore, "read_json_artifact", counted_read)
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-single-authority-snapshot",
+        )
+    )
+
+    assert result.status == "ready"
+    assert intake_reads == 1
+
+
+def test_check_design_contract_loop_rejects_scope_self_authorized_by_spec(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_work_item(
+        tmp_path,
+        plan_extra="Touch implementation_loop.py.",
+    )
+    spec_path = work_item / "spec.md"
+    spec_path.write_text(
+        "---\n"
+        "design_scope_families:\n"
+        "  - implementation\n"
+        "---\n"
+        f"{spec_path.read_text(encoding='utf-8')}",
+        encoding="utf-8",
+    )
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-self-authorized-scope",
+        )
+    )
+
+    assert result.status == "needs_fix"
+    report = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "design-contract"
+            / "dc-self-authorized-scope"
+            / "design-contract-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert "scope_authority_missing" in {
+        finding["code"] for finding in report["findings"]
+    }
+
+
+def test_check_design_contract_loop_blocks_mutated_requirement_scope_authority(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(
+        tmp_path,
+        requirement_scope_families=("implementation",),
+    )
+    intake_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "requirement"
+        / "req-current"
+        / "requirement-intake.json"
+    )
+    intake = json.loads(intake_path.read_text(encoding="utf-8"))
+    intake["design_scope_families"].append("pr-review")
+    intake_path.write_text(json.dumps(intake), encoding="utf-8")
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-mutated-scope-authority",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "changed after freeze" in result.blocker
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    (("accepted_by", "attacker"), ("accepted_at", "2099-01-01T00:00:00Z")),
+)
+def test_check_design_contract_loop_blocks_mutated_requirement_approval(
+    tmp_path: Path,
+    field: str,
+    value: str,
+) -> None:
+    _write_work_item(tmp_path)
+    freeze_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "requirement"
+        / "req-current"
+        / "requirement-freeze.json"
+    )
+    freeze = json.loads(freeze_path.read_text(encoding="utf-8"))
+    freeze[field] = value
+    freeze_path.write_text(json.dumps(freeze, indent=2), encoding="utf-8")
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=f"dc-mutated-requirement-{field}",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "committed scope authority" in result.blocker
+
+
+def test_check_design_contract_loop_blocks_recomputed_requirement_authority_pair(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    requirement_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "req-current"
+    intake_path = requirement_dir / "requirement-intake.json"
+    intake_payload = json.loads(intake_path.read_text(encoding="utf-8"))
+    intake_payload["design_scope_families"] = ["implementation"]
+    intake = RequirementIntake.model_validate(intake_payload)
+    intake_path.write_text(
+        json.dumps(intake.model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
+    freeze_path = requirement_dir / "requirement-freeze.json"
+    freeze_payload = json.loads(freeze_path.read_text(encoding="utf-8"))
+    freeze_payload["intake_digest"] = _requirement_intake_digest(intake)
+    freeze_path.write_text(json.dumps(freeze_payload, indent=2), encoding="utf-8")
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-recomputed-scope-authority",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "committed scope authority" in result.blocker
+
+
+def test_close_design_contract_loop_blocks_re_frozen_scope_authority_change(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(
+        tmp_path,
+        requirement_scope_families=("implementation",),
+    )
+    check = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-refrozen-scope-authority",
+        )
+    )
+    assert check.status == "ready"
+    requirement_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "req-current"
+    intake_path = requirement_dir / "requirement-intake.json"
+    intake_payload = json.loads(intake_path.read_text(encoding="utf-8"))
+    intake_payload["design_scope_families"].append("pr-review")
+    intake = RequirementIntake.model_validate(intake_payload)
+    intake_path.write_text(
+        json.dumps(intake.model_dump(mode="json"), indent=2),
+        encoding="utf-8",
+    )
+    freeze_path = requirement_dir / "requirement-freeze.json"
+    freeze_payload = json.loads(freeze_path.read_text(encoding="utf-8"))
+    freeze_payload["intake_digest"] = _requirement_intake_digest(intake)
+    freeze_path.write_text(json.dumps(freeze_payload, indent=2), encoding="utf-8")
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id="dc-refrozen-scope-authority",
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "scope authority changed" in result.blocker
+
+
+def test_close_design_contract_loop_blocks_cleared_scope_authority_binding(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    check = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-cleared-scope-authority",
+        )
+    )
+    assert check.status == "ready"
+    input_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / "dc-cleared-scope-authority"
+        / "design-contract-input.json"
+    )
+    input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+    input_payload["authorized_scope_families"] = ["implementation"]
+    input_payload["scope_authority_ref"] = ""
+    input_payload["scope_authority_digest"] = ""
+    input_path.write_text(json.dumps(input_payload, indent=2), encoding="utf-8")
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id="dc-cleared-scope-authority",
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "authority binding" in result.blocker
+
+
+def test_close_design_contract_loop_blocks_swapped_requirement_authority(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    check = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-swapped-scope-authority",
+        )
+    )
+    assert check.status == "ready"
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-alternate",
+            work_item_id="demo-contract",
+            idea="Authorize implementation design scope.",
+            acceptance=("Design contract can be checked.",),
+            design_scope_families=("implementation",),
+        )
+    )
+    frozen = freeze_requirement_loop(
+        RequirementFreezeOptions(
+            root=tmp_path,
+            loop_id="req-alternate",
+            yes=True,
+        )
+    )
+    assert frozen.status == "ready"
+    alternate_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "req-alternate"
+    alternate_freeze = json.loads(
+        (alternate_dir / "requirement-freeze.json").read_text(encoding="utf-8")
+    )
+    input_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / "dc-swapped-scope-authority"
+        / "design-contract-input.json"
+    )
+    input_payload = json.loads(input_path.read_text(encoding="utf-8"))
+    input_payload["requirement_loop_id"] = "req-alternate"
+    input_payload["authorized_scope_families"] = ["implementation"]
+    input_payload["scope_authority_ref"] = (
+        ".ai-sdlc/loops/requirement/req-alternate/requirement-intake.json"
+    )
+    input_payload["scope_authority_digest"] = alternate_freeze["intake_digest"]
+    input_path.write_text(json.dumps(input_payload, indent=2), encoding="utf-8")
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id="dc-swapped-scope-authority",
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "checked authority snapshot changed" in result.blocker
+
+
+def test_check_design_contract_loop_rejects_scope_mentioned_only_as_a_non_goal(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(
+        tmp_path,
+        spec_intro_extra=(
+            "Non-goal: never touch implementation_loop.py, "
+            "frontend_evidence_loop.py, or pr_review_service.py."
+        ),
+        plan_extra="Touch implementation_loop.py.",
+    )
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-non-goal-does-not-authorize-scope",
+        )
+    )
+
+    assert result.status == "needs_fix"
+    report = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "design-contract"
+            / "dc-non-goal-does-not-authorize-scope"
+            / "design-contract-report.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert "scope_drift" in {finding["code"] for finding in report["findings"]}
 
 
 def test_check_design_contract_loop_blocks_non_canonical_work_item_dir(
@@ -1090,6 +1548,56 @@ def test_close_design_contract_loop_writes_close_artifact(tmp_path: Path) -> Non
     assert loop_run["status"] == "closed"
 
 
+def test_close_design_contract_loop_rejects_report_changed_after_stage_review(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.core import design_contract_loop as design_module
+
+    _write_work_item(tmp_path)
+    checked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-report-review-race",
+        )
+    )
+    original_execute = design_module.execute_stage_close
+
+    def execute_then_tamper(prepared, writer):
+        result = original_execute(prepared, writer)
+        report_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "design-contract"
+            / checked.loop_id
+            / "design-contract-report.json"
+        )
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+        report["status"] = "needs_fix"
+        report["blocker_count"] = 1
+        report_path.write_text(json.dumps(report), encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(
+        design_module,
+        "execute_stage_close",
+        execute_then_tamper,
+    )
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id=checked.loop_id,
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "authority" in result.blocker.lower()
+
+
 def test_close_design_contract_loop_revalidates_changed_docs(
     tmp_path: Path,
 ) -> None:
@@ -1128,7 +1636,9 @@ def test_close_design_contract_loop_revalidates_changed_docs(
 
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "dc-stale-close"
     loop_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
-    report = json.loads((loop_dir / "design-contract-report.json").read_text(encoding="utf-8"))
+    report = json.loads(
+        (loop_dir / "design-contract-report.json").read_text(encoding="utf-8")
+    )
     assert loop_run["status"] == "needs_fix"
     assert "task_verification_gap" in {
         finding["code"] for finding in report["findings"]
@@ -1205,7 +1715,9 @@ def test_check_design_contract_loop_preserves_closed_current_default_recheck(
         )
     )
     close_design_contract_loop(
-        DesignContractCloseOptions(root=tmp_path, loop_id=check_result.loop_id, yes=True)
+        DesignContractCloseOptions(
+            root=tmp_path, loop_id=check_result.loop_id, yes=True
+        )
     )
 
     result = check_design_contract_loop(
@@ -1238,7 +1750,9 @@ def test_check_design_contract_loop_dry_run_after_close_stays_preview(
         )
     )
     close_design_contract_loop(
-        DesignContractCloseOptions(root=tmp_path, loop_id=check_result.loop_id, yes=True)
+        DesignContractCloseOptions(
+            root=tmp_path, loop_id=check_result.loop_id, yes=True
+        )
     )
 
     result = check_design_contract_loop(
@@ -1262,11 +1776,7 @@ def test_check_design_contract_loop_dry_run_after_close_stays_preview(
     )
     assert pointer["loop_id"] == check_result.loop_id
     assert not (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "design-contract"
-        / "dc-dry-after-close"
+        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "dc-dry-after-close"
     ).exists()
 
 
@@ -1357,6 +1867,118 @@ def test_close_design_contract_loop_blocks_non_current_explicit_loop_id(
     ).exists()
 
 
+def test_close_design_contract_loop_blocks_cross_loop_authority_substitution(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    for loop_id in ("dc-target-a", "dc-source-b"):
+        check_design_contract_loop(
+            DesignContractCheckOptions(
+                root=tmp_path,
+                work_item="specs/demo-contract",
+                loop_id=loop_id,
+            )
+        )
+    root = tmp_path / ".ai-sdlc" / "loops" / "design-contract"
+    target = root / "dc-target-a"
+    source = root / "dc-source-b"
+    target_input = target / "design-contract-input.json"
+    target_run = target / "loop-run.json"
+    source_input = json.loads(
+        (source / "design-contract-input.json").read_text(encoding="utf-8")
+    )
+    source_run = json.loads((source / "loop-run.json").read_text(encoding="utf-8"))
+    target_input.write_text(json.dumps(source_input), encoding="utf-8")
+    target_run_payload = json.loads(target_run.read_text(encoding="utf-8"))
+    target_run_payload["input_digest"] = source_run["input_digest"]
+    target_run.write_text(json.dumps(target_run_payload), encoding="utf-8")
+    pointer_path = tmp_path / CURRENT_DESIGN_CONTRACT_PATH
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["loop_id"] = "dc-target-a"
+    pointer["loop_run_path"] = (
+        ".ai-sdlc/loops/design-contract/dc-target-a/loop-run.json"
+    )
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id="dc-target-a", yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "input identity" in result.blocker
+    assert not (target / "design-contract-close.json").exists()
+
+
+def test_close_design_contract_loop_blocks_pointer_and_run_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-identity-target",
+        )
+    )
+    loop_run_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / "dc-identity-target"
+        / "loop-run.json"
+    )
+    loop_run = json.loads(loop_run_path.read_text(encoding="utf-8"))
+    loop_run["loop_id"] = "dc-identity-other"
+    loop_run_path.write_text(json.dumps(loop_run), encoding="utf-8")
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id="dc-identity-target",
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "loop identity" in result.blocker
+
+
+def test_close_design_contract_loop_blocks_report_work_item_mismatch(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-report-identity",
+        )
+    )
+    report_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / "dc-report-identity"
+        / "design-contract-report.json"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    report["work_item_id"] = "other-contract"
+    report_path.write_text(json.dumps(report), encoding="utf-8")
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id="dc-report-identity",
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "report identity" in result.blocker
+
+
 def test_close_design_contract_loop_blocks_symlinked_current_pointer(
     tmp_path: Path,
 ) -> None:
@@ -1418,6 +2040,32 @@ def test_check_design_contract_loop_blocks_missing_work_item(tmp_path: Path) -> 
     assert result.status == "blocked"
     assert "does not exist" in result.blocker
     assert not (tmp_path / ".ai-sdlc").exists()
+
+
+@pytest.mark.parametrize("doc_name", ("spec.md", "plan.md", "tasks.md"))
+def test_check_design_contract_loop_blocks_symlinked_formal_doc(
+    tmp_path: Path,
+    doc_name: str,
+) -> None:
+    work_item = _write_work_item(tmp_path)
+    outside = tmp_path.parent / f"{tmp_path.name}-{doc_name}"
+    outside.write_text(work_item.joinpath(doc_name).read_text("utf-8"), "utf-8")
+    work_item.joinpath(doc_name).unlink()
+    try:
+        work_item.joinpath(doc_name).symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=f"dc-symlinked-{doc_name.removesuffix('.md')}",
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "symlink" in result.blocker.lower()
 
 
 def test_check_design_contract_loop_uses_checkpoint_feature_spec_dir(
@@ -1483,6 +2131,7 @@ def _write_work_item(
     include_task_refs: bool = True,
     with_frozen_requirement: bool = True,
     requirement_loop_id: str = "req-current",
+    requirement_scope_families: tuple[str, ...] = (),
     placeholder: bool = False,
     relative_path: str = "specs/demo-contract",
     task_heading: str = "### Task 1.1 Check contract",
@@ -1559,11 +2208,20 @@ def _write_work_item(
         encoding="utf-8",
     )
     if with_frozen_requirement:
-        _ensure_frozen_requirement_loop(root, loop_id=requirement_loop_id)
+        _ensure_frozen_requirement_loop(
+            root,
+            loop_id=requirement_loop_id,
+            scope_families=requirement_scope_families,
+        )
     return work_item
 
 
-def _ensure_frozen_requirement_loop(root: Path, *, loop_id: str) -> None:
+def _ensure_frozen_requirement_loop(
+    root: Path,
+    *,
+    loop_id: str,
+    scope_families: tuple[str, ...] = (),
+) -> None:
     freeze_path = (
         root
         / ".ai-sdlc"
@@ -1580,6 +2238,7 @@ def _ensure_frozen_requirement_loop(root: Path, *, loop_id: str) -> None:
             loop_id=loop_id,
             idea="Demo users need a checked design contract.",
             acceptance=("The design contract can be checked before implementation.",),
+            design_scope_families=scope_families,
         )
     )
     assert start_result.status == "ready"

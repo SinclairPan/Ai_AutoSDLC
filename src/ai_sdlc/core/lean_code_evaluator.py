@@ -31,7 +31,9 @@ from ai_sdlc.core.lean_code_models import (
     LeanEvaluationReport,
     LeanException,
     LeanFinding,
+    LeanMetrics,
     LeanPolicy,
+    MetricCapability,
     RegressionEvidence,
     evaluation_profile_for,
 )
@@ -98,7 +100,10 @@ def evaluate_lean_code(options: LeanEvaluationOptions) -> LeanEvaluationReport:
     )
 
 
-def _collect_findings(options: LeanEvaluationOptions, metrics) -> list[LeanFinding]:
+def _collect_findings(
+    options: LeanEvaluationOptions,
+    metrics: LeanMetrics,
+) -> list[LeanFinding]:
     findings = [
         *scope_findings(
             metrics.scope_drift,
@@ -140,7 +145,14 @@ def _collect_findings(options: LeanEvaluationOptions, metrics) -> list[LeanFindi
     return findings
 
 
-def _build_report(options, metrics, findings, exception_ids, status, policy_digest):
+def _build_report(
+    options: LeanEvaluationOptions,
+    metrics: LeanMetrics,
+    findings: list[LeanFinding],
+    exception_ids: list[str],
+    status: LoopStatus,
+    policy_digest: str,
+) -> LeanEvaluationReport:
     stop_reason = ""
     actionable = _unresolved_actionable_signatures(findings)
     if (
@@ -193,7 +205,8 @@ def _file_budget_finding(
     policy: LeanPolicy,
     round_number: int,
 ) -> LeanFinding:
-    historical = not file.is_new and not _significantly_changed(file, policy)
+    is_new = file.base_lines == 0 and file.head_lines > 0
+    historical = not is_new and not _significantly_changed(file, policy)
     claim = (
         "Historical file exceeds the initial line budget."
         if historical
@@ -281,7 +294,7 @@ def _function_risk_finding(
         path=file.path,
         symbol=function.symbol,
         claim="Oversized function also increases deterministic complexity, nesting, or coupling risk.",
-        measured=f"lines={function.logical_lines},complexity={function.complexity},nesting={function.max_nesting},fan_out={file.import_fan_out}",
+        measured=f"lines={function.logical_lines},complexity={function.complexity},nesting={function.max_nesting},fan_out={function.import_fan_out}",
         budget=f"lines={policy.function_line_budget},complexity={policy.complexity_budget},nesting={policy.nesting_budget},fan_out={policy.fan_out_budget}",
         risk="Multiple risk signals indicate mixed responsibility or costly review surface.",
         fix="Make a behavior-preserving, finding-scoped simplification.",
@@ -323,16 +336,27 @@ def _function_risk(
         and function.max_nesting > function.base_max_nesting
     )
     fan_out = (
-        file.import_fan_out >= policy.fan_out_budget
-        and file.import_fan_out - file.base_import_fan_out >= policy.fan_out_delta
+        function.import_fan_out >= policy.fan_out_budget
+        and function.import_fan_out - function.base_import_fan_out
+        >= policy.fan_out_delta
     )
-    return complexity or nesting or fan_out or function.duplicate_count > 1
+    uncertain_coupling = function.capability != MetricCapability.EXACT and (
+        function.is_new or function.base_capability == MetricCapability.EXACT
+    )
+    return (
+        complexity
+        or nesting
+        or fan_out
+        or uncertain_coupling
+        or function.duplicate_count > 1
+    )
 
 
 def _significantly_changed(file: FileMetric, policy: LeanPolicy) -> bool:
     return (
         file.added_lines + file.deleted_lines >= policy.significant_changed_lines
-        or file.changed_ratio >= policy.significant_changed_ratio
+        or (file.added_lines + file.deleted_lines) / max(file.base_lines, 1)
+        >= policy.significant_changed_ratio
     )
 
 

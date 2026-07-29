@@ -243,8 +243,12 @@ def _controlled_listeners() -> Iterator[tuple[list[list[object]], int]]:
     try:
         for family, host in ((socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")):
             listener = socket.socket(family, socket.SOCK_STREAM)
-            listener.bind((host, 0))
-            listener.listen(1)
+            try:
+                listener.bind((host, 0))
+                listener.listen(1)
+            except BaseException:
+                listener.close()
+                raise
             listeners.append(listener)
             targets.append([family, list(listener.getsockname())])
             _prove_host_connectivity(listener, family)
@@ -342,7 +346,7 @@ def run_sandbox(
             text=True,
             cwd=context.normalized_run_root,
             env=_sandbox_environment(config_root, disposable_home, context),
-            **_popen_launch_kwargs(launch_envelope),
+            close_fds=_validated_close_fds(launch_envelope),
         )
         try:
             stdout, stderr = process.communicate(stdin_text, timeout=60)
@@ -381,9 +385,9 @@ def sandbox_command(
     )
 
 
-def _popen_launch_kwargs(
+def _validated_close_fds(
     envelope: ProbeLaunchEnvelope,
-) -> dict[str, object]:
+) -> bool:
     if (
         envelope.schema_version != "ai-sdlc-probe-launch.v1"
         or not envelope.close_fds
@@ -392,7 +396,7 @@ def _popen_launch_kwargs(
         or envelope.windows_handle_list
     ):
         raise ValueError("sandbox launch envelope is not supported")
-    return {"close_fds": envelope.close_fds}
+    return envelope.close_fds
 
 
 def _sandbox_environment(
@@ -650,7 +654,7 @@ def _probe_payload(
 
 
 def _probe_sentinel_target(
-    value: str,
+    value: str | Path,
     probe_root: Path,
     *,
     role: str,
@@ -748,19 +752,9 @@ def _probe_targets_unchanged(
     sentinel_fd: int,
     launch_envelope: ProbeLaunchEnvelope = _PROBE_LAUNCH_ENVELOPE,
 ) -> bool:
-    descriptors = [
-        payload["candidate_target"],
-        payload["candidate_read_target"],
-        *payload["peer_targets"],
-        *payload["peer_read_targets"],
-        payload["real_home_target"],
-        payload["real_home_read_target"],
-        *payload["global_config_targets"],
-        payload["runtime_read_target"],
-        payload["boundary_link_target"],
-        payload["boundary_link_read_target"],
-        payload["outside_target"],
-    ]
+    descriptors = _probe_descriptors(payload)
+    if descriptors is None:
+        return False
     try:
         sentinel = os.fstat(sentinel_fd)
     except OSError:
@@ -786,6 +780,33 @@ def _probe_targets_unchanged(
         if actual != expected:
             return False
     return True
+
+
+def _probe_descriptors(payload: dict[str, object]) -> list[object] | None:
+    peer_targets = payload.get("peer_targets")
+    peer_read_targets = payload.get("peer_read_targets")
+    global_config_targets = payload.get("global_config_targets")
+    if not all(
+        isinstance(values, (list, tuple))
+        for values in (peer_targets, peer_read_targets, global_config_targets)
+    ):
+        return None
+    assert isinstance(peer_targets, (list, tuple))
+    assert isinstance(peer_read_targets, (list, tuple))
+    assert isinstance(global_config_targets, (list, tuple))
+    return [
+        payload["candidate_target"],
+        payload["candidate_read_target"],
+        *peer_targets,
+        *peer_read_targets,
+        payload["real_home_target"],
+        payload["real_home_read_target"],
+        *global_config_targets,
+        payload["runtime_read_target"],
+        payload["boundary_link_target"],
+        payload["boundary_link_read_target"],
+        payload["outside_target"],
+    ]
 
 
 def decode_probe(

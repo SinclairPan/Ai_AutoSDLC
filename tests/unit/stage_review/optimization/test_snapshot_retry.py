@@ -97,3 +97,40 @@ def test_retry_does_not_replay_real_integrity_failure() -> None:
 
     assert attempts == [1]
     assert sleeps == []
+
+
+def test_expired_commit_lease_retries_the_idempotent_transaction() -> None:
+    attempts: list[int] = []
+
+    def expire_once(attempt: int) -> str:
+        attempts.append(attempt)
+        if attempt == 1:
+            raise SharedStateIntegrityError("optimization commit lease expired")
+        return "committed"
+
+    result = SnapshotControlRetryExecutor(sleeper=lambda _delay: None).run(
+        "operation.lease-expired",
+        expire_once,
+    )
+
+    assert result == "committed"
+    assert attempts == [1, 2]
+
+
+def test_expired_commit_lease_gets_one_recovery_after_contention_window() -> None:
+    attempts: list[int] = []
+    monotonic_values = iter((0.0, 2.001))
+
+    def expire_after_full_lease(attempt: int) -> str:
+        attempts.append(attempt)
+        if attempt == 1:
+            raise SharedStateIntegrityError("optimization commit lease expired")
+        return "committed"
+
+    result = SnapshotControlRetryExecutor(
+        monotonic=lambda: next(monotonic_values),
+        sleeper=lambda _delay: None,
+    ).run("operation.real-lease-expiry", expire_after_full_lease)
+
+    assert result == "committed"
+    assert attempts == [1, 2]

@@ -5,36 +5,29 @@ from __future__ import annotations
 import hashlib
 from enum import StrEnum
 from pathlib import Path
-from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
+from ai_sdlc.core.lean_code_metric_models import (
+    LEAN_ARTIFACT_SCHEMA_VERSION,
+    V2_FUNCTION_METRIC_FIELDS,
+    FileClassification,
+    FileMetric,
+    FunctionMetric,
+    LeanVersionedArtifact,
+    MetricCapability,
+)
+from ai_sdlc.core.lean_code_reviewer_models import (
+    LeanReviewerDecisionArtifact,
+    LeanReviewerFindingDecision,
+)
 from ai_sdlc.core.loop_models import LoopArtifactModel, LoopStatus
 from ai_sdlc.core.pr_review_models import FindingResolutionStatus, FindingSeverity
 from ai_sdlc.models.work import WorkType
 
 
-class FileClassification(StrEnum):
-    """Classification applied before maintainability budgets are interpreted."""
-
-    HANDWRITTEN_PRODUCT = "handwritten_product"
-    HANDWRITTEN_TEST = "handwritten_test"
-    GENERATED = "generated"
-    FIXTURE = "fixture"
-    VENDORED = "vendored"
-    SNAPSHOT = "snapshot"
-    DECLARATIVE = "declarative"
-    UNKNOWN = "unknown"
-
-
-class MetricCapability(StrEnum):
-    """Confidence contract for one language or metric adapter."""
-
-    EXACT = "exact"
-    CONSERVATIVE = "conservative"
-    UNSUPPORTED = "unsupported"
-
-
+# 分类与能力枚举继续从本模块重导出，实际定义集中在度量模型域。
+# 该兼容路径避免旧调用方因职责拆分而修改导入地址。
 class LeanEnforcementMode(StrEnum):
     """Project policy modes for non-integrity Lean findings."""
 
@@ -111,112 +104,8 @@ class RegressionEvidence(LoopArtifactModel):
         return self
 
 
-class LeanReviewerFindingDecision(BaseModel):
-    """One reviewer's evidence-bound decision for one exact Lean finding."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
-
-    stable_signature: str
-    rule_id: str
-    path: str
-    symbol: str = ""
-    verdict: str
-    rationale: str
-    contract_kind: str
-    contract_path: str
-    contract_digest: str
-    contract_symbol: str
-    exact_locators: list[str]
-    exact_locator_digests: dict[str, str]
-    verification_evidence_refs: list[str]
-    verification_evidence_digests: dict[str, str]
-
-    @model_validator(mode="after")
-    def _require_semantic_evidence(self) -> LeanReviewerFindingDecision:
-        required = (
-            self.stable_signature,
-            self.rule_id,
-            self.path,
-            self.verdict,
-            self.rationale,
-            self.contract_kind,
-            self.contract_path,
-            self.contract_digest,
-            self.contract_symbol,
-        )
-        if not all(item.strip() for item in required):
-            raise ValueError("Lean reviewer decision is incomplete")
-        if self.verdict not in {"approved", "rejected"}:
-            raise ValueError("Lean reviewer verdict is invalid")
-        if not self.exact_locators or not self.verification_evidence_refs:
-            raise ValueError("Lean reviewer semantic evidence is missing")
-        if set(self.exact_locators) != set(self.exact_locator_digests):
-            raise ValueError("Lean reviewer exact locator evidence is incomplete")
-        if set(self.verification_evidence_refs) != set(
-            self.verification_evidence_digests
-        ):
-            raise ValueError("Lean reviewer verification evidence is incomplete")
-        return self
-
-
-class LeanReviewerDecisionArtifact(LoopArtifactModel):
-    """Independent reviewer decisions bound to one frozen Lean evaluation."""
-
-    artifact_kind: str = "lean-reviewer-decision"
-    decision_id: str
-    reviewer_id: str
-    reviewer_role: str
-    review_project_id: str
-    review_work_item_id: str
-    review_stage_instance_id: str
-    review_session_id: str
-    review_pass_id: str
-    review_pass_digest: str
-    review_assignment_digest: str
-    decision_payload_digest: str
-    diff_hash: str
-    policy_digest: str
-    evaluation_digest: str
-    decisions: list[LeanReviewerFindingDecision]
-
-    @model_validator(mode="after")
-    def _require_independent_decisions(self) -> LeanReviewerDecisionArtifact:
-        required = (
-            self.decision_id,
-            self.reviewer_id,
-            self.reviewer_role,
-            self.review_project_id,
-            self.review_work_item_id,
-            self.review_stage_instance_id,
-            self.review_session_id,
-            self.review_pass_id,
-            self.review_pass_digest,
-            self.review_assignment_digest,
-            self.decision_payload_digest,
-            self.diff_hash,
-            self.policy_digest,
-            self.evaluation_digest,
-        )
-        if not all(item.strip() for item in required) or not self.decisions:
-            raise ValueError("Lean reviewer decision artifact is incomplete")
-        signatures = [item.stable_signature for item in self.decisions]
-        if len(signatures) != len(set(signatures)):
-            raise ValueError("Lean reviewer decisions must be unique by signature")
-        from ai_sdlc.core.lean_code_exception_review import (
-            reviewer_decision_payload_digest,
-        )
-
-        expected = reviewer_decision_payload_digest(
-            self.diff_hash,
-            self.policy_digest,
-            self.evaluation_digest,
-            self.decisions,
-        )
-        if self.decision_payload_digest != expected:
-            raise ValueError("Lean reviewer decision payload digest is invalid")
-        return self
-
-
+# 评审决策模型继续从本模块重导出，实际定义集中在评审协议域。
+# 该依赖方向避免评审权威与异常处置形成循环依赖。
 class LeanException(LoopArtifactModel):
     """A bounded exception that changes enforcement without hiding a finding."""
 
@@ -319,71 +208,9 @@ class LeanEvaluationInput(LoopArtifactModel):
     evaluation_round: int = Field(ge=1, le=2)
 
 
-class FunctionMetric(BaseModel):
-    """Deterministic measurements for one source function."""
-
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
-
-    symbol: str
-    logical_lines: int = Field(ge=0)
-    base_logical_lines: int = Field(default=0, ge=0)
-    complexity: int = Field(default=0, ge=0)
-    base_complexity: int = Field(default=0, ge=0)
-    max_nesting: int = Field(default=0, ge=0)
-    base_max_nesting: int = Field(default=0, ge=0)
-    caller_count: int = Field(default=0, ge=0)
-    caller_evidence: list[str] = Field(
-        default_factory=list, exclude_if=lambda value: not value
-    )
-    public: bool = False
-    is_new: bool = False
-    capability: MetricCapability = MetricCapability.UNSUPPORTED
-    binding_state: Literal["exact", "plausible", "disproven"] = "disproven"
-    execution_state: Literal[
-        "executed", "contractual", "referenced_only", "unreachable", "unknown"
-    ] = "unreachable"
-    invocation_boundary: str = ""
-    invocation_evidence: list[str] = Field(
-        default_factory=list, exclude_if=lambda value: not value
-    )
-    reference_evidence: list[str] = Field(
-        default_factory=list, exclude_if=lambda value: not value
-    )
-    unlinked_evidence: list[str] = Field(
-        default_factory=list, exclude_if=lambda value: not value
-    )
-    fingerprint: str = ""
-    duplicate_count: int = Field(default=1, ge=1)
-
-
-class FileMetric(BaseModel):
-    """Classification, diff, size, and semantic metrics for one changed file."""
-
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
-
-    path: str
-    classification: FileClassification
-    language: str = "unknown"
-    capability: MetricCapability = MetricCapability.UNSUPPORTED
-    base_lines: int = Field(default=0, ge=0)
-    head_lines: int = Field(default=0, ge=0)
-    added_lines: int = Field(default=0, ge=0)
-    deleted_lines: int = Field(default=0, ge=0)
-    import_fan_out: int = Field(default=0, ge=0)
-    base_import_fan_out: int = Field(default=0, ge=0)
-    functions: list[FunctionMetric] = Field(default_factory=list)
-    parse_errors: list[str] = Field(default_factory=list)
-
-    @property
-    def is_new(self) -> bool:
-        return self.base_lines == 0 and self.head_lines > 0
-
-    @property
-    def changed_ratio(self) -> float:
-        return (self.added_lines + self.deleted_lines) / max(self.base_lines, 1)
-
-
-class LeanMetrics(LoopArtifactModel):
+# 文件与函数度量通过本模块保持旧导入路径，实际定义集中在度量模型域。
+# 聚合工件只组合度量结果，不再重复声明底层模型。
+class LeanMetrics(LeanVersionedArtifact):
     """Aggregate deterministic metrics for one source snapshot."""
 
     artifact_kind: str = "lean-code-metrics"
@@ -405,8 +232,24 @@ class LeanMetrics(LoopArtifactModel):
     )
     files: list[FileMetric] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _require_schema_compatible_function_metrics(self) -> LeanMetrics:
+        if self.schema_version != "1":
+            return self
+        for file_metric in self.files:
+            for function_metric in file_metric.functions:
+                incompatible = (
+                    function_metric.model_fields_set & V2_FUNCTION_METRIC_FIELDS
+                )
+                if incompatible:
+                    fields = ", ".join(sorted(incompatible))
+                    raise ValueError(
+                        f"schema v1 cannot contain v2-only FunctionMetric fields: {fields}"
+                    )
+        return self
 
-class LeanEvaluationReport(LoopArtifactModel):
+
+class LeanEvaluationReport(LeanVersionedArtifact):
     """Machine truth for a single bounded Lean evaluation round."""
 
     artifact_kind: str = "lean-code-report"
@@ -427,6 +270,14 @@ class LeanEvaluationReport(LoopArtifactModel):
     risk_accepted: bool = False
     previous_signatures: list[str] = Field(default_factory=list)
     stop_reason: str = ""
+
+    @model_validator(mode="after")
+    def _require_nested_schema_version(self) -> LeanEvaluationReport:
+        if self.metrics.schema_version != self.schema_version:
+            raise ValueError(
+                "metrics schema_version must match report schema_version"
+            )
+        return self
 
     @property
     def blocking_findings(self) -> list[LeanFinding]:
@@ -517,6 +368,7 @@ def evaluation_profile_for(work_type: WorkType) -> LeanEvaluationProfile:
 
 __all__ = [
     "FileClassification",
+    "LEAN_ARTIFACT_SCHEMA_VERSION",
     "LeanEnforcementMode",
     "LeanEvaluationInput",
     "LeanEvaluationReport",
@@ -524,8 +376,11 @@ __all__ = [
     "LeanException",
     "LeanFinding",
     "LeanPolicy",
+    "LeanVersionedArtifact",
     "LeanMetrics",
     "LeanNoGoDecision",
+    "LeanReviewerDecisionArtifact",
+    "LeanReviewerFindingDecision",
     "FileMetric",
     "FunctionMetric",
     "MetricCapability",

@@ -58,7 +58,10 @@ from ai_sdlc.core.stage_review.artifacts import (
     resolve_canonical_shared_state,
     resolve_repository_project_id,
 )
-from ai_sdlc.core.stage_review.candidate import candidate_binding_digest
+from ai_sdlc.core.stage_review.candidate import (
+    CandidateManifest,
+    candidate_binding_digest,
+)
 from ai_sdlc.core.stage_review.canonical import (
     CanonicalizationPolicy,
     canonical_digest,
@@ -203,6 +206,50 @@ def test_clean_committed_loop_close_materializes_artifact_bound_candidate(
 
     attestation = read_stage_close_gate_attestations(tmp_path)[0]
     assert attestation.candidate.status == "materialized"
+
+
+def test_planner_failure_preserves_materialized_candidate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _init_git_repo(tmp_path)
+    _write(tmp_path, "specs/001/spec.md", "# Requirement\n")
+    _write(tmp_path, "src/app.py", "VALUE = 1\n")
+    prepared, close_path = _prepared_implementation_close(
+        tmp_path,
+        "implementation.planner-failure",
+    )
+
+    def writer() -> dict[str, str]:
+        _write(tmp_path, close_path.relative_to(tmp_path).as_posix(), "{}\n")
+        return {"status": "ready", "loop_status": "closed"}
+
+    monkeypatch.setattr(
+        shadow_planning_runtime,
+        "hold_stage_review_plan",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("planner failed")
+        ),
+    )
+
+    StageCloseGateway().execute(prepared, writer)
+
+    attestation = read_stage_close_gate_attestations(tmp_path)[0]
+    assert attestation.candidate.status == "materialized"
+    assert attestation.planning.status == "failed"
+    candidate_ref = Path(attestation.candidate.candidate_ref)
+    shared = resolve_canonical_shared_state(
+        tmp_path,
+        resolve_repository_project_id(tmp_path),
+    )
+    persisted = CandidateManifest.model_validate_json(
+        (shared / "shadow-planning" / candidate_ref.parent.name / candidate_ref.name)
+        .read_text(encoding="utf-8")
+    )
+    assert (
+        candidate_binding_digest(persisted)
+        == attestation.candidate.candidate_manifest_digest
+    )
 
 
 def test_shadow_candidate_never_omits_staged_changes(tmp_path: Path) -> None:

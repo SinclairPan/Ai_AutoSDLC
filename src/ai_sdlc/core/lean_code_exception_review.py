@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -12,12 +11,15 @@ from ai_sdlc.core.lean_code_models import (
     LeanException,
     LeanFinding,
     LeanReviewerDecisionArtifact,
-    LeanReviewerFindingDecision,
 )
 from ai_sdlc.core.lean_code_reviewer_authority import (
     TrustedLeanReviewerExecution,
     resolve_reviewer_execution,
     reviewer_independence_issue,
+)
+from ai_sdlc.core.lean_code_reviewer_models import (
+    LeanReviewerFindingDecision,
+    _reviewer_decision_payload_digest,
 )
 
 _SEMANTIC_CONTRACT_KINDS = frozenset(
@@ -197,32 +199,10 @@ def exact_locator_digest(reference: str, symbol: str, line: int, text: str) -> s
     return f"sha256:{hashlib.sha256(payload).hexdigest()}"
 
 
-def reviewer_decision_payload_digest(
-    diff_hash: str,
-    policy_digest: str,
-    evaluation_digest: str,
-    decisions: list[LeanReviewerFindingDecision] | list[dict[str, object]],
-) -> str:
-    normalized = [
-        item.model_dump(mode="json")
-        if isinstance(item, LeanReviewerFindingDecision)
-        else item
-        for item in decisions
-    ]
-    payload = {
-        "diff_hash": diff_hash,
-        "policy_digest": policy_digest,
-        "evaluation_digest": evaluation_digest,
-        "decisions": normalized,
-    }
-    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-    return f"sha256:{hashlib.sha256(encoded.encode()).hexdigest()}"
-
-
 def _locator_symbol_matches(path: Path, source: str, symbol: str, line: int) -> bool:
     if symbol == "<module>":
         return bool(source.splitlines()[line - 1].strip())
-    if path.suffix != ".py":
+    if path.suffix.casefold() != ".py":
         return symbol in source.splitlines()[line - 1]
     try:
         tree = ast.parse(source)
@@ -263,6 +243,22 @@ def _reference_digest_issue(
     if expected_digest and expected_digest != actual:
         return f"digest is stale: {reference}", path
     return "", path
+
+
+def reviewer_decision_payload_digest(
+    diff_hash: str,
+    policy_digest: str,
+    evaluation_digest: str,
+    decisions: list[LeanReviewerFindingDecision] | list[dict[str, object]],
+) -> str:
+    """保持既有公共导入路径，摘要实现由 reviewer 模型域唯一维护。"""
+
+    return _reviewer_decision_payload_digest(
+        diff_hash,
+        policy_digest,
+        evaluation_digest,
+        decisions,
+    )
 
 
 __all__ = ["exact_locator_digest", "reviewer_decision_payload_digest"]

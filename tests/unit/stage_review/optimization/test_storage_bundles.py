@@ -224,13 +224,14 @@ def test_replayed_reservation_reuses_bundle_after_release_retry_exhaustion(
 def test_replayed_reservation_rejects_parameter_drift(tmp_path: Path) -> None:
     governor = _governor(tmp_path)
     ledger = ResourceStorageBundleLedger(governor._store)
-    ledger.reserve(
+    initial = ledger.reserve(
         bundle_class="critical_recovery",
         bundle_bytes=10,
         net_reclaim_bytes=0,
         policy=_policy(),
         operation_id="bundle.replay-drift",
     )
+    initial.release()
 
     with pytest.raises(SharedStateIntegrityError, match="diverged"):
         ledger.reserve(
@@ -320,6 +321,7 @@ def test_foreign_reservation_cannot_poison_local_release_intents(
         operation_id="bundle.local-after-foreign",
     )
     local_handle.release()
+    foreign_handle.release()
 
 
 def test_concurrent_release_of_same_reservation_is_idempotent(tmp_path: Path) -> None:
