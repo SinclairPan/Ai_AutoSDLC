@@ -48,6 +48,7 @@ from ai_sdlc.core.stage_review.close_gate_models import (
     PreparedStageClose,
     StageCloseGateAttestation,
     StageCloseGateOperation,
+    StageCloseRecoveryBinding,
 )
 from ai_sdlc.core.stage_review.close_gate_observation import (
     _build_reobservation_operation as build_reobservation_operation,
@@ -92,6 +93,7 @@ from ai_sdlc.core.stage_review.close_gate_store import (
 from ai_sdlc.core.stage_review.close_gate_store import (
     advance_gate_operation,
 )
+from ai_sdlc.core.stage_review.repo_write_lease import canonical_worktree_identity
 from ai_sdlc.core.stage_review.resource_builders import stable_id
 from ai_sdlc.core.stage_review.shadow_planning_runtime import (
     ShadowPlanningOutcome,
@@ -102,6 +104,9 @@ from ai_sdlc.core.stage_review.shadow_planning_runtime import (
 )
 from ai_sdlc.core.stage_review.shadow_planning_runtime import (
     _preflight_shadow_planning as preflight_shadow_planning,
+)
+from ai_sdlc.core.stage_review.stage_close_product_contract import (
+    _enforce_partial_stage_close_is_recoverable,
 )
 from ai_sdlc.core.stage_review.stage_review_execution import (
     StageCloseGateUnavailableError,
@@ -127,11 +132,14 @@ class StageCloseGateway:
         | None = None,
         review_executor: StageReviewExecutor | None = None,
         close_enforcer: StageReviewRuntime | None = None,
+        *,
+        require_durable_shadow_intent: bool = False,
     ) -> None:
         self._uses_canonical_resolver = resolver is None
         self._resolver = resolver or shadow_applicability
         self._review_executor = review_executor
         self._close_enforcer = close_enforcer
+        self._require_durable_shadow_intent = require_durable_shadow_intent
 
     def execute(
         self,
@@ -196,7 +204,11 @@ class StageCloseGateway:
         try:
             lock = gate_execution_lock(prepared.root, operation_id)
             lock.__enter__()
-        except Exception:
+        except Exception as exc:
+            if self._require_durable_shadow_intent:
+                raise StageCloseGateUnavailableError(
+                    "stage-close-operation-lock-unavailable"
+                ) from exc
             return writer()
         try:
             return self._execute_shadow(
@@ -228,7 +240,11 @@ class StageCloseGateway:
                 raise StageCloseGateUnavailableError(
                     "activation-policy-changed-before-operation-prepare"
                 )
-            operation = _prepare_operation(prepared, existed_before)
+            operation = _prepare_operation(
+                prepared,
+                existed_before,
+                fail_closed=self._require_durable_shadow_intent,
+            )
         result = writer()
         try:
             with activation_safety_mutation_fence(prepared.root, project_id):
@@ -257,6 +273,7 @@ class StageCloseGateway:
                 result,
                 preflight,
                 self._review_executor,
+                artifact_existed_before_execution=existed_before,
                 require_canonical_policy=self._uses_canonical_resolver,
             )
         except Exception as exc:  # Shadow 诊断不能改变原命令结果。
@@ -267,12 +284,219 @@ class StageCloseGateway:
 def execute_stage_close(
     prepared: PreparedStageClose,
     writer: Callable[[], _RESULT],
+    *,
+    require_durable_shadow_intent: bool = False,
 ) -> _RESULT:
     executor = build_stage_review_executor(prepared.root)
     return StageCloseGateway(
         review_executor=executor,
         close_enforcer=executor,
+        require_durable_shadow_intent=require_durable_shadow_intent,
     ).execute(prepared, writer)
+
+
+def _interrupted_stage_close_is_recoverable(prepared: PreparedStageClose) -> bool:
+    """确认现有 close 来自同一持久化 writer 意图，而非预置普通文件。"""
+
+    try:
+        _refresh_activation_before_close(prepared.root)
+        preflight = preflight_shadow_planning(prepared)
+        risk_level = (
+            preflight.risk_profile.risk_level
+            if preflight.risk_profile is not None
+            else "unclassified"
+        )
+        frozen = replace(prepared, risk_level=risk_level)
+        decision = shadow_applicability(frozen)
+        if decision.mode == "enforce":
+            return bool(
+                preflight.candidate is not None
+                and _enforce_partial_stage_close_is_recoverable(
+                    frozen,
+                    decision,
+                    preflight.candidate,
+                )
+            )
+        operation = read_gate_operation(
+            prepared.root,
+            stage_close_operation_id(prepared),
+        )
+        if operation is not None and operation.recovery_binding is not None:
+            recovered = _restore_post_writer_recovery_input(prepared)
+            return bool(
+                operation.state == "prepared"
+                and not operation.artifact_existed_before
+                and recovered.stage_input_digest == operation.stage_input_digest
+            )
+    except (OSError, StageCloseGateUnavailableError, ValueError):
+        return False
+    return bool(
+        operation is not None
+        and operation.state == "prepared"
+        and not operation.artifact_existed_before
+        and operation.stage_input_digest == prepared.stage_input_digest
+    )
+
+
+def _prepare_stage_close_recovery_intent(
+    prepared: PreparedStageClose,
+) -> PreparedStageClose:
+    """Design 等产品 writer 可用此入口确保 Shadow 恢复意图先可靠落盘。"""
+
+    _refresh_activation_before_close(prepared.root)
+    preflight = preflight_shadow_planning(prepared)
+    risk_level = (
+        preflight.risk_profile.risk_level
+        if preflight.risk_profile is not None
+        else "unclassified"
+    )
+    frozen = replace(prepared, risk_level=risk_level)
+    if shadow_applicability(frozen).mode == "enforce":
+        return frozen
+    frozen = _restore_post_writer_recovery_input(frozen)
+    prepare_gate_operation(
+        prepared.root,
+        _new_gate_operation(
+            frozen,
+            (prepared.root / prepared.close_artifact_path).is_file(),
+        ),
+    )
+    return frozen
+
+
+def _restore_post_writer_recovery_input(
+    prepared: PreparedStageClose,
+) -> PreparedStageClose:
+    operation = read_gate_operation(
+        prepared.root,
+        stage_close_operation_id(prepared),
+    )
+    if (
+        operation is None
+        or operation.artifact_existed_before
+        or operation.recovery_binding is None
+    ):
+        return prepared
+    binding = operation.recovery_binding
+    _require_recovery_binding_identity(prepared, binding)
+    _require_recovery_protected_artifacts(prepared, binding)
+    predecessor = type(prepared.stage_state).model_validate(
+        binding.predecessor_stage_state
+    )
+    successor = type(prepared.stage_state).model_validate(
+        binding.successor_stage_state
+    )
+    predecessor_digest = canonical_digest(predecessor, CanonicalizationPolicy())
+    successor_digest = canonical_digest(successor, CanonicalizationPolicy())
+    if (
+        predecessor_digest != binding.predecessor_stage_digest
+        or predecessor_digest != operation.stage_input_digest
+        or successor_digest != binding.successor_stage_digest
+    ):
+        raise ValueError("stage close recovery state binding diverged")
+    _require_recovery_files_current(
+        prepared,
+        operation,
+        binding,
+        predecessor_digest=predecessor_digest,
+        successor_digest=successor_digest,
+    )
+    return replace(
+        prepared,
+        stage_status=str(getattr(predecessor, "status", "")),
+        stage_input_digest=operation.stage_input_digest,
+        stage_state=predecessor,
+        recovery_binding=binding,
+    )
+
+
+def _require_recovery_binding_identity(
+    prepared: PreparedStageClose,
+    binding: StageCloseRecoveryBinding,
+) -> None:
+    current = (
+        binding.project_id,
+        binding.worktree_identity,
+        binding.adapter_id,
+        binding.adapter_version,
+        binding.adapter_contract_digest,
+        binding.stage_key,
+        binding.loop_id,
+        binding.stage_instance_id,
+        binding.work_item_id,
+        binding.loop_round_number,
+        binding.close_kind,
+        binding.target_status,
+        binding.close_artifact_path,
+    )
+    expected = (
+        resolve_repository_project_id(prepared.root),
+        canonical_worktree_identity(prepared.root),
+        prepared.adapter_id,
+        prepared.adapter_version,
+        prepared.adapter_contract_digest,
+        prepared.stage_key,
+        prepared.loop_id,
+        prepared.stage_instance_id,
+        prepared.work_item_id,
+        prepared.loop_round_number,
+        prepared.close_kind,
+        prepared.target_status,
+        prepared.close_artifact_path,
+    )
+    if current != expected:
+        raise ValueError("stage close recovery identity diverged")
+
+
+def _require_recovery_protected_artifacts(
+    prepared: PreparedStageClose,
+    binding: StageCloseRecoveryBinding,
+) -> None:
+    for relative, expected_digest in binding.protected_artifact_digests:
+        path = (prepared.root / relative).resolve()
+        try:
+            path.relative_to(prepared.root)
+        except ValueError as exc:
+            raise ValueError("stage close recovery artifact escaped repository") from exc
+        if not path.is_file() or file_digest(path) != expected_digest:
+            raise ValueError("stage close recovery protected artifact diverged")
+
+
+def _require_recovery_files_current(
+    prepared: PreparedStageClose,
+    operation: StageCloseGateOperation,
+    binding: StageCloseRecoveryBinding,
+    *,
+    predecessor_digest: str,
+    successor_digest: str,
+) -> None:
+    current_digest = canonical_digest(
+        prepared.stage_state,
+        CanonicalizationPolicy(),
+    )
+    close_path = prepared.root / prepared.close_artifact_path
+    close_digest = file_digest(close_path) if close_path.is_file() else ""
+    if current_digest == predecessor_digest:
+        if close_digest and close_digest != binding.close_artifact_file_digest:
+            raise ValueError("stage close recovery close artifact diverged")
+        if operation.state != "prepared":
+            raise ValueError("completed stage close returned to predecessor state")
+        return
+    if (
+        current_digest != successor_digest
+        or close_digest != binding.close_artifact_file_digest
+    ):
+        raise ValueError("stage close recovery successor diverged")
+    if operation.state in {"original_completed", "shadow_observed"} and (
+        operation.close_artifact_digest != close_digest
+    ):
+        raise ValueError("stage close recovery completion diverged")
+    if operation.state == "shadow_observed" and not gate_attestation_is_current(
+        prepared.root,
+        operation,
+        close_path,
+    ):
+        raise ValueError("stage close recovery attestation is stale")
 
 
 def _read_stage_close_gate_attestations(
@@ -286,8 +510,25 @@ def _read_stage_close_gate_attestations(
 def _prepare_operation(
     prepared: PreparedStageClose,
     artifact_existed_before: bool,
+    *,
+    fail_closed: bool = False,
 ) -> StageCloseGateOperation:
-    operation = StageCloseGateOperation(
+    operation = _new_gate_operation(prepared, artifact_existed_before)
+    try:
+        return prepare_gate_operation(prepared.root, operation)
+    except Exception as exc:
+        if fail_closed:
+            raise StageCloseGateUnavailableError(
+                "stage-close-operation-persistence-unavailable"
+            ) from exc
+        return operation
+
+
+def _new_gate_operation(
+    prepared: PreparedStageClose,
+    artifact_existed_before: bool,
+) -> StageCloseGateOperation:
+    return StageCloseGateOperation(
         operation_id=stage_close_operation_id(prepared),
         stage_key=prepared.stage_key,
         loop_id=prepared.loop_id,
@@ -295,11 +536,8 @@ def _prepare_operation(
         state="prepared",
         stage_input_digest=prepared.stage_input_digest,
         artifact_existed_before=artifact_existed_before,
+        recovery_binding=prepared.recovery_binding,
     )
-    try:
-        return prepare_gate_operation(prepared.root, operation)
-    except Exception:
-        return operation
 
 
 def _complete_shadow_observation(
@@ -310,6 +548,7 @@ def _complete_shadow_observation(
     preflight: ShadowPlanningPreflight,
     executor: StageReviewExecutor | None,
     *,
+    artifact_existed_before_execution: bool,
     require_canonical_policy: bool,
 ) -> None:
     project_id = resolve_repository_project_id(prepared.root)
@@ -322,7 +561,12 @@ def _complete_shadow_observation(
             raise StageCloseGateUnavailableError(
                 "activation-policy-changed-before-original-completion"
             )
-        completed = _complete_original_operation(prepared, operation, result)
+        completed = _complete_original_operation(
+            prepared,
+            operation,
+            result,
+            artifact_existed_before_execution=artifact_existed_before_execution,
+        )
     if completed is None:
         return
     planning = observe_shadow_planning(
@@ -365,24 +609,28 @@ def _complete_original_operation(
     prepared: PreparedStageClose,
     operation: StageCloseGateOperation,
     result: object,
+    *,
+    artifact_existed_before_execution: bool,
 ) -> StageCloseGateOperation | None:
     artifact_path = prepared.root / prepared.close_artifact_path
     if not artifact_path.is_file():
         return None
     artifact_digest = file_digest(artifact_path)
-    if operation.artifact_existed_before:
-        result_payload = reconciled_result(prepared, artifact_digest)
-    else:
-        result_payload = observation_result(
-            prepared,
-            stage_close_result_payload(result),
-            artifact_digest,
-        )
+    if (
+        operation.state in {"original_completed", "shadow_observed"}
+        and operation.close_artifact_digest == artifact_digest
+    ):
+        return operation
+    result_payload = _original_completion_payload(
+        prepared,
+        operation,
+        result,
+        artifact_digest,
+        artifact_existed_before_execution=artifact_existed_before_execution,
+    )
     if result_payload is None:
         return None
     if operation.state in {"original_completed", "shadow_observed"}:
-        if operation.close_artifact_digest == artifact_digest:
-            return operation
         return prepare_gate_operation(
             prepared.root,
             build_reobservation_operation(
@@ -396,7 +644,20 @@ def _complete_original_operation(
                 ),
             ),
         )
-    completed = operation.model_copy(
+    completed = _completed_original_operation(
+        operation,
+        result_payload,
+        artifact_digest,
+    )
+    return advance_gate_operation(prepared.root, completed)
+
+
+def _completed_original_operation(
+    operation: StageCloseGateOperation,
+    result_payload: dict[str, object],
+    artifact_digest: str,
+) -> StageCloseGateOperation:
+    return operation.model_copy(
         update={
             "state": "original_completed",
             "result_digest": canonical_digest(
@@ -409,7 +670,37 @@ def _complete_original_operation(
             "last_error_code": "",
         }
     )
-    return advance_gate_operation(prepared.root, completed)
+
+
+def _original_completion_payload(
+    prepared: PreparedStageClose,
+    operation: StageCloseGateOperation,
+    result: object,
+    artifact_digest: str,
+    *,
+    artifact_existed_before_execution: bool,
+) -> dict[str, object] | None:
+    is_post_writer_recovery = bool(
+        operation.state == "prepared"
+        and (
+            operation.last_error_code
+            or artifact_existed_before_execution
+        )
+    )
+    writer_payload = stage_close_result_payload(result)
+    if operation.artifact_existed_before or is_post_writer_recovery:
+        result_payload = reconciled_result(
+            prepared,
+            artifact_digest,
+            writer_payload,
+        )
+    else:
+        result_payload = observation_result(
+            prepared,
+            writer_payload,
+            artifact_digest,
+        )
+    return result_payload
 
 
 def _build_attestation(
@@ -459,6 +750,7 @@ def _build_attestation(
         "observation_origin": (
             "closed_reconciliation"
             if operation.artifact_existed_before
+            or operation.result_status == "reconciled"
             else "close_execution"
         ),
         "supersedes_attestation_id": operation.supersedes_attestation_id,

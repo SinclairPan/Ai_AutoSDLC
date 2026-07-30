@@ -31,15 +31,18 @@ from ai_sdlc.core.stage_review.close_governance import (
     StageCloseGovernanceAuthority,
 )
 from ai_sdlc.core.stage_review.close_models import (
-    CloseArtifactContract,
     StageCloseAuthorization,
     StageCloseContext,
 )
-from ai_sdlc.core.stage_review.finding_models import FindingScope
 from ai_sdlc.core.stage_review.resource_builders import stable_id, utc_iso
 from ai_sdlc.core.stage_review.session import StageReviewSessionService
 from ai_sdlc.core.stage_review.stage_close_command_recovery import (
     recover_closed_command,
+)
+from ai_sdlc.core.stage_review.stage_close_product_contract import (
+    _product_close_intent,
+    _product_close_marker_contract,
+    _product_close_scope,
 )
 from ai_sdlc.core.stage_review.stage_close_result_codec import (
     persist_product_result,
@@ -148,7 +151,7 @@ def recover_product_stage_close(
             "stage-close-command",
             stage_close_operation_id(prepared),
         ),
-        contract=_marker_contract(prepared, decision, candidate),
+        contract=_product_close_marker_contract(prepared, decision, candidate),
     )
     if authorization is None:
         return None
@@ -163,7 +166,11 @@ def _close_authority_context(
 ) -> tuple[StageCloseAuthorizer, StageCloseContext]:
     request = runtime.execution_request(mode="enforce")
     reconciliation_digest = _reconcile_review_resources(prepared, request)
-    marker = _marker_contract(prepared, decision, runtime.planned.candidate)
+    marker = _product_close_marker_contract(
+        prepared,
+        decision,
+        runtime.planned.candidate,
+    )
     evidence_authority = PreparedStageCloseEvidenceAuthority(
         prepared,
         decision,
@@ -255,52 +262,10 @@ def _intent(
     decision: GateApplicabilityDecision,
     runtime: HeldStageReviewPlan,
 ) -> StageCloseIntent:
-    candidate = runtime.planned.candidate
-    operation_id = stage_close_operation_id(prepared)
-    return StageCloseIntent(
-        scope=_scope(candidate),
-        gate_id=decision.gate_id,
-        close_kind=prepared.close_kind,
-        target_status=prepared.target_status,
-        command_id=stable_id("stage-close-command", operation_id),
-        idempotency_key=stable_id("stage-close-key", operation_id),
-        loop_id=prepared.loop_id,
-        loop_round_number=prepared.loop_round_number,
-    )
-
-
-def _scope(candidate: CandidateManifest) -> FindingScope:
-    return FindingScope(
-        project_id=candidate.project_id,
-        work_item_id=candidate.work_item_id,
-        stage_instance_id=candidate.stage_instance_id,
-        session_id=candidate.review_session_id,
-    )
-
-
-def _marker_contract(
-    prepared: PreparedStageClose,
-    decision: GateApplicabilityDecision,
-    candidate: CandidateManifest,
-) -> CloseArtifactContract:
-    operation_id = stage_close_operation_id(prepared)
-    path = f".ai-sdlc/state/stage-close-authorizations/{operation_id}.json"
-    result_path = product_result_path(prepared).relative_to(prepared.root).as_posix()
-    return CloseArtifactContract(
-        artifact_path=path,
-        payload={
-            "schema_version": "stage-close-authorization.v1",
-            "artifact_kind": "stage-close-authorization",
-            "operation_id": operation_id,
-            "stage_key": prepared.stage_key,
-            "close_kind": prepared.close_kind,
-            "target_status": prepared.target_status,
-            "stage_input_digest": prepared.stage_input_digest,
-            "product_close_artifact_path": prepared.close_artifact_path,
-            "product_result_artifact_path": result_path,
-            "candidate_manifest_digest": candidate_binding_digest(candidate),
-            "gate_decision_digest": decision.decision_digest,
-        },
+    return _product_close_intent(
+        prepared,
+        decision,
+        runtime.planned.candidate,
     )
 
 
@@ -346,7 +311,7 @@ def _intent_matches(
     intent: StageCloseIntent,
 ) -> bool:
     return (
-        intent.scope == _scope(candidate)
+        intent.scope == _product_close_scope(candidate)
         and candidate.work_item_id == prepared.work_item_id
         and candidate.loop_id == prepared.loop_id
         and candidate.loop_round_number == prepared.loop_round_number

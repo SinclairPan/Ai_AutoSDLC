@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -26,6 +27,9 @@ from ai_sdlc.core.stage_review.optimization.observations import (
 )
 from ai_sdlc.core.stage_review.stage_adapter_registry import (
     default_stage_candidate_adapter_registry,
+)
+from ai_sdlc.core.stage_review.stage_close_product_contract import (
+    _enforce_partial_stage_close_is_recoverable,
 )
 from ai_sdlc.core.stage_review.stage_close_product_runtime import (
     authorize_product_stage_close,
@@ -164,6 +168,79 @@ def test_same_product_close_command_recovers_without_rerunning_writer(
     assert second == first
     assert calls == 1
     assert len(read_activation_session_records(tmp_path)) == 1
+
+
+def test_untracked_product_close_is_not_an_enforce_recovery_authority(
+    tmp_path: Path,
+) -> None:
+    rig = _executor_rig(tmp_path, transport_available=True)
+    prepared = _prepared_close(tmp_path)
+    path = tmp_path / prepared.close_artifact_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('{"status":"closed"}\n', encoding="utf-8")
+
+    assert (
+        _enforce_partial_stage_close_is_recoverable(
+            prepared,
+            _enforce_decision(tmp_path, prepared),
+            rig.request.candidate,
+        )
+        is False
+    )
+
+
+def test_enforce_prepared_claim_authorizes_product_close_recovery(
+    tmp_path: Path,
+) -> None:
+    sessions = []
+    rig = _executor_rig(
+        tmp_path,
+        transport_available=True,
+        on_authorized=sessions.append,
+    )
+    outcome = rig.executor.execute(rig.request)
+    assert outcome.status == "completed", outcome
+    prepared = _prepared_close(tmp_path)
+    decision = _enforce_decision(tmp_path, prepared)
+    runtime = HeldStageReviewPlan(
+        planned=rig.request.proposal,
+        held=_held_plan(rig.request),
+        source_snapshot=rig.request.source_snapshot,
+        refs={},
+    )
+
+    def interrupted_writer() -> dict[str, str]:
+        path = tmp_path / prepared.close_artifact_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"status":"closed"}\n', encoding="utf-8")
+        raise RuntimeError("simulated product writer interruption")
+
+    with pytest.raises(RuntimeError, match="simulated product writer interruption"):
+        authorize_product_stage_close(
+            prepared,
+            decision,
+            runtime,
+            sessions[0],
+            interrupted_writer,
+        )
+
+    assert _enforce_partial_stage_close_is_recoverable(
+        prepared,
+        decision,
+        rig.request.candidate,
+    )
+    changed = replace(
+        prepared,
+        stage_input_digest="sha256:" + ("f" * 64),
+    )
+    assert (
+        _enforce_partial_stage_close_is_recoverable(
+            changed,
+            decision,
+            rig.request.candidate,
+        )
+        is False
+    )
 
 
 def test_product_result_codec_restores_governed_model(tmp_path: Path) -> None:

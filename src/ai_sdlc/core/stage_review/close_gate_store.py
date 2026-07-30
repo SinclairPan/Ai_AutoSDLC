@@ -205,6 +205,8 @@ def _require_same_operation(
     proposed_identity = (proposed.stage_key, proposed.loop_id, proposed.close_kind)
     if current_identity != proposed_identity:
         raise ValueError("stage close operation identity diverged")
+    if current.recovery_binding != proposed.recovery_binding:
+        raise ValueError("stage close operation recovery binding diverged")
 
 
 def _require_same_completion(
@@ -236,12 +238,10 @@ def _reconcile_prepared_input(
 ) -> StageCloseGateOperation:
     if current.state != "prepared":
         return current
-    if proposed.artifact_existed_before:
-        reconciled = current.model_copy(update={"artifact_existed_before": True})
-        _write_operation_path(paths, reconciled)
-        return reconciled
     if current.stage_input_digest == proposed.stage_input_digest:
         return current
+    if proposed.artifact_existed_before:
+        raise ValueError("stage close partial commit input diverged")
     _write_operation_path(paths, proposed)
     return proposed
 

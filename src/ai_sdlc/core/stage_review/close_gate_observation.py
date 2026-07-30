@@ -37,8 +37,11 @@ def _result_closes_stage(result: dict[str, object]) -> bool:
 def _reconciled_result(
     prepared: PreparedStageClose,
     artifact_digest: str,
+    result: dict[str, object] | None = None,
 ) -> dict[str, object] | None:
-    if prepared.stage_status != "closed":
+    if prepared.stage_status != "closed" and not (
+        result is not None and _result_closes_stage(result)
+    ):
         return None
     return {
         "status": "reconciled",
@@ -55,7 +58,7 @@ def _observation_result(
 ) -> dict[str, object] | None:
     if _result_closes_stage(result):
         return result
-    return _reconciled_result(prepared, artifact_digest)
+    return _reconciled_result(prepared, artifact_digest, result)
 
 
 def _stage_close_result_payload(result: object) -> dict[str, object]:

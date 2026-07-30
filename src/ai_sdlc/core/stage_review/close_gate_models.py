@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 from ai_sdlc.core.stage_review.artifact_compat import (
     ArtifactCompatibility,
     fill_artifact_digest,
+    freeze_json_mapping,
 )
 from ai_sdlc.core.stage_review.canonical import normalize_repo_path
 from ai_sdlc.core.stage_review.finding_models import FindingScope
@@ -56,6 +57,88 @@ class GateApplicabilityDecision(ArtifactCompatibility):
         return fill_artifact_digest(self, "decision_digest")
 
 
+class StageCloseRecoveryBinding(ArtifactCompatibility):
+    """把 durable writer 的输入与唯一允许的输出绑定为不可变计划。"""
+
+    model_config = _MODEL_CONFIG
+    schema_version: Literal["stage-close-recovery-binding.v1"] = (
+        "stage-close-recovery-binding.v1"
+    )
+    artifact_kind: Literal["stage-close-recovery-binding"] = (
+        "stage-close-recovery-binding"
+    )
+    operation_id: str
+    project_id: str
+    worktree_identity: str
+    adapter_id: str
+    adapter_version: str
+    adapter_contract_digest: str
+    stage_key: str
+    loop_id: str
+    stage_instance_id: str
+    work_item_id: str
+    loop_round_number: int = Field(ge=1)
+    close_kind: str
+    target_status: str
+    close_artifact_path: str
+    predecessor_stage_state: dict[str, object]
+    predecessor_stage_digest: str
+    successor_stage_state: dict[str, object]
+    successor_stage_digest: str
+    close_artifact_payload: dict[str, object]
+    close_artifact_file_digest: str
+    writer_arguments_digest: str
+    protected_artifact_digests: tuple[tuple[str, str], ...]
+    binding_digest: str = ""
+
+    @field_validator("close_artifact_path")
+    @classmethod
+    def _normalize_close_path(cls, value: str) -> str:
+        return normalize_repo_path(value)
+
+    @model_validator(mode="after")
+    def _validate_binding(self) -> StageCloseRecoveryBinding:
+        required = (
+            self.operation_id,
+            self.project_id,
+            self.worktree_identity,
+            self.adapter_id,
+            self.adapter_version,
+            self.adapter_contract_digest,
+            self.stage_key,
+            self.loop_id,
+            self.stage_instance_id,
+            self.work_item_id,
+            self.close_kind,
+            self.target_status,
+            self.close_artifact_path,
+            self.predecessor_stage_digest,
+            self.successor_stage_digest,
+            self.close_artifact_file_digest,
+            self.writer_arguments_digest,
+        )
+        if any(not value.strip() or value != value.strip() for value in required):
+            raise ValueError("stage close recovery binding is incomplete")
+        if not self.protected_artifact_digests:
+            raise ValueError("stage close recovery binding has no protected artifacts")
+        object.__setattr__(
+            self,
+            "predecessor_stage_state",
+            freeze_json_mapping(self.predecessor_stage_state),
+        )
+        object.__setattr__(
+            self,
+            "successor_stage_state",
+            freeze_json_mapping(self.successor_stage_state),
+        )
+        object.__setattr__(
+            self,
+            "close_artifact_payload",
+            freeze_json_mapping(self.close_artifact_payload),
+        )
+        return fill_artifact_digest(self, "binding_digest")
+
+
 class StageCloseGateOperation(BaseModel):
     """Shadow 关闭观测的可恢复投影；不替代正式关闭状态机。"""
 
@@ -78,6 +161,7 @@ class StageCloseGateOperation(BaseModel):
     attestation_digest: str = ""
     artifact_existed_before: bool = False
     last_error_code: str = ""
+    recovery_binding: StageCloseRecoveryBinding | None = None
 
     @model_validator(mode="after")
     def _validate_state_payload(self) -> StageCloseGateOperation:
@@ -93,6 +177,15 @@ class StageCloseGateOperation(BaseModel):
         attestation = (self.attestation_id, self.attestation_digest)
         if observed != all(value.strip() for value in attestation):
             raise ValueError("stage close attestation payload contradicts state")
+        binding = self.recovery_binding
+        if binding is not None and (
+            binding.operation_id != self.operation_id
+            or binding.stage_key != self.stage_key
+            or binding.loop_id != self.loop_id
+            or binding.close_kind != self.close_kind
+            or binding.predecessor_stage_digest != self.stage_input_digest
+        ):
+            raise ValueError("stage close recovery binding contradicts operation")
         return self
 
 
@@ -304,3 +397,4 @@ class PreparedStageClose:
     gate_contract_version: str
     risk_level: str
     stage_state: BaseModel
+    recovery_binding: StageCloseRecoveryBinding | None = None

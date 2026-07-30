@@ -49,18 +49,15 @@ def _advance_design_scope_authority(
                 raise ScopeAuthorityIntegrityError("scope authority anchor diverged")
             current = _read_anchor(path, DesignScopeAuthorityAnchor)
             if current == updated:
-                if previous != updated and not previous_digest_matches:
-                    raise ScopeAuthorityIntegrityError(
-                        "design checked authority snapshot changed"
-                    )
                 return updated
-            if not previous_digest_matches:
+            if current == previous:
+                atomic_write_json(path, updated.model_dump(mode="json"))
+            elif not previous_digest_matches:
                 raise ScopeAuthorityIntegrityError(
                     "design checked authority snapshot changed"
                 )
-            if current != previous:
+            else:
                 raise ScopeAuthorityIntegrityError("scope authority anchor diverged")
-            atomic_write_json(path, updated.model_dump(mode="json"))
     except (
         OSError,
         ValueError,

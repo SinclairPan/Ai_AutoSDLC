@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -123,6 +124,25 @@ def test_partial_advance_outage_is_labeled_as_closed_reconciliation(
     assert attestation.observation_origin == "closed_reconciliation"
 
 
+def test_hard_crash_after_writer_is_labeled_as_closed_reconciliation(
+    tmp_path: Path,
+) -> None:
+    initial = _prepare_requirement_close(tmp_path, next_action="hard-crash")
+    operation = close_gate_module._new_gate_operation(initial, False)
+
+    payload = close_gate_module._original_completion_payload(
+        initial,
+        operation,
+        {"status": "ready", "loop_status": "closed"},
+        "sha256:" + ("a" * 64),
+        artifact_existed_before_execution=True,
+    )
+
+    assert payload is not None
+    assert payload["status"] == "reconciled"
+    assert payload["loop_status"] == "closed"
+
+
 def test_shadow_attestation_is_content_addressed_and_recoverable(
     tmp_path: Path,
 ) -> None:
@@ -228,6 +248,54 @@ def test_shadow_lock_store_outage_falls_back_to_original_writer(
     freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
     attestation = read_stage_close_gate_attestations(tmp_path)[0]
     assert attestation.observation_origin == "closed_reconciliation"
+
+
+def test_prepared_partial_recovery_preserves_same_input_writer_intent(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepare_requirement_close(tmp_path, next_action="same-input")
+    original = close_gate_module._new_gate_operation(prepared, False)
+    close_gate_module.prepare_gate_operation(tmp_path, original)
+    proposed = close_gate_module._new_gate_operation(prepared, True)
+
+    recovered = close_gate_module.prepare_gate_operation(tmp_path, proposed)
+
+    assert recovered.stage_input_digest == prepared.stage_input_digest
+    assert recovered.artifact_existed_before is False
+
+
+def test_prepared_partial_recovery_rejects_different_input(
+    tmp_path: Path,
+) -> None:
+    prepared = _prepare_requirement_close(tmp_path, next_action="first-input")
+    original = close_gate_module._new_gate_operation(prepared, False)
+    close_gate_module.prepare_gate_operation(tmp_path, original)
+    changed = replace(
+        prepared,
+        stage_input_digest="sha256:" + ("f" * 64),
+    )
+    proposed = close_gate_module._new_gate_operation(changed, True)
+
+    with pytest.raises(ValueError, match="partial commit input diverged"):
+        close_gate_module.prepare_gate_operation(tmp_path, proposed)
+
+
+def test_interrupted_recovery_fails_closed_when_gate_is_unavailable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = _prepare_requirement_close(tmp_path, next_action="unavailable")
+    monkeypatch.setattr(
+        close_gate_module,
+        "_refresh_activation_before_close",
+        lambda _root: (_ for _ in ()).throw(
+            close_gate_module.StageCloseGateUnavailableError(
+                "injected activation outage"
+            )
+        ),
+    )
+
+    assert close_gate_module._interrupted_stage_close_is_recoverable(prepared) is False
 
 
 def test_shadow_lock_release_failure_preserves_original_result(

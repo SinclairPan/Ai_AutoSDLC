@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
 
 import ai_sdlc.core.design_contract_loop as design_contract_loop_module
+import ai_sdlc.core.stage_review.close_gate as close_gate_module
 from ai_sdlc.core.design_contract_loop import (
     CURRENT_DESIGN_CONTRACT_PATH,
     DesignContractCheckOptions,
@@ -17,6 +20,7 @@ from ai_sdlc.core.design_contract_loop import (
     close_design_contract_loop,
 )
 from ai_sdlc.core.design_contract_models import (
+    DesignContractClose,
     DesignContractInput,
     DesignContractReport,
 )
@@ -33,6 +37,9 @@ from ai_sdlc.core.requirement_loop import (
     _requirement_intake_digest,
     freeze_requirement_loop,
     start_requirement_loop,
+)
+from ai_sdlc.core.stage_review.stage_review_execution import (
+    StageCloseGateUnavailableError,
 )
 
 
@@ -173,11 +180,15 @@ def test_check_design_contract_loop_allows_fix_and_recheck_in_same_loop(
     assert closed.closed is True
 
 
-@pytest.mark.parametrize("writes_input_before_failure", [False, True])
+@pytest.mark.parametrize(
+    ("writes_input_before_failure", "edit_after_failure"),
+    [(False, False), (True, False), (True, True)],
+)
 def test_check_design_contract_loop_recovers_after_authority_advance_write_failure(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     writes_input_before_failure: bool,
+    edit_after_failure: bool,
 ) -> None:
     work_item = _write_work_item(
         tmp_path,
@@ -262,6 +273,12 @@ def test_check_design_contract_loop_recovers_after_authority_advance_write_failu
         "_write_check_artifacts",
         original_write,
     )
+    if edit_after_failure:
+        tasks_path.write_text(
+            tasks_path.read_text(encoding="utf-8")
+            + "\nAdditional implementation note.\n",
+            encoding="utf-8",
+        )
     retried = check_design_contract_loop(
         DesignContractCheckOptions(
             root=tmp_path,
@@ -2095,6 +2112,473 @@ def test_close_design_contract_loop_writes_close_artifact(tmp_path: Path) -> Non
     assert loop_run["status"] == "closed"
 
 
+def test_close_design_contract_loop_recovers_close_written_before_loop_run(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-close-write-recovery"
+    checked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert checked.status == "ready"
+    original_write = LoopArtifactStore.write_json_artifact
+    close_written = False
+
+    def fail_loop_run_write(
+        store: LoopArtifactStore,
+        path: Path,
+        payload: object,
+    ) -> Path:
+        nonlocal close_written
+        if path.name == "design-contract-close.json":
+            written = original_write(store, path, payload)
+            close_written = True
+            return written
+        if close_written and path.name == "loop-run.json":
+            raise OSError("injected loop-run write failure")
+        return original_write(store, path, payload)
+
+    monkeypatch.setattr(
+        LoopArtifactStore,
+        "write_json_artifact",
+        fail_loop_run_write,
+    )
+    with pytest.raises(OSError, match="injected loop-run write failure"):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    assert (loop_dir / "design-contract-close.json").is_file()
+    persisted_run = json.loads(
+        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "passed"
+    unchanged_artifacts = {
+        name: (loop_dir / name).read_bytes()
+        for name in (
+            "design-contract-input.json",
+            "coverage-matrix.json",
+            "design-contract-report.json",
+        )
+    }
+
+    monkeypatch.setattr(
+        LoopArtifactStore,
+        "write_json_artifact",
+        original_write,
+    )
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert recovered.status == "ready", recovered.blocker
+    assert recovered.closed is True
+    assert recovered.loop_status == "closed"
+    persisted_run = json.loads(
+        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "closed"
+    assert unchanged_artifacts == {
+        name: (loop_dir / name).read_bytes() for name in unchanged_artifacts
+    }
+
+
+def test_close_design_contract_loop_recovers_after_post_writer_hard_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-post-writer-hard-crash"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    original_complete = close_gate_module._complete_shadow_observation
+
+    def interrupt_before_observation(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt("injected post-writer hard crash")
+
+    monkeypatch.setattr(
+        close_gate_module,
+        "_complete_shadow_observation",
+        interrupt_before_observation,
+    )
+    with pytest.raises(KeyboardInterrupt, match="post-writer hard crash"):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    persisted_run = json.loads(
+        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "closed"
+    assert (loop_dir / "design-contract-close.json").is_file()
+
+    monkeypatch.setattr(
+        close_gate_module,
+        "_complete_shadow_observation",
+        original_complete,
+    )
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    attestations = tuple(
+        item
+        for item in close_gate_module._read_stage_close_gate_attestations(tmp_path)
+        if item.loop_id == loop_id
+    )
+
+    assert recovered.status == "ready", recovered.blocker
+    assert recovered.closed is True
+    assert recovered.loop_status == "closed"
+    assert len(attestations) == 1
+    assert attestations[0].result_status == "reconciled"
+    assert attestations[0].observation_origin == "closed_reconciliation"
+
+
+def test_close_design_contract_loop_rejects_other_worktree_recovery(
+    git_repo: Path,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(git_repo)
+    loop_id = "dc-cross-worktree-recovery"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=git_repo,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    _run_git(git_repo, "add", "--all")
+    _run_git(git_repo, "commit", "-m", "freeze design close input")
+    secondary = tmp_path / "secondary-worktree"
+    _run_git(
+        git_repo,
+        "worktree",
+        "add",
+        "-b",
+        "feature/cross-worktree-recovery",
+        str(secondary),
+    )
+    original_complete = close_gate_module._complete_shadow_observation
+
+    def interrupt_before_observation(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt("injected post-writer hard crash")
+
+    monkeypatch.setattr(
+        close_gate_module,
+        "_complete_shadow_observation",
+        interrupt_before_observation,
+    )
+    with pytest.raises(KeyboardInterrupt, match="post-writer hard crash"):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=git_repo, loop_id=loop_id, yes=True)
+        )
+
+    primary_loop = (
+        git_repo / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    )
+    secondary_loop = (
+        secondary / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    )
+    for artifact_name in ("loop-run.json", "design-contract-close.json"):
+        shutil.copy2(primary_loop / artifact_name, secondary_loop / artifact_name)
+    monkeypatch.setattr(
+        close_gate_module,
+        "_complete_shadow_observation",
+        original_complete,
+    )
+
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=secondary, loop_id=loop_id, yes=True)
+    )
+
+    assert recovered.status == "blocked"
+    assert "recovery identity diverged" in recovered.blocker
+
+
+@pytest.mark.parametrize(
+    "tamper_target",
+    ("closed-loop-run", "close-artifact", "protected-report"),
+)
+def test_close_design_contract_loop_rejects_changed_recovery_input_after_hard_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    tamper_target: str,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-post-writer-tampered"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    original_complete = close_gate_module._complete_shadow_observation
+
+    def interrupt_before_observation(*_args: object, **_kwargs: object) -> None:
+        raise KeyboardInterrupt("injected post-writer hard crash")
+
+    monkeypatch.setattr(
+        close_gate_module,
+        "_complete_shadow_observation",
+        interrupt_before_observation,
+    )
+    with pytest.raises(KeyboardInterrupt, match="post-writer hard crash"):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    loop_dir = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+    )
+    target_by_kind = {
+        "closed-loop-run": (loop_dir / "loop-run.json", "next_action"),
+        "close-artifact": (
+            loop_dir / "design-contract-close.json",
+            "closed_by",
+        ),
+        "protected-report": (
+            loop_dir / "design-contract-report.json",
+            "next_action",
+        ),
+    }
+    target_path, target_field = target_by_kind[tamper_target]
+    payload = json.loads(target_path.read_text(encoding="utf-8"))
+    payload[target_field] = "tampered-recovery-input"
+    target_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(
+        close_gate_module,
+        "_complete_shadow_observation",
+        original_complete,
+    )
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert recovered.status == "blocked"
+    assert not any(
+        item.loop_id == loop_id
+        for item in close_gate_module._read_stage_close_gate_attestations(tmp_path)
+    )
+
+
+def test_close_design_contract_loop_recovers_after_attestation_store_outage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-attestation-recovery"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    original_persist = close_gate_module._persist_attestation
+    monkeypatch.setattr(
+        close_gate_module,
+        "_persist_attestation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected attestation outage")
+        ),
+    )
+
+    first = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    monkeypatch.setattr(close_gate_module, "_persist_attestation", original_persist)
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    replay = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert first.status == "blocked"
+    assert recovered.status == "ready", recovered.blocker
+    assert recovered.closed is True
+    assert replay.status == "ready", replay.blocker
+    assert replay.closed is True
+
+
+def test_close_design_contract_loop_recovers_after_authority_store_outage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-authority-recovery"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    original_record = design_contract_loop_module._record_design_close_authority
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_record_design_close_authority",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            design_contract_loop_module.ScopeAuthorityIntegrityError(
+                "injected authority outage"
+            )
+        ),
+    )
+
+    first = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_record_design_close_authority",
+        original_record,
+    )
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    replay = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert first.status == "blocked"
+    assert recovered.status == "ready", recovered.blocker
+    assert recovered.closed is True
+    assert replay.status == "ready", replay.blocker
+    assert replay.closed is True
+
+
+def test_close_design_contract_loop_rejects_untracked_preexisting_close(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-untracked-preexisting-close"
+    checked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert checked.status == "ready"
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    close_path = loop_dir / "design-contract-close.json"
+    LoopArtifactStore(tmp_path).write_json_artifact(
+        close_path,
+        DesignContractClose(
+            loop_id=loop_id,
+            report_path=(
+                f".ai-sdlc/loops/design-contract/{loop_id}/"
+                "design-contract-report.json"
+            ),
+        ),
+    )
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "interrupted close transaction" in result.blocker
+    persisted_run = json.loads(
+        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "passed"
+
+
+def test_close_design_contract_loop_does_not_write_without_durable_intent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-intent-store-unavailable"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    monkeypatch.setattr(
+        close_gate_module,
+        "prepare_gate_operation",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected intent store failure")
+        ),
+    )
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    assert result.status == "blocked"
+    assert "could not be prepared" in result.blocker
+    assert not (loop_dir / "design-contract-close.json").exists()
+    persisted_run = json.loads(
+        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "passed"
+
+
+def test_close_design_contract_loop_does_not_write_without_shadow_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-shadow-lock-unavailable"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    monkeypatch.setattr(
+        close_gate_module,
+        "gate_execution_lock",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("injected execution lock failure")
+        ),
+    )
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="stage-close-operation-lock-unavailable",
+    ):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    assert not (loop_dir / "design-contract-close.json").exists()
+    persisted_run = json.loads(
+        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "passed"
+
+
 def test_close_design_contract_loop_rejects_report_changed_after_stage_review(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2111,8 +2595,8 @@ def test_close_design_contract_loop_rejects_report_changed_after_stage_review(
     )
     original_execute = design_module.execute_stage_close
 
-    def execute_then_tamper(prepared, writer):
-        result = original_execute(prepared, writer)
+    def execute_then_tamper(prepared, writer, **kwargs):
+        result = original_execute(prepared, writer, **kwargs)
         report_path = (
             tmp_path
             / ".ai-sdlc"
@@ -2788,6 +3272,15 @@ def _write_work_item(
             scope_families=requirement_scope_families,
         )
     return work_item
+
+
+def _run_git(root: Path, *args: str) -> None:
+    subprocess.run(
+        ["git", "-C", str(root), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def _ensure_frozen_requirement_loop(

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -84,10 +86,30 @@ from ai_sdlc.core.stable_file_read import (
     read_stable_text,
 )
 from ai_sdlc.core.stage_review.adapters import DesignContractStageAdapter
-from ai_sdlc.core.stage_review.artifacts import create_json_exclusive
+from ai_sdlc.core.stage_review.artifacts import (
+    ResourceLockUnavailableError,
+    SharedStateIntegrityError,
+    create_json_exclusive,
+    resolve_repository_project_id,
+)
+from ai_sdlc.core.stage_review.canonical import (
+    CanonicalizationPolicy,
+    canonical_digest,
+)
 from ai_sdlc.core.stage_review.close_gate import (
+    _interrupted_stage_close_is_recoverable,
+    _prepare_stage_close_recovery_intent,
     execute_stage_close,
     prepare_loop_stage_close,
+)
+from ai_sdlc.core.stage_review.close_gate_models import (
+    PreparedStageClose,
+    StageCloseRecoveryBinding,
+)
+from ai_sdlc.core.stage_review.close_gate_observation import stage_close_operation_id
+from ai_sdlc.core.stage_review.repo_write_lease import canonical_worktree_identity
+from ai_sdlc.core.stage_review.stage_review_execution import (
+    StageCloseGateUnavailableError,
 )
 
 
@@ -413,6 +435,16 @@ def _close_verified_design_context(
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
 ) -> DesignContractCommandResult:
+    recovered = _recover_interrupted_design_close(
+        root,
+        loop_run,
+        report,
+        verified_input,
+        artifacts,
+        options.closed_by,
+    )
+    if recovered is not None:
+        return recovered
     existing = _existing_design_close_result(
         root,
         loop_run,
@@ -428,6 +460,22 @@ def _close_verified_design_context(
             artifacts=artifacts.refs(root),
             result="Design contract cannot close while blockers remain.",
         )
+    return _finish_verified_design_close(
+        root,
+        options,
+        loop_run,
+        verified_input,
+        artifacts,
+    )
+
+
+def _finish_verified_design_close(
+    root: Path,
+    options: DesignContractCloseOptions,
+    loop_run: LoopRun,
+    verified_input: DesignContractInput,
+    artifacts: DesignContractArtifacts,
+) -> DesignContractCommandResult:
     refreshed = _refresh_report_before_close(
         root,
         loop_run,
@@ -481,6 +529,84 @@ def _existing_design_close_result(
     return None
 
 
+def _recover_interrupted_design_close(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    verified_input: DesignContractInput,
+    artifacts: DesignContractArtifacts,
+    closed_by: str,
+) -> DesignContractCommandResult | None:
+    if loop_run.status != LoopStatus.PASSED:
+        return None
+    try:
+        close_exists = _trusted_close_artifact_exists(root, artifacts)
+    except ScopeAuthorityIntegrityError as exc:
+        return _blocked_result(
+            str(exc),
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    if not close_exists:
+        return None
+    prepared = prepare_loop_stage_close(
+        root=root,
+        adapter=DesignContractStageAdapter(),
+        loop_run=loop_run,
+        close_kind="design-contract-close",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=artifacts.close_path,
+    )
+    if not _interrupted_stage_close_is_recoverable(prepared):
+        return _blocked_result(
+            "Existing close artifact has no matching interrupted close transaction.",
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    return _finish_interrupted_design_close(
+        root,
+        loop_run,
+        report,
+        verified_input,
+        artifacts,
+        closed_by,
+    )
+
+
+def _finish_interrupted_design_close(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    verified_input: DesignContractInput,
+    artifacts: DesignContractArtifacts,
+    closed_by: str,
+) -> DesignContractCommandResult:
+    validated = _refresh_report_before_close(
+        root,
+        loop_run,
+        artifacts,
+        verified_input,
+        persist=False,
+    )
+    if isinstance(validated, DesignContractCommandResult):
+        return validated
+    validated_report, validated_run = validated
+    if validated_report.blocker_count or validated_run.status != LoopStatus.PASSED:
+        return _result_from_report(
+            validated_report,
+            artifacts=artifacts.refs(root),
+            result="Design contract cannot close while blockers remain.",
+        )
+    return _write_close(
+        root,
+        loop_run,
+        report,
+        verified_input,
+        artifacts,
+        closed_by,
+    )
+
+
 def _already_closed_design_result(
     root: Path,
     loop_run: LoopRun,
@@ -511,7 +637,7 @@ def _already_closed_design_result(
         loop_run,
         verified_input,
         artifacts,
-        lambda: result,
+        lambda _prepared: result,
     )
 
 
@@ -572,6 +698,8 @@ def _refresh_report_before_close(
     loop_run: LoopRun,
     artifacts: DesignContractArtifacts,
     contract_input: DesignContractInput,
+    *,
+    persist: bool = True,
 ) -> tuple[DesignContractReport, LoopRun] | DesignContractCommandResult:
     resolved_requirement_loop_id, requirement_blocker, requirement_next_action = (
         _required_requirement_loop_id(root, contract_input.requirement_loop_id)
@@ -619,7 +747,14 @@ def _refresh_report_before_close(
         artifacts=artifacts,
         root=root,
     )
-    _write_check_artifacts(root, contract_input, report, refreshed_loop_run, artifacts)
+    if persist:
+        _write_check_artifacts(
+            root,
+            contract_input,
+            report,
+            refreshed_loop_run,
+            artifacts,
+        )
     return report, refreshed_loop_run
 
 
@@ -683,38 +818,56 @@ def _write_close(
     artifacts: DesignContractArtifacts,
     closed_by: str,
 ) -> DesignContractCommandResult:
+    try:
+        expected_artifact_digests = _capture_design_close_artifact_digests(
+            root,
+            artifacts,
+        )
+    except (OSError, UnicodeError, ValueError) as exc:
+        return _blocked_result(
+            f"Design close authority could not prepare artifacts: {exc}",
+            loop_id=loop_run.loop_id,
+            next_action="Rerun ai-sdlc loop design-contract check with a new loop id.",
+            artifacts=artifacts.refs(root),
+        )
+    prepared = _prepared_design_stage_close(root, loop_run, artifacts)
+    binding = _build_design_close_recovery_binding(
+        prepared,
+        loop_run,
+        report,
+        artifacts,
+        closed_by,
+        expected_artifact_digests,
+    )
     return _execute_design_close_gate(
         root,
         loop_run,
         contract_input,
         artifacts,
-        lambda: _write_design_close(root, loop_run, report, artifacts, closed_by),
+        lambda frozen: _write_design_close(root, report, artifacts, frozen),
+        prepared=replace(prepared, recovery_binding=binding),
+        expected_artifact_digests=expected_artifact_digests,
     )
 
 
 def _write_design_close(
     root: Path,
-    loop_run: LoopRun,
     report: DesignContractReport,
     artifacts: DesignContractArtifacts,
-    closed_by: str,
+    prepared: PreparedStageClose,
 ) -> DesignContractCommandResult:
-    close = DesignContractClose(
-        loop_id=loop_run.loop_id,
-        closed_by=closed_by.strip() or "local-user",
-        report_path=repo_relative_path(root, artifacts.report_json_path),
-    )
-    loop_run.status = LoopStatus.CLOSED
-    loop_run.updated_at = utc_now_iso()
-    loop_run.next_action = _implementation_next_action(report.work_item_id)
-    loop_run.current_round = 1
-    if loop_run.rounds:
-        loop_run.rounds[0].status = LoopStatus.CLOSED
-        loop_run.rounds[0].output_artifacts = append_unique(
-            loop_run.rounds[0].output_artifacts,
-            repo_relative_path(root, artifacts.close_path),
-        )
-        loop_run.rounds[0].next_action = loop_run.next_action
+    binding = prepared.recovery_binding
+    if binding is None:
+        raise ValueError("design close writer requires a durable recovery binding")
+    close = DesignContractClose.model_validate(binding.close_artifact_payload)
+    loop_run = LoopRun.model_validate(binding.successor_stage_state)
+    if (
+        canonical_digest(loop_run, CanonicalizationPolicy())
+        != binding.successor_stage_digest
+        or _json_artifact_file_digest(close)
+        != binding.close_artifact_file_digest
+    ):
+        raise ValueError("design close writer plan is inconsistent")
     store = LoopArtifactStore(root)
     store.write_json_artifact(artifacts.close_path, close)
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
@@ -728,26 +881,12 @@ def _write_design_close(
     )
 
 
-def _execute_design_close_gate(
+def _prepared_design_stage_close(
     root: Path,
     loop_run: LoopRun,
-    contract_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
-    writer: Callable[[], DesignContractCommandResult],
-) -> DesignContractCommandResult:
-    try:
-        expected_artifact_digests = _capture_design_close_artifact_digests(
-            root,
-            artifacts,
-        )
-    except (OSError, UnicodeError, ValueError) as exc:
-        return _blocked_result(
-            f"Design close authority could not prepare artifacts: {exc}",
-            loop_id=loop_run.loop_id,
-            next_action="Rerun ai-sdlc loop design-contract check with a new loop id.",
-            artifacts=artifacts.refs(root),
-        )
-    prepared = prepare_loop_stage_close(
+) -> PreparedStageClose:
+    return prepare_loop_stage_close(
         root=root,
         adapter=DesignContractStageAdapter(),
         loop_run=loop_run,
@@ -755,7 +894,206 @@ def _execute_design_close_gate(
         target_status=LoopStatus.CLOSED.value,
         close_artifact_path=artifacts.close_path,
     )
-    result = execute_stage_close(prepared, writer)
+
+
+def _build_design_close_recovery_binding(
+    prepared: PreparedStageClose,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    artifacts: DesignContractArtifacts, closed_by: str,
+    protected_artifact_digests: tuple[tuple[str, str], ...],
+) -> StageCloseRecoveryBinding:
+    normalized_closed_by, close, successor = _design_close_write_payloads(
+        prepared.root,
+        loop_run,
+        report,
+        artifacts,
+        closed_by,
+    )
+    return StageCloseRecoveryBinding(
+        operation_id=stage_close_operation_id(prepared),
+        project_id=resolve_repository_project_id(prepared.root),
+        worktree_identity=canonical_worktree_identity(prepared.root),
+        adapter_id=prepared.adapter_id,
+        adapter_version=prepared.adapter_version,
+        adapter_contract_digest=prepared.adapter_contract_digest,
+        stage_key=prepared.stage_key,
+        loop_id=prepared.loop_id,
+        stage_instance_id=prepared.stage_instance_id,
+        work_item_id=prepared.work_item_id,
+        loop_round_number=prepared.loop_round_number,
+        close_kind=prepared.close_kind,
+        target_status=prepared.target_status,
+        close_artifact_path=prepared.close_artifact_path,
+        predecessor_stage_state=loop_run.model_dump(mode="json"),
+        predecessor_stage_digest=prepared.stage_input_digest,
+        successor_stage_state=successor.model_dump(mode="json"),
+        successor_stage_digest=canonical_digest(
+            successor,
+            CanonicalizationPolicy(),
+        ),
+        close_artifact_payload=close.model_dump(mode="json"),
+        close_artifact_file_digest=_json_artifact_file_digest(close),
+        writer_arguments_digest=canonical_digest(
+            {
+                "closed_by": normalized_closed_by,
+                "report_path": close.report_path,
+                "close_path": prepared.close_artifact_path,
+                "next_action": successor.next_action,
+                "transition_at": close.closed_at,
+            },
+            CanonicalizationPolicy(),
+        ),
+        protected_artifact_digests=protected_artifact_digests,
+    )
+
+
+def _design_close_write_payloads(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    artifacts: DesignContractArtifacts,
+    closed_by: str,
+) -> tuple[str, DesignContractClose, LoopRun]:
+    transition_at = utc_now_iso()
+    normalized_closed_by = closed_by.strip() or "local-user"
+    close = DesignContractClose(
+        loop_id=loop_run.loop_id,
+        closed_by=normalized_closed_by,
+        created_at=transition_at,
+        closed_at=transition_at,
+        report_path=repo_relative_path(root, artifacts.report_json_path),
+    )
+    successor = _closed_design_loop_run(
+        root,
+        loop_run,
+        report,
+        artifacts,
+        transition_at=transition_at,
+    )
+    return normalized_closed_by, close, successor
+
+
+def _closed_design_loop_run(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    artifacts: DesignContractArtifacts,
+    *,
+    transition_at: str,
+) -> LoopRun:
+    successor = loop_run.model_copy(deep=True)
+    successor.status = LoopStatus.CLOSED
+    successor.updated_at = transition_at
+    successor.next_action = _implementation_next_action(report.work_item_id)
+    successor.current_round = 1
+    if successor.rounds:
+        current = successor.rounds[0]
+        current.status = LoopStatus.CLOSED
+        current.output_artifacts = append_unique(
+            current.output_artifacts,
+            repo_relative_path(root, artifacts.close_path),
+        )
+        current.next_action = successor.next_action
+    return successor
+
+
+def _json_artifact_file_digest(payload: DesignContractClose) -> str:
+    serialized = json.dumps(
+        payload.model_dump(mode="json"),
+        ensure_ascii=False,
+        indent=2,
+        sort_keys=False,
+    )
+    content = (serialized + "\n").encode()
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _execute_design_close_gate(
+    root: Path,
+    loop_run: LoopRun,
+    contract_input: DesignContractInput,
+    artifacts: DesignContractArtifacts,
+    writer: Callable[[PreparedStageClose], DesignContractCommandResult],
+    *,
+    prepared: PreparedStageClose | None = None,
+    expected_artifact_digests: tuple[tuple[str, str], ...] | None = None,
+) -> DesignContractCommandResult:
+    if expected_artifact_digests is None:
+        try:
+            expected_artifact_digests = _capture_design_close_artifact_digests(
+                root,
+                artifacts,
+            )
+        except (OSError, UnicodeError, ValueError) as exc:
+            return _blocked_result(
+                f"Design close authority could not prepare artifacts: {exc}",
+                loop_id=loop_run.loop_id,
+                next_action=(
+                    "Rerun ai-sdlc loop design-contract check with a new loop id."
+                ),
+                artifacts=artifacts.refs(root),
+            )
+    prepared = prepared or _prepared_design_stage_close(root, loop_run, artifacts)
+    prepared_or_blocker = _prepare_design_close_transaction(
+        root,
+        loop_run,
+        artifacts,
+        prepared,
+    )
+    if isinstance(prepared_or_blocker, DesignContractCommandResult):
+        return prepared_or_blocker
+    prepared = prepared_or_blocker
+    result = execute_stage_close(
+        prepared,
+        lambda: writer(prepared),
+        require_durable_shadow_intent=True,
+    )
+    commit_blocker = _commit_design_close_authority(
+        root,
+        loop_run,
+        contract_input,
+        artifacts,
+        prepared,
+        expected_artifact_digests,
+    )
+    return commit_blocker or result
+
+
+def _prepare_design_close_transaction(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: DesignContractArtifacts,
+    prepared: PreparedStageClose,
+) -> PreparedStageClose | DesignContractCommandResult:
+    try:
+        return _prepare_stage_close_recovery_intent(prepared)
+    except (
+        OSError,
+        ResourceLockUnavailableError,
+        SharedStateIntegrityError,
+        StageCloseGateUnavailableError,
+        ValueError,
+    ) as exc:
+        return _blocked_result(
+            f"Design close transaction could not be prepared: {exc}",
+            loop_id=loop_run.loop_id,
+            next_action="Retry ai-sdlc loop design-contract close --yes.",
+            artifacts=artifacts.refs(
+                root,
+                include_close=artifacts.close_path.is_file(),
+            ),
+        )
+
+
+def _commit_design_close_authority(
+    root: Path,
+    loop_run: LoopRun,
+    contract_input: DesignContractInput,
+    artifacts: DesignContractArtifacts,
+    prepared: PreparedStageClose,
+    expected_artifact_digests: tuple[tuple[str, str], ...],
+) -> DesignContractCommandResult | None:
     try:
         _record_design_close_authority(
             root,
@@ -773,7 +1111,7 @@ def _execute_design_close_gate(
                 root, include_close=artifacts.close_path.is_file()
             ),
         )
-    return result
+    return None
 
 
 def _closed_recheck_result(

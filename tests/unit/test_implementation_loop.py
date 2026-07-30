@@ -758,7 +758,8 @@ def test_enforced_design_close_authority_allows_implementation_start(
     records: list[ActivationSessionRecord] = []
     receipt_close_digests: list[str] = []
 
-    def execute_enforced_close(prepared, writer):
+    def execute_enforced_close(prepared, writer, **kwargs):
+        assert kwargs == {"require_durable_shadow_intent": True}
         result = writer()
         operation_id = stage_close_operation_id(prepared)
         marker = {
