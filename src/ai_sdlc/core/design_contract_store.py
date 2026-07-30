@@ -21,7 +21,7 @@ from ai_sdlc.core.design_contract_models import (
 )
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType, utc_now_iso
-from ai_sdlc.core.stable_file_read import read_stable_bytes
+from ai_sdlc.core.stable_file_read import read_stable_bytes, read_stable_text
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
@@ -201,10 +201,10 @@ def _resolve_design_contract_loop_run_identity(
 
 def _current_design_contract_loop_run_path(root: Path) -> tuple[Path, str, str]:
     pointer_path = root / CURRENT_DESIGN_CONTRACT_PATH
-    if not pointer_path.is_file():
-        return pointer_path, "", "No current design-contract loop exists."
     try:
-        payload = LoopArtifactStore(root).read_json_artifact(pointer_path)
+        payload = LoopArtifactStore(root).read_json_artifact(pointer_path, stable=True)
+    except FileNotFoundError:
+        return pointer_path, "", "No current design-contract loop exists."
     except (OSError, ValueError) as exc:
         return pointer_path, "", f"Current design-contract pointer is malformed: {exc}"
     loop_id = payload.get("loop_id")
@@ -224,14 +224,13 @@ def _current_design_contract_loop_run_path(root: Path) -> tuple[Path, str, str]:
     path = Path(path_text)
     if path.is_absolute() or ".." in path.parts:
         return pointer_path, "", "Current design-contract pointer path must be project-relative."
-    candidate = (root / path).resolve(strict=False)
+    canonical_root = root.resolve(strict=False)
+    candidate = canonical_root / path
     try:
-        candidate.relative_to(root.resolve(strict=False))
+        candidate.resolve(strict=False).relative_to(canonical_root)
     except ValueError:
         return pointer_path, "", "Current design-contract pointer path must stay within project."
-    canonical = design_contract_artifacts(root, safe_loop_id).loop_run_path.resolve(
-        strict=False
-    )
+    canonical = design_contract_artifacts(canonical_root, safe_loop_id).loop_run_path
     if candidate != canonical:
         return (
             candidate,
@@ -241,11 +240,16 @@ def _current_design_contract_loop_run_path(root: Path) -> tuple[Path, str, str]:
     return candidate, safe_loop_id, ""
 
 
-def read_loop_run(path: Path) -> LoopRun:
+def read_loop_run(path: Path, *, root: Path | None = None) -> LoopRun:
     """Read and validate a design-contract loop-run artifact."""
 
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        content = (
+            read_stable_text(root, path, encoding="utf-8")
+            if root is not None
+            else path.read_text(encoding="utf-8")
+        )
+        payload = json.loads(content)
     except (json.JSONDecodeError, OSError) as exc:
         raise ValueError(f"Design-contract loop-run.json is not readable: {exc}") from exc
     try:

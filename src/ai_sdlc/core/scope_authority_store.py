@@ -290,7 +290,7 @@ def _verify_requirement_scope_authority(
 
 def _design_scope_input_digest(contract_input: DesignContractInput) -> str:
     return canonical_digest(
-        contract_input.model_dump(mode="json"),
+        contract_input.model_dump(mode="json", exclude={"created_at"}),
         CanonicalizationPolicy(),
     )
 

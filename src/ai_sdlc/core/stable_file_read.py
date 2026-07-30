@@ -32,6 +32,32 @@ def read_stable_text(
     return read_stable_bytes(root, path).decode(encoding)
 
 
+def _stable_regular_file_exists(root: Path, path: Path) -> bool:
+    """区分真正缺失的文件，并拒绝链接、重解析点和非普通文件。"""
+
+    canonical_root, relative = _lexical_relative(root, path)
+    current = canonical_root
+    for index, part in enumerate(relative.parts):
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise ValueError(
+                f"trusted file is unavailable: {relative.as_posix()}"
+            ) from exc
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if stat.S_ISLNK(metadata.st_mode) or attributes & _REPARSE_POINT:
+            raise ValueError(f"trusted file uses a symlink: {relative.as_posix()}")
+        is_leaf = index == len(relative.parts) - 1
+        if is_leaf and not stat.S_ISREG(metadata.st_mode):
+            raise ValueError(f"trusted file must be regular: {relative.as_posix()}")
+        if not is_leaf and not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"trusted file parent is invalid: {relative.as_posix()}")
+    return True
+
+
 def _lexical_relative(root: Path, path: Path) -> tuple[Path, Path]:
     canonical_root = root.resolve(strict=True)
     candidate = path if path.is_absolute() else canonical_root / path

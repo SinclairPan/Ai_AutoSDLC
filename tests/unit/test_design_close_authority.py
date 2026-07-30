@@ -21,7 +21,13 @@ from ai_sdlc.core.design_contract_models import (
     DesignContractReport,
 )
 from ai_sdlc.core.design_contract_store import DesignContractArtifacts
-from ai_sdlc.core.scope_authority_store import ScopeAuthorityIntegrityError
+from ai_sdlc.core.design_scope_authority_transition import (
+    _advance_design_scope_authority,
+)
+from ai_sdlc.core.scope_authority_store import (
+    ScopeAuthorityIntegrityError,
+    _design_scope_input_digest,
+)
 from ai_sdlc.core.stage_review.activation_models import (
     ActivationSessionObservation,
     ActivationSessionRecord,
@@ -29,6 +35,73 @@ from ai_sdlc.core.stage_review.activation_models import (
 from ai_sdlc.core.stage_review.close_models import StageCloseConsumptionReceipt
 from ai_sdlc.core.stage_review.finding_models import FindingScope
 from ai_sdlc.core.stage_review.resource_builders import stable_id
+
+
+def test_design_scope_authority_transition_rejects_stale_previous_snapshot(
+    tmp_path: Path,
+) -> None:
+    previous = DesignContractInput(
+        loop_id="dc-recheck",
+        work_item_id="demo",
+        work_item_path="specs/demo",
+        spec_path="specs/demo/spec.md",
+        spec_digest=_digest(b"spec"),
+        plan_path="specs/demo/plan.md",
+        plan_digest=_digest(b"plan"),
+        tasks_path="specs/demo/tasks.md",
+        tasks_digest=_digest(b"tasks-v1"),
+        requirement_loop_id="req-demo",
+        scope_authority_ref=".ai-sdlc/loops/requirement/req-demo/intake.json",
+        scope_authority_digest=_digest(b"scope"),
+    )
+    first = _advance_design_scope_authority(
+        tmp_path,
+        previous,
+        previous_input=None,
+        previous_loop_input_digest="",
+    )
+    updated = previous.model_copy(update={"tasks_digest": _digest(b"tasks-v2")})
+    _advance_design_scope_authority(
+        tmp_path,
+        updated,
+        previous_input=previous,
+        previous_loop_input_digest=first.input_digest,
+    )
+
+    competing = previous.model_copy(update={"tasks_digest": _digest(b"tasks-v3")})
+    with pytest.raises(ScopeAuthorityIntegrityError):
+        _advance_design_scope_authority(
+            tmp_path,
+            competing,
+            previous_input=previous,
+            previous_loop_input_digest=first.input_digest,
+        )
+
+
+def test_design_scope_input_digest_ignores_time_but_preserves_provenance() -> None:
+    contract_input = DesignContractInput(
+        loop_id="dc-semantic-digest",
+        work_item_id="demo",
+        work_item_path="specs/demo",
+        spec_path="specs/demo/spec.md",
+        spec_digest=_digest(b"spec"),
+        plan_path="specs/demo/plan.md",
+        plan_digest=_digest(b"plan"),
+        tasks_path="specs/demo/tasks.md",
+        tasks_digest=_digest(b"tasks"),
+        created_at="2030-01-01T00:00:00Z",
+    )
+    expected = _design_scope_input_digest(contract_input)
+
+    assert _design_scope_input_digest(
+        contract_input.model_copy(update={"created_at": "2030-01-01T00:00:01Z"})
+    ) == expected
+    assert _design_scope_input_digest(
+        contract_input.model_copy(update={"created_by": "other-writer"})
+    ) != expected
+    assert _design_scope_input_digest(
+        contract_input.model_copy(update={"ai_sdlc_version": "future"})
+    ) != expected
 
 
 def test_enforce_record_must_belong_to_current_project() -> None:

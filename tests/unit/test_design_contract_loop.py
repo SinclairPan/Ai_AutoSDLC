@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+import ai_sdlc.core.design_contract_loop as design_contract_loop_module
 from ai_sdlc.core.design_contract_loop import (
     CURRENT_DESIGN_CONTRACT_PATH,
     DesignContractCheckOptions,
@@ -14,8 +16,16 @@ from ai_sdlc.core.design_contract_loop import (
     check_design_contract_loop,
     close_design_contract_loop,
 )
-from ai_sdlc.core.design_contract_store import resolve_design_contract_loop_run_path
+from ai_sdlc.core.design_contract_models import (
+    DesignContractInput,
+    DesignContractReport,
+)
+from ai_sdlc.core.design_contract_store import (
+    DesignContractArtifacts,
+    resolve_design_contract_loop_run_path,
+)
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
+from ai_sdlc.core.loop_models import LoopRun
 from ai_sdlc.core.requirement_loop import (
     RequirementFreezeOptions,
     RequirementIntake,
@@ -114,6 +124,543 @@ def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> N
         (loop_dir / "design-contract-input.json").read_text(encoding="utf-8")
     )
     assert contract_input["requirement_loop_id"] == "req-current"
+
+
+def test_check_design_contract_loop_allows_fix_and_recheck_in_same_loop(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_work_item(
+        tmp_path,
+        include_task_refs=False,
+        verification_value="",
+    )
+    first = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-fix-and-recheck",
+        )
+    )
+    assert first.status == "needs_fix"
+
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "Cover contract docs.\n- **验证**：",
+            "Cover FR-DEMO-001 and SC-DEMO-001.\n"
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+        ),
+        encoding="utf-8",
+    )
+    second = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id="dc-fix-and-recheck",
+        )
+    )
+
+    assert second.status == "ready"
+    assert second.loop_status == "passed"
+    closed = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id="dc-fix-and-recheck",
+            yes=True,
+        )
+    )
+    assert closed.status == "ready"
+    assert closed.closed is True
+
+
+@pytest.mark.parametrize("writes_input_before_failure", [False, True])
+def test_check_design_contract_loop_recovers_after_authority_advance_write_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    writes_input_before_failure: bool,
+) -> None:
+    work_item = _write_work_item(
+        tmp_path,
+        include_task_refs=False,
+        verification_value="",
+    )
+    loop_id = "dc-authority-write-recovery"
+    first = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert first.status == "needs_fix"
+
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "Cover contract docs.\n- **验证**：",
+            "Cover FR-DEMO-001 and SC-DEMO-001.\n"
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+        ),
+        encoding="utf-8",
+    )
+    original_write = design_contract_loop_module._write_check_artifacts
+    original_build = design_contract_loop_module.build_contract_input
+    timestamps = iter(("2030-01-01T00:00:00Z", "2030-01-01T00:00:01Z"))
+
+    def build_with_advancing_timestamp(
+        *,
+        root: Path,
+        loop_id: str,
+        work_item_dir: Path,
+        requirement_loop_id: str,
+    ) -> DesignContractInput:
+        built = original_build(
+            root=root,
+            loop_id=loop_id,
+            work_item_dir=work_item_dir,
+            requirement_loop_id=requirement_loop_id,
+        )
+        return built.model_copy(update={"created_at": next(timestamps)})
+
+    def fail_after_authority_advance(
+        root: Path,
+        contract_input: DesignContractInput,
+        report: DesignContractReport,
+        loop_run: LoopRun,
+        artifacts: DesignContractArtifacts,
+        *,
+        loop_run_must_be_absent: bool = False,
+    ) -> None:
+        if writes_input_before_failure:
+            LoopArtifactStore(root).write_json_artifact(
+                artifacts.input_path,
+                contract_input,
+            )
+        raise OSError("injected artifact write failure")
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "build_contract_input",
+        build_with_advancing_timestamp,
+    )
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_write_check_artifacts",
+        fail_after_authority_advance,
+    )
+    with pytest.raises(OSError, match="injected artifact write failure"):
+        check_design_contract_loop(
+            DesignContractCheckOptions(
+                root=tmp_path,
+                work_item="specs/demo-contract",
+                loop_id=loop_id,
+            )
+        )
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_write_check_artifacts",
+        original_write,
+    )
+    retried = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert retried.status == "ready", retried.blocker
+    assert retried.loop_status == "passed"
+
+    closed = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            yes=True,
+        )
+    )
+    assert closed.status == "ready"
+    assert closed.closed is True
+
+
+def test_check_design_contract_loop_recovers_initial_partial_artifact_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-initial-write-recovery"
+    original_write = design_contract_loop_module._write_check_artifacts
+    original_build = design_contract_loop_module.build_contract_input
+    timestamps = iter(("2030-01-01T00:00:00Z", "2030-01-01T00:00:01Z"))
+
+    def build_with_advancing_timestamp(
+        *,
+        root: Path,
+        loop_id: str,
+        work_item_dir: Path,
+        requirement_loop_id: str,
+    ) -> DesignContractInput:
+        built = original_build(
+            root=root,
+            loop_id=loop_id,
+            work_item_dir=work_item_dir,
+            requirement_loop_id=requirement_loop_id,
+        )
+        return built.model_copy(update={"created_at": next(timestamps)})
+
+    def write_input_then_fail(
+        root: Path,
+        contract_input: DesignContractInput,
+        report: DesignContractReport,
+        loop_run: LoopRun,
+        artifacts: DesignContractArtifacts,
+        *,
+        loop_run_must_be_absent: bool = False,
+    ) -> None:
+        LoopArtifactStore(root).write_json_artifact(
+            artifacts.input_path,
+            contract_input,
+        )
+        raise OSError("injected initial artifact write failure")
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "build_contract_input",
+        build_with_advancing_timestamp,
+    )
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_write_check_artifacts",
+        write_input_then_fail,
+    )
+    with pytest.raises(OSError, match="injected initial artifact write failure"):
+        check_design_contract_loop(
+            DesignContractCheckOptions(
+                root=tmp_path,
+                work_item="specs/demo-contract",
+                loop_id=loop_id,
+            )
+        )
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_write_check_artifacts",
+        original_write,
+    )
+    retried = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert retried.status == "ready", retried.blocker
+    assert retried.loop_status == "passed"
+
+
+@pytest.mark.parametrize(
+    "artifact_name",
+    ["design-contract-input.json", "loop-run.json"],
+)
+def test_check_design_contract_loop_rejects_symlinked_previous_artifact(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    work_item = _write_work_item(
+        tmp_path,
+        include_task_refs=False,
+        verification_value="",
+    )
+    loop_id = "dc-previous-artifact-symlink"
+    first = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert first.status == "needs_fix"
+
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "Cover contract docs.\n- **验证**：",
+            "Cover FR-DEMO-001 and SC-DEMO-001.\n"
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+        ),
+        encoding="utf-8",
+    )
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    artifact = loop_dir / artifact_name
+    backing = loop_dir / f"backing-{artifact_name}"
+    backing.write_bytes(artifact.read_bytes())
+    artifact.unlink()
+    artifact.symlink_to(backing.name)
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert result.status == "blocked"
+    assert "previous design check artifacts are unavailable" in result.blocker
+
+
+@pytest.mark.parametrize("replacement_kind", ["broken_symlink", "directory"])
+def test_check_design_contract_loop_rejects_invalid_previous_loop_run(
+    tmp_path: Path,
+    replacement_kind: str,
+) -> None:
+    work_item = _write_work_item(
+        tmp_path,
+        include_task_refs=False,
+        verification_value="",
+    )
+    loop_id = "dc-invalid-previous-loop-run"
+    first = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert first.status == "needs_fix"
+
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "Cover contract docs.\n- **验证**：",
+            "Cover FR-DEMO-001 and SC-DEMO-001.\n"
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+        ),
+        encoding="utf-8",
+    )
+    loop_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+        / "loop-run.json"
+    )
+    loop_run.unlink()
+    if replacement_kind == "broken_symlink":
+        loop_run.symlink_to("missing-loop-run.json")
+    else:
+        loop_run.mkdir()
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert result.status == "blocked"
+    assert "previous design check artifacts are unavailable" in result.blocker
+
+
+def test_check_design_contract_loop_rejects_loop_run_inserted_after_missing_probe(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-loop-run-missing-race"
+    first = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert first.status == "ready"
+    loop_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+        / "loop-run.json"
+    )
+    loop_run.unlink()
+    original_advance = design_contract_loop_module._advance_design_scope_authority
+
+    def insert_symlink_before_authority(*args: object, **kwargs: object) -> object:
+        loop_run.symlink_to("missing-loop-run.json")
+        return original_advance(*args, **kwargs)
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_advance_design_scope_authority",
+        insert_symlink_before_authority,
+    )
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "appeared during recovery" in result.blocker
+    assert loop_run.is_symlink()
+
+
+def test_close_design_contract_loop_rejects_symlinked_loop_run(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-close-loop-run-symlink"
+    checked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert checked.status == "ready"
+
+    loop_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+        / "loop-run.json"
+    )
+    backing = loop_run.with_name("backing-loop-run.json")
+    backing.write_bytes(loop_run.read_bytes())
+    loop_run.unlink()
+    loop_run.symlink_to(backing.name)
+
+    closed = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            yes=True,
+        )
+    )
+    assert closed.status == "blocked"
+    assert closed.closed is False
+    assert "uses a symlink" in closed.blocker
+
+
+@pytest.mark.parametrize(
+    "replacement_kind",
+    ["valid_symlink", "broken_symlink", "directory"],
+)
+def test_closed_design_contract_recheck_rejects_untrusted_close_artifact(
+    tmp_path: Path,
+    replacement_kind: str,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-closed-untrusted-close"
+    checked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert checked.status == "ready"
+    closed = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    assert closed.closed is True
+    loop_dir = (
+        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    )
+    close_path = loop_dir / "design-contract-close.json"
+    backing = loop_dir / "backing-design-contract-close.json"
+    if replacement_kind == "valid_symlink":
+        backing.write_bytes(close_path.read_bytes())
+    close_path.unlink()
+    if replacement_kind == "directory":
+        close_path.mkdir()
+    else:
+        target = backing.name if replacement_kind == "valid_symlink" else "missing.json"
+        close_path.symlink_to(target)
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "closed design-contract artifact is unavailable" in result.blocker
+    loop_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
+    assert loop_run["status"] == "closed"
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO is unavailable")
+def test_closed_design_contract_recheck_rejects_fifo_close_artifact(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-closed-fifo-close"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    assert close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    ).closed
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    close_path = loop_dir / "design-contract-close.json"
+    close_path.unlink()
+    os.mkfifo(close_path)
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "closed design-contract artifact is unavailable" in result.blocker
+    loop_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
+    assert loop_run["status"] == "closed"
+
+
+def test_current_closed_recheck_rejects_untrusted_close_artifact(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_work_item(tmp_path)
+    loop_id = "dc-current-closed-untrusted-close"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    assert close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    ).closed
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    close_path = loop_dir / "design-contract-close.json"
+    close_path.unlink()
+    close_path.symlink_to("missing-close.json")
+
+    result = check_design_contract_loop(
+        DesignContractCheckOptions(root=tmp_path, work_item=str(work_item))
+    )
+
+    assert result.status == "blocked"
+    assert "closed design-contract artifact is unavailable" in result.blocker
+    loop_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
+    assert loop_run["status"] == "closed"
 
 
 def test_check_design_contract_loop_dry_run_does_not_write(tmp_path: Path) -> None:
@@ -2010,6 +2557,33 @@ def test_close_design_contract_loop_blocks_symlinked_current_pointer(
 
     assert result.status == "blocked"
     assert "must stay within project" in result.blocker
+
+
+def test_close_design_contract_loop_blocks_current_pointer_file_symlink(
+    tmp_path: Path,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-pointer-file-symlink"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    pointer_path = tmp_path / CURRENT_DESIGN_CONTRACT_PATH
+    backing = pointer_path.with_name("backing-current-design-contract.json")
+    backing.write_bytes(pointer_path.read_bytes())
+    pointer_path.unlink()
+    pointer_path.symlink_to(backing.name)
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert result.closed is False
+    assert "pointer is malformed" in result.blocker
 
 
 def test_check_design_contract_loop_blocks_unsafe_loop_id(tmp_path: Path) -> None:

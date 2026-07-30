@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from pathlib import Path
 
@@ -45,6 +46,9 @@ from ai_sdlc.core.design_contract_store import (
     resolve_loop_id,
     resolve_work_item_dir,
 )
+from ai_sdlc.core.design_scope_authority_transition import (
+    _advance_design_scope_authority,
+)
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import (
     LoopRound,
@@ -72,11 +76,15 @@ from ai_sdlc.core.requirement_loop import (
 from ai_sdlc.core.scope_authority_store import (
     ScopeAuthorityIntegrityError,
     _design_scope_input_digest,
-    _record_design_scope_authority,
     _verify_design_scope_authority,
     _verify_requirement_scope_authority,
 )
+from ai_sdlc.core.stable_file_read import (
+    _stable_regular_file_exists,
+    read_stable_text,
+)
 from ai_sdlc.core.stage_review.adapters import DesignContractStageAdapter
+from ai_sdlc.core.stage_review.artifacts import create_json_exclusive
 from ai_sdlc.core.stage_review.close_gate import (
     execute_stage_close,
     prepare_loop_stage_close,
@@ -163,8 +171,21 @@ def check_design_contract_loop(
     report = analyze_design_contract(root, contract_input)
     report.next_action = _next_action_for_report(report)
     try:
-        _record_design_scope_authority(root, contract_input)
-    except ScopeAuthorityIntegrityError as exc:
+        (
+            previous_input,
+            previous_loop_input_digest,
+            loop_run_must_be_absent,
+        ) = _previous_design_check(
+            root,
+            artifacts,
+        )
+        _advance_design_scope_authority(
+            root,
+            contract_input,
+            previous_input=previous_input,
+            previous_loop_input_digest=previous_loop_input_digest,
+        )
+    except (ScopeAuthorityIntegrityError, ValueError) as exc:
         return _blocked_result(
             f"Design checked authority snapshot is unavailable: {exc}",
             loop_id=loop_id,
@@ -177,7 +198,21 @@ def check_design_contract_loop(
         artifacts=artifacts,
         root=root,
     )
-    _write_check_artifacts(root, contract_input, report, loop_run, artifacts)
+    try:
+        _write_check_artifacts(
+            root,
+            contract_input,
+            report,
+            loop_run,
+            artifacts,
+            loop_run_must_be_absent=loop_run_must_be_absent,
+        )
+    except ScopeAuthorityIntegrityError as exc:
+        return _blocked_result(
+            f"Design check artifacts are unavailable: {exc}",
+            loop_id=loop_id,
+            artifacts=planned_refs,
+        )
     return _result_from_report(
         report,
         artifacts=artifacts.refs(root),
@@ -187,6 +222,43 @@ def check_design_contract_loop(
             else "Design contract needs fixes."
         ),
     )
+
+
+def _previous_design_check(
+    root: Path,
+    artifacts: DesignContractArtifacts,
+) -> tuple[DesignContractInput | None, str, bool]:
+    try:
+        input_exists = _stable_regular_file_exists(root, artifacts.input_path)
+        run_exists = _stable_regular_file_exists(root, artifacts.loop_run_path)
+    except ValueError as exc:
+        raise ScopeAuthorityIntegrityError(
+            "previous design check artifacts are unavailable"
+        ) from exc
+    if not input_exists and not run_exists:
+        return None, "", True
+    if not input_exists:
+        raise ScopeAuthorityIntegrityError(
+            "previous design check artifacts are incomplete"
+        )
+    try:
+        payload = json.loads(
+            read_stable_text(root, artifacts.input_path, encoding="utf-8")
+        )
+        previous_input = DesignContractInput.model_validate(payload)
+        if not run_exists:
+            # 初次检查可能在 input 原子落盘后中断；共享 authority 会在推进时复验它。
+            return (
+                previous_input,
+                _design_scope_input_digest(previous_input),
+                True,
+            )
+        previous_run = read_loop_run(artifacts.loop_run_path, root=root)
+    except (OSError, ValueError, ValidationError) as exc:
+        raise ScopeAuthorityIntegrityError(
+            "previous design check artifacts are unavailable"
+        ) from exc
+    return previous_input, previous_run.input_digest, False
 
 
 def _prepare_design_check(
@@ -295,7 +367,7 @@ def _load_design_close_context(
     | DesignContractCommandResult
 ):
     try:
-        loop_run = read_loop_run(loop_run_path)
+        loop_run = read_loop_run(loop_run_path, root=root)
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -341,10 +413,15 @@ def _close_verified_design_context(
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
 ) -> DesignContractCommandResult:
-    if loop_run.status == LoopStatus.CLOSED and artifacts.close_path.is_file():
-        return _already_closed_design_result(
-            root, loop_run, report, verified_input, artifacts
-        )
+    existing = _existing_design_close_result(
+        root,
+        loop_run,
+        report,
+        verified_input,
+        artifacts,
+    )
+    if existing is not None:
+        return existing
     if report.blocker_count or loop_run.status != LoopStatus.PASSED:
         return _result_from_report(
             report,
@@ -374,6 +451,34 @@ def _close_verified_design_context(
         artifacts,
         options.closed_by,
     )
+
+
+def _existing_design_close_result(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    verified_input: DesignContractInput,
+    artifacts: DesignContractArtifacts,
+) -> DesignContractCommandResult | None:
+    try:
+        close_exists = _trusted_close_artifact_exists(root, artifacts)
+    except ScopeAuthorityIntegrityError as exc:
+        return _blocked_result(
+            str(exc),
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    if loop_run.status == LoopStatus.CLOSED and close_exists:
+        return _already_closed_design_result(
+            root, loop_run, report, verified_input, artifacts
+        )
+    if loop_run.status == LoopStatus.CLOSED or close_exists:
+        return _blocked_result(
+            "Existing closed design-contract artifact is unavailable.",
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    return None
 
 
 def _already_closed_design_result(
@@ -416,6 +521,8 @@ def _write_check_artifacts(
     report: DesignContractReport,
     loop_run: LoopRun,
     artifacts: DesignContractArtifacts,
+    *,
+    loop_run_must_be_absent: bool = False,
 ) -> None:
     store = LoopArtifactStore(root)
     store.create_loop_run_dir(
@@ -435,7 +542,22 @@ def _write_check_artifacts(
     store.write_markdown_artifact(
         artifacts.report_md_path, render_report_markdown(report)
     )
-    store.write_json_artifact(artifacts.loop_run_path, loop_run)
+    if loop_run_must_be_absent:
+        try:
+            created = create_json_exclusive(
+                artifacts.loop_run_path,
+                loop_run.model_dump(mode="json"),
+            )
+        except (OSError, ValueError) as exc:
+            raise ScopeAuthorityIntegrityError(
+                "previous design check loop-run could not be committed"
+            ) from exc
+        if not created:
+            raise ScopeAuthorityIntegrityError(
+                "previous design check loop-run appeared during recovery"
+            )
+    else:
+        store.write_json_artifact(artifacts.loop_run_path, loop_run)
     store.write_json_artifact(
         artifacts.pointer_path,
         DesignContractCurrentPointer(
@@ -658,10 +780,29 @@ def _closed_recheck_result(
     root: Path,
     artifacts: DesignContractArtifacts,
 ) -> DesignContractCommandResult | None:
-    if not artifacts.close_path.is_file():
-        return None
     try:
-        loop_run = read_loop_run(artifacts.loop_run_path)
+        close_exists = _trusted_close_artifact_exists(root, artifacts)
+    except ScopeAuthorityIntegrityError as exc:
+        return _blocked_result(
+            str(exc),
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    if not close_exists:
+        try:
+            if not _stable_regular_file_exists(root, artifacts.loop_run_path):
+                return None
+            loop_run = read_loop_run(artifacts.loop_run_path, root=root)
+        except ValueError:
+            return None
+        if loop_run.status != LoopStatus.CLOSED:
+            return None
+        return _blocked_result(
+            "Existing closed design-contract artifact is unavailable.",
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    try:
+        loop_run = read_loop_run(artifacts.loop_run_path, root=root)
     except ValueError as exc:
         return _blocked_result(
             f"Existing closed design-contract loop is malformed: {exc}",
@@ -685,9 +826,11 @@ def _closed_current_recheck_result(
         _resolve_design_contract_loop_run_identity(root, "")
     )
     if pointer_blocker:
-        return None
+        if pointer_blocker == "No current design-contract loop exists.":
+            return None
+        return _blocked_result(pointer_blocker)
     try:
-        loop_run = read_loop_run(loop_run_path)
+        loop_run = read_loop_run(loop_run_path, root=root)
     except ValueError:
         return None
     if _design_contract_loop_identity_issue(
@@ -703,8 +846,28 @@ def _closed_current_recheck_result(
     ):
         return None
     artifacts = design_contract_artifacts(root, expected_loop_id)
-    if not artifacts.close_path.is_file():
-        return None
+    return _current_closed_design_result(root, loop_run, artifacts)
+
+
+def _current_closed_design_result(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: DesignContractArtifacts,
+) -> DesignContractCommandResult:
+    try:
+        close_exists = _trusted_close_artifact_exists(root, artifacts)
+    except ScopeAuthorityIntegrityError as exc:
+        return _blocked_result(
+            str(exc),
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
+    if not close_exists:
+        return _blocked_result(
+            "Existing closed design-contract artifact is unavailable.",
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root, include_close=True),
+        )
     try:
         report = read_report(artifacts.report_json_path)
     except ValueError as exc:
@@ -723,6 +886,18 @@ def _closed_current_recheck_result(
         loop_status=LoopStatus.CLOSED,
         next_action=next_action,
     )
+
+
+def _trusted_close_artifact_exists(
+    root: Path,
+    artifacts: DesignContractArtifacts,
+) -> bool:
+    try:
+        return _stable_regular_file_exists(root, artifacts.close_path)
+    except ValueError as exc:
+        raise ScopeAuthorityIntegrityError(
+            "Existing closed design-contract artifact is unavailable."
+        ) from exc
 
 
 def _requirement_loop_gate(
