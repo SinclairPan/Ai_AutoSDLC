@@ -9,6 +9,7 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
+from ai_sdlc.core.source_snapshot import SourceSnapshot
 from ai_sdlc.core.stage_review.activation_evidence_runtime import (
     _refresh_activation_policy_from_local_evidence as refresh_activation_policy_from_local_evidence,
 )
@@ -62,6 +63,7 @@ from ai_sdlc.core.stage_review.codex_review_binding_runtime import (
 from ai_sdlc.core.stage_review.codex_trusted_releases import (
     _trusted_published_codex_release as trusted_published_codex_release,
 )
+from ai_sdlc.core.stage_review.finding_models import FindingScope
 from ai_sdlc.core.stage_review.isolation_backend_identity import (
     TrustedBackendReleaseManifest,
 )
@@ -83,7 +85,11 @@ from ai_sdlc.core.stage_review.provider_usage_models import (
 from ai_sdlc.core.stage_review.remote_review_driver_factory import (
     RemoteReviewDriverFactory,
 )
-from ai_sdlc.core.stage_review.session import StageReviewSessionService
+from ai_sdlc.core.stage_review.session import (
+    SessionIntegrityError,
+    StageReviewSessionService,
+)
+from ai_sdlc.core.stage_review.session_store import SessionEventStore
 from ai_sdlc.core.stage_review.shadow_planning_runtime import (
     ShadowPlanningPreflight,
 )
@@ -98,6 +104,7 @@ from ai_sdlc.core.stage_review.stage_review_execution import (
 )
 from ai_sdlc.core.stage_review.stage_review_plan_runtime import (
     HeldStageReviewPlan,
+    _recover_stage_review_plan,
     hold_stage_review_plan,
     release_stage_review_plan,
 )
@@ -138,72 +145,234 @@ class CodexStageReviewExecutor:
     ) -> object:
         if preflight.candidate is None or preflight.source_snapshot is None:
             raise StageCloseGateUnavailableError("review-candidate-unavailable")
-        recovered = recover_product_stage_close(
-            prepared,
-            decision,
-            preflight.candidate,
-        )
-        if recovered is not None:
-            authorization, result = recovered
-            if preflight.risk_profile is None:
-                raise StageCloseGateUnavailableError(
-                    "activation-session-recovery-failed"
-                )
-            try:
-                recover_enforced_activation_session(
-                    self._root,
-                    candidate=preflight.candidate,
-                    risk_profile=preflight.risk_profile,
-                    authorization=authorization,
-                )
-            except (OSError, ValueError) as exc:
-                raise StageCloseGateUnavailableError(
-                    "activation-session-recovery-failed"
-                ) from exc
-            return _bind_stage_close_execution_identity(
-                result,
-                preflight.candidate,
-                authorization,
-            )
-        resolved = resolve_codex_runtime_prerequisites()
-        if resolved is None:
-            raise StageCloseGateUnavailableError("review-isolation-unproven")
-        executable, release = resolved
         try:
-            runtime = hold_stage_review_plan(
+            recovered = recover_product_stage_close(
                 prepared,
                 decision,
                 preflight.candidate,
-                preflight.source_snapshot,
             )
-            try:
-                result = _execute_enforced_close(
-                    self._root,
-                    prepared,
-                    decision,
-                    runtime,
-                    writer,
-                    executable,
-                    release,
-                )
-            except BaseException as primary_error:
-                try:
-                    release_stage_review_plan(runtime)
-                except BaseException as release_error:
-                    primary_error.add_note(
-                        "stage review plan release deferred after close failure: "
-                        f"{type(release_error).__name__}: {release_error}"
+            if recovered is not None:
+                authorization, result = recovered
+                if preflight.risk_profile is None:
+                    raise StageCloseGateUnavailableError(
+                        "activation-session-recovery-failed"
                     )
-                raise
-            else:
-                release_stage_review_plan(runtime)
-                return result
-        except StageCloseGateUnavailableError:
-            raise
-        except (OSError, ValueError) as exc:
+                state = _recovered_review_session_state(
+                    self._root,
+                    preflight.candidate,
+                    authorization,
+                )
+                if state == "consumed":
+                    return _recover_consumed_product_close(
+                        self._root,
+                        preflight,
+                        authorization,
+                        result,
+                    )
+        except (OSError, ValueError, SessionIntegrityError) as exc:
             raise StageCloseGateUnavailableError(
                 "review-runtime-integrity-failure"
             ) from exc
+        return _complete_product_close(
+            self._root,
+            prepared,
+            decision,
+            preflight,
+            writer,
+            recover_runtime=recovered is not None,
+        )
+
+
+def _recover_consumed_product_close(
+    root: Path,
+    preflight: ShadowPlanningPreflight,
+    authorization: StageCloseAuthorization,
+    result: object,
+) -> object:
+    candidate = preflight.candidate
+    risk_profile = preflight.risk_profile
+    if candidate is None or risk_profile is None:
+        raise StageCloseGateUnavailableError("activation-session-recovery-failed")
+    try:
+        recover_enforced_activation_session(
+            root,
+            candidate=candidate,
+            risk_profile=risk_profile,
+            authorization=authorization,
+        )
+    except (OSError, ValueError) as exc:
+        raise StageCloseGateUnavailableError(
+            "activation-session-recovery-failed"
+        ) from exc
+    return _bind_stage_close_execution_identity(result, candidate, authorization)
+
+
+def _complete_product_close(
+    root: Path,
+    prepared: PreparedStageClose,
+    decision: GateApplicabilityDecision,
+    preflight: ShadowPlanningPreflight,
+    writer: Callable[[], object],
+    *,
+    recover_runtime: bool,
+) -> object:
+    candidate = preflight.candidate
+    source_snapshot = preflight.source_snapshot
+    if candidate is None or source_snapshot is None:
+        raise StageCloseGateUnavailableError("review-candidate-unavailable")
+    resolved = resolve_codex_runtime_prerequisites()
+    if resolved is None:
+        raise StageCloseGateUnavailableError("review-isolation-unproven")
+    executable, release = resolved
+    try:
+        runtime = _resolve_stage_review_plan(
+            prepared,
+            decision,
+            candidate,
+            source_snapshot,
+            recover_runtime=recover_runtime,
+        )
+        return _execute_product_close_runtime(
+            root,
+            prepared,
+            decision,
+            runtime,
+            writer,
+            executable,
+            release,
+            recover_runtime=recover_runtime,
+        )
+    except StageCloseGateUnavailableError:
+        raise
+    except (OSError, ValueError, SessionIntegrityError) as exc:
+        raise StageCloseGateUnavailableError(
+            "review-runtime-integrity-failure"
+        ) from exc
+
+
+def _resolve_stage_review_plan(
+    prepared: PreparedStageClose,
+    decision: GateApplicabilityDecision,
+    candidate: CandidateManifest,
+    source_snapshot: SourceSnapshot,
+    *,
+    recover_runtime: bool,
+) -> HeldStageReviewPlan:
+    if recover_runtime:
+        return _recover_stage_review_plan(
+            prepared,
+            decision,
+            candidate,
+            source_snapshot,
+        )
+    return hold_stage_review_plan(
+        prepared,
+        decision,
+        candidate,
+        source_snapshot,
+    )
+
+
+def _execute_product_close_runtime(
+    root: Path,
+    prepared: PreparedStageClose,
+    decision: GateApplicabilityDecision,
+    runtime: HeldStageReviewPlan,
+    writer: Callable[[], object],
+    executable: str,
+    release: TrustedBackendReleaseManifest,
+    *,
+    recover_runtime: bool,
+) -> object:
+    if recover_runtime:
+        return _execute_enforced_close(
+            root,
+            prepared,
+            decision,
+            runtime,
+            writer,
+            executable,
+            release,
+        )
+    return _execute_new_product_close(
+        root,
+        prepared,
+        decision,
+        runtime,
+        writer,
+        executable,
+        release,
+    )
+
+
+def _execute_new_product_close(
+    root: Path,
+    prepared: PreparedStageClose,
+    decision: GateApplicabilityDecision,
+    runtime: HeldStageReviewPlan,
+    writer: Callable[[], object],
+    executable: str,
+    release: TrustedBackendReleaseManifest,
+) -> object:
+    try:
+        result = _execute_enforced_close(
+            root,
+            prepared,
+            decision,
+            runtime,
+            writer,
+            executable,
+            release,
+        )
+    except BaseException as primary_error:
+        try:
+            release_stage_review_plan(runtime)
+        except BaseException as release_error:
+            primary_error.add_note(
+                "stage review plan release deferred after close failure: "
+                f"{type(release_error).__name__}: {release_error}"
+            )
+        raise
+    release_stage_review_plan(runtime)
+    return result
+
+
+def _recovered_review_session_state(
+    root: Path,
+    candidate: CandidateManifest,
+    authorization: StageCloseAuthorization,
+) -> str:
+    scope = FindingScope(
+        project_id=candidate.project_id,
+        work_item_id=candidate.work_item_id,
+        stage_instance_id=candidate.stage_instance_id,
+        session_id=candidate.review_session_id,
+    )
+    session = SessionEventStore(
+        root,
+        project_id=candidate.project_id,
+    ).rebuild(scope)
+    claim = authorization.claim
+    if session is None or session.state not in {"consuming", "consumed"}:
+        raise ValueError("recovered review session is unavailable")
+    projection = session.projection
+    receipt = authorization.receipt
+    if claim.scope != scope or not all(
+        (
+            projection.active_close_certificate_id == claim.certificate_id,
+            projection.active_close_certificate_digest == claim.certificate_digest,
+            projection.active_close_claim_id == claim.claim_id,
+            projection.active_close_claim_digest == claim.claim_digest,
+        )
+    ):
+        raise ValueError("recovered review session identity diverged")
+    if session.state == "consumed" and (
+        receipt is None
+        or projection.close_consumption_receipt_id != receipt.receipt_id
+        or projection.close_consumption_receipt_digest != receipt.receipt_digest
+    ):
+        raise ValueError("recovered review session receipt diverged")
+    return session.state
 
 
 def _execute_enforced_close(

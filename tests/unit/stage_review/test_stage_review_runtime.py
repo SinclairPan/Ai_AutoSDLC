@@ -15,6 +15,7 @@ from ai_sdlc.core.stage_review.close_gate_models import (
     PreparedStageClose,
 )
 from ai_sdlc.core.stage_review.codex_review_runtime import CodexStageReviewExecutor
+from ai_sdlc.core.stage_review.session import SessionIntegrityError
 from ai_sdlc.core.stage_review.shadow_planning_runtime import (
     ShadowPlanningPreflight,
 )
@@ -161,6 +162,155 @@ def test_codex_enforce_maps_plan_acquisition_failure_before_writer(
             ),
             lambda: (_ for _ in ()).throw(
                 AssertionError("failed planning called the writer")
+            ),
+        )
+
+
+def test_codex_enforce_replays_recovered_close_through_session_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "recover_product_stage_close",
+        lambda *_args: (object(), "recovered"),
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_recovered_review_session_state",
+        lambda *_args: "consuming",
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "resolve_codex_runtime_prerequisites",
+        lambda: ("codex", object()),
+    )
+    runtime = object()
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_recover_stage_review_plan",
+        lambda *_args: runtime,
+    )
+    executed = []
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_execute_enforced_close",
+        lambda *_args: executed.append("session-replayed") or "recovered",
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "release_stage_review_plan",
+        lambda held: executed.append(held),
+    )
+    available = object()
+
+    result = CodexStageReviewExecutor(tmp_path).enforce_close(
+        cast(PreparedStageClose, available),
+        cast(GateApplicabilityDecision, available),
+        ShadowPlanningPreflight(
+            candidate=cast(object, available),
+            source_snapshot=cast(object, available),
+            risk_profile=cast(object, available),
+            failure=None,
+        ),
+        lambda: (_ for _ in ()).throw(
+            AssertionError("recovered close called the writer")
+        ),
+    )
+
+    assert result == "recovered"
+    assert executed == ["session-replayed"]
+
+
+def test_codex_enforce_maps_recovered_session_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "recover_product_stage_close",
+        lambda *_args: (object(), "recovered"),
+    )
+
+    def fail_recovered_session(*_args: object) -> str:
+        raise SessionIntegrityError("session projection digest fork")
+
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_recovered_review_session_state",
+        fail_recovered_session,
+    )
+    available = object()
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="review-runtime-integrity-failure",
+    ):
+        CodexStageReviewExecutor(tmp_path).enforce_close(
+            cast(PreparedStageClose, available),
+            cast(GateApplicabilityDecision, available),
+            ShadowPlanningPreflight(
+                candidate=cast(object, available),
+                source_snapshot=cast(object, available),
+                risk_profile=cast(object, available),
+                failure=None,
+            ),
+            lambda: (_ for _ in ()).throw(
+                AssertionError("failed recovery called the writer")
+            ),
+        )
+
+
+def test_codex_enforce_maps_consuming_replay_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "recover_product_stage_close",
+        lambda *_args: (object(), "recovered"),
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_recovered_review_session_state",
+        lambda *_args: "consuming",
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "resolve_codex_runtime_prerequisites",
+        lambda: ("codex", object()),
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_recover_stage_review_plan",
+        lambda *_args: object(),
+    )
+
+    def fail_consuming_replay(*_args: object) -> object:
+        raise SessionIntegrityError("completion lineage diverged")
+
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_execute_enforced_close",
+        fail_consuming_replay,
+    )
+    available = object()
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="review-runtime-integrity-failure",
+    ):
+        CodexStageReviewExecutor(tmp_path).enforce_close(
+            cast(PreparedStageClose, available),
+            cast(GateApplicabilityDecision, available),
+            ShadowPlanningPreflight(
+                candidate=cast(object, available),
+                source_snapshot=cast(object, available),
+                risk_profile=cast(object, available),
+                failure=None,
+            ),
+            lambda: (_ for _ in ()).throw(
+                AssertionError("failed replay called the writer")
             ),
         )
 

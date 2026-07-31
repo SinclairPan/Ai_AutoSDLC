@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 
 from ai_sdlc.core.source_snapshot import SourceSnapshot, revalidate_source_snapshot
@@ -49,6 +50,9 @@ from ai_sdlc.core.stage_review.stage_close_result_codec import (
     persist_product_result,
     product_result_path,
     recover_product_result,
+)
+from ai_sdlc.core.stage_review.stage_close_session_recovery import (
+    _finalize_recovered_product_close,
 )
 from ai_sdlc.core.stage_review.stage_review_execution import (
     StageReviewExecutionRequest,
@@ -112,10 +116,13 @@ def authorize_product_stage_close(
         runtime.planned.candidate,
     )
     if recovered is not None:
-        authorization, result = recovered
-        if on_closed is not None:
-            on_closed(authorization)
-        return result
+        context_factory = partial(_close_authority_context, prepared, decision, runtime, sessions)
+        return _finalize_recovered_product_close(
+            recovered,
+            sessions,
+            context_factory,
+            on_closed,
+        )
     authorizer, context = _close_authority_context(
         prepared,
         decision,
@@ -387,8 +394,4 @@ def _clock() -> str:
     return utc_iso(datetime.now(UTC))
 
 
-__all__ = [
-    "PreparedStageCloseEvidenceAuthority",
-    "authorize_product_stage_close",
-    "recover_product_stage_close",
-]
+__all__ = ["PreparedStageCloseEvidenceAuthority", "authorize_product_stage_close", "recover_product_stage_close"]

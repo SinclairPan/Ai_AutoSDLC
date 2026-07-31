@@ -48,23 +48,40 @@ def _read_close_start_context(
     scope: FindingScope,
 ) -> _CloseStartRecoveryContext | None:
     session = store.rebuild(scope)
-    if session is None or session.state != "consuming":
+    if session is None or session.state not in {"consuming", "consumed"}:
         return None
     command, operation = _read_close_start_operation(store, session)
     if not store.is_operation_complete(command, ("close_consumption_started",)):
         raise SessionIntegrityError("session close start operation is incomplete")
     events = store.load_events(scope)
-    predecessor = reduce_session_events(scope, events[:-1])
-    if predecessor is None:
+    positions = tuple(
+        index
+        for index, event in enumerate(events)
+        if event.command_id == command.command_id
+        and event.event_kind == "close_consumption_started"
+    )
+    if len(positions) != 1:
+        raise SessionIntegrityError("session close start event is unavailable")
+    position = positions[0]
+    predecessor = reduce_session_events(scope, events[:position])
+    consuming = reduce_session_events(scope, events[: position + 1])
+    if predecessor is None or consuming is None:
         raise SessionIntegrityError("session close start predecessor is unavailable")
     _require_close_start_lineage(
-        session,
+        consuming,
         predecessor,
-        events[-1],
+        events[position],
         operation,
         command,
     )
-    return command, predecessor, _session_head_time(events[:-1], predecessor)
+    if session.state == "consuming" and position != len(events) - 1:
+        raise SessionIntegrityError("consuming session close start is not at head")
+    if session.state == "consumed" and (
+        position != len(events) - 2
+        or events[-1].event_kind != "close_receipt_committed"
+    ):
+        raise SessionIntegrityError("consumed session close lineage diverged")
+    return command, predecessor, _session_head_time(events[:position], predecessor)
 
 
 def _read_close_start_operation(

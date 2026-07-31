@@ -132,6 +132,31 @@ class StageCloseAuthorizer:
             self._store.last_event(claim.certificate_id),
         )
 
+    def _reconcile_committed_stage_close(
+        self,
+        context: StageCloseContext,
+        result: StageCloseAuthorization,
+    ) -> StageCloseAuthorization:
+        trusted = StageCloseContext.model_validate(context.model_dump(mode="json"))
+        self._require_worktree(trusted)
+        self._certificates.require_persisted(trusted.certificate)
+        claim = self._store.read_claim(trusted.certificate.certificate_id)
+        if claim is None:
+            raise CloseClaimConflictError("committed close claim is missing")
+        validate_claim_context(claim, trusted)
+        state = self._store.require_consumable_state(claim)
+        if (
+            result.status != "closed"
+            or result.claim != claim
+            or result.state != state
+        ):
+            raise CloseClaimConflictError("committed close recovery diverged")
+        return self._session.reconcile(
+            trusted,
+            result,
+            self._store.last_event(claim.certificate_id),
+        )
+
     def _prepare_claim(
         self,
         context: StageCloseContext,

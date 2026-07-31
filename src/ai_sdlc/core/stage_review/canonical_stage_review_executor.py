@@ -168,7 +168,7 @@ class CanonicalStageReviewExecutor:
         packets: tuple[ReviewInputPacket, ...],
         session: StageReviewSession,
     ) -> StageReviewExecutionOutcome:
-        if session.state == "consuming":
+        if session.state in {"consuming", "consumed"}:
             return recover_consuming_review_session(
                 request,
                 binding_set,
