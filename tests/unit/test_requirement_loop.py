@@ -650,6 +650,7 @@ def test_freeze_requirement_loop_recovers_intent_after_pre_writer_failure(
     )
     assert freeze["accepted_by"] == "local-user"
     assert freeze["accepted_at"] == "2026-07-27T10:00:00Z"
+    assert freeze["created_at"] == freeze["accepted_at"]
     project_id = resolve_repository_project_id(tmp_path)
     shared = resolve_canonical_shared_state(tmp_path, project_id)
     assert (

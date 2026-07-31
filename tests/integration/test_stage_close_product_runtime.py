@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 from dataclasses import replace
 from pathlib import Path
+from typing import Protocol
 
 import pytest
 
@@ -17,14 +20,18 @@ from ai_sdlc.core.stage_review.activation_store import (
 )
 from ai_sdlc.core.stage_review.adapters import ImplementationStageAdapter
 from ai_sdlc.core.stage_review.canonical import CanonicalizationPolicy, canonical_digest
+from ai_sdlc.core.stage_review.canonical_stage_review_support import execution_scope
 from ai_sdlc.core.stage_review.close_gate_models import (
     GateApplicabilityDecision,
     PreparedStageClose,
 )
 from ai_sdlc.core.stage_review.close_models import StageCloseAuthorization
+from ai_sdlc.core.stage_review.close_store import StageCloseStore
 from ai_sdlc.core.stage_review.optimization.observations import (
     OptimizationObservationStore,
 )
+from ai_sdlc.core.stage_review.review_completion import ReviewSessionCompletion
+from ai_sdlc.core.stage_review.session import SessionIntegrityError
 from ai_sdlc.core.stage_review.stage_adapter_registry import (
     default_stage_candidate_adapter_registry,
 )
@@ -40,7 +47,18 @@ from ai_sdlc.core.stage_review.stage_close_result_codec import (
     recover_product_result,
 )
 from ai_sdlc.core.stage_review.stage_review_plan_runtime import HeldStageReviewPlan
-from tests.integration.test_canonical_stage_review_executor import _executor_rig
+from tests.integration.test_canonical_stage_review_executor import (
+    _executor_for_request,
+    _executor_rig,
+)
+
+
+class _ResultQueue(Protocol):
+    def put(self, value: object) -> None: ...
+
+    def close(self) -> None: ...
+
+    def join_thread(self) -> None: ...
 
 
 def test_authorized_session_consumes_certificate_before_product_close(
@@ -241,6 +259,205 @@ def test_enforce_prepared_claim_authorizes_product_close_recovery(
         )
         is False
     )
+
+
+def test_enforce_prepared_claim_resumes_original_review_and_close_transaction(
+    tmp_path: Path,
+) -> None:
+    context = multiprocessing.get_context("spawn")
+    result_queue = context.Queue()
+    interrupted = context.Process(
+        target=_hard_exit_product_close_worker,
+        args=(str(tmp_path), result_queue),
+    )
+    interrupted.start()
+    interrupted.join(timeout=60)
+
+    assert not interrupted.is_alive()
+    assert interrupted.exitcode == 86
+    request, prepared, decision, first_outcome = result_queue.get(timeout=5)
+    result_queue.close()
+    result_queue.join_thread()
+    runtime = HeldStageReviewPlan(
+        planned=request.proposal,
+        held=_held_plan(request),
+        source_snapshot=request.source_snapshot,
+        refs={},
+    )
+    assert (tmp_path / prepared.close_artifact_path).is_file()
+    assert not product_result_path(prepared).exists()
+    close_store = StageCloseStore(
+        tmp_path,
+        project_id=request.candidate.project_id,
+        lock_timeout_seconds=2,
+    )
+    claim_paths = tuple(tmp_path.rglob("stage-close-authorizer/claims/*.json"))
+    assert len(claim_paths) == 1
+    claim = close_store.read_claim(claim_paths[0].stem)
+    assert claim is not None
+    interrupted_state = close_store.require_consumable_state(claim)
+    assert interrupted_state.status == "consuming"
+    assert interrupted_state.revision == 1
+    assert interrupted_state.event_kinds == ("prepared",)
+    assert not interrupted_state.close_artifact_digest
+    assert close_store.read_receipt(claim.claim_id) is None
+    recovered_sessions = []
+    replay_executor = _executor_for_request(
+        tmp_path,
+        request,
+        on_authorized=recovered_sessions.append,
+    )
+    replay_outcome = replay_executor.execute(request)
+
+    assert replay_outcome == first_outcome
+    assert len(recovered_sessions) == 1
+    resumed_writer_calls = 0
+
+    def resumed_writer() -> dict[str, str]:
+        nonlocal resumed_writer_calls
+        resumed_writer_calls += 1
+        path = tmp_path / prepared.close_artifact_path
+        path.write_text('{"status":"closed"}\n', encoding="utf-8")
+        return {"status": "ready", "loop_status": "closed"}
+
+    second = authorize_product_stage_close(
+        prepared,
+        decision,
+        runtime,
+        recovered_sessions[0],
+        resumed_writer,
+    )
+    third = authorize_product_stage_close(
+        prepared,
+        decision,
+        runtime,
+        recovered_sessions[0],
+        lambda: (_ for _ in ()).throw(
+            AssertionError("closed command reran product writer")
+        ),
+    )
+
+    assert second == {"status": "ready", "loop_status": "closed"}
+    assert third == second
+    assert resumed_writer_calls == 1
+    assert recover_product_result(prepared) == second
+    closed_state = close_store.require_consumable_state(claim)
+    assert closed_state.event_kinds == (
+        "prepared",
+        "close_written",
+        "reconciled",
+        "committed",
+    )
+    assert recovered_sessions[0].get(execution_scope(request)).state == "consumed"
+    assert len(tuple(tmp_path.rglob("certificates/*.json"))) == 1
+    assert len(tuple(tmp_path.rglob("stage-close-authorizer/claims/*.json"))) == 1
+    assert len(tuple(tmp_path.rglob("stage-close-authorizer/receipts/*.json"))) == 1
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("session_head_event_digest", "sha256:" + ("a" * 64)),
+        ("initial_review_seal_digest", "sha256:" + ("b" * 64)),
+        ("required_pass_digests", ("sha256:" + ("c" * 64),)),
+        ("completed_at", "2099-01-01T00:00:00Z"),
+    ),
+)
+def test_consuming_review_recovery_rejects_rehashed_completion_tamper(
+    tmp_path: Path,
+    field: str,
+    value: object,
+) -> None:
+    sessions = []
+    rig = _executor_rig(
+        tmp_path,
+        transport_available=True,
+        on_authorized=sessions.append,
+    )
+    assert rig.executor.execute(rig.request).status == "completed"
+    prepared = _prepared_close(tmp_path)
+    runtime = HeldStageReviewPlan(
+        planned=rig.request.proposal,
+        held=_held_plan(rig.request),
+        source_snapshot=rig.request.source_snapshot,
+        refs={},
+    )
+
+    def interrupted_writer() -> None:
+        raise RuntimeError("simulated product writer interruption")
+
+    with pytest.raises(RuntimeError, match="simulated product writer interruption"):
+        authorize_product_stage_close(
+            prepared,
+            _enforce_decision(tmp_path, prepared),
+            runtime,
+            sessions[0],
+            interrupted_writer,
+        )
+    path = sessions[0].projection_path(execution_scope(rig.request)).parent / "completion.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload[field] = value
+    payload["completion_digest"] = ""
+    tampered = ReviewSessionCompletion.model_validate(payload)
+    path.write_text(
+        json.dumps(tampered.model_dump(mode="json"), sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    recovered = []
+    replay = _executor_for_request(
+        tmp_path,
+        rig.request,
+        on_authorized=recovered.append,
+    )
+
+    with pytest.raises(
+        SessionIntegrityError,
+        match="consuming review session completion lineage diverged",
+    ):
+        replay.execute(rig.request)
+    assert recovered == []
+
+
+def _hard_exit_product_close_worker(
+    root_value: str,
+    result_queue: _ResultQueue,
+) -> None:
+    root = Path(root_value)
+    sessions = []
+    rig = _executor_rig(
+        root,
+        transport_available=True,
+        on_authorized=sessions.append,
+    )
+    outcome = rig.executor.execute(rig.request)
+    if outcome.status != "completed" or len(sessions) != 1:
+        raise SystemExit(85)
+    prepared = _prepared_close(root)
+    decision = _enforce_decision(root, prepared)
+    result_queue.put((rig.request, prepared, decision, outcome))
+    result_queue.close()
+    result_queue.join_thread()
+    runtime = HeldStageReviewPlan(
+        planned=rig.request.proposal,
+        held=_held_plan(rig.request),
+        source_snapshot=rig.request.source_snapshot,
+        refs={},
+    )
+
+    def hard_exit_writer() -> None:
+        path = root / prepared.close_artifact_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('{"status":"closed"}\n', encoding="utf-8")
+        os._exit(86)
+
+    authorize_product_stage_close(
+        prepared,
+        decision,
+        runtime,
+        sessions[0],
+        hard_exit_writer,
+    )
+    raise SystemExit(87)
 
 
 def test_product_result_codec_restores_governed_model(tmp_path: Path) -> None:

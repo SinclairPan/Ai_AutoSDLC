@@ -26,6 +26,7 @@ from ai_sdlc.core.design_contract_models import (
 )
 from ai_sdlc.core.design_contract_store import (
     DesignContractArtifacts,
+    design_contract_artifacts,
     resolve_design_contract_loop_run_path,
 )
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
@@ -37,6 +38,11 @@ from ai_sdlc.core.requirement_loop import (
     _requirement_intake_digest,
     freeze_requirement_loop,
     start_requirement_loop,
+)
+from ai_sdlc.core.stage_review.close_gate_models import GateApplicabilityDecision
+from ai_sdlc.core.stage_review.close_gate_observation import stage_close_operation_id
+from ai_sdlc.core.stage_review.close_gate_store import (
+    _read_gate_operation as read_gate_operation,
 )
 from ai_sdlc.core.stage_review.stage_review_execution import (
     StageCloseGateUnavailableError,
@@ -2577,6 +2583,163 @@ def test_close_design_contract_loop_does_not_write_without_shadow_lock(
         (loop_dir / "loop-run.json").read_text(encoding="utf-8")
     )
     assert persisted_run["status"] == "passed"
+
+
+def test_close_design_contract_loop_replays_frozen_plan_after_lock_outage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-shadow-lock-retry"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    original_lock = close_gate_module.gate_execution_lock
+    lock_calls = 0
+    original_refresh = design_contract_loop_module._refresh_report_before_close
+    refresh_calls = 0
+
+    def fail_first_lock(*args, **kwargs):
+        nonlocal lock_calls
+        lock_calls += 1
+        if lock_calls == 1:
+            raise OSError("injected first execution lock failure")
+        return original_lock(*args, **kwargs)
+
+    def refresh_with_time_bearing_rewrite(*args, persist: bool = True, **kwargs):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        refreshed = original_refresh(*args, persist=persist, **kwargs)
+        if (
+            persist
+            and refresh_calls > 1
+            and not isinstance(refreshed, design_contract_loop_module.DesignContractCommandResult)
+        ):
+            report, loop_run = refreshed
+            loop_run = loop_run.model_copy(
+                update={"updated_at": f"2026-07-30T00:00:00.{refresh_calls:06d}Z"}
+            )
+            LoopArtifactStore(tmp_path).write_json_artifact(
+                args[2].loop_run_path,
+                loop_run,
+            )
+            return report, loop_run
+        return refreshed
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_refresh_report_before_close",
+        refresh_with_time_bearing_rewrite,
+    )
+    monkeypatch.setattr(close_gate_module, "gate_execution_lock", fail_first_lock)
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="stage-close-operation-lock-unavailable",
+    ):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    prepared = design_contract_loop_module._prepared_design_stage_close(
+        tmp_path,
+        LoopRun.model_validate_json(
+            (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+        ),
+        design_contract_artifacts(tmp_path, loop_id),
+    )
+    operation = read_gate_operation(tmp_path, stage_close_operation_id(prepared))
+    assert operation is not None
+    assert operation.recovery_binding is not None
+    frozen_binding_digest = operation.recovery_binding.binding_digest
+    frozen_closed_at = operation.recovery_binding.close_artifact_payload["closed_at"]
+
+    replay = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    recovered = read_gate_operation(tmp_path, stage_close_operation_id(prepared))
+    close_payload = json.loads(
+        (loop_dir / "design-contract-close.json").read_text(encoding="utf-8")
+    )
+    assert replay.status == "ready"
+    assert replay.loop_status == "closed"
+    assert recovered is not None
+    assert recovered.recovery_binding is not None
+    assert recovered.recovery_binding.binding_digest == frozen_binding_digest
+    assert close_payload["closed_at"] == frozen_closed_at
+
+
+def test_enforce_design_close_persists_frozen_writer_plan_before_execution(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-enforce-frozen-plan"
+    assert check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    ).status == "ready"
+    original_applicability = close_gate_module.shadow_applicability
+
+    def enforce_applicability(prepared) -> GateApplicabilityDecision:
+        shadow = original_applicability(prepared)
+        return GateApplicabilityDecision(
+            decision_id=f"{shadow.decision_id}.enforce-test",
+            gate_id=shadow.gate_id,
+            stage_key=shadow.stage_key,
+            loop_id=shadow.loop_id,
+            mode="enforce",
+            policy_id=shadow.policy_id,
+            policy_version=shadow.policy_version,
+            policy_digest=shadow.policy_digest,
+            reason_code="test-enforce-frozen-writer-plan",
+        )
+
+    monkeypatch.setattr(
+        close_gate_module,
+        "shadow_applicability",
+        enforce_applicability,
+    )
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "execute_stage_close",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            StageCloseGateUnavailableError("injected enforce execution outage")
+        ),
+    )
+
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="injected enforce execution outage",
+    ):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    prepared = design_contract_loop_module._prepared_design_stage_close(
+        tmp_path,
+        LoopRun.model_validate_json(
+            (loop_dir / "loop-run.json").read_text(encoding="utf-8")
+        ),
+        design_contract_artifacts(tmp_path, loop_id),
+    )
+    operation = read_gate_operation(tmp_path, stage_close_operation_id(prepared))
+    assert operation is not None
+    assert operation.state == "prepared"
+    assert operation.recovery_binding is not None
+    assert operation.recovery_binding.predecessor_stage_digest == (
+        operation.stage_input_digest
+    )
 
 
 def test_close_design_contract_loop_rejects_report_changed_after_stage_review(

@@ -15,6 +15,9 @@ from ai_sdlc.core.stage_review.candidate import candidate_binding_digest
 from ai_sdlc.core.stage_review.canonical_stage_review_optimization import (
     build_session_optimization_coordinator,
 )
+from ai_sdlc.core.stage_review.canonical_stage_review_recovery import (
+    _recover_consuming_review_session as recover_consuming_review_session,
+)
 from ai_sdlc.core.stage_review.canonical_stage_review_slots import (
     CanonicalReviewSlotExecutor,
     ReviewDriverFactory,
@@ -165,6 +168,14 @@ class CanonicalStageReviewExecutor:
         packets: tuple[ReviewInputPacket, ...],
         session: StageReviewSession,
     ) -> StageReviewExecutionOutcome:
+        if session.state == "consuming":
+            return recover_consuming_review_session(
+                request,
+                binding_set,
+                service,
+                session,
+                self._on_authorized,
+            )
         if session.state == "authorized":
             return self._complete(service, session)
         if session.state != "collecting_initial_reviews":
@@ -195,6 +206,7 @@ class CanonicalStageReviewExecutor:
         service: StageReviewSessionService,
         session: StageReviewSession,
     ) -> StageReviewExecutionOutcome:
+        completed_at = service._authorized_completion_time(session)
         if self._on_authorized is not None:
             self._on_authorized(service)
         path = service.projection_path(session.scope)
@@ -202,14 +214,14 @@ class CanonicalStageReviewExecutor:
         if existing is not None:
             expected = build_review_completion(
                 session,
-                completed_at=existing.completed_at,
+                completed_at=completed_at,
             )
             if existing != expected:
                 raise ValueError("review completion lineage fork")
             return _completed_outcome(session, existing.completion_digest)
         completion = build_review_completion(
             session,
-            completed_at=utc_iso(self._clock()),
+            completed_at=completed_at,
         )
         persist_review_completion(path, completion)
         return _completed_outcome(session, completion.completion_digest)

@@ -308,26 +308,30 @@ def _interrupted_stage_close_is_recoverable(prepared: PreparedStageClose) -> boo
         )
         frozen = replace(prepared, risk_level=risk_level)
         decision = shadow_applicability(frozen)
+        operation = read_gate_operation(
+            prepared.root,
+            stage_close_operation_id(prepared),
+        )
+        recovered = _restore_stage_close_recovery_input(frozen)
+        binding_is_current = bool(
+            operation is not None
+            and operation.recovery_binding is not None
+            and operation.state == "prepared"
+            and not operation.artifact_existed_before
+            and recovered.stage_input_digest == operation.stage_input_digest
+        )
         if decision.mode == "enforce":
             return bool(
-                preflight.candidate is not None
+                binding_is_current
+                and preflight.candidate is not None
                 and _enforce_partial_stage_close_is_recoverable(
                     frozen,
                     decision,
                     preflight.candidate,
                 )
             )
-        operation = read_gate_operation(
-            prepared.root,
-            stage_close_operation_id(prepared),
-        )
         if operation is not None and operation.recovery_binding is not None:
-            recovered = _restore_post_writer_recovery_input(prepared)
-            return bool(
-                operation.state == "prepared"
-                and not operation.artifact_existed_before
-                and recovered.stage_input_digest == operation.stage_input_digest
-            )
+            return binding_is_current
     except (OSError, StageCloseGateUnavailableError, ValueError):
         return False
     return bool(
@@ -351,9 +355,8 @@ def _prepare_stage_close_recovery_intent(
         else "unclassified"
     )
     frozen = replace(prepared, risk_level=risk_level)
-    if shadow_applicability(frozen).mode == "enforce":
-        return frozen
-    frozen = _restore_post_writer_recovery_input(frozen)
+    shadow_applicability(frozen)
+    frozen = _restore_stage_close_recovery_input(frozen)
     prepare_gate_operation(
         prepared.root,
         _new_gate_operation(
@@ -364,7 +367,7 @@ def _prepare_stage_close_recovery_intent(
     return frozen
 
 
-def _restore_post_writer_recovery_input(
+def _restore_stage_close_recovery_input(
     prepared: PreparedStageClose,
 ) -> PreparedStageClose:
     operation = read_gate_operation(

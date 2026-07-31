@@ -754,6 +754,7 @@ def _freeze_open_requirement(
     )
     freeze = RequirementFreeze(
         loop_id=loop_run.loop_id,
+        created_at=accepted_at,
         accepted_by=accepted_by,
         accepted_at=accepted_at,
         intake_path=_repo_relative_path(root, artifacts.intake_path),

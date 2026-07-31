@@ -17,6 +17,7 @@ from ai_sdlc.core.stage_review.candidate import (
 )
 from ai_sdlc.core.stage_review.canonical import CanonicalizationPolicy, canonical_digest
 from ai_sdlc.core.stage_review.certificate_models import (
+    StageCloseCertificate,
     StageCloseCertificateRequest,
     StageCloseEvidence,
     StageCloseIntent,
@@ -189,13 +190,14 @@ def _close_authority_context(
         context_authority=evidence_authority,
         clock=_clock,
     )
-    certificate_request = StageCloseCertificateRequest(
-        intent=intent,
-        evidence=evidence,
-        expected_session_revision=session.revision,
-        resource_reconciliation_digest=reconciliation_digest,
+    certificate_request, certificate = _resolve_close_certificate(
+        sessions,
+        certificates,
+        intent,
+        evidence,
+        session.revision,
+        reconciliation_digest,
     )
-    certificate = certificates.issue(certificate_request)
     authorizer = _authorizer(prepared.root, certificates, request)
     context = StageCloseContext(
         certificate=certificate,
@@ -206,6 +208,35 @@ def _close_authority_context(
         lease_seconds=60,
     )
     return authorizer, context
+
+
+def _resolve_close_certificate(
+    sessions: StageReviewSessionService,
+    certificates: StageCloseCertificateAuthority,
+    intent: StageCloseIntent,
+    evidence: StageCloseEvidence,
+    session_revision: int,
+    reconciliation_digest: str,
+) -> tuple[StageCloseCertificateRequest, StageCloseCertificate]:
+    recovered = sessions._recover_close_start_command(intent.scope)
+    expected_revision = (
+        session_revision
+        if recovered is None
+        else recovered.certificate.session_revision
+    )
+    certificate_request = StageCloseCertificateRequest(
+        intent=intent,
+        evidence=evidence,
+        expected_session_revision=expected_revision,
+        resource_reconciliation_digest=reconciliation_digest,
+    )
+    if recovered is None:
+        return certificate_request, certificates.issue(certificate_request)
+    if recovered.certificate_request != certificate_request:
+        raise ValueError("prepared stage close recovery context diverged")
+    return certificate_request, certificates.require_persisted(
+        recovered.certificate
+    )
 
 
 def _reconcile_review_resources(

@@ -99,6 +99,7 @@ from ai_sdlc.core.stage_review.canonical import (
 from ai_sdlc.core.stage_review.close_gate import (
     _interrupted_stage_close_is_recoverable,
     _prepare_stage_close_recovery_intent,
+    _restore_stage_close_recovery_input,
     execute_stage_close,
     prepare_loop_stage_close,
 )
@@ -476,11 +477,20 @@ def _finish_verified_design_close(
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
 ) -> DesignContractCommandResult:
+    frozen_or_blocker = _restore_design_close_plan(
+        root,
+        loop_run,
+        artifacts,
+    )
+    if isinstance(frozen_or_blocker, DesignContractCommandResult):
+        return frozen_or_blocker
+    frozen = frozen_or_blocker
     refreshed = _refresh_report_before_close(
         root,
         loop_run,
         artifacts,
         verified_input,
+        persist=frozen.recovery_binding is None,
     )
     if isinstance(refreshed, DesignContractCommandResult):
         return refreshed
@@ -498,6 +508,7 @@ def _finish_verified_design_close(
         verified_input,
         artifacts,
         options.closed_by,
+        prepared=frozen if frozen.recovery_binding is not None else None,
     )
 
 
@@ -817,12 +828,77 @@ def _write_close(
     contract_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
     closed_by: str,
+    *,
+    prepared: PreparedStageClose | None = None,
 ) -> DesignContractCommandResult:
+    plan = _prepare_design_close_writer_plan(
+        root,
+        loop_run,
+        report,
+        artifacts,
+        closed_by,
+        prepared=prepared,
+    )
+    if isinstance(plan, DesignContractCommandResult):
+        return plan
+    prepared, expected_artifact_digests = plan
+    return _execute_design_close_gate(
+        root,
+        loop_run,
+        contract_input,
+        artifacts,
+        lambda frozen: _write_design_close(root, report, artifacts, frozen),
+        prepared=prepared,
+        expected_artifact_digests=expected_artifact_digests,
+    )
+
+
+def _restore_design_close_plan(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: DesignContractArtifacts,
+    prepared: PreparedStageClose | None = None,
+) -> PreparedStageClose | DesignContractCommandResult:
     try:
-        expected_artifact_digests = _capture_design_close_artifact_digests(
-            root,
-            artifacts,
+        return _restore_stage_close_recovery_input(
+            prepared or _prepared_design_stage_close(root, loop_run, artifacts)
         )
+    except (OSError, UnicodeError, ValueError) as exc:
+        return _blocked_result(
+            f"Design close transaction could not restore its frozen plan: {exc}",
+            loop_id=loop_run.loop_id,
+            next_action="Retry ai-sdlc loop design-contract close --yes.",
+            artifacts=artifacts.refs(
+                root,
+                include_close=artifacts.close_path.is_file(),
+            ),
+        )
+
+
+def _prepare_design_close_writer_plan(
+    root: Path,
+    loop_run: LoopRun,
+    report: DesignContractReport,
+    artifacts: DesignContractArtifacts,
+    closed_by: str,
+    *,
+    prepared: PreparedStageClose | None,
+) -> (
+    tuple[PreparedStageClose, tuple[tuple[str, str], ...]]
+    | DesignContractCommandResult
+):
+    recovered = _restore_design_close_plan(
+        root,
+        loop_run,
+        artifacts,
+        prepared,
+    )
+    if isinstance(recovered, DesignContractCommandResult):
+        return recovered
+    if recovered.recovery_binding is not None:
+        return recovered, recovered.recovery_binding.protected_artifact_digests
+    try:
+        expected = _capture_design_close_artifact_digests(root, artifacts)
     except (OSError, UnicodeError, ValueError) as exc:
         return _blocked_result(
             f"Design close authority could not prepare artifacts: {exc}",
@@ -830,24 +906,15 @@ def _write_close(
             next_action="Rerun ai-sdlc loop design-contract check with a new loop id.",
             artifacts=artifacts.refs(root),
         )
-    prepared = _prepared_design_stage_close(root, loop_run, artifacts)
     binding = _build_design_close_recovery_binding(
-        prepared,
+        recovered,
         loop_run,
         report,
         artifacts,
         closed_by,
-        expected_artifact_digests,
+        expected,
     )
-    return _execute_design_close_gate(
-        root,
-        loop_run,
-        contract_input,
-        artifacts,
-        lambda frozen: _write_design_close(root, report, artifacts, frozen),
-        prepared=replace(prepared, recovery_binding=binding),
-        expected_artifact_digests=expected_artifact_digests,
-    )
+    return replace(recovered, recovery_binding=binding), expected
 
 
 def _write_design_close(

@@ -41,6 +41,9 @@ from ai_sdlc.core.stage_review.session_close_authorities import (
     SessionCloseStartAuthority,
 )
 from ai_sdlc.core.stage_review.session_close_ops import SessionCloseOps
+from ai_sdlc.core.stage_review.session_close_start_recovery import (
+    _SessionCloseStartRecoveryMixin as SessionCloseStartRecoveryMixin,
+)
 from ai_sdlc.core.stage_review.session_contracts import (
     BudgetGrantApplyCommand,
     BudgetGrantFailureCommand,
@@ -88,7 +91,10 @@ __all__ = [
 ]
 
 
-class StageReviewSessionService(SessionCertificateInputsMixin):
+class StageReviewSessionService(
+    SessionCertificateInputsMixin,
+    SessionCloseStartRecoveryMixin,
+):
     def __init__(
         self,
         root: Path,
