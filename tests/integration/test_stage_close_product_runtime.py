@@ -598,18 +598,17 @@ def test_two_recoverers_return_the_same_committed_close(
     entry = threading.Barrier(2)
     winner_done = threading.Event()
     original_state = codex_review_runtime._recovered_review_session_state
+    original_build_recovery_executor = (
+        codex_review_runtime._build_codex_recovery_executor
+    )
 
     def synchronized_state(*args):
         state = original_state(*args)
         entry.wait(timeout=30)
         return state
 
-    def build_executor(*_args, **kwargs):
-        inner = _executor_for_request(
-            tmp_path,
-            runtime.execution_request(mode="enforce"),
-            on_authorized=kwargs.get("on_authorized"),
-        )
+    def build_recovery_executor(*args, **kwargs):
+        inner = original_build_recovery_executor(*args, **kwargs)
         if threading.current_thread().name == "recovery-loser":
             return _WaitForWinnerExecutor(inner, winner_done)
         return inner
@@ -624,7 +623,11 @@ def test_two_recoverers_return_the_same_committed_close(
         "resolve_codex_runtime_prerequisites",
         lambda: ("deterministic-provider", object()),
     )
-    monkeypatch.setattr(codex_review_runtime, "_build_executor", build_executor)
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_build_codex_recovery_executor",
+        build_recovery_executor,
+    )
     monkeypatch.setattr(
         codex_review_runtime,
         "_recover_stage_review_plan",
