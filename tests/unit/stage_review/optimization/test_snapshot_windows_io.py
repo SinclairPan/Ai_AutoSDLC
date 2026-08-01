@@ -146,6 +146,29 @@ def test_windows_rename_buffer_meets_the_flexible_array_contract() -> None:
     )
 
 
+def test_windows_rename_failure_reports_the_native_error_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    kernel32 = type(
+        "Kernel32",
+        (),
+        {"SetFileInformationByHandle": lambda *_: 0},
+    )()
+    monkeypatch.setattr(snapshot_windows_io, "_kernel32", lambda: kernel32)
+    monkeypatch.setattr(snapshot_windows_io, "_last_error", lambda: 87)
+
+    with pytest.raises(
+        snapshot_windows_io.SharedStateIntegrityError,
+        match=r"winerror=87",
+    ):
+        snapshot_windows_io._rename_handle(
+            81,
+            41,
+            "trusted-head.json",
+            replace=True,
+        )
+
+
 def test_windows_publish_closes_handle_when_cleanup_deletion_fails(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

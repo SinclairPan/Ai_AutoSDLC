@@ -329,7 +329,9 @@ def _rename_handle(
     error = _last_error()
     if error in (80, 183):
         raise FileExistsError(name)
-    raise SharedStateIntegrityError("snapshot trusted file publish failed")
+    raise SharedStateIntegrityError(
+        f"snapshot trusted file publish failed (winerror={error})"
+    )
 
 
 def _build_rename_information(
