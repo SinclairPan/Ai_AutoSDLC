@@ -36,10 +36,12 @@ _FILE_ATTRIBUTE_DIRECTORY = 0x10
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_FILE_READ_ATTRIBUTES = 0x80
 _FILE_RENAME_INFO_CLASS = 3
 _FILE_DISPOSITION_INFO_CLASS = 4
 _FILE_SHARE_READ = 0x1
 _FILE_SHARE_READ_WRITE = 0x1 | 0x2
+_FILE_TRAVERSE = 0x20
 _LOCKFILE_FAIL_IMMEDIATELY = 0x1
 _LOCKFILE_EXCLUSIVE_LOCK = 0x2
 _REGISTRY_LOCK = threading.RLock()
@@ -47,6 +49,15 @@ _DIRECTORY_IDENTITIES: dict[
     str,
     tuple[tuple[Path, tuple[int, int]], ...],
 ] = {}
+
+
+class _FileRenameInfo(ctypes.Structure):
+    _fields_ = (
+        ("replace_if_exists", wintypes.BOOLEAN),
+        ("root_directory", wintypes.HANDLE),
+        ("file_name_length", wintypes.DWORD),
+        ("file_name", wintypes.WCHAR * 1),
+    )
 
 
 def _register_windows_directory(
@@ -92,7 +103,10 @@ def _windows_secure_publish(
 ) -> None:
     _validate_leaf_name(name)
     _validate_leaf_name(temporary)
-    with _open_registered_directory(directory) as directory_handle:
+    with _open_registered_directory(
+        directory,
+        desired_access=_FILE_TRAVERSE | _FILE_READ_ATTRIBUTES,
+    ) as directory_handle:
         handle = _open_windows_relative(
             directory_handle,
             temporary,
@@ -100,26 +114,53 @@ def _windows_secure_publish(
             creation_disposition=_CREATE_NEW,
         )
         renamed = False
+        primary_failure: BaseException | None = None
         try:
-            _verify_registered_directory(directory)
-            _verify_regular_file(handle)
-            _harden_windows_handle_acl(handle)
-            _verify_registered_directory(directory)
-            _write_handle(handle, payload)
-            _rename_handle(
-                handle,
-                directory_handle,
-                name,
-                replace=replace,
-            )
-            renamed = True
-        except FileExistsError:
-            if replace:
-                raise
+            try:
+                _verify_registered_directory(directory)
+                _verify_regular_file(handle)
+                _harden_windows_handle_acl(handle)
+                _verify_registered_directory(directory)
+                _write_handle(handle, payload)
+                _rename_handle(
+                    handle,
+                    directory_handle,
+                    name,
+                    replace=replace,
+                )
+                renamed = True
+            except FileExistsError:
+                if replace:
+                    raise
+        except BaseException as exc:
+            primary_failure = exc
+            raise
         finally:
+            cleanup_failure: BaseException | None = None
             if not renamed:
-                _mark_handle_for_deletion(handle)
-            _close_windows_handle(handle)
+                try:
+                    _mark_handle_for_deletion(handle)
+                except BaseException as exc:
+                    cleanup_failure = exc
+                    if primary_failure is not None:
+                        primary_failure.add_note(
+                            f"snapshot trusted temporary cleanup failed: {exc}"
+                        )
+            try:
+                _close_windows_handle(handle)
+            except BaseException as exc:
+                if primary_failure is not None:
+                    primary_failure.add_note(
+                        f"snapshot trusted temporary close failed: {exc}"
+                    )
+                elif cleanup_failure is not None:
+                    cleanup_failure.add_note(
+                        f"snapshot trusted temporary close failed: {exc}"
+                    )
+                else:
+                    raise
+            if primary_failure is None and cleanup_failure is not None:
+                raise cleanup_failure
 
 
 def _windows_secure_unlink(directory: Path, name: str) -> None:
@@ -172,10 +213,14 @@ def _windows_secure_lock(
 
 
 @contextmanager
-def _open_registered_directory(directory: Path) -> Iterator[int]:
+def _open_registered_directory(
+    directory: Path,
+    *,
+    desired_access: int = 0,
+) -> Iterator[int]:
     expected = _registered_identities(directory)
     _verify_registered_directory(directory)
-    handle = _open_windows_path(directory)
+    handle = _open_windows_path(directory, desired_access=desired_access)
     try:
         identity, attributes = _windows_handle_metadata(handle)
         if attributes & (_FILE_ATTRIBUTE_REPARSE_POINT):
@@ -268,25 +313,16 @@ def _rename_handle(
     *,
     replace: bool,
 ) -> None:
-    class _FileRenameInfo(ctypes.Structure):
-        _fields_ = (
-            ("replace_if_exists", wintypes.BOOLEAN),
-            ("root_directory", wintypes.HANDLE),
-            ("file_name_length", wintypes.DWORD),
-            ("file_name", wintypes.WCHAR * len(name)),
-        )
-
-    information = _FileRenameInfo(
-        int(replace),
-        wintypes.HANDLE(directory_handle),
-        len(name.encode("utf-16-le")),
+    buffer, information = _build_rename_information(
+        directory_handle,
         name,
+        replace=replace,
     )
     success = _kernel32().SetFileInformationByHandle(
         wintypes.HANDLE(handle),
         _FILE_RENAME_INFO_CLASS,
         ctypes.byref(information),
-        ctypes.sizeof(information),
+        ctypes.sizeof(buffer),
     )
     if success:
         return
@@ -294,6 +330,28 @@ def _rename_handle(
     if error in (80, 183):
         raise FileExistsError(name)
     raise SharedStateIntegrityError("snapshot trusted file publish failed")
+
+
+def _build_rename_information(
+    directory_handle: int,
+    name: str,
+    *,
+    replace: bool,
+) -> tuple[Any, _FileRenameInfo]:
+    encoded_name = name.encode("utf-16-le")
+    buffer = ctypes.create_string_buffer(
+        ctypes.sizeof(_FileRenameInfo) + len(encoded_name)
+    )
+    information = _FileRenameInfo.from_buffer(buffer)
+    information.replace_if_exists = int(replace)
+    information.root_directory = directory_handle
+    information.file_name_length = len(encoded_name)
+    ctypes.memmove(
+        ctypes.addressof(buffer) + _FileRenameInfo.file_name.offset,
+        encoded_name,
+        len(encoded_name),
+    )
+    return buffer, information
 
 
 def _mark_handle_for_deletion(handle: int) -> None:

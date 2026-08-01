@@ -25,12 +25,14 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    directory_access: list[int] = []
     opened: list[tuple[int, str, int]] = []
     hardened: list[int] = []
     closed: list[int] = []
 
     @contextmanager
-    def open_directory(_: Path) -> Iterator[int]:
+    def open_directory(_: Path, *, desired_access: int = 0) -> Iterator[int]:
+        directory_access.append(desired_access)
         yield 41
 
     def open_relative(
@@ -113,8 +115,96 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
         (41, "removed.json", 0x7),
         (41, ".trusted.lock", 0x3),
     ]
+    assert directory_access == [0, 0x20 | 0x80, 0x20 | 0x80, 0, 0]
     assert hardened == [81, 82, 83, 85]
     assert closed == [81, 82, 83, 84, 85]
+
+
+def test_windows_rename_buffer_meets_the_flexible_array_contract() -> None:
+    name = "trusted-head.json"
+    encoded_name = name.encode("utf-16-le")
+
+    buffer, information = snapshot_windows_io._build_rename_information(
+        0x123456789,
+        name,
+        replace=True,
+    )
+
+    assert ctypes.sizeof(buffer) >= (
+        ctypes.sizeof(snapshot_windows_io._FileRenameInfo) + len(encoded_name)
+    )
+    assert information.replace_if_exists == 1
+    assert information.root_directory == 0x123456789
+    assert information.file_name_length == len(encoded_name)
+    assert (
+        ctypes.string_at(
+            ctypes.addressof(buffer)
+            + snapshot_windows_io._FileRenameInfo.file_name.offset,
+            len(encoded_name),
+        )
+        == encoded_name
+    )
+
+
+def test_windows_publish_closes_handle_when_cleanup_deletion_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    closed: list[int] = []
+    primary = snapshot_windows_io.SharedStateIntegrityError("primary publish failure")
+
+    @contextmanager
+    def open_directory(_: Path, *, desired_access: int = 0) -> Iterator[int]:
+        yield 41
+
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_open_registered_directory",
+        open_directory,
+    )
+    monkeypatch.setattr(
+        snapshot_windows_io, "_open_windows_relative", lambda *_a, **_k: 81
+    )
+    monkeypatch.setattr(
+        snapshot_windows_io, "_verify_registered_directory", lambda _: None
+    )
+    monkeypatch.setattr(snapshot_windows_io, "_verify_regular_file", lambda _: None)
+    monkeypatch.setattr(
+        snapshot_windows_io, "_harden_windows_handle_acl", lambda _: None
+    )
+    monkeypatch.setattr(snapshot_windows_io, "_write_handle", lambda *_: None)
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_rename_handle",
+        lambda *_a, **_k: (_ for _ in ()).throw(primary),
+    )
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_mark_handle_for_deletion",
+        lambda _: (_ for _ in ()).throw(
+            snapshot_windows_io.SharedStateIntegrityError("cleanup deletion failure")
+        ),
+    )
+    monkeypatch.setattr(snapshot_windows_io, "_close_windows_handle", closed.append)
+
+    with pytest.raises(
+        snapshot_windows_io.SharedStateIntegrityError,
+        match="primary publish failure",
+    ) as captured:
+        snapshot_windows_io._windows_secure_publish(
+            tmp_path,
+            "trusted-head.json",
+            ".trusted-head.tmp",
+            b"payload",
+            replace=True,
+        )
+
+    assert captured.value is primary
+    assert closed == [81]
+    assert any(
+        "cleanup deletion failure" in note
+        for note in getattr(captured.value, "__notes__", ())
+    )
 
 
 def test_windows_process_token_uses_a_pointer_sized_process_handle(
