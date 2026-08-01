@@ -12,6 +12,7 @@ import pytest
 
 from ai_sdlc.core.stage_review.optimization import (
     snapshot_trusted_files,
+    snapshot_windows_handle_acl,
     snapshot_windows_io,
     snapshot_windows_relative,
 )
@@ -106,7 +107,7 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
         pass
 
     assert opened == [
-        (41, "read.json", 0x7),
+        (41, "read.json", 0x1),
         (41, ".create.tmp", 0x7),
         (41, ".replace.tmp", 0x7),
         (41, "removed.json", 0x7),
@@ -114,6 +115,28 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
     ]
     assert hardened == [81, 82, 83, 85]
     assert closed == [81, 82, 83, 84, 85]
+
+
+def test_windows_process_token_uses_a_pointer_sized_process_handle(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class OpenProcessToken:
+        argtypes: tuple[object, ...] | None = None
+        restype: object | None = None
+
+    function = OpenProcessToken()
+    advapi32 = type("Advapi32", (), {"OpenProcessToken": function})()
+    monkeypatch.setattr(snapshot_windows_handle_acl, "_advapi32", lambda: advapi32)
+
+    configured = snapshot_windows_handle_acl._open_process_token()
+
+    assert configured is function
+    assert configured.argtypes == (
+        snapshot_windows_handle_acl.wintypes.HANDLE,
+        snapshot_windows_handle_acl.wintypes.DWORD,
+        ctypes.POINTER(snapshot_windows_handle_acl.wintypes.HANDLE),
+    )
+    assert configured.restype is snapshot_windows_handle_acl.wintypes.BOOL
 
 
 def test_windows_directory_preparation_uses_relative_handles_and_handle_acl(

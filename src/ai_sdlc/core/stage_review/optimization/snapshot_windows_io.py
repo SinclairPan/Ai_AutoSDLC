@@ -38,6 +38,7 @@ _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
 _FILE_RENAME_INFO_CLASS = 3
 _FILE_DISPOSITION_INFO_CLASS = 4
+_FILE_SHARE_READ = 0x1
 _FILE_SHARE_READ_WRITE = 0x1 | 0x2
 _LOCKFILE_FAIL_IMMEDIATELY = 0x1
 _LOCKFILE_EXCLUSIVE_LOCK = 0x2
@@ -70,6 +71,7 @@ def _windows_secure_read(directory: Path, name: str) -> bytes:
             name,
             desired_access=_GENERIC_READ,
             creation_disposition=_OPEN_EXISTING,
+            share_mode=_FILE_SHARE_READ,
         )
         try:
             _verify_regular_file(handle)

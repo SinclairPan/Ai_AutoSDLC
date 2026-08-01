@@ -267,6 +267,11 @@ def _get_current_process() -> Any:
 
 def _open_process_token() -> Any:
     function = _advapi32().OpenProcessToken
+    function.argtypes = (
+        wintypes.HANDLE,
+        wintypes.DWORD,
+        ctypes.POINTER(wintypes.HANDLE),
+    )
     function.restype = wintypes.BOOL
     return function
 
