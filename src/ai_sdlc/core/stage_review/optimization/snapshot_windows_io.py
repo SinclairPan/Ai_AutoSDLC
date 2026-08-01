@@ -36,12 +36,10 @@ _FILE_ATTRIBUTE_DIRECTORY = 0x10
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_FILE_READ_ATTRIBUTES = 0x80
 _FILE_RENAME_INFO_CLASS = 3
 _FILE_DISPOSITION_INFO_CLASS = 4
 _FILE_SHARE_READ = 0x1
 _FILE_SHARE_READ_WRITE = 0x1 | 0x2
-_FILE_TRAVERSE = 0x20
 _LOCKFILE_FAIL_IMMEDIATELY = 0x1
 _LOCKFILE_EXCLUSIVE_LOCK = 0x2
 _REGISTRY_LOCK = threading.RLock()
@@ -103,10 +101,7 @@ def _windows_secure_publish(
 ) -> None:
     _validate_leaf_name(name)
     _validate_leaf_name(temporary)
-    with _open_registered_directory(
-        directory,
-        desired_access=_FILE_TRAVERSE | _FILE_READ_ATTRIBUTES,
-    ) as directory_handle:
+    with _open_registered_directory(directory) as directory_handle:
         handle = _open_windows_relative(
             directory_handle,
             temporary,
@@ -124,7 +119,6 @@ def _windows_secure_publish(
                 _write_handle(handle, payload)
                 _rename_handle(
                     handle,
-                    directory_handle,
                     name,
                     replace=replace,
                 )
@@ -308,13 +302,11 @@ def _write_handle(handle: int, payload: bytes) -> None:
 
 def _rename_handle(
     handle: int,
-    directory_handle: int,
     name: str,
     *,
     replace: bool,
 ) -> None:
     buffer, information = _build_rename_information(
-        directory_handle,
         name,
         replace=replace,
     )
@@ -335,7 +327,6 @@ def _rename_handle(
 
 
 def _build_rename_information(
-    directory_handle: int,
     name: str,
     *,
     replace: bool,
@@ -346,7 +337,6 @@ def _build_rename_information(
     )
     information = _FileRenameInfo.from_buffer(buffer)
     information.replace_if_exists = int(replace)
-    information.root_directory = directory_handle
     information.file_name_length = len(encoded_name)
     ctypes.memmove(
         ctypes.addressof(buffer) + _FileRenameInfo.file_name.offset,
@@ -432,5 +422,12 @@ def _directory_key(directory: Path) -> str:
 
 
 def _validate_leaf_name(name: str) -> None:
-    if not name or Path(name).name != name or name in (".", ".."):
+    if (
+        not name
+        or name in (".", "..")
+        or "/" in name
+        or "\\" in name
+        or ":" in name
+        or Path(name).name != name
+    ):
         raise SharedStateIntegrityError("snapshot trusted file name is unsafe")

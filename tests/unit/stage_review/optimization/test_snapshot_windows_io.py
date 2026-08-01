@@ -27,6 +27,7 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
 ) -> None:
     directory_access: list[int] = []
     opened: list[tuple[int, str, int]] = []
+    renamed: list[tuple[tuple[object, ...], dict[str, object]]] = []
     hardened: list[int] = []
     closed: list[int] = []
 
@@ -75,7 +76,11 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
     )
     monkeypatch.setattr(snapshot_windows_io, "_read_handle", lambda _: b"trusted")
     monkeypatch.setattr(snapshot_windows_io, "_write_handle", lambda *_: None)
-    monkeypatch.setattr(snapshot_windows_io, "_rename_handle", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_rename_handle",
+        lambda *args, **kwargs: renamed.append((args, kwargs)),
+    )
     monkeypatch.setattr(
         snapshot_windows_io, "_mark_handle_for_deletion", lambda _: None
     )
@@ -115,7 +120,11 @@ def test_windows_leaf_operations_use_the_verified_directory_handle(
         (41, "removed.json", 0x7),
         (41, ".trusted.lock", 0x3),
     ]
-    assert directory_access == [0, 0x20 | 0x80, 0x20 | 0x80, 0, 0]
+    assert directory_access == [0, 0, 0, 0, 0]
+    assert renamed == [
+        ((82, "created.json"), {"replace": False}),
+        ((83, "replaced.json"), {"replace": True}),
+    ]
     assert hardened == [81, 82, 83, 85]
     assert closed == [81, 82, 83, 84, 85]
 
@@ -125,7 +134,6 @@ def test_windows_rename_buffer_meets_the_flexible_array_contract() -> None:
     encoded_name = name.encode("utf-16-le")
 
     buffer, information = snapshot_windows_io._build_rename_information(
-        0x123456789,
         name,
         replace=True,
     )
@@ -134,7 +142,7 @@ def test_windows_rename_buffer_meets_the_flexible_array_contract() -> None:
         ctypes.sizeof(snapshot_windows_io._FileRenameInfo) + len(encoded_name)
     )
     assert information.replace_if_exists == 1
-    assert information.root_directory == 0x123456789
+    assert information.root_directory is None
     assert information.file_name_length == len(encoded_name)
     assert (
         ctypes.string_at(
@@ -163,10 +171,25 @@ def test_windows_rename_failure_reports_the_native_error_code(
     ):
         snapshot_windows_io._rename_handle(
             81,
-            41,
             "trusted-head.json",
             replace=True,
         )
+
+
+@pytest.mark.parametrize(
+    "unsafe_name",
+    [
+        "../leaf.json",
+        "/absolute.json",
+        r"dir\leaf.json",
+        r"C:\leaf.json",
+        r"\\server\share\leaf.json",
+        "leaf.json:ads",
+    ],
+)
+def test_windows_leaf_name_rejects_non_simple_names(unsafe_name: str) -> None:
+    with pytest.raises(snapshot_windows_io.SharedStateIntegrityError):
+        snapshot_windows_io._validate_leaf_name(unsafe_name)
 
 
 def test_windows_publish_closes_handle_when_cleanup_deletion_fails(
