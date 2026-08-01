@@ -91,6 +91,9 @@ from ai_sdlc.core.stage_review.optimization.shadow_observations import (
     OptimizationShadowObservationStore,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_models import OptimizationSnapshot
+from ai_sdlc.core.stage_review.optimization.snapshot_trust_anchor import (
+    SNAPSHOT_CONTROL_TRUST_MAC_EXTENSION,
+)
 from ai_sdlc.core.stage_review.optimization.snapshots import SnapshotControlService
 from ai_sdlc.core.stage_review.optimization.statistics import (
     statistics_policy_for_digest,
@@ -637,6 +640,8 @@ class SnapshotPublication:
             package,
         )
         event = self.snapshots.store.event(publication.control_event_digest)
+        event_extensions = {} if event is None else dict(event.extensions)
+        event_extensions.pop(SNAPSHOT_CONTROL_TRUST_MAC_EXTENSION, None)
         expected_extensions = {
             "promotion_package_digest": package.package_digest,
             "promotion_evidence_digest": package.evidence.evidence_digest,
@@ -666,7 +671,7 @@ class SnapshotPublication:
             False
             if event is None
             else event.target_snapshot_digest == package.snapshot.snapshot_digest,
-            False if event is None else dict(event.extensions) == expected_extensions,
+            event_extensions == expected_extensions,
         )
         if not all(lineage):
             raise SharedStateIntegrityError(
