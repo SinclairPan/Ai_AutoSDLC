@@ -60,6 +60,9 @@ from ai_sdlc.core.stage_review.codex_provider_transport import (
 from ai_sdlc.core.stage_review.codex_review_binding_runtime import (
     build_codex_binding_service,
 )
+from ai_sdlc.core.stage_review.codex_review_recovery_runtime import (
+    _build_codex_recovery_executor,
+)
 from ai_sdlc.core.stage_review.codex_trusted_releases import (
     _trusted_published_codex_release as trusted_published_codex_release,
 )
@@ -133,7 +136,7 @@ class CodexStageReviewExecutor:
             return needs_user("review-isolation-unproven")
         try:
             return executor.execute(request)
-        except (OSError, ValueError):
+        except (OSError, ValueError, SessionIntegrityError):
             return blocked("review-runtime-integrity-failure")
 
     def enforce_close(
@@ -220,17 +223,26 @@ def _complete_product_close(
     source_snapshot = preflight.source_snapshot
     if candidate is None or source_snapshot is None:
         raise StageCloseGateUnavailableError("review-candidate-unavailable")
-    resolved = resolve_codex_runtime_prerequisites()
-    if resolved is None:
-        raise StageCloseGateUnavailableError("review-isolation-unproven")
-    executable, release = resolved
     try:
+        if recover_runtime:
+            return _execute_recovered_product_close(
+                root,
+                prepared,
+                decision,
+                candidate,
+                source_snapshot,
+                writer,
+            )
+        resolved = resolve_codex_runtime_prerequisites()
+        if resolved is None:
+            raise StageCloseGateUnavailableError("review-isolation-unproven")
+        executable, release = resolved
         runtime = _resolve_stage_review_plan(
             prepared,
             decision,
             candidate,
             source_snapshot,
-            recover_runtime=recover_runtime,
+            recover_runtime=False,
         )
         return _execute_product_close_runtime(
             root,
@@ -248,6 +260,33 @@ def _complete_product_close(
         raise StageCloseGateUnavailableError(
             "review-runtime-integrity-failure"
         ) from exc
+
+
+def _execute_recovered_product_close(
+    root: Path,
+    prepared: PreparedStageClose,
+    decision: GateApplicabilityDecision,
+    candidate: CandidateManifest,
+    source_snapshot: SourceSnapshot,
+    writer: Callable[[], object],
+) -> object:
+    runtime = _resolve_stage_review_plan(
+        prepared,
+        decision,
+        candidate,
+        source_snapshot,
+        recover_runtime=True,
+    )
+    return _execute_product_close_runtime(
+        root,
+        prepared,
+        decision,
+        runtime,
+        writer,
+        None,
+        None,
+        recover_runtime=True,
+    )
 
 
 def _resolve_stage_review_plan(
@@ -279,8 +318,8 @@ def _execute_product_close_runtime(
     decision: GateApplicabilityDecision,
     runtime: HeldStageReviewPlan,
     writer: Callable[[], object],
-    executable: str,
-    release: TrustedBackendReleaseManifest,
+    executable: str | None,
+    release: TrustedBackendReleaseManifest | None,
     *,
     recover_runtime: bool,
 ) -> object:
@@ -293,7 +332,10 @@ def _execute_product_close_runtime(
             writer,
             executable,
             release,
+            True,
         )
+    if executable is None or release is None:
+        raise ValueError("trusted Codex runtime prerequisites are unavailable")
     return _execute_new_product_close(
         root,
         prepared,
@@ -381,17 +423,19 @@ def _execute_enforced_close(
     decision: GateApplicabilityDecision,
     runtime: HeldStageReviewPlan,
     writer: Callable[[], object],
-    executable: str,
-    release: TrustedBackendReleaseManifest,
+    executable: str | None,
+    release: TrustedBackendReleaseManifest | None,
+    recovery_only: bool = False,
 ) -> object:
     services: list[StageReviewSessionService] = []
     authorizations: list[StageCloseAuthorization] = []
     request = runtime.execution_request(mode="enforce")
-    executor = _build_executor(
+    executor = _select_enforced_review_executor(
         root,
         request,
-        executable=executable,
-        release=release,
+        executable,
+        release,
+        recovery_only=recovery_only,
         on_authorized=services.append,
     )
     outcome = executor.execute(request)
@@ -399,6 +443,7 @@ def _execute_enforced_close(
         raise StageCloseGateUnavailableError(outcome.reason_code)
     if len(services) != 1:
         raise ValueError("authorized review session service is unavailable")
+
     def record_closed(authorization: StageCloseAuthorization) -> None:
         record_enforced_activation_session(
             root,
@@ -461,6 +506,32 @@ def _execute_enforced_close(
             runtime.planned.candidate,
             authorizations[0],
         )
+
+
+def _select_enforced_review_executor(
+    root: Path,
+    request: StageReviewExecutionRequest,
+    executable: str | None,
+    release: TrustedBackendReleaseManifest | None,
+    *,
+    recovery_only: bool,
+    on_authorized: Callable[[StageReviewSessionService], None],
+) -> CanonicalStageReviewExecutor:
+    if recovery_only:
+        return _build_codex_recovery_executor(
+            root,
+            request,
+            on_authorized=on_authorized,
+        )
+    if executable is None or release is None:
+        raise ValueError("trusted Codex runtime prerequisites are unavailable")
+    return _build_executor(
+        root,
+        request,
+        executable=executable,
+        release=release,
+        on_authorized=on_authorized,
+    )
 
 
 def _bind_stage_close_execution_identity(

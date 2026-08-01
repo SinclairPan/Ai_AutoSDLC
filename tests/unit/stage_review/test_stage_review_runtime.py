@@ -91,6 +91,32 @@ def test_codex_runtime_blocks_protocol_integrity_failure(
     assert outcome.reason_code == "review-runtime-integrity-failure"
 
 
+def test_codex_runtime_blocks_session_integrity_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FailingExecutor:
+        def execute(self, _request: StageReviewExecutionRequest) -> object:
+            raise SessionIntegrityError("review session lineage fork")
+
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "resolve_codex_runtime_prerequisites",
+        lambda: ("codex", object()),
+    )
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "_build_executor",
+        lambda *_args, **_kwargs: _FailingExecutor(),
+    )
+    request = cast(StageReviewExecutionRequest, object())
+
+    outcome = CodexStageReviewExecutor(tmp_path).execute(request)
+
+    assert outcome.status == "blocked"
+    assert outcome.reason_code == "review-runtime-integrity-failure"
+
+
 def test_codex_enforce_fails_before_writer_without_trusted_prerequisites(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

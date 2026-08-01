@@ -79,6 +79,9 @@ from ai_sdlc.core.stage_review.session_replacement_ops import SessionReplacement
 from ai_sdlc.core.stage_review.session_review_ops import SessionReviewOps
 from ai_sdlc.core.stage_review.session_role_gap_ops import SessionRoleGapOps
 from ai_sdlc.core.stage_review.session_runtime import SessionRuntime
+from ai_sdlc.core.stage_review.session_start_runtime import (
+    _SessionStartRuntimeMixin as SessionStartRuntimeMixin,
+)
 from ai_sdlc.core.stage_review.session_store import SessionEventStore
 
 __all__ = [
@@ -94,6 +97,7 @@ __all__ = [
 class StageReviewSessionService(
     SessionCertificateInputsMixin,
     SessionCloseStartRecoveryMixin,
+    SessionStartRuntimeMixin,
 ):
     def __init__(
         self,
@@ -137,12 +141,6 @@ class StageReviewSessionService(
             budget_grant_approval_resolver,
         )
         self._optimization = optimization_coordinator
-
-    def start(self, command: SessionStartCommand) -> SessionMutationResult:
-        if self._optimization is not None:
-            self._optimization.bind_start(command)
-        self._resume_pending(command.scope, command.command_id)
-        return self._review.start(command)
 
     def observe_optimization_outcome(
         self,
@@ -366,7 +364,7 @@ class StageReviewSessionService(
         if close_result is not None:
             return close_result
         if isinstance(command, SessionStartCommand):
-            return self._review.start(command)
+            return self.start(command)
         if isinstance(command, SubmitReviewPassCommand):
             return self._review.submit_pass(command)
         if isinstance(command, ProgressCommand):

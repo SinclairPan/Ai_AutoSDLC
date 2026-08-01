@@ -37,6 +37,9 @@ from ai_sdlc.core.stage_review.finding_models import FindingScope
 from ai_sdlc.core.stage_review.optimization.observations import (
     OptimizationObservationStore,
 )
+from ai_sdlc.core.stage_review.optimization.session_coordinator import (
+    SessionOptimizationCoordinator,
+)
 from ai_sdlc.core.stage_review.review_completion import ReviewSessionCompletion
 from ai_sdlc.core.stage_review.session import (
     SessionIntegrityError,
@@ -489,6 +492,48 @@ def test_committed_close_recovery_consumes_the_review_session(
     assert replay_session is not None
     assert replay_session.state == "consumed"
     assert first_outcome.status == "completed"
+
+
+def test_committed_close_recovery_does_not_require_live_codex_runtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    request, prepared, decision = _interrupted_committed_close(tmp_path)
+    monkeypatch.setattr(
+        codex_review_runtime,
+        "resolve_codex_runtime_prerequisites",
+        lambda: None,
+    )
+    monkeypatch.setattr(
+        SessionOptimizationCoordinator,
+        "bind_start",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("committed close rebound the current optimization snapshot")
+        ),
+    )
+
+    result = _enforce_recovered_close(
+        tmp_path,
+        prepared,
+        decision,
+        request,
+    )
+
+    assert result == {"status": "ready", "loop_status": "closed"}
+    replay_session = SessionEventStore(
+        tmp_path,
+        project_id=request.candidate.project_id,
+    ).rebuild(execution_scope(request))
+    assert replay_session is not None
+    assert replay_session.state == "consumed"
+    observations = OptimizationObservationStore(
+        tmp_path,
+        project_id=request.candidate.project_id,
+    ).read_session(request.candidate.review_session_id)
+    assert tuple(item.observation_kind for item in observations) == (
+        "created",
+        "consumed",
+    )
 
 
 def test_recovered_close_rejects_rehashed_session_receipt(

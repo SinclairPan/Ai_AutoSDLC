@@ -17,6 +17,7 @@ from ai_sdlc.core.stage_review.optimization.observations import (
 from ai_sdlc.core.stage_review.optimization.snapshot_models import (
     ActiveOptimizationPointer,
     OptimizationSnapshot,
+    SessionSnapshotBindingOperation,
     SnapshotControlEvent,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_projection import (
@@ -69,6 +70,38 @@ class _SnapshotServiceSupportMixin:
             binding_store=binding_store,
             observation_store=observation_store,
         )
+
+    def session_binding_lineage(
+        self,
+        session_id: str,
+    ) -> tuple[SessionSnapshotBindingOperation, SnapshotControlEvent] | None:
+        from ai_sdlc.core.stage_review.optimization.session_materialization import (
+            _verify_binding_event as verify_binding_event,
+        )
+
+        events = tuple(
+            item
+            for item in self.store.events()
+            if item.event_kind == "session_binding"
+            and item.session_id == session_id
+            and self.store._is_authenticated_event(item)
+        )
+        if not events:
+            return None
+        if len(events) != 1:
+            raise SharedStateIntegrityError("session binding event is ambiguous")
+        event = events[0]
+        operations = tuple(
+            item
+            for item in self.store.binding_operations()
+            if isinstance(item, SessionSnapshotBindingOperation)
+            and item.operation_id == event.operation_id
+        )
+        if len(operations) != 1:
+            raise SharedStateIntegrityError("session binding operation is unavailable")
+        operation = operations[0]
+        verify_binding_event(operation, event)
+        return operation, event
 
     def _has_pending_safety(self, pointer: ActiveOptimizationPointer) -> bool:
         return any(

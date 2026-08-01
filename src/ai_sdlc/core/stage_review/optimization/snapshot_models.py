@@ -19,6 +19,7 @@ from ai_sdlc.core.stage_review.resource_builders import parse_utc
 SnapshotControlEventKind = Literal[
     "promotion", "stability", "revocation", "rollback", "session_binding"
 ]
+SESSION_BINDING_OPERATION_DIGEST_EXTENSION = "session_binding_operation_digest"
 
 
 class OptimizationSnapshot(ArtifactCompatibility):
@@ -157,10 +158,7 @@ class SnapshotRevocationOperation(ArtifactCompatibility):
         return fill_artifact_digest(self, "operation_digest")
 
 
-class SessionSnapshotBindingOperation(ArtifactCompatibility):
-    schema_version: Literal["session-snapshot-binding-operation.v1"] = (
-        "session-snapshot-binding-operation.v1"
-    )
+class _SessionSnapshotBindingOperationBase(ArtifactCompatibility):
     artifact_kind: Literal["session-snapshot-binding-operation"] = (
         "session-snapshot-binding-operation"
     )
@@ -205,3 +203,27 @@ class SessionSnapshotBindingOperation(ArtifactCompatibility):
         if any(group != tuple(sorted(set(group))) for group in groups):
             raise ValueError("session binding lineage sets must be canonical")
         return fill_artifact_digest(self, "operation_digest")
+
+
+class _LegacySessionSnapshotBindingOperationV1(
+    _SessionSnapshotBindingOperationBase
+):
+    schema_version: Literal["session-snapshot-binding-operation.v1"] = (
+        "session-snapshot-binding-operation.v1"
+    )
+
+
+class SessionSnapshotBindingOperation(_SessionSnapshotBindingOperationBase):
+    schema_version: Literal["session-snapshot-binding-operation.v2"] = (
+        "session-snapshot-binding-operation.v2"
+    )
+    command_id: str
+    idempotency_key: str
+    command_digest: str
+
+    @field_validator("command_id", "idempotency_key", "command_digest")
+    @classmethod
+    def _command_identity_is_complete(cls, value: str) -> str:
+        if not value.strip() or value != value.strip():
+            raise ValueError("session snapshot binding command identity is incomplete")
+        return value

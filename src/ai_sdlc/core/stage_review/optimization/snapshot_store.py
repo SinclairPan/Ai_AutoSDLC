@@ -23,9 +23,14 @@ from ai_sdlc.core.stage_review.optimization.snapshot_models import (
     SessionSnapshotBindingOperation,
     SnapshotControlEvent,
     SnapshotRevocationOperation,
+    _LegacySessionSnapshotBindingOperationV1,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_projection import (
     _rebuild_pointer as rebuild_pointer,
+)
+from ai_sdlc.core.stage_review.optimization.snapshot_trust_anchor import (
+    SnapshotControlTrustAnchor,
+    _TrustedHeadRefreshError,
 )
 from ai_sdlc.core.stage_review.optimization.storage import (
     OptimizationStorage,
@@ -64,6 +69,10 @@ class SnapshotControlStore:
             project_id=self.project_id,
             policy=storage_policy or OptimizationStoragePolicy(),
             commit_leases=self.commit_leases,
+        )
+        self.trust_anchor = SnapshotControlTrustAnchor(
+            root,
+            project_id=self.project_id,
         )
         trusted = OptimizationSnapshot.model_validate(
             baseline_snapshot.model_dump(mode="json")
@@ -121,9 +130,7 @@ class SnapshotControlStore:
             else PipelinePromotionPackage.model_validate(read_json_object(path))
         )
         if existing != trusted:
-            raise SharedStateIntegrityError(
-                "promotion package digest content diverged"
-            )
+            raise SharedStateIntegrityError("promotion package digest content diverged")
         binding_path = self._promotion_authorization_path(trusted.package_digest)
         binding = {
             "promotion_package_digest": trusted.package_digest,
@@ -136,9 +143,7 @@ class SnapshotControlStore:
             )
             and read_json_object(binding_path) != binding
         ):
-            raise SharedStateIntegrityError(
-                "promotion authorization binding diverged"
-            )
+            raise SharedStateIntegrityError("promotion authorization binding diverged")
         return existing
 
     def promotion_package(
@@ -156,9 +161,7 @@ class SnapshotControlStore:
             return ""
         payload = read_json_object(path)
         if payload.get("promotion_package_digest") != package_digest:
-            raise SharedStateIntegrityError(
-                "promotion authorization binding diverged"
-            )
+            raise SharedStateIntegrityError("promotion authorization binding diverged")
         return str(payload.get("promotion_authorization_digest", ""))
 
     def _snapshot_path(self, digest: str) -> Path:
@@ -174,12 +177,26 @@ class SnapshotControlStore:
         return self.root / "promotion-authorizations" / f"{name}.json"
 
     def events(self) -> tuple[SnapshotControlEvent, ...]:
-        events = tuple(
-            _snapshot_event(record)
-            for record in self.storage.read_stream("snapshot-control")
-        )
-        rebuild_pointer(self.project_id, self.baseline_digest, events)
-        return events
+        for attempt in range(16):
+            events = tuple(
+                _snapshot_event(record)
+                for record in self.storage.read_stream("snapshot-control")
+            )
+            legacy_sequence = self.trust_anchor._verify_event_authentication(events)
+            rebuild_pointer(self.project_id, self.baseline_digest, events)
+            try:
+                self.trust_anchor._reconcile_head(
+                    events,
+                    legacy_sequence=legacy_sequence,
+                )
+            except _TrustedHeadRefreshError:
+                if attempt < 15:
+                    continue
+                raise SharedStateIntegrityError(
+                    "snapshot control trusted head diverged"
+                ) from None
+            return events
+        raise AssertionError("snapshot stream retry budget is unreachable")
 
     def append_event(
         self,
@@ -188,7 +205,7 @@ class SnapshotControlStore:
         lease: OptimizationCommitLeaseHandle,
         resource_bundle: StorageBundleHandle | None = None,
     ) -> SnapshotControlEvent:
-        trusted = SnapshotControlEvent.model_validate(event.model_dump(mode="json"))
+        trusted = self.trust_anchor._sign(event)
         lease.assert_current()
         if (
             trusted.commit_fencing_epoch != lease.claim.fencing_epoch
@@ -211,23 +228,20 @@ class SnapshotControlStore:
         if record.sequence != trusted.sequence:
             raise SharedStateIntegrityError("snapshot control sequence collided")
         self.events()
-        return _snapshot_event(record)
+        return trusted
 
     def event_for_operation(self, operation_id: str) -> SnapshotControlEvent | None:
-        record = self.storage.lookup(
-            "snapshot-control",
-            key_kind="operation_id",
-            key=operation_id,
+        return next(
+            (event for event in self.events() if event.operation_id == operation_id),
+            None,
         )
-        return None if record is None else _snapshot_event(record)
+
+    def _is_authenticated_event(self, event: SnapshotControlEvent) -> bool:
+        return self.trust_anchor._is_authenticated(event)
 
     def event(self, event_digest: str) -> SnapshotControlEvent | None:
         return next(
-            (
-                event
-                for event in self.events()
-                if event.event_digest == event_digest
-            ),
+            (event for event in self.events() if event.event_digest == event_digest),
             None,
         )
 
@@ -288,12 +302,17 @@ class SnapshotControlStore:
             )
         return existing
 
-    def binding_operations(self) -> tuple[SessionSnapshotBindingOperation, ...]:
+    def binding_operations(
+        self,
+    ) -> tuple[
+        SessionSnapshotBindingOperation | _LegacySessionSnapshotBindingOperationV1,
+        ...,
+    ]:
         directory = self.root / "session-binding-operations"
         if not directory.is_dir():
             return ()
         return tuple(
-            SessionSnapshotBindingOperation.model_validate(read_json_object(path))
+            _binding_operation(read_json_object(path))
             for path in sorted(directory.glob("*.json"))
         )
 
@@ -324,6 +343,14 @@ def _snapshot_event(record: OptimizationStorageRecord) -> SnapshotControlEvent:
     if event.sequence != record.sequence:
         raise SharedStateIntegrityError("snapshot control record sequence diverged")
     return event
+
+
+def _binding_operation(
+    payload: dict[str, object],
+) -> SessionSnapshotBindingOperation | _LegacySessionSnapshotBindingOperationV1:
+    if payload.get("schema_version") == "session-snapshot-binding-operation.v1":
+        return _LegacySessionSnapshotBindingOperationV1.model_validate(payload)
+    return SessionSnapshotBindingOperation.model_validate(payload)
 
 
 def _event_write_class(event: SnapshotControlEvent) -> WriteClass:

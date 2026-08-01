@@ -9,7 +9,6 @@ from ai_sdlc.core.stage_review.binding_result_models import ReviewerBindingSet
 from ai_sdlc.core.stage_review.canonical import CanonicalizationPolicy, canonical_digest
 from ai_sdlc.core.stage_review.contracts import TaskRiskProfile
 from ai_sdlc.core.stage_review.optimization.observations import (
-    CommittedSessionBinding,
     CommittedSessionBindingStore,
     ObservationKind,
     OptimizationObservationStore,
@@ -18,12 +17,18 @@ from ai_sdlc.core.stage_review.optimization.observations import (
 from ai_sdlc.core.stage_review.optimization.observations import (
     _build_terminal_observation as build_terminal_observation,
 )
+from ai_sdlc.core.stage_review.optimization.session_start_binding import (
+    _binding_for,
+    _binding_operation,
+    _operation_token,
+    _verify_recovered_operation,
+    _verify_recovered_population,
+)
 from ai_sdlc.core.stage_review.optimization.snapshot_models import (
     SessionSnapshotBindingOperation,
-    SnapshotSelectionToken,
+    SnapshotControlEvent,
 )
 from ai_sdlc.core.stage_review.optimization.snapshots import SnapshotControlService
-from ai_sdlc.core.stage_review.resource_builders import stable_id
 from ai_sdlc.core.stage_review.session_contracts import (
     SessionIntegrityError,
     SessionStartCommand,
@@ -72,20 +77,75 @@ class SessionOptimizationCoordinator:
         self.trigger_refresher = trigger_refresher
         self.finding_event_source = finding_event_source
 
+    def _ensure_start_binding(
+        self,
+        command: SessionStartCommand,
+        *,
+        recovery_required: bool,
+    ) -> None:
+        try:
+            lineage = self.snapshots.session_binding_lineage(command.scope.session_id)
+        except SharedStateIntegrityError as exc:
+            raise SessionIntegrityError(
+                "session optimization binding lineage is unavailable"
+            ) from exc
+        if lineage is None:
+            if recovery_required:
+                raise SessionIntegrityError(
+                    "session optimization binding lineage is unavailable"
+                )
+            self.bind_start(command)
+            return
+        self._recover_start_binding(command, *lineage)
+
+    def _recover_start_binding(
+        self,
+        command: SessionStartCommand,
+        operation: SessionSnapshotBindingOperation,
+        event: SnapshotControlEvent,
+    ) -> None:
+        profile, binding_set = self._resolve_start_inputs(command)
+        expected_operation = _binding_operation(
+            command,
+            _operation_token(operation),
+            profile,
+            binding_set,
+            candidate_size=self.candidate_size_classifier(command.candidate_digest),
+            created_at=operation.created_at,
+        )
+        _verify_recovered_operation(command, operation, expected_operation)
+        try:
+            self.snapshots.recover_session_population(
+                binding_store=self.binding_store,
+                observation_store=self.observation_store,
+            )
+            binding = _binding_for(
+                self.binding_store.read_all(),
+                command.scope.session_id,
+            )
+            created = tuple(
+                item
+                for item in self.observation_store.read_session(
+                    command.scope.session_id
+                )
+                if item.observation_kind == "created"
+            )
+        except SharedStateIntegrityError as exc:
+            raise SessionIntegrityError(
+                "session optimization binding lineage is unavailable"
+            ) from exc
+        _verify_recovered_population(
+            operation,
+            event,
+            binding,
+            created,
+        )
+
     def bind_start(self, command: SessionStartCommand) -> None:
         token = self.snapshots.resolve_snapshot()
         if command.optimization_snapshot_digest != token.active_snapshot_digest:
             raise SessionIntegrityError("session start snapshot selection is stale")
-        profile = self.resolver.resolve_risk_profile(command.risk_profile_digest)
-        binding_set = self.resolver.resolve_binding_set(command.binding_set_digest)
-        if profile is None or binding_set is None:
-            raise SessionIntegrityError("session optimization lineage is unavailable")
-        if (
-            profile.work_item_id != command.scope.work_item_id
-            or binding_set.project_id != command.scope.project_id
-            or binding_set.stage_review_session_id != command.scope.session_id
-        ):
-            raise SessionIntegrityError("session optimization scope diverged")
+        profile, binding_set = self._resolve_start_inputs(command)
         operation = _binding_operation(
             command,
             token,
@@ -100,6 +160,22 @@ class SessionOptimizationCoordinator:
             observation_store=self.observation_store,
         )
         self._refresh_trigger()
+
+    def _resolve_start_inputs(
+        self,
+        command: SessionStartCommand,
+    ) -> tuple[TaskRiskProfile, ReviewerBindingSet]:
+        profile = self.resolver.resolve_risk_profile(command.risk_profile_digest)
+        binding_set = self.resolver.resolve_binding_set(command.binding_set_digest)
+        if profile is None or binding_set is None:
+            raise SessionIntegrityError("session optimization lineage is unavailable")
+        if (
+            profile.work_item_id != command.scope.work_item_id
+            or binding_set.project_id != command.scope.project_id
+            or binding_set.stage_review_session_id != command.scope.session_id
+        ):
+            raise SessionIntegrityError("session optimization scope diverged")
+        return profile, binding_set
 
     def observe_session(self, session: StageReviewSession) -> None:
         observation_kind = _session_observation_kind(session)
@@ -199,61 +275,10 @@ def _session_observation_kind(
     return _TERMINAL_OBSERVATIONS.get(session.state)
 
 
-def _binding_operation(
-    command: SessionStartCommand,
-    token: SnapshotSelectionToken,
-    profile: TaskRiskProfile,
-    binding_set: ReviewerBindingSet,
-    *,
-    candidate_size: str,
-    created_at: str,
-) -> SessionSnapshotBindingOperation:
-    bindings = binding_set.bindings
-    capabilities = {
-        capability for item in bindings for capability in item.capability_ids
-    }
-    return SessionSnapshotBindingOperation(
-        operation_id=stable_id(
-            "session-snapshot-binding", command.scope.project_id, command.scope.session_id
-        ),
-        project_id=command.scope.project_id,
-        session_id=command.scope.session_id,
-        initial_candidate_digest=command.candidate_digest,
-        stage_key=profile.stage_key,
-        risk_level=profile.risk_level,
-        candidate_size_bucket=candidate_size,
-        provider_ids=tuple(sorted({item.provider_id for item in bindings})),
-        binding_set_digest=binding_set.binding_set_digest,
-        role_profile_ids=tuple(sorted({item.role_profile_id for item in bindings})),
-        reviewer_slot_ids=tuple(sorted({item.slot_id for item in bindings})),
-        capability_ids=tuple(sorted(capabilities)),
-        binding_digests=tuple(sorted({item.binding_digest for item in bindings})),
-        resource_reservation_digest=binding_set.final_reservation_digest,
-        risk_profile_digest=profile.profile_digest,
-        created_at=created_at,
-        target_snapshot_digest=token.active_snapshot_digest,
-        expected_head_sequence=token.head_sequence,
-        expected_head_digest=token.head_digest,
-        expected_pointer_revision=token.pointer_revision,
-        expected_revocation_generation=token.revocation_generation,
-    )
-
-
-def _binding_for(
-    bindings: tuple[CommittedSessionBinding, ...],
-    session_id: str,
-) -> CommittedSessionBinding:
-    matches = tuple(item for item in bindings if item.session_id == session_id)
-    if len(matches) != 1:
-        raise SharedStateIntegrityError("session optimization binding is unavailable")
-    return matches[0]
-
-
+# Start binding 的构造与恢复校验必须先于人口物化，由专职模块统一执行。
 def _convergence_digest(session: StageReviewSession) -> str:
     records = session.projection.progress_records
-    return (
-        canonical_digest(records, CanonicalizationPolicy()) if records else ""
-    )
+    return canonical_digest(records, CanonicalizationPolicy()) if records else ""
 
 
 def _session_label_sources(session: StageReviewSession) -> tuple[str, ...]:

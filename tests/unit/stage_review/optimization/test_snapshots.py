@@ -1,11 +1,20 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
 
-from ai_sdlc.core.stage_review.artifacts import SharedStateIntegrityError
+from ai_sdlc.core.stage_review.artifacts import (
+    SharedStateIntegrityError,
+    atomic_write_json,
+    read_json_object,
+)
+from ai_sdlc.core.stage_review.canonical import (
+    CanonicalizationPolicy,
+    canonical_digest,
+)
 from ai_sdlc.core.stage_review.optimization.commit_fencing import (
     OptimizationCommitLeaseHandle,
 )
@@ -24,13 +33,16 @@ from ai_sdlc.core.stage_review.optimization.promotion import (
     AutoPromotionPolicy,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_models import (
+    SESSION_BINDING_OPERATION_DIGEST_EXTENSION,
     OptimizationSnapshot,
     SessionSnapshotBindingOperation,
+    SnapshotControlEvent,
     SnapshotSelectionToken,
 )
 from ai_sdlc.core.stage_review.optimization.snapshots import SnapshotControlService
 from ai_sdlc.core.stage_review.optimization.storage_models import (
     OptimizationStoragePolicy,
+    OptimizationStorageRecord,
     StoragePressureError,
 )
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
@@ -56,9 +68,7 @@ def test_auto_promotion_requires_quality_non_regression_and_significance() -> No
     assert accepted.approved
     assert not quality_regression.approved
     assert "late_critical_non_regression" in quality_regression.failed_guards
-    assert "hard_budget_exhausted_non_regression" in (
-        budget_regression.failed_guards
-    )
+    assert "hard_budget_exhausted_non_regression" in (budget_regression.failed_guards)
     assert not insignificant.approved
     assert accepted == gate.evaluate(
         _promotion_evidence(), decision_id="decision.accepted"
@@ -75,7 +85,9 @@ def test_packaged_baseline_change_preserves_existing_project_baseline(
     reopened = _service(tmp_path, replacement)
 
     assert first.resolve_snapshot().active_snapshot_digest == original.snapshot_digest
-    assert reopened.resolve_snapshot().active_snapshot_digest == original.snapshot_digest
+    assert (
+        reopened.resolve_snapshot().active_snapshot_digest == original.snapshot_digest
+    )
     assert reopened.store.snapshot(replacement.snapshot_digest) is None
 
 
@@ -102,6 +114,7 @@ def test_promotion_only_affects_sessions_bound_after_control_event(
     first_binding = service.bind_session(_binding("session.before", before), before)
     assert first_binding.commit_fencing_epoch > 0
     assert first_binding.commit_claim_digest
+    assert first_binding.extensions["session_binding_operation_digest"]
     challenger = _snapshot(
         "challenger",
         parent_snapshot_digest=baseline.snapshot_digest,
@@ -136,6 +149,273 @@ def test_promotion_only_affects_sessions_bound_after_control_event(
     assert second_binding.target_snapshot_digest == challenger.snapshot_digest
     assert after.active_snapshot_digest == challenger.snapshot_digest
     assert service.events()[-1].event_kind == "session_binding"
+
+
+def test_session_binding_rejects_same_domain_rehashed_tail_facts(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("trusted-binding", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    token = service.resolve_snapshot()
+    operation = _binding("session.trusted", token)
+    service.bind_session(operation, token)
+    stored_operation = service.store.binding_operations()[0]
+
+    operation_path = (
+        service.store.root
+        / "session-binding-operations"
+        / f"{stored_operation.operation_id}.json"
+    )
+    operation_payload = read_json_object(operation_path)
+    operation_payload.update(
+        {
+            "created_at": "2035-12-31T23:59:59Z",
+            "operation_digest": "",
+        }
+    )
+    rehashed_operation = SessionSnapshotBindingOperation.model_validate(
+        operation_payload
+    )
+    atomic_write_json(operation_path, rehashed_operation.model_dump(mode="json"))
+
+    record_path = next(
+        (service.store.storage.loose_root / "snapshot-control").glob("*.json")
+    )
+    record_payload = read_json_object(record_path)
+    event_payload = dict(record_payload["payload"])
+    extensions = dict(event_payload["extensions"])
+    extensions[SESSION_BINDING_OPERATION_DIGEST_EXTENSION] = (
+        rehashed_operation.operation_digest
+    )
+    event_payload.update({"extensions": extensions, "event_digest": ""})
+    rehashed_event = SnapshotControlEvent.model_validate(event_payload)
+    record_payload.update(
+        {
+            "payload": rehashed_event.model_dump(mode="json"),
+            "record_digest": "",
+        }
+    )
+    rehashed_record = OptimizationStorageRecord.model_validate(record_payload)
+    atomic_write_json(record_path, rehashed_record.model_dump(mode="json"))
+
+    with pytest.raises(SharedStateIntegrityError, match="trust anchor"):
+        _service(tmp_path, baseline).events()
+
+
+def test_snapshot_control_rejects_valid_mac_prefix_rollback(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("trusted-head", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    token = service.resolve_snapshot()
+    service.bind_session(_binding("session.first", token), token)
+    second_token = service.resolve_snapshot()
+    service.bind_session(_binding("session.second", second_token), second_token)
+    records = sorted(
+        (service.store.storage.loose_root / "snapshot-control").glob("*.json")
+    )
+    assert len(records) == 2
+    records[-1].unlink()
+
+    with pytest.raises(SharedStateIntegrityError, match="trusted head"):
+        _service(tmp_path, baseline).events()
+
+
+def test_snapshot_control_recovers_signed_tail_after_head_update_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _snapshot("head-recovery", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    token = service.resolve_snapshot()
+    original = service.store.trust_anchor._reconcile_head
+
+    def crash_after_event_append(
+        events: tuple[SnapshotControlEvent, ...],
+        *,
+        legacy_sequence: int,
+    ) -> None:
+        if events:
+            raise RuntimeError("simulated crash before trusted head update")
+        original(events, legacy_sequence=legacy_sequence)
+
+    monkeypatch.setattr(
+        service.store.trust_anchor,
+        "_reconcile_head",
+        crash_after_event_append,
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        service.bind_session(_binding("session.crash", token), token)
+
+    reopened = _service(tmp_path, baseline)
+    events = reopened.events()
+
+    assert len(events) == 1
+    assert events[0].session_id == "session.crash"
+    assert reopened.store.trust_anchor.head_path.is_file()
+
+
+def test_snapshot_control_recovers_epoch_after_head_commit_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    baseline = _snapshot("epoch-recovery", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    token = service.resolve_snapshot()
+    original = service.store.trust_anchor.epoch_store._reconcile
+
+    def crash_after_head_commit(commitment: dict[str, object]) -> None:
+        if commitment["head_sequence"] == 0:
+            original(commitment)
+            return
+        raise RuntimeError("simulated crash before trust epoch update")
+
+    monkeypatch.setattr(
+        service.store.trust_anchor.epoch_store,
+        "_reconcile",
+        crash_after_head_commit,
+    )
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        service.bind_session(_binding("session.epoch-crash", token), token)
+
+    reopened = _service(tmp_path, baseline)
+
+    assert reopened.events()[0].session_id == "session.epoch-crash"
+    assert reopened.store.trust_anchor.epoch_store._read()["head_sequence"] == 1
+
+
+def test_snapshot_control_rejects_old_valid_head_and_event_prefix_replay(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("head-replay", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    first_token = service.resolve_snapshot()
+    service.bind_session(_binding("session.first", first_token), first_token)
+    record_root = service.store.storage.loose_root / "snapshot-control"
+    first_records = {path.name: path.read_bytes() for path in record_root.glob("*.json")}
+    first_head = service.store.trust_anchor.head_path.read_bytes()
+    second_token = service.resolve_snapshot()
+    service.bind_session(_binding("session.second", second_token), second_token)
+
+    for path in record_root.glob("*.json"):
+        path.unlink()
+    for name, payload in first_records.items():
+        (record_root / name).write_bytes(payload)
+    service.store.trust_anchor.head_path.write_bytes(first_head)
+
+    with pytest.raises(SharedStateIntegrityError, match="trusted.*diverged"):
+        _service(tmp_path, baseline).events()
+
+
+def test_snapshot_control_rejects_missing_committed_epoch(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("missing-epoch", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    token = service.resolve_snapshot()
+    service.bind_session(_binding("session.committed", token), token)
+    epoch_path = (
+        service.store.trust_anchor.epoch_store.root
+        / "snapshot-control-epoch.json"
+    )
+    epoch_path.unlink()
+
+    with pytest.raises(SharedStateIntegrityError, match="trust epoch.*missing"):
+        _service(tmp_path, baseline).events()
+
+
+def test_snapshot_control_rejects_epoch_head_and_event_prefix_replay(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("epoch-replay", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    first_token = service.resolve_snapshot()
+    service.bind_session(_binding("session.first", first_token), first_token)
+    record_root = service.store.storage.loose_root / "snapshot-control"
+    first_records = {path.name: path.read_bytes() for path in record_root.glob("*.json")}
+    first_head = service.store.trust_anchor.head_path.read_bytes()
+    epoch_path = (
+        service.store.trust_anchor.epoch_store.root
+        / "snapshot-control-epoch.json"
+    )
+    first_epoch = epoch_path.read_bytes()
+    second_token = service.resolve_snapshot()
+    service.bind_session(_binding("session.second", second_token), second_token)
+
+    for path in record_root.glob("*.json"):
+        path.unlink()
+    for name, payload in first_records.items():
+        (record_root / name).write_bytes(payload)
+    service.store.trust_anchor.head_path.write_bytes(first_head)
+    epoch_path.write_bytes(first_epoch)
+
+    with pytest.raises(SharedStateIntegrityError, match="trust epoch.*backwards"):
+        _service(tmp_path, baseline).events()
+
+
+def test_legacy_unsigned_binding_cannot_downgrade_committed_trust_epoch(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("legacy-binding", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    _convert_session_binding_to_legacy(service)
+    trusted_root = (
+        tmp_path
+        / ".ai-sdlc"
+        / "state"
+        / "trusted"
+        / "projects"
+        / "project.shared"
+        / "snapshot-control"
+    )
+    for path in trusted_root.iterdir():
+        if path.is_file():
+            path.unlink()
+
+    with pytest.raises(SharedStateIntegrityError, match="trust anchor.*invalid"):
+        _service(tmp_path, baseline)
+
+
+def test_legacy_unsigned_binding_cannot_delete_every_mutable_anchor(
+    tmp_path: Path,
+) -> None:
+    baseline = _snapshot("legacy-full-anchor-delete", is_baseline=True)
+    service = _service(tmp_path, baseline)
+    _convert_session_binding_to_legacy(service)
+    epoch_path = (
+        service.store.trust_anchor.epoch_store.root
+        / "snapshot-control-epoch.json"
+    )
+    epoch_path.unlink()
+    for path in service.store.trust_anchor.root.iterdir():
+        if path.is_file():
+            path.unlink()
+
+    with pytest.raises(SharedStateIntegrityError, match="trust epoch.*missing"):
+        _service(tmp_path, baseline)
+
+
+def test_legacy_unsigned_binding_migrates_once_without_recovery_authority(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "legacy-source"
+    source.mkdir()
+    baseline = _snapshot("legacy-migration", is_baseline=True)
+    source_service = _service(source, baseline)
+    legacy_event = _convert_session_binding_to_legacy(source_service)
+    migrated = tmp_path / "migrated-project"
+    shutil.copytree(source, migrated, ignore=shutil.ignore_patterns("trusted"))
+
+    reopened = _service(migrated, baseline)
+
+    assert reopened.events() == (legacy_event,)
+    assert reopened.session_binding_lineage("session.legacy") is None
+    current = reopened.resolve_snapshot()
+    with pytest.raises(
+        SharedStateIntegrityError,
+        match="session binding identity diverged",
+    ):
+        reopened.bind_session(_binding("session.legacy", current), current)
 
 
 def test_snapshot_control_rejects_uncommitted_promotion_package(
@@ -178,19 +458,22 @@ def test_snapshot_control_recovers_from_segment_and_fences_followup_writer(
     prepared = service.store.storage._prepare_compaction("snapshot-control")
     assert prepared is not None
 
-    with service.resources.storage_bundle(
-        bundle_class="reclamation",
-        bundle_bytes=prepared.required_bundle_bytes,
-        net_reclaim_bytes=prepared.net_reclaim_bytes,
-        policy=service.storage_policy,
-        operation_id="compactor.snapshot-control.bundle",
-    ) as bundle, service.store.storage.acquire_planned_lease(
-        prepared.lease_plan,
-        write_class="reclamation",
-        bundle_bytes=prepared.required_bundle_bytes,
-        net_reclaim_bytes=prepared.net_reclaim_bytes,
-        resource_bundle=bundle,
-    ) as lease:
+    with (
+        service.resources.storage_bundle(
+            bundle_class="reclamation",
+            bundle_bytes=prepared.required_bundle_bytes,
+            net_reclaim_bytes=prepared.net_reclaim_bytes,
+            policy=service.storage_policy,
+            operation_id="compactor.snapshot-control.bundle",
+        ) as bundle,
+        service.store.storage.acquire_planned_lease(
+            prepared.lease_plan,
+            write_class="reclamation",
+            bundle_bytes=prepared.required_bundle_bytes,
+            net_reclaim_bytes=prepared.net_reclaim_bytes,
+            resource_bundle=bundle,
+        ) as lease,
+    ):
         service.store.storage._commit_compaction(
             prepared,
             lease=lease,
@@ -213,7 +496,9 @@ def test_session_binding_rebases_stale_head_when_active_snapshot_is_unchanged(
     shared_token = service.resolve_snapshot()
 
     first = service.bind_session(_binding("session.first", shared_token), shared_token)
-    second = service.bind_session(_binding("session.second", shared_token), shared_token)
+    second = service.bind_session(
+        _binding("session.second", shared_token), shared_token
+    )
 
     assert (first.sequence, second.sequence) == (1, 2)
     assert second.previous_event_digest == first.event_digest
@@ -604,9 +889,7 @@ def _snapshot(
         evaluation_report_digests=()
         if is_baseline
         else (f"sha256:evaluation-{suffix}",),
-        shadow_result_digest=""
-        if is_baseline
-        else f"sha256:shadow-{suffix}",
+        shadow_result_digest="" if is_baseline else f"sha256:shadow-{suffix}",
         policy_payload={"selection_policy": {"version": suffix}},
         created_at="2026-07-22T00:00:00+00:00",
         is_baseline=is_baseline,
@@ -621,6 +904,9 @@ def _binding(
         operation_id=f"binding.{session_id}",
         project_id="project.shared",
         session_id=session_id,
+        command_id=f"command.{session_id}",
+        idempotency_key=f"idempotency.{session_id}",
+        command_digest=f"sha256:command-{session_id}",
         initial_candidate_digest=f"sha256:{session_id}-candidate",
         stage_key="implementation",
         risk_level="medium",
@@ -674,9 +960,7 @@ class _SnapshotPromotionAuthority:
         package: PipelinePromotionPackage,
     ) -> None:
         if self.receipts.get(package.package_digest) != receipt:
-            raise SharedStateIntegrityError(
-                "promotion authorization lineage diverged"
-            )
+            raise SharedStateIntegrityError("promotion authorization lineage diverged")
 
 
 def _register_promotion(
@@ -691,6 +975,57 @@ def _register_promotion(
         authorization_digest=receipt.authorization_digest,
     )
     return receipt.authorization_digest
+
+
+def _convert_session_binding_to_legacy(
+    service: SnapshotControlService,
+) -> SnapshotControlEvent:
+    token = service.resolve_snapshot()
+    operation = _binding("session.legacy", token)
+    service.bind_session(operation, token)
+    stored_operation = service.store.binding_operations()[0]
+    operation_path = (
+        service.store.root
+        / "session-binding-operations"
+        / f"{stored_operation.operation_id}.json"
+    )
+    legacy_operation = read_json_object(operation_path)
+    for field in ("command_id", "idempotency_key", "command_digest"):
+        legacy_operation.pop(field)
+    legacy_operation.update(
+        {
+            "schema_version": "session-snapshot-binding-operation.v1",
+            "operation_digest": "",
+        }
+    )
+    legacy_operation["operation_digest"] = canonical_digest(
+        {
+            key: value
+            for key, value in legacy_operation.items()
+            if key != "operation_digest"
+        },
+        CanonicalizationPolicy(),
+    )
+    atomic_write_json(operation_path, legacy_operation)
+
+    record_path = next(
+        (service.store.storage.loose_root / "snapshot-control").glob("*.json")
+    )
+    record_payload = read_json_object(record_path)
+    event_payload = dict(record_payload["payload"])
+    extensions = dict(event_payload["extensions"])
+    extensions.pop("snapshot_control_trust_mac")
+    event_payload.update({"extensions": extensions, "event_digest": ""})
+    legacy_event = SnapshotControlEvent.model_validate(event_payload)
+    record_payload.update(
+        {
+            "payload": legacy_event.model_dump(mode="json"),
+            "record_digest": "",
+        }
+    )
+    legacy_record = OptimizationStorageRecord.model_validate(record_payload)
+    atomic_write_json(record_path, legacy_record.model_dump(mode="json"))
+    return legacy_event
 
 
 def _service(root: Path, baseline: OptimizationSnapshot) -> SnapshotControlService:

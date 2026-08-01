@@ -10,6 +10,7 @@ from ai_sdlc.core.stage_review.optimization.observations import (
     OptimizationSessionObservation,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_models import (
+    SESSION_BINDING_OPERATION_DIGEST_EXTENSION,
     SessionSnapshotBindingOperation,
     SnapshotControlEvent,
 )
@@ -25,8 +26,10 @@ def _recover_session_population(
 ) -> tuple[CommittedSessionBinding, ...]:
     events = {item.operation_id: item for item in store.events()}
     for operation in store.binding_operations():
+        if not isinstance(operation, SessionSnapshotBindingOperation):
+            continue
         event = events.get(operation.operation_id)
-        if event is None:
+        if event is None or not store._is_authenticated_event(event):
             continue
         _verify_binding_event(operation, event)
         binding_store.append(_materialized_binding(operation, event))
@@ -40,8 +43,16 @@ def _verify_binding_event(
 ) -> None:
     if (
         event.event_kind != "session_binding"
+        or event.operation_id != operation.operation_id
+        or event.extensions.get(SESSION_BINDING_OPERATION_DIGEST_EXTENSION)
+        != operation.operation_digest
         or event.session_id != operation.session_id
         or event.target_snapshot_digest != operation.target_snapshot_digest
+        or event.sequence != operation.expected_head_sequence + 1
+        or event.previous_event_digest != operation.expected_head_digest
+        or event.pointer_revision != operation.expected_pointer_revision
+        or event.revocation_generation
+        != operation.expected_revocation_generation
     ):
         raise SharedStateIntegrityError("session binding event lineage diverged")
 

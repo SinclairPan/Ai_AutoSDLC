@@ -65,6 +65,19 @@ def resolve_canonical_shared_state(root: Path, project_id: str) -> Path:
     return base / "projects" / stable_project_id
 
 
+def _resolve_trusted_project_state(root: Path, project_id: str) -> Path:
+    """解析独立于可重建 canonical state 的项目可信锚根。"""
+
+    stable_project_id = require_machine_id(project_id, "project_id")
+    repository_root = _resolve_integrity_path(root, "Repository")
+    common_git_dir = _git_common_dir(repository_root)
+    if common_git_dir is None:
+        base = repository_root / ".ai-sdlc" / "state" / "trusted"
+    else:
+        base = common_git_dir / "ai-sdlc-trusted-state"
+    return base / "projects" / stable_project_id
+
+
 def resolve_repository_project_id(root: Path) -> str:
     """跨 Worktree 解析同一个稳定项目身份，不依赖目录名。"""
 
@@ -79,10 +92,14 @@ def resolve_repository_project_id(root: Path) -> str:
     if identity_path.is_file():
         project_id = str(read_json_object(identity_path).get("project_id", ""))
         return require_machine_id(project_id, "project_id")
-    seed = _resolve_integrity_path(
-        shared_base,
-        "Shared state",
-    ).as_posix().encode("utf-8")
+    seed = (
+        _resolve_integrity_path(
+            shared_base,
+            "Shared state",
+        )
+        .as_posix()
+        .encode("utf-8")
+    )
     return f"project.{hashlib.sha256(seed).hexdigest()[:24]}"
 
 
@@ -321,9 +338,7 @@ def _resolve_integrity_path(path: Path, label: str) -> Path:
                 candidate.resolve(strict=True)
         return path.resolve(strict=False)
     except (OSError, RuntimeError) as exc:
-        raise SharedStateIntegrityError(
-            f"{label} path cannot be resolved"
-        ) from exc
+        raise SharedStateIntegrityError(f"{label} path cannot be resolved") from exc
 
 
 def _find_git_marker(root: Path) -> Path | None:

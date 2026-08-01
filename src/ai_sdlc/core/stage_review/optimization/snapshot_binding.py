@@ -123,6 +123,9 @@ def _same_binding_identity(
     protected = (
         "project_id",
         "session_id",
+        "command_id",
+        "idempotency_key",
+        "command_digest",
         "initial_candidate_digest",
         "stage_key",
         "risk_level",

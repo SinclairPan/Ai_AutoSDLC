@@ -6,6 +6,7 @@ import time
 from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from ai_sdlc.core.stage_review.artifact_compat import JsonValue
 from ai_sdlc.core.stage_review.artifacts import (
     ResourceLockUnavailableError,
     SharedStateIntegrityError,
@@ -41,6 +42,7 @@ from ai_sdlc.core.stage_review.optimization.snapshot_binding import (
     _verify_session_binding as verify_session_binding,
 )
 from ai_sdlc.core.stage_review.optimization.snapshot_models import (
+    SESSION_BINDING_OPERATION_DIGEST_EXTENSION,
     ActiveOptimizationPointer,
     OptimizationSnapshot,
     SessionSnapshotBindingOperation,
@@ -73,6 +75,15 @@ from ai_sdlc.core.stage_review.resource_storage_bundles import (
     StorageBundleUnavailableError,
 )
 from ai_sdlc.core.stage_review.resources import ResourceGovernor
+
+
+def _same_current_binding_identity(
+    original: object,
+    trusted: SessionSnapshotBindingOperation,
+) -> bool:
+    return isinstance(original, SessionSnapshotBindingOperation) and (
+        same_binding_identity(original, trusted)
+    )
 
 
 class SnapshotControlService(SnapshotServiceSupportMixin):
@@ -415,7 +426,7 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
                     ),
                     None,
                 )
-                if original is None or not same_binding_identity(original, trusted):
+                if not _same_current_binding_identity(original, trusted):
                     raise SharedStateIntegrityError("session binding identity diverged")
                 return existing_session
             existing = self.store.event_for_operation(trusted.operation_id)
@@ -432,6 +443,7 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
                 ),
                 lease,
                 bundle,
+                event_extensions=_binding_event_extensions(trusted),
             )
 
     def _recover_safety_locked(
@@ -482,7 +494,7 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
         lease: OptimizationCommitLeaseHandle,
         resource_bundle: StorageBundleHandle | None,
         *,
-        event_extensions: dict[str, object] | None = None,
+        event_extensions: dict[str, JsonValue] | None = None,
     ) -> SnapshotControlEvent:
         existing = self.store.event_for_operation(effect.operation_id)
         if existing is not None:
@@ -517,7 +529,7 @@ class SnapshotControlService(SnapshotServiceSupportMixin):
 
 def _promotion_event_extensions(
     package: PipelinePromotionPackage,
-) -> dict[str, object]:
+) -> dict[str, JsonValue]:
     return {
         "promotion_package_digest": package.package_digest,
         "promotion_evidence_digest": package.evidence.evidence_digest,
@@ -528,3 +540,9 @@ def _promotion_event_extensions(
             package.snapshot.evaluation_report_digests
         ),
     }
+
+
+def _binding_event_extensions(
+    operation: SessionSnapshotBindingOperation,
+) -> dict[str, JsonValue]:
+    return {SESSION_BINDING_OPERATION_DIGEST_EXTENSION: operation.operation_digest}
