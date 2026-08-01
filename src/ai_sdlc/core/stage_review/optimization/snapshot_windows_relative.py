@@ -26,6 +26,7 @@ _FILE_DIRECTORY_FILE = 0x1
 _FILE_NON_DIRECTORY_FILE = 0x40
 _FILE_SYNCHRONOUS_IO_NONALERT = 0x20
 _FILE_OPEN_REPARSE_POINT = 0x00200000
+_FILE_READ_ATTRIBUTES = 0x80
 _FILE_SHARE_ALL = 0x1 | 0x2 | 0x4
 _FILE_SHARE_READ_WRITE = 0x1 | 0x2
 _FILE_TRAVERSE = 0x20
@@ -89,7 +90,7 @@ def _open_windows_relative(
         )
         handle = wintypes.HANDLE()
         io_status = _IoStatusBlock()
-        access = desired_access | _SYNCHRONIZE
+        access = desired_access | _FILE_READ_ATTRIBUTES | _SYNCHRONIZE
         if acl_access:
             access |= _READ_CONTROL | _WRITE_DAC
         status = _nt_create_file()(

@@ -323,7 +323,7 @@ def test_windows_untrusted_ancestor_open_does_not_request_acl_write(
     assert handle == 94
     assert captured == {
         "descriptor": None,
-        "access": 0x20 | 0x00100000,
+        "access": 0x20 | 0x80 | 0x00100000,
     }
 
 
