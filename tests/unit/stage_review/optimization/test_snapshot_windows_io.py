@@ -154,20 +154,100 @@ def test_windows_rename_buffer_meets_the_flexible_array_contract() -> None:
     )
 
 
-def test_windows_rename_failure_reports_the_native_error_code(
+def test_windows_rename_uses_native_same_directory_contract(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    kernel32 = type(
-        "Kernel32",
-        (),
-        {"SetFileInformationByHandle": lambda *_: 0},
-    )()
-    monkeypatch.setattr(snapshot_windows_io, "_kernel32", lambda: kernel32)
-    monkeypatch.setattr(snapshot_windows_io, "_last_error", lambda: 87)
+    captured: dict[str, object] = {}
+
+    class NtSetInformationFile:
+        def __call__(self, *arguments: object) -> int:
+            captured["arguments"] = arguments
+            return 0
+
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_nt_set_information_file",
+        lambda: NtSetInformationFile(),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_kernel32",
+        lambda: pytest.fail("same-directory rename used the Win32 CWD contract"),
+    )
+
+    snapshot_windows_io._rename_handle(
+        81,
+        "trusted-head.json",
+        replace=True,
+    )
+
+    arguments = captured["arguments"]
+    assert isinstance(arguments, tuple)
+    assert len(arguments) == 5
+    assert arguments[0].value == 81
+    status = ctypes.cast(
+        arguments[1],
+        ctypes.POINTER(snapshot_windows_io._IoStatusBlock),
+    ).contents
+    information = ctypes.cast(
+        arguments[2],
+        ctypes.POINTER(snapshot_windows_io._FileRenameInfo),
+    ).contents
+    assert status.status == 0
+    assert status.information == 0
+    assert information.replace_if_exists == 1
+    assert information.root_directory is None
+    assert arguments[3] >= ctypes.sizeof(snapshot_windows_io._FileRenameInfo)
+    assert arguments[4] == 10
+
+
+def test_windows_native_rename_collision_is_file_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_nt_set_information_file",
+        lambda: lambda *_: ctypes.c_int32(0xC0000035).value,
+        raising=False,
+    )
+
+    with pytest.raises(FileExistsError, match="trusted-head.json"):
+        snapshot_windows_io._rename_handle(
+            81,
+            "trusted-head.json",
+            replace=False,
+        )
+
+
+@pytest.mark.parametrize(
+    ("ntstatus", "winerror"),
+    [
+        (0xC000000D, 87),
+        (0x00000103, 997),
+    ],
+)
+def test_windows_native_rename_failure_reports_both_error_domains(
+    monkeypatch: pytest.MonkeyPatch,
+    ntstatus: int,
+    winerror: int,
+) -> None:
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_nt_set_information_file",
+        lambda: lambda *_: ctypes.c_int32(ntstatus).value,
+        raising=False,
+    )
+    monkeypatch.setattr(
+        snapshot_windows_io,
+        "_rtl_nt_status_to_dos_error",
+        lambda: lambda _: winerror,
+        raising=False,
+    )
 
     with pytest.raises(
         snapshot_windows_io.SharedStateIntegrityError,
-        match=r"winerror=87",
+        match=rf"ntstatus=0x{ntstatus:08X}, winerror={winerror}",
     ):
         snapshot_windows_io._rename_handle(
             81,

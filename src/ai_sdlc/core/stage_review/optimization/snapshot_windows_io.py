@@ -36,13 +36,15 @@ _FILE_ATTRIBUTE_DIRECTORY = 0x10
 _FILE_ATTRIBUTE_NORMAL = 0x80
 _FILE_ATTRIBUTE_REPARSE_POINT = 0x400
 _FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
-_FILE_RENAME_INFO_CLASS = 3
+# Win32 class=3 会把相对名称按进程 CWD 解析；native class=10 才保留源文件父目录。
+_FILE_RENAME_INFORMATION_CLASS = 10
 _FILE_DISPOSITION_INFO_CLASS = 4
 _FILE_SHARE_READ = 0x1
 _FILE_SHARE_READ_WRITE = 0x1 | 0x2
 _LOCKFILE_FAIL_IMMEDIATELY = 0x1
 _LOCKFILE_EXCLUSIVE_LOCK = 0x2
 _REGISTRY_LOCK = threading.RLock()
+_STATUS_OBJECT_NAME_COLLISION = 0xC0000035
 _DIRECTORY_IDENTITIES: dict[
     str,
     tuple[tuple[Path, tuple[int, int]], ...],
@@ -55,6 +57,21 @@ class _FileRenameInfo(ctypes.Structure):
         ("root_directory", wintypes.HANDLE),
         ("file_name_length", wintypes.DWORD),
         ("file_name", wintypes.WCHAR * 1),
+    )
+
+
+class _IoStatusValue(ctypes.Union):
+    _fields_ = (
+        ("status", wintypes.LONG),
+        ("pointer", wintypes.LPVOID),
+    )
+
+
+class _IoStatusBlock(ctypes.Structure):
+    _anonymous_ = ("value",)
+    _fields_ = (
+        ("value", _IoStatusValue),
+        ("information", ctypes.c_size_t),
     )
 
 
@@ -310,20 +327,57 @@ def _rename_handle(
         name,
         replace=replace,
     )
-    success = _kernel32().SetFileInformationByHandle(
-        wintypes.HANDLE(handle),
-        _FILE_RENAME_INFO_CLASS,
-        ctypes.byref(information),
-        ctypes.sizeof(buffer),
+    io_status = _IoStatusBlock()
+    status = int(
+        _nt_set_information_file()(
+            wintypes.HANDLE(handle),
+            ctypes.byref(io_status),
+            ctypes.byref(information),
+            ctypes.sizeof(buffer),
+            _FILE_RENAME_INFORMATION_CLASS,
+        )
     )
-    if success:
+    ntstatus = ctypes.c_uint32(status).value
+    if ntstatus == 0:
         return
-    error = _last_error()
-    if error in (80, 183):
+    if ntstatus == _STATUS_OBJECT_NAME_COLLISION:
         raise FileExistsError(name)
+    winerror = int(_rtl_nt_status_to_dos_error()(status))
     raise SharedStateIntegrityError(
-        f"snapshot trusted file publish failed (winerror={error})"
+        "snapshot trusted file publish failed "
+        f"(ntstatus=0x{ntstatus:08X}, winerror={winerror})"
     )
+
+
+def _nt_set_information_file() -> Any:
+    if os.name != "nt":
+        raise RuntimeError("Windows native file API is unavailable")
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None:
+        raise RuntimeError("Windows API loader is unavailable")
+    function = loader("ntdll").NtSetInformationFile
+    function.argtypes = (
+        wintypes.HANDLE,
+        ctypes.POINTER(_IoStatusBlock),
+        wintypes.LPVOID,
+        wintypes.ULONG,
+        ctypes.c_int,
+    )
+    function.restype = wintypes.LONG
+    return function
+
+
+def _rtl_nt_status_to_dos_error() -> Any:
+    if os.name != "nt":
+        raise RuntimeError("Windows native status API is unavailable")
+    pointer_type = ctypes.c_void_p
+    loader = getattr(ctypes, "WinDLL", None)
+    if loader is None or pointer_type is None:
+        raise RuntimeError("Windows API loader is unavailable")
+    function = loader("ntdll").RtlNtStatusToDosError
+    function.argtypes = (wintypes.LONG,)
+    function.restype = wintypes.ULONG
+    return function
 
 
 def _build_rename_information(
