@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import typer
-from rich.console import Console
 
 from ai_sdlc.branch.git_client import GitClient, GitError
+from ai_sdlc.cli.pr_review_rendering import (
+    emit_pr_review_result as _emit_result,
+)
+from ai_sdlc.cli.stage_review_guidance import execute_stage_close_for_cli
 from ai_sdlc.core.pr_review_provider import MockReviewerFixture, ProviderRunStatus
 from ai_sdlc.core.pr_review_service import (
+    PRReviewAttestResult,
     PRReviewCommandStatus,
     PRReviewStartOptions,
     attest_pr_review,
@@ -22,13 +25,26 @@ from ai_sdlc.core.pr_review_service import (
     start_pr_review,
     status_pr_review,
 )
-from ai_sdlc.utils.helpers import find_project_root
+from ai_sdlc.core.stage_review.artifacts import (
+    ResourceLockUnavailableError,
+    SharedStateIntegrityError,
+    ShortFileLock,
+    resolve_canonical_shared_state,
+    resolve_repository_project_id,
+)
+from ai_sdlc.core.stage_review.ci_certificate import (
+    CI_CERTIFICATE_BUNDLE_PATH,
+    read_ci_certificate_bundle,
+)
+from ai_sdlc.core.stage_review.ci_certificate_export import (
+    export_ci_certificate_bundle,
+)
+from ai_sdlc.utils.helpers import AI_SDLC_DIR, find_project_root
 
 pr_review_app = typer.Typer(
     help="Run local adversarial PR review loops.",
     no_args_is_help=True,
 )
-console = Console()
 
 
 @pr_review_app.command(name="doctor")
@@ -44,8 +60,12 @@ def pr_review_doctor(
         "--diff-source",
         help="Review input source: local-git-range, patch, local-staged, local-unstaged, or scm-pr.",
     ),
-    patch_file: str = typer.Option("", "--patch-file", help="Patch file for patch diff source."),
-    source_id: str = typer.Option("", "--source-id", help="External source id such as PR/MR id."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Patch file for patch diff source."
+    ),
+    source_id: str = typer.Option(
+        "", "--source-id", help="External source id such as PR/MR id."
+    ),
     source_provider: str = typer.Option(
         "",
         "--source-provider",
@@ -124,8 +144,12 @@ def pr_review_start(
         "--diff-source",
         help="Review input source: local-git-range, patch, local-staged, local-unstaged, or scm-pr.",
     ),
-    patch_file: str = typer.Option("", "--patch-file", help="Patch file for patch diff source."),
-    source_id: str = typer.Option("", "--source-id", help="External source id such as PR/MR id."),
+    patch_file: str = typer.Option(
+        "", "--patch-file", help="Patch file for patch diff source."
+    ),
+    source_id: str = typer.Option(
+        "", "--source-id", help="External source id such as PR/MR id."
+    ),
     source_provider: str = typer.Option(
         "",
         "--source-provider",
@@ -208,7 +232,8 @@ def pr_review_start(
         raise typer.Exit(10)
     raise typer.Exit(
         0
-        if result.status in {PRReviewCommandStatus.DRY_RUN, PRReviewCommandStatus.STARTED}
+        if result.status
+        in {PRReviewCommandStatus.DRY_RUN, PRReviewCommandStatus.STARTED}
         else 1
     )
 
@@ -268,9 +293,7 @@ def pr_review_rerun(
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     if result.provider_status == ProviderRunStatus.CHANGES_REQUIRED:
         raise typer.Exit(10)
-    raise typer.Exit(
-        0 if result.status == PRReviewCommandStatus.STARTED else 1
-    )
+    raise typer.Exit(0 if result.status == PRReviewCommandStatus.STARTED else 1)
 
 
 @pr_review_app.command(name="close")
@@ -290,10 +313,15 @@ def pr_review_close(
     """Close the local PR review with a final verdict."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = close_pr_review(
+    result = execute_stage_close_for_cli(
         root,
-        require_no_blockers=require_no_blockers,
-        verification_evidence=evidence,
+        lambda: close_pr_review(
+            root,
+            require_no_blockers=require_no_blockers,
+            verification_evidence=evidence,
+        ),
+        json_output=json_output,
+        emit=_emit_result,
     )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.CLOSED else 1)
@@ -306,9 +334,211 @@ def pr_review_attest(
     """Write a CI-readable attestation for the current closed local review."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = attest_pr_review(root)
+    try:
+        shared = resolve_canonical_shared_state(
+            root,
+            resolve_repository_project_id(root),
+        )
+    except (OSError, ValueError, SharedStateIntegrityError) as exc:
+        cleanup_blockers = tuple(
+            item
+            for item in (
+                _clear_stale_pr_review_attestation(root),
+                _clear_stale_ci_certificate_bundle(root),
+            )
+            if item
+        )
+        result = PRReviewAttestResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker=(
+                f"PR review attest shared lock state is unavailable: {exc}"
+                + (f"; {'; '.join(cleanup_blockers)}" if cleanup_blockers else "")
+            ),
+            next_action=(
+                "Run ai-sdlc doctor, repair Git/shared stage-review state, "
+                "then rerun pr-review attest."
+            ),
+        )
+    else:
+        try:
+            with ShortFileLock(
+                shared / "locks" / "pr-review-attest.lock",
+                timeout_seconds=5,
+            ):
+                result = execute_stage_close_for_cli(
+                    root,
+                    lambda: attest_pr_review(root),
+                    json_output=json_output,
+                    emit=_emit_result,
+                    failure_cleanup=lambda: _clear_stale_ci_certificate_bundle(
+                        root
+                    ),
+                )
+                result = _export_pr_review_attestation_bundle(root, result)
+        except ResourceLockUnavailableError as exc:
+            result = PRReviewAttestResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                blocker=f"Another pr-review attest operation is active: {exc}",
+                next_action=(
+                    "Wait for that operation to finish, "
+                    "then rerun pr-review attest."
+                ),
+            )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
+
+
+def _clear_stale_pr_review_attestation(root: Path) -> str:
+    path = root / AI_SDLC_DIR / "reviews" / "pr" / "latest-attestation.json"
+    try:
+        path.unlink(missing_ok=True)
+    except OSError as exc:
+        return f"Unable to clear stale review attestation: {exc}"
+    return ""
+
+
+def _export_pr_review_attestation_bundle(
+    root: Path,
+    result: PRReviewAttestResult,
+) -> PRReviewAttestResult:
+    if result.status == PRReviewCommandStatus.READY:
+        has_session = bool(result.stage_review_session_id)
+        has_certificate = bool(result.stage_close_certificate_id)
+        if has_session != has_certificate:
+            result = result.model_copy(
+                update={
+                    "status": PRReviewCommandStatus.BLOCKED,
+                    "blocker": "Stage close certificate identity is incomplete.",
+                    "next_action": "Rerun pr-review attest for the current review.",
+                }
+            )
+            bundle_path = None
+        elif not has_certificate:
+            bundle_path = None
+            cleanup_blocker = _clear_stale_ci_certificate_bundle(root)
+            if cleanup_blocker:
+                result = result.model_copy(
+                    update={
+                        "status": PRReviewCommandStatus.BLOCKED,
+                        "blocker": cleanup_blocker,
+                        "next_action": (
+                            f"Remove {CI_CERTIFICATE_BUNDLE_PATH} and rerun "
+                            "pr-review attest."
+                        ),
+                    }
+                )
+            else:
+                result = result.model_copy(
+                    update={
+                        "next_action": (
+                            "Attestation is ready; the current Shadow policy "
+                            "does not require a CI certificate bundle, and CI "
+                            "must not call any model."
+                        )
+                    }
+                )
+        else:
+            try:
+                bundle_path = export_ci_certificate_bundle(
+                    root,
+                    close_kind="local-pr-review-attest",
+                    stage_instance_id=result.review_id,
+                    review_session_id=result.stage_review_session_id,
+                    certificate_id=result.stage_close_certificate_id,
+                )
+            except (OSError, ValueError) as exc:
+                cleanup_blocker = _clear_stale_ci_certificate_bundle(
+                    root,
+                    preserve_review_session_id=result.stage_review_session_id,
+                    preserve_certificate_id=result.stage_close_certificate_id,
+                )
+                result = result.model_copy(
+                    update={
+                        "status": PRReviewCommandStatus.BLOCKED,
+                        "blocker": (
+                            f"CI certificate bundle export failed: {exc}"
+                            + (f"; {cleanup_blocker}" if cleanup_blocker else "")
+                        ),
+                        "next_action": (
+                            "Rerun the local PR review with "
+                            "`--diff-source local-git-range` before attestation."
+                        ),
+                    }
+                )
+                bundle_path = None
+            if bundle_path is None and result.status == PRReviewCommandStatus.READY:
+                cleanup_blocker = _clear_stale_ci_certificate_bundle(
+                    root,
+                    preserve_review_session_id=result.stage_review_session_id,
+                    preserve_certificate_id=result.stage_close_certificate_id,
+                )
+                result = result.model_copy(
+                    update={
+                        "status": PRReviewCommandStatus.BLOCKED,
+                        "blocker": (
+                            "exact certificate proof did not produce a CI bundle"
+                            + (f"; {cleanup_blocker}" if cleanup_blocker else "")
+                        ),
+                        "next_action": "Rerun pr-review attest for the current review.",
+                    }
+                )
+        if bundle_path is not None:
+            result = result.model_copy(
+                update={
+                    "ci_certificate_bundle_path": str(bundle_path),
+                    "next_action": (
+                        f"Stage only {CI_CERTIFICATE_BUNDLE_PATH} with "
+                        f"`git add -- {CI_CERTIFICATE_BUNDLE_PATH}`, commit it, "
+                        "then push the reviewed branch; CI verifies this bundle "
+                        "and must not call any model."
+                    ),
+                }
+            )
+    if result.status != PRReviewCommandStatus.READY:
+        cleanup_blocker = _clear_stale_ci_certificate_bundle(root)
+        if cleanup_blocker:
+            result = result.model_copy(
+                update={
+                    "blocker": (
+                        f"{result.blocker}; {cleanup_blocker}"
+                        if result.blocker
+                        else cleanup_blocker
+                    ),
+                    "next_action": (
+                        f"Remove {CI_CERTIFICATE_BUNDLE_PATH} and rerun "
+                        "pr-review attest."
+                    ),
+                }
+            )
+    return result
+
+
+def _clear_stale_ci_certificate_bundle(
+    root: Path,
+    *,
+    preserve_review_session_id: str = "",
+    preserve_certificate_id: str = "",
+) -> str:
+    path = root / CI_CERTIFICATE_BUNDLE_PATH
+    try:
+        if (
+            path.is_file()
+            and preserve_review_session_id
+            and preserve_certificate_id
+        ):
+            try:
+                current = read_ci_certificate_bundle(path)
+            except (OSError, ValueError):
+                current = None
+            if current is not None and (
+                current.certificate.scope.session_id == preserve_review_session_id
+                and current.certificate.certificate_id == preserve_certificate_id
+            ):
+                return ""
+        path.unlink(missing_ok=True)
+    except (OSError, ValueError) as exc:
+        return f"Unable to clear stale CI certificate bundle: {exc}"
+    return ""
 
 
 def _project_root_or_exit(*, json_output: bool = False) -> Path:
@@ -349,36 +579,6 @@ def _resolve_base_ref(
             json_output=json_output,
         )
         raise typer.Exit(1) from exc
-
-
-def _emit_result(payload: dict[str, object], *, json_output: bool) -> None:
-    if json_output:
-        typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
-        return
-    console.print(f"Result: {payload.get('status', '')}")
-    if payload.get("blocker"):
-        console.print(f"Blocker: {payload['blocker']}")
-    console.print(f"Next: {payload.get('next_action') or '-'}")
-    for key in (
-        "source_adapter",
-        "source_access_status",
-        "provider_id",
-        "model_selector",
-        "resolved_model",
-        "code_egress",
-    ):
-        if key in payload:
-            console.print(f"{key}: {payload.get(key)}")
-    if isinstance(payload.get("diff_source"), dict):
-        source = payload["diff_source"]
-        if isinstance(source, dict) and source.get("source_kind"):
-            console.print(f"diff_source: {source.get('source_kind')}")
-    if payload.get("review_pack_path"):
-        console.print(f"review_pack: {payload['review_pack_path']}")
-    if payload.get("source_resolution_path"):
-        console.print(f"source_resolution: {payload['source_resolution_path']}")
-    if payload.get("findings_path"):
-        console.print(f"findings: {payload['findings_path']}")
 
 
 __all__ = ["pr_review_app"]

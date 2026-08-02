@@ -1,0 +1,361 @@
+"""Snapshot Registry、Control Event 与安全 Operation 的共享存储。"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from ai_sdlc.core.stage_review.artifacts import (
+    SharedStateIntegrityError,
+    bind_repository_project,
+    portable_content_digest_name,
+    read_json_object,
+    resolve_canonical_shared_state,
+)
+from ai_sdlc.core.stage_review.optimization.commit_fencing import (
+    OptimizationCommitLeaseHandle,
+    OptimizationCommitLeaseStore,
+)
+from ai_sdlc.core.stage_review.optimization.pipeline_contracts import (
+    PipelinePromotionPackage,
+)
+from ai_sdlc.core.stage_review.optimization.snapshot_models import (
+    OptimizationSnapshot,
+    SessionSnapshotBindingOperation,
+    SnapshotControlEvent,
+    SnapshotRevocationOperation,
+    _LegacySessionSnapshotBindingOperationV1,
+)
+from ai_sdlc.core.stage_review.optimization.snapshot_projection import (
+    _rebuild_pointer as rebuild_pointer,
+)
+from ai_sdlc.core.stage_review.optimization.snapshot_trust_anchor import (
+    SnapshotControlTrustAnchor,
+    _TrustedHeadRefreshError,
+)
+from ai_sdlc.core.stage_review.optimization.storage import (
+    OptimizationStorage,
+    WriteClass,
+)
+from ai_sdlc.core.stage_review.optimization.storage_models import (
+    OptimizationStoragePolicy,
+    OptimizationStorageRecord,
+)
+from ai_sdlc.core.stage_review.registry_versions import require_machine_id
+from ai_sdlc.core.stage_review.resource_storage_bundles import StorageBundleHandle
+
+
+class SnapshotControlStore:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        project_id: str,
+        baseline_snapshot: OptimizationSnapshot,
+        lock_timeout_seconds: float = 2,
+        storage_policy: OptimizationStoragePolicy | None = None,
+    ) -> None:
+        self.project_id = require_machine_id(project_id, "project_id")
+        shared = resolve_canonical_shared_state(root, self.project_id)
+        bind_repository_project(shared, self.project_id)
+        self.root = shared / "offline-optimization" / "snapshot-control"
+        self.lock_timeout_seconds = lock_timeout_seconds
+        self.commit_leases = OptimizationCommitLeaseStore(
+            root,
+            project_id=self.project_id,
+            lock_timeout_seconds=lock_timeout_seconds,
+        )
+        self.storage = OptimizationStorage(
+            root,
+            project_id=self.project_id,
+            policy=storage_policy or OptimizationStoragePolicy(),
+            commit_leases=self.commit_leases,
+        )
+        self.trust_anchor = SnapshotControlTrustAnchor(
+            root,
+            project_id=self.project_id,
+        )
+        trusted = OptimizationSnapshot.model_validate(
+            baseline_snapshot.model_dump(mode="json")
+        )
+        if trusted.project_id != self.project_id or not trusted.is_baseline:
+            raise ValueError("snapshot control baseline is invalid")
+        self.baseline_digest = self._bind_baseline(trusted)
+
+    def register_snapshot(self, snapshot: OptimizationSnapshot) -> OptimizationSnapshot:
+        trusted = OptimizationSnapshot.model_validate(snapshot.model_dump(mode="json"))
+        if trusted.project_id != self.project_id:
+            raise SharedStateIntegrityError("snapshot project identity diverged")
+        path = self._snapshot_path(trusted.snapshot_digest)
+        if self.storage.accounting.persist_json_exclusive(
+            path,
+            trusted.model_dump(mode="json"),
+        ):
+            return trusted
+        existing = OptimizationSnapshot.model_validate(read_json_object(path))
+        if existing != trusted:
+            raise SharedStateIntegrityError("snapshot digest content diverged")
+        return existing
+
+    def snapshot(self, digest: str) -> OptimizationSnapshot | None:
+        path = self._snapshot_path(digest)
+        if not path.is_file():
+            return None
+        return OptimizationSnapshot.model_validate(read_json_object(path))
+
+    def register_promotion_package(
+        self,
+        package: PipelinePromotionPackage,
+        *,
+        authorization_digest: str,
+    ) -> PipelinePromotionPackage:
+        trusted = PipelinePromotionPackage.model_validate(
+            package.model_dump(mode="json")
+        )
+        if trusted.snapshot.project_id != self.project_id:
+            raise SharedStateIntegrityError(
+                "promotion package project identity diverged"
+            )
+        if not authorization_digest.strip():
+            raise SharedStateIntegrityError(
+                "promotion authorization digest is required"
+            )
+        path = self._promotion_package_path(trusted.package_digest)
+        created = self.storage.accounting.persist_json_exclusive(
+            path,
+            trusted.model_dump(mode="json"),
+        )
+        existing = (
+            trusted
+            if created
+            else PipelinePromotionPackage.model_validate(read_json_object(path))
+        )
+        if existing != trusted:
+            raise SharedStateIntegrityError("promotion package digest content diverged")
+        binding_path = self._promotion_authorization_path(trusted.package_digest)
+        binding = {
+            "promotion_package_digest": trusted.package_digest,
+            "promotion_authorization_digest": authorization_digest,
+        }
+        if (
+            not self.storage.accounting.persist_json_exclusive(
+                binding_path,
+                binding,
+            )
+            and read_json_object(binding_path) != binding
+        ):
+            raise SharedStateIntegrityError("promotion authorization binding diverged")
+        return existing
+
+    def promotion_package(
+        self,
+        digest: str,
+    ) -> PipelinePromotionPackage | None:
+        path = self._promotion_package_path(digest)
+        if not path.is_file():
+            return None
+        return PipelinePromotionPackage.model_validate(read_json_object(path))
+
+    def promotion_authorization_digest(self, package_digest: str) -> str:
+        path = self._promotion_authorization_path(package_digest)
+        if not path.is_file():
+            return ""
+        payload = read_json_object(path)
+        if payload.get("promotion_package_digest") != package_digest:
+            raise SharedStateIntegrityError("promotion authorization binding diverged")
+        return str(payload.get("promotion_authorization_digest", ""))
+
+    def _snapshot_path(self, digest: str) -> Path:
+        name = portable_content_digest_name(digest)
+        return self.root / "snapshots" / f"{name}.json"
+
+    def _promotion_package_path(self, digest: str) -> Path:
+        name = portable_content_digest_name(digest)
+        return self.root / "promotion-packages" / f"{name}.json"
+
+    def _promotion_authorization_path(self, digest: str) -> Path:
+        name = portable_content_digest_name(digest)
+        return self.root / "promotion-authorizations" / f"{name}.json"
+
+    def events(self) -> tuple[SnapshotControlEvent, ...]:
+        for attempt in range(16):
+            events = tuple(
+                _snapshot_event(record)
+                for record in self.storage.read_stream("snapshot-control")
+            )
+            legacy_sequence = self.trust_anchor._verify_event_authentication(events)
+            rebuild_pointer(self.project_id, self.baseline_digest, events)
+            try:
+                self.trust_anchor._reconcile_head(
+                    events,
+                    legacy_sequence=legacy_sequence,
+                )
+            except _TrustedHeadRefreshError:
+                if attempt < 15:
+                    continue
+                raise SharedStateIntegrityError(
+                    "snapshot control trusted head diverged"
+                ) from None
+            return events
+        raise AssertionError("snapshot stream retry budget is unreachable")
+
+    def append_event(
+        self,
+        event: SnapshotControlEvent,
+        *,
+        lease: OptimizationCommitLeaseHandle,
+        resource_bundle: StorageBundleHandle | None = None,
+    ) -> SnapshotControlEvent:
+        trusted = self.trust_anchor._sign(event)
+        lease.assert_current()
+        if (
+            trusted.commit_fencing_epoch != lease.claim.fencing_epoch
+            or trusted.commit_claim_digest != lease.claim.claim_digest
+        ):
+            raise SharedStateIntegrityError("snapshot control fencing claim diverged")
+        existing = self.event_for_operation(trusted.operation_id)
+        if existing is not None:
+            if existing != trusted:
+                raise SharedStateIntegrityError("snapshot operation content diverged")
+            return existing
+        record = self.storage.append(
+            "snapshot-control",
+            trusted.model_dump(mode="json"),
+            keys={"operation_id": trusted.operation_id},
+            lease=lease,
+            write_class=_event_write_class(trusted),
+            resource_bundle=resource_bundle,
+        )
+        if record.sequence != trusted.sequence:
+            raise SharedStateIntegrityError("snapshot control sequence collided")
+        self.events()
+        return trusted
+
+    def event_for_operation(self, operation_id: str) -> SnapshotControlEvent | None:
+        return next(
+            (event for event in self.events() if event.operation_id == operation_id),
+            None,
+        )
+
+    def _is_authenticated_event(self, event: SnapshotControlEvent) -> bool:
+        return self.trust_anchor._is_authenticated(event)
+
+    def event(self, event_digest: str) -> SnapshotControlEvent | None:
+        return next(
+            (event for event in self.events() if event.event_digest == event_digest),
+            None,
+        )
+
+    def persist_revocation(
+        self,
+        operation: SnapshotRevocationOperation,
+        *,
+        resource_bundle: StorageBundleHandle,
+    ) -> SnapshotRevocationOperation:
+        trusted = SnapshotRevocationOperation.model_validate(
+            operation.model_dump(mode="json")
+        )
+        path = self.root / "revocation-operations" / f"{trusted.operation_id}.json"
+        if self.storage.accounting.persist_json_exclusive(
+            path,
+            trusted.model_dump(mode="json"),
+            write_class="critical_recovery",
+            resource_bundle=resource_bundle,
+        ):
+            return trusted
+        existing = SnapshotRevocationOperation.model_validate(read_json_object(path))
+        if existing != trusted:
+            raise SharedStateIntegrityError("revocation operation content diverged")
+        return existing
+
+    def revocation_operations(self) -> tuple[SnapshotRevocationOperation, ...]:
+        directory = self.root / "revocation-operations"
+        if not directory.is_dir():
+            return ()
+        return tuple(
+            SnapshotRevocationOperation.model_validate(read_json_object(path))
+            for path in sorted(directory.glob("*.json"))
+        )
+
+    def persist_binding_operation(
+        self,
+        operation: SessionSnapshotBindingOperation,
+        *,
+        resource_bundle: StorageBundleHandle,
+    ) -> SessionSnapshotBindingOperation:
+        trusted = SessionSnapshotBindingOperation.model_validate(
+            operation.model_dump(mode="json")
+        )
+        path = self.root / "session-binding-operations" / f"{trusted.operation_id}.json"
+        if self.storage.accounting.persist_json_exclusive(
+            path,
+            trusted.model_dump(mode="json"),
+            write_class="session_binding",
+            resource_bundle=resource_bundle,
+        ):
+            return trusted
+        existing = SessionSnapshotBindingOperation.model_validate(
+            read_json_object(path)
+        )
+        if existing != trusted:
+            raise SharedStateIntegrityError(
+                "session binding operation content diverged"
+            )
+        return existing
+
+    def binding_operations(
+        self,
+    ) -> tuple[
+        SessionSnapshotBindingOperation | _LegacySessionSnapshotBindingOperationV1,
+        ...,
+    ]:
+        directory = self.root / "session-binding-operations"
+        if not directory.is_dir():
+            return ()
+        return tuple(
+            _binding_operation(read_json_object(path))
+            for path in sorted(directory.glob("*.json"))
+        )
+
+    def _bind_baseline(self, baseline: OptimizationSnapshot) -> str:
+        identity = {
+            "project_id": self.project_id,
+            "baseline_snapshot_digest": baseline.snapshot_digest,
+        }
+        path = self.root / "baseline.json"
+        if self.storage.accounting.persist_json_exclusive(path, identity):
+            self.register_snapshot(baseline)
+            return baseline.snapshot_digest
+        persisted = read_json_object(path)
+        digest = str(persisted.get("baseline_snapshot_digest", ""))
+        if persisted.get("project_id") != self.project_id or not digest:
+            raise SharedStateIntegrityError("snapshot baseline identity diverged")
+        if digest == baseline.snapshot_digest:
+            self.register_snapshot(baseline)
+            return digest
+        existing = self.snapshot(digest)
+        if existing is None or not existing.is_baseline:
+            raise SharedStateIntegrityError("snapshot baseline artifact is unavailable")
+        return digest
+
+
+def _snapshot_event(record: OptimizationStorageRecord) -> SnapshotControlEvent:
+    event = SnapshotControlEvent.model_validate(record.payload)
+    if event.sequence != record.sequence:
+        raise SharedStateIntegrityError("snapshot control record sequence diverged")
+    return event
+
+
+def _binding_operation(
+    payload: dict[str, object],
+) -> SessionSnapshotBindingOperation | _LegacySessionSnapshotBindingOperationV1:
+    if payload.get("schema_version") == "session-snapshot-binding-operation.v1":
+        return _LegacySessionSnapshotBindingOperationV1.model_validate(payload)
+    return SessionSnapshotBindingOperation.model_validate(payload)
+
+
+def _event_write_class(event: SnapshotControlEvent) -> WriteClass:
+    if event.event_kind in {"revocation", "rollback"}:
+        return "critical_recovery"
+    if event.event_kind == "session_binding":
+        return "session_binding"
+    return "normal"

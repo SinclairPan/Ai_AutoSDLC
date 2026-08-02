@@ -351,6 +351,7 @@ class ReviewPack(LoopArtifactModel):
     source_adapter: str = "local-git-range"
     source_access_status: SourceAccessStatus = SourceAccessStatus.RESOLVED
     source_resolution_path: str = ""
+    source_resolution_digest: str = ""
     repo_root: str
     base_ref: str
     head_ref: str
@@ -359,6 +360,7 @@ class ReviewPack(LoopArtifactModel):
     changed_files: list[str] = Field(default_factory=list)
     diff_summary: str = ""
     diff_path: str = ""
+    diff_digest: str = ""
     diff_coverage: dict[str, int | float | str] = Field(default_factory=dict)
     work_item_refs: list[str] = Field(default_factory=list)
     test_results_refs: list[str] = Field(default_factory=list)

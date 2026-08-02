@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 import time
 from pathlib import Path
 from typing import Any
@@ -11,6 +12,10 @@ from typing import Any
 import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel
 
+from ai_sdlc.core.stable_file_read import (
+    _stable_regular_file_exists,
+    read_stable_text,
+)
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 _IS_WINDOWS = os.name == "nt"
@@ -81,10 +86,22 @@ class LoopArtifactStore:
         text = content if content.endswith("\n") else f"{content}\n"
         return _atomic_write_text(path, text)
 
-    def read_json_artifact(self, path: Path) -> dict[str, Any]:
+    def read_json_artifact(
+        self,
+        path: Path,
+        *,
+        stable: bool = False,
+    ) -> dict[str, Any]:
         """Read a JSON artifact as a mapping."""
 
-        data = json.loads(path.read_text(encoding="utf-8"))
+        if stable and not _stable_regular_file_exists(self.root, path):
+            raise FileNotFoundError(path)
+        content = (
+            read_stable_text(self.root, path, encoding="utf-8")
+            if stable
+            else path.read_text(encoding="utf-8")
+        )
+        data = json.loads(content)
         if not isinstance(data, dict):
             raise ValueError("JSON artifact root must be an object")
         return data
@@ -120,15 +137,16 @@ def _artifact_child_dir(base: Path, identifier: str) -> Path:
 
 def _atomic_write_text(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.read_text(encoding="utf-8") == content:
+    payload = content.encode("utf-8")
+    if path.exists() and path.read_bytes() == payload:
         return path
 
-    temp_path = path.with_name(f".{path.name}.{os.getpid()}.{time.monotonic_ns()}.tmp")
+    temp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
         try:
-            temp_path.write_text(content, encoding="utf-8")
+            temp_path.write_bytes(payload)
         except PermissionError:
-            path.write_text(content, encoding="utf-8")
+            path.write_bytes(payload)
             return path
         _replace_with_retry(temp_path, path)
     except Exception:

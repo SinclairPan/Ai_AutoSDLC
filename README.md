@@ -199,6 +199,24 @@ ai-sdlc pr-review close
 ai-sdlc pr-review attest
 ```
 
+当 Enforce 策略要求 CI 关闭证书时，`attest` 会输出唯一的
+`.ai-sdlc/attestations/ci-certificate-bundle.json`。CLI 不会代替用户修改
+Git 历史；必须显式提交并推送该文件：
+
+```powershell
+git add -- .ai-sdlc/attestations/ci-certificate-bundle.json
+git commit -m "chore: publish AI-SDLC review certificate"
+git push
+```
+
+只提交命令输出的固定 bundle，不要把本地 `.ai-sdlc/state/` 运行状态加入
+Git。Shadow 策略不要求证书时，`attest` 不会要求执行这一步。
+
+仓库内置的 `CI Certificate Gate` 由受保护 base 分支版本启动：可信
+verifier 只从 base checkout 安装运行，PR head 被放入独立目录且仅作为
+Git/JSON 数据读取，不在证书 Gate 中安装 head 依赖或执行 head 代码。仓库治理
+应将这个 Gate 固定为 required check，不能只依赖待审 PR 自己声明的同名任务。
+
 ## 前端工程能力
 
 AI-SDLC 将前端质量作为可验证交付的一部分：

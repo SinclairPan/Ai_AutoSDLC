@@ -7,7 +7,9 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
+import pytest
 import yaml
 
 from ai_sdlc.core.pr_review_provider import MockReviewerFixture, ProviderRunStatus
@@ -1546,6 +1548,116 @@ def test_attest_blocks_changed_patch_source_hash_after_close(tmp_path) -> None:
     assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
 
 
+def test_attest_writes_local_attestation_for_patch_source(
+    tmp_path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(
+        tmp_path,
+        "change.patch",
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+print('from patch')\n",
+        "add patch",
+    )
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file="change.patch",
+            provider_id="mock-reviewer",
+            review_id="review-patch-non-exportable",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    close = close_pr_review(tmp_path)
+    attestation_path = tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json"
+    prior_attestation = b'{"review_id":"prior-trusted-review"}\n'
+    attestation_path.write_bytes(prior_attestation)
+    result = attest_pr_review(tmp_path)
+
+    assert close.status == PRReviewCommandStatus.CLOSED
+    assert result.status == PRReviewCommandStatus.READY
+    assert result.diff_source_hash
+    assert attestation_path.read_bytes() != prior_attestation
+    payload = json.loads(attestation_path.read_text(encoding="utf-8"))
+    assert payload["diff_source"]["source_kind"] == "patch"
+    assert payload["diff_source_hash"]
+
+
+@pytest.mark.parametrize("diff_source", ["local-staged", "local-unstaged"])
+def test_attest_writes_local_attestation_for_worktree_source(
+    tmp_path,
+    diff_source: str,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('before')\n", "add app")
+    (tmp_path / "src/app.py").write_text("print('after')\n", encoding="utf-8")
+    if diff_source == "local-staged":
+        _git(tmp_path, "add", "src/app.py")
+    start = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source=diff_source,
+            provider_id="mock-reviewer",
+            review_id=f"review-{diff_source}-attestation",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    close = close_pr_review(tmp_path)
+    result = attest_pr_review(tmp_path)
+
+    assert start.status == PRReviewCommandStatus.STARTED, start.blocker
+    assert close.status == PRReviewCommandStatus.CLOSED, close.blocker
+    assert result.status == PRReviewCommandStatus.READY, result.blocker
+    payload = json.loads(Path(result.attestation_path).read_text(encoding="utf-8"))
+    assert payload["diff_source"]["source_kind"] == diff_source
+    assert payload["diff_source_hash"]
+
+
+def test_attest_clears_stale_attestation_after_patch_source_drifts(
+    tmp_path,
+) -> None:
+    _init_repo(tmp_path)
+    patch_path = tmp_path / "change.patch"
+    patch_path.write_text(
+        "diff --git a/src/app.py b/src/app.py\n"
+        "--- a/src/app.py\n"
+        "+++ b/src/app.py\n"
+        "@@ -0,0 +1 @@\n"
+        "+print('from patch')\n",
+        encoding="utf-8",
+    )
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            diff_source="patch",
+            patch_file="change.patch",
+            provider_id="mock-reviewer",
+            review_id="review-patch-source-drift",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    assert close_pr_review(tmp_path).status == PRReviewCommandStatus.CLOSED
+    first = attest_pr_review(tmp_path)
+    assert first.status == PRReviewCommandStatus.READY
+    attestation_path = Path(first.attestation_path)
+    assert attestation_path.is_file()
+    patch_path.write_text(
+        patch_path.read_text(encoding="utf-8") + "\n",
+        encoding="utf-8",
+    )
+
+    result = attest_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "diff source hash does not match" in result.blocker
+    assert not attestation_path.exists()
+
+
 def test_attest_blocks_before_review_close(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
@@ -1613,6 +1725,31 @@ def test_close_blocks_provider_blocked_run_even_with_valid_findings(tmp_path) ->
     assert result.verdict == "blocked"
     assert "provider run is blocked" in result.blocker
     assert result.final_report_path == ""
+
+
+def test_close_with_unresolved_findings_does_not_request_close_authorization(
+    tmp_path: Path,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-blocked-without-authorization",
+            mock_fixture=MockReviewerFixture.CHANGES_REQUIRED,
+        )
+    )
+
+    with patch(
+        "ai_sdlc.core.pr_review_service.execute_stage_close",
+        side_effect=AssertionError("blocked review requested close authorization"),
+    ):
+        result = close_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert result.unresolved_required == 1
 
 
 def test_close_treats_invalid_waiver_as_unresolved(tmp_path) -> None:
@@ -2305,6 +2442,14 @@ def _write_no_output_reviewer_script(path: Path) -> Path:
     script = path / "no_output_reviewer.py"
     script.write_text("raise SystemExit(0)\n", encoding="utf-8")
     return script
+
+
+def _artifact_tree(root: Path) -> dict[str, bytes]:
+    return {
+        path.relative_to(root).as_posix(): path.read_bytes()
+        for path in sorted(root.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _init_repo(path: Path) -> str:

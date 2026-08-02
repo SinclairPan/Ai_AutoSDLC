@@ -4,14 +4,29 @@ from __future__ import annotations
 
 import hashlib
 import re
+from collections.abc import Callable
 from pathlib import Path
 
-from ai_sdlc.core.design_contract_models import DesignContractReport
+from pydantic import ValidationError
+
+from ai_sdlc.core.design_close_authority_store import (
+    _verify_design_close_authority,
+)
+from ai_sdlc.core.design_contract_checks import _verify_design_document_snapshot
+from ai_sdlc.core.design_contract_models import (
+    DesignContractClose,
+    DesignContractInput,
+    DesignContractReport,
+)
 from ai_sdlc.core.design_contract_store import (
     DesignContractArtifacts,
+    _design_contract_loop_identity_issue,
+    _resolve_design_contract_loop_run_identity,
     design_contract_artifacts,
-    resolve_design_contract_loop_run_path,
     resolve_work_item_dir,
+)
+from ai_sdlc.core.design_contract_store import (
+    _read_close as read_design_contract_close,
 )
 from ai_sdlc.core.design_contract_store import (
     read_loop_run as read_design_contract_loop_run,
@@ -77,11 +92,23 @@ from ai_sdlc.core.loop_models import (
     utc_now_iso,
 )
 from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
+from ai_sdlc.core.scope_authority_store import (
+    ScopeAuthorityIntegrityError,
+    _verify_design_scope_authority,
+)
+from ai_sdlc.core.stable_file_read import read_stable_bytes
+from ai_sdlc.core.stage_review.adapters import ImplementationStageAdapter
+from ai_sdlc.core.stage_review.close_gate import (
+    execute_stage_close,
+    prepare_loop_stage_close,
+)
 
-_TASK_ID = re.compile(r"\bT\d{2,3}\b")
+_TASK_ID = re.compile(r"\bT\d{2,}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
 _PRIORITY = re.compile(r"(?:优先级|priority)[^\n]*(P[0-9])\b", re.IGNORECASE)
+_CANONICAL_SCOPE = re.compile(r"^\s*-\s*scope\s*:\s*(.*)$", re.IGNORECASE)
+_INDENTED_LIST_ITEM = re.compile(r"^\s{2,}-\s+(.+?)\s*$")
 _FRONTEND_SIGNAL = re.compile(
     r"(?i)(\b(?:frontend|browser|playwright|vue|react|ui|css)\b|前端|浏览器|页面|组件)"
 )
@@ -128,6 +155,7 @@ def start_implementation_loop(
     task_items, task_blocker = _parse_tasks_file(
         root=root,
         work_item_dir=work_item_dir,
+        design_contract_loop_id=design_contract_loop_id,
     )
     if task_blocker:
         return _blocked_result(
@@ -151,6 +179,15 @@ def start_implementation_loop(
             str(exc),
             loop_id=loop_id,
             next_action=f"Fix {LOOP_POLICY_PATH.as_posix()} and retry.",
+            artifacts=planned_refs,
+        )
+    except ValueError as exc:
+        return _blocked_result(
+            f"Invalid implementation input: {exc}",
+            loop_id=loop_id,
+            next_action=(
+                f"Fix {repo_relative_path(root, work_item_dir / 'spec.md')} and retry."
+            ),
             artifacts=planned_refs,
         )
     tasks = ImplementationTasks(
@@ -346,13 +383,19 @@ def close_implementation_loop(
                 loop_id=loop_run.loop_id,
                 artifacts=artifacts.refs(root, include_close=True),
             )
-        return _result_from_report(
+        result = _result_from_report(
             report,
             artifacts=artifacts.refs(root, include_close=True),
             result="Implementation loop is already closed.",
             closed=True,
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _next_loop_action(report),
+        )
+        return _execute_implementation_close_gate(
+            root,
+            loop_run,
+            artifacts,
+            lambda: result,
         )
     close_blockers = _close_blockers(tasks, progress)
     if close_blockers:
@@ -456,6 +499,27 @@ def _write_close(
     artifacts: ImplementationArtifacts,
     closed_by: str,
 ) -> ImplementationCommandResult:
+    return _execute_implementation_close_gate(
+        root,
+        loop_run,
+        artifacts,
+        lambda: _write_implementation_close(
+            root,
+            loop_run,
+            report,
+            artifacts,
+            closed_by,
+        ),
+    )
+
+
+def _write_implementation_close(
+    root: Path,
+    loop_run: LoopRun,
+    report: ImplementationReport,
+    artifacts: ImplementationArtifacts,
+    closed_by: str,
+) -> ImplementationCommandResult:
     report = report.model_copy(
         update={
             "status": LoopStatus.PASSED,
@@ -492,6 +556,23 @@ def _write_close(
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
     )
+
+
+def _execute_implementation_close_gate(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: ImplementationArtifacts,
+    writer: Callable[[], ImplementationCommandResult],
+) -> ImplementationCommandResult:
+    prepared = prepare_loop_stage_close(
+        root=root,
+        adapter=ImplementationStageAdapter(),
+        loop_run=loop_run,
+        close_kind="implementation-close",
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=artifacts.close_path,
+    )
+    return execute_stage_close(prepared, writer)
 
 
 def _record_close_outputs(
@@ -624,31 +705,11 @@ def _design_contract_gate(
     *,
     work_item_id: str,
 ) -> tuple[str, str, str, str]:
-    loop_id = design_contract_loop_id.strip()
-    if loop_id:
-        try:
-            safe_loop_id = validate_design_contract_loop_id(loop_id)
-        except ValueError as exc:
-            return (
-                "",
-                "",
-                f"Invalid design-contract loop id: {exc}",
-                ("Run ai-sdlc loop design-contract status."),
-            )
-        artifacts = design_contract_artifacts(root, safe_loop_id)
-        loop_run_path = artifacts.loop_run_path
-    else:
-        loop_run_path, blocker = resolve_design_contract_loop_run_path(root, "")
-        if blocker:
-            return (
-                "",
-                "",
-                (
-                    "A closed current design-contract loop is required before "
-                    f"implementation start: {blocker}"
-                ),
-                "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
-            )
+    loop_run_path, expected_loop_id, target_blocker, target_next = (
+        _resolve_design_gate_target(root, design_contract_loop_id)
+    )
+    if target_blocker:
+        return "", "", target_blocker, target_next
     try:
         loop_run = read_design_contract_loop_run(loop_run_path)
     except ValueError as exc:
@@ -660,19 +721,65 @@ def _design_contract_gate(
             ),
             "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
         )
-    artifacts = design_contract_artifacts(root, loop_run.loop_id)
+    identity_issue = _design_contract_loop_identity_issue(
+        root,
+        loop_run_path,
+        expected_loop_id,
+        loop_run,
+    )
+    if identity_issue:
+        return (
+            "",
+            "",
+            f"Design-contract loop identity is invalid: {identity_issue}",
+            "Run ai-sdlc loop design-contract status.",
+        )
+    artifacts = design_contract_artifacts(root, expected_loop_id)
+    if loop_run.status != LoopStatus.CLOSED or not artifacts.close_path.is_file():
+        return (
+            "",
+            "",
+            (
+                f"Design-contract loop {loop_run.loop_id} must be closed before "
+                "implementation start."
+            ),
+            "Run ai-sdlc loop design-contract close --yes.",
+        )
     try:
         report = read_design_contract_report(artifacts.report_json_path)
+        close = read_design_contract_close(artifacts.close_path)
     except ValueError as exc:
         return (
             "",
             "",
-            f"Design-contract report is malformed: {exc}",
+            f"Design-contract report or close artifact is malformed: {exc}",
             ("Run ai-sdlc loop design-contract check --wi specs/<work-item>."),
         )
-    blocker = _design_contract_blocker(loop_run, report, artifacts, work_item_id)
+    blocker = _design_contract_blocker(
+        root,
+        loop_run,
+        report,
+        close,
+        artifacts,
+        expected_loop_id,
+        work_item_id,
+    )
     if blocker:
         return "", "", blocker, "Run ai-sdlc loop design-contract close --yes."
+    authority_issue = _design_close_authority_issue(
+        root,
+        loop_run,
+        artifacts,
+        expected_loop_id,
+        work_item_id,
+    )
+    if authority_issue:
+        return (
+            "",
+            "",
+            authority_issue,
+            "Rerun ai-sdlc loop design-contract check with a new loop id.",
+        )
     return (
         loop_run.loop_id,
         repo_relative_path(root, artifacts.report_json_path),
@@ -681,10 +788,81 @@ def _design_contract_gate(
     )
 
 
+def _resolve_design_gate_target(
+    root: Path,
+    design_contract_loop_id: str,
+) -> tuple[Path, str, str, str]:
+    loop_id = design_contract_loop_id.strip()
+    if loop_id:
+        try:
+            safe_loop_id = validate_design_contract_loop_id(loop_id)
+        except ValueError as exc:
+            return (
+                root,
+                "",
+                f"Invalid design-contract loop id: {exc}",
+                "Run ai-sdlc loop design-contract status.",
+            )
+        artifacts = design_contract_artifacts(root, safe_loop_id)
+        return artifacts.loop_run_path, safe_loop_id, "", ""
+    loop_run_path, expected_loop_id, blocker = (
+        _resolve_design_contract_loop_run_identity(root, "")
+    )
+    if blocker:
+        return (
+            loop_run_path,
+            expected_loop_id,
+            (
+                "A closed current design-contract loop is required before "
+                f"implementation start: {blocker}"
+            ),
+            "Run ai-sdlc loop design-contract check --wi specs/<work-item>.",
+        )
+    return (
+        loop_run_path,
+        expected_loop_id,
+        "",
+        "",
+    )
+
+
+def _design_close_authority_issue(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: DesignContractArtifacts,
+    expected_loop_id: str,
+    work_item_id: str,
+) -> str:
+    try:
+        payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
+        contract_input = DesignContractInput.model_validate(payload)
+        _verify_design_scope_authority(
+            root,
+            contract_input,
+            loop_input_digest=loop_run.input_digest,
+            expected_loop_id=expected_loop_id,
+            expected_work_item_id=work_item_id,
+        )
+        _verify_design_document_snapshot(root, contract_input)
+        _verify_design_close_authority(root, contract_input, artifacts)
+    except (
+        OSError,
+        UnicodeError,
+        ValueError,
+        ValidationError,
+        ScopeAuthorityIntegrityError,
+    ) as exc:
+        return f"Design close authority verification failed: {exc}"
+    return ""
+
+
 def _design_contract_blocker(
+    root: Path,
     loop_run: LoopRun,
     report: DesignContractReport,
+    close: DesignContractClose,
     artifacts: DesignContractArtifacts,
+    expected_loop_id: str,
     work_item_id: str,
 ) -> str:
     close_path = artifacts.close_path
@@ -693,12 +871,25 @@ def _design_contract_blocker(
             f"Design-contract loop {loop_run.loop_id} must be closed before "
             "implementation start."
         )
+    expected_report_path = repo_relative_path(root, artifacts.report_json_path)
+    if (
+        report.loop_id != expected_loop_id
+        or close.loop_id != expected_loop_id
+        or close.report_path != expected_report_path
+    ):
+        return "Design-contract artifact identity does not match the confirmed loop."
     if loop_run.work_item_id != work_item_id or report.work_item_id != work_item_id:
         return (
             f"Design-contract loop {loop_run.loop_id} belongs to work item "
             f"{report.work_item_id or loop_run.work_item_id}, but implementation "
             f"work item is {work_item_id}."
         )
+    if (
+        report.status != LoopStatus.PASSED
+        or report.blocker_count != 0
+        or close.blocker_count != 0
+    ):
+        return "Design-contract report or close artifact still contains blockers."
     return ""
 
 
@@ -706,11 +897,20 @@ def _parse_tasks_file(
     *,
     root: Path,
     work_item_dir: Path,
+    design_contract_loop_id: str,
 ) -> tuple[list[ImplementationTaskItem], str]:
     tasks_path = work_item_dir / "tasks.md"
-    if not tasks_path.is_file():
-        return [], f"tasks.md is required: {repo_relative_path(root, tasks_path)}"
-    text = tasks_path.read_text(encoding="utf-8")
+    try:
+        artifacts = design_contract_artifacts(root, design_contract_loop_id)
+        payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
+        contract_input = DesignContractInput.model_validate(payload)
+        content = read_stable_bytes(root, tasks_path)
+    except (OSError, UnicodeError, ValueError, ValidationError) as exc:
+        return [], f"tasks.md is unavailable or unsafe: {exc}"
+    digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
+    if digest != contract_input.tasks_digest:
+        return [], "tasks.md changed after the design contract was closed."
+    text = content.decode("utf-8")
     sections = _task_sections(text)
     if not sections:
         return [], "tasks.md does not contain parseable ### Task or ### 任务 sections."
@@ -771,12 +971,33 @@ def _task_priority(section: str) -> str:
 
 
 def _task_files(section: str) -> list[str]:
+    canonical_scope = _canonical_task_scope(section)
+    if canonical_scope:
+        return canonical_scope
     for line in section.splitlines():
         if "文件" in line or "files" in line.lower():
             value = _label_value(line)
             if not value:
                 continue
             return _split_values(value)
+    return []
+
+
+def _canonical_task_scope(section: str) -> list[str]:
+    lines = section.splitlines()
+    for index, line in enumerate(lines):
+        match = _CANONICAL_SCOPE.match(line)
+        if match is None:
+            continue
+        values = _split_values(match.group(1))
+        for candidate in lines[index + 1 :]:
+            item = _INDENTED_LIST_ITEM.match(candidate)
+            if item is not None:
+                values.extend(_split_values(item.group(1)))
+                continue
+            if candidate.strip() and not candidate[:1].isspace():
+                break
+        return list(dict.fromkeys(values))
     return []
 
 

@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 
 import pytest
 import yaml
 
+import ai_sdlc.core.loop_artifacts as loop_artifacts_module
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType
 from ai_sdlc.core.pr_review_models import ReviewPack
@@ -45,6 +48,8 @@ def test_write_json_artifact_serializes_pydantic_model(tmp_path) -> None:
     assert payload["artifact_kind"] == "loop-run"
     assert payload["loop_id"] == "loop-001"
     assert payload["loop_type"] == "local-pr-review"
+    assert written.read_bytes().endswith(b"}\n")
+    assert b"\r\n" not in written.read_bytes()
     assert not list(written.parent.glob("*.tmp"))
 
 
@@ -72,6 +77,50 @@ def test_write_markdown_artifact_normalizes_trailing_newline(tmp_path) -> None:
     written = store.write_markdown_artifact(path, "# Report")
 
     assert written.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_markdown_artifact_rewrites_legacy_crlf_bytes(tmp_path) -> None:
+    store = LoopArtifactStore(tmp_path)
+    path = store.create_review_run_dir("review-001") / "final-report.md"
+    path.write_bytes(b"# Report\r\n")
+
+    written = store.write_markdown_artifact(path, "# Report")
+
+    assert written.read_bytes() == b"# Report\n"
+
+
+def test_concurrent_writers_do_not_share_a_coarse_clock_temporary(
+    tmp_path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    store = LoopArtifactStore(tmp_path)
+    path = store.loop_run_dir("loop-001") / "status.md"
+    replace_barrier = Barrier(2)
+    original_replace = loop_artifacts_module._replace_with_retry
+
+    monkeypatch.setattr(loop_artifacts_module.time, "monotonic_ns", lambda: 1)
+
+    def synchronized_replace(source, destination) -> None:
+        replace_barrier.wait(timeout=5)
+        original_replace(source, destination)
+
+    monkeypatch.setattr(
+        loop_artifacts_module,
+        "_replace_with_retry",
+        synchronized_replace,
+    )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        written = tuple(
+            executor.map(
+                lambda content: store.write_markdown_artifact(path, content),
+                ("first", "second"),
+            )
+        )
+
+    assert written == (path, path)
+    assert path.read_text(encoding="utf-8") in {"first\n", "second\n"}
+    assert not list(path.parent.glob(".*.tmp"))
 
 
 def test_read_json_artifact_returns_mapping(tmp_path) -> None:

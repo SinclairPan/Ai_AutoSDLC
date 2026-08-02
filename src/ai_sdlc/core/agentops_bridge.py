@@ -1054,7 +1054,10 @@ def send_agentops_batch(
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             response_body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
-        response_body = exc.read().decode("utf-8", errors="replace")
+        try:
+            response_body = exc.read().decode("utf-8", errors="replace")
+        finally:
+            exc.close()
         safe_body = _http_error_body_summary(response_body)
         raise RuntimeError(
             f"AgentOps runtime ingestion failed: HTTP {exc.code} {safe_body}"

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import ClassVar
 
 from pydantic import (
     BaseModel,
@@ -30,6 +31,9 @@ class LoopArtifactModel(BaseModel):
     """Base contract shared by long-lived Loop Engine artifacts."""
 
     model_config = ConfigDict(extra="forbid", use_enum_values=True)
+    supported_schema_versions: ClassVar[frozenset[str]] = frozenset(
+        {LOOP_SCHEMA_VERSION}
+    )
 
     schema_version: str = LOOP_SCHEMA_VERSION
     artifact_kind: str
@@ -40,7 +44,7 @@ class LoopArtifactModel(BaseModel):
     @field_validator("schema_version")
     @classmethod
     def _require_supported_schema_version(cls, value: str) -> str:
-        if value != LOOP_SCHEMA_VERSION:
+        if value not in cls.supported_schema_versions:
             raise ValueError(f"unsupported schema_version: {value}")
         return value
 
@@ -168,7 +172,10 @@ class LoopPolicyProfile(LoopArtifactModel):
             },
             "lean_enforcement_mode": {"report", "warning", "blocking"},
         }
-        allowed = allowed_by_field[info.field_name]
+        field_name = info.field_name
+        if field_name is None:
+            raise ValueError("policy field name is unavailable")
+        allowed = allowed_by_field[field_name]
         if value not in allowed:
             raise ValueError(f"unsupported policy value: {value}")
         return value

@@ -26,7 +26,11 @@ from ai_sdlc.core.implementation_models import (
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
 from ai_sdlc.core.lean_code_execution import LeanExecutionOptions, run_lean_command
-from ai_sdlc.core.lean_code_models import LeanEvaluationReport, LeanException
+from ai_sdlc.core.lean_code_models import (
+    LeanEvaluationReport,
+    LeanException,
+    LeanFinding,
+)
 from ai_sdlc.core.lean_code_policy import stable_artifact_digest
 from ai_sdlc.core.lean_code_review import (
     resolve_lean_review_binding,
@@ -52,7 +56,16 @@ from ai_sdlc.core.pr_review_service import (
     start_pr_review,
     status_pr_review,
 )
+from ai_sdlc.core.source_snapshot import (
+    SourceSnapshot,
+    SourceSnapshotOptions,
+    build_source_snapshot,
+)
 from ai_sdlc.models.work import WorkType
+from tests.support.lean_code_review_authority import (
+    _reviewed_contract,
+    trusted_reviewer_decisions,
+)
 
 
 def test_review_pack_contains_fresh_lean_digest_chain(tmp_path: Path) -> None:
@@ -1315,6 +1328,82 @@ def test_closed_scope_recomputes_matching_source_before_disposition(
     assert all("source-match" in result.blocker for result in results[:2])
 
 
+def test_reviewed_contract_uses_frozen_base_for_deleted_source(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    deleted_source = b"def legacy_contract():\n    return 1\n"
+    (tmp_path / "src/old.py").write_bytes(deleted_source)
+    _git(tmp_path, "add", "src/old.py")
+    _git(tmp_path, "commit", "-m", "add legacy source")
+    (tmp_path / "src/old.py").unlink()
+    _git(tmp_path, "add", "src/old.py")
+    _git(tmp_path, "commit", "-m", "delete legacy source")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, base_ref="HEAD^")
+    )
+    finding = LeanFinding(
+        finding_id="lean-deleted-contract",
+        stable_signature="sha256:deleted-contract",
+        rule_id="lean.bugfix-regression",
+        severity="REQUIRED",
+        path="src/old.py",
+        symbol="legacy_contract",
+        claim="deleted source still requires exact review evidence",
+        evidence=["src/old.py:legacy_contract"],
+        measured_value=1,
+        configured_budget=0,
+        risk="deleted code may remove required behavior",
+        suggested_fix="review the frozen base-side contract",
+        required_verification=["pytest"],
+        round_number=1,
+    )
+
+    contract = _reviewed_contract(tmp_path, snapshot, finding)
+
+    assert contract["path"] == "src/old.py"
+    assert contract["symbol"] == "legacy_contract"
+    assert contract["locator"] == "src/old.py:legacy_contract:1"
+    assert contract["digest"] == f"sha256:{hashlib.sha256(deleted_source).hexdigest()}"
+
+
+def test_reviewed_contract_uses_frozen_base_for_renamed_away_source(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    renamed_source = b"def legacy_contract():\n    return 1\n"
+    (tmp_path / "src/old.py").write_bytes(renamed_source)
+    _git(tmp_path, "add", "src/old.py")
+    _git(tmp_path, "commit", "-m", "add legacy source")
+    _git(tmp_path, "mv", "src/old.py", "src/new.py")
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=tmp_path, source_kind="local-worktree")
+    )
+    finding = LeanFinding(
+        finding_id="lean-renamed-contract",
+        stable_signature="sha256:renamed-contract",
+        rule_id="lean.bugfix-regression",
+        severity="REQUIRED",
+        path="src/old.py",
+        symbol="legacy_contract",
+        claim="renamed source still requires exact review evidence",
+        evidence=["src/old.py:legacy_contract"],
+        measured_value=1,
+        configured_budget=0,
+        risk="renamed code may remove required behavior",
+        suggested_fix="review the frozen base-side contract",
+        required_verification=["pytest"],
+        round_number=1,
+    )
+
+    contract = _reviewed_contract(tmp_path, snapshot, finding)
+
+    assert contract["path"] == "src/old.py"
+    assert contract["symbol"] == "legacy_contract"
+    assert contract["locator"] == "src/old.py:legacy_contract:1"
+    assert contract["digest"] == f"sha256:{hashlib.sha256(renamed_source).hexdigest()}"
+
+
 def test_closed_scope_recomputes_unrelated_source_before_disposition(
     tmp_path: Path,
 ) -> None:
@@ -1424,6 +1513,7 @@ def _seed_lean_loop(
     patch_file: str = "",
     include_untracked: bool = False,
     rename_to: str = "",
+    work_item_id: str = "WI-REVIEW",
 ) -> None:
     _init_repo(root)
     _write(root, "specs/WI-REVIEW/spec.md", "# Acceptance\n\n- AC-1\n")
@@ -1458,7 +1548,7 @@ def _seed_lean_loop(
         artifacts.input_path,
         ImplementationInput(
             loop_id=loop_id,
-            work_item_id="WI-REVIEW",
+            work_item_id=work_item_id,
             work_item_path="specs/WI-REVIEW",
             spec_path="specs/WI-REVIEW/spec.md",
             plan_path="specs/WI-REVIEW/plan.md",
@@ -1493,7 +1583,7 @@ def _seed_lean_loop(
         artifacts.tasks_path,
         ImplementationTasks(
             loop_id=loop_id,
-            work_item_id="WI-REVIEW",
+            work_item_id=work_item_id,
             items=[
                 ImplementationTaskItem(
                     task_id="T11",
@@ -1531,9 +1621,35 @@ def _seed_risk_accepted_loop(
         _write(root, "src/app.py", "def _small():\n    return 1\n")
     if rename_source:
         (root / "src/app.py").rename(root / "src/old.py")
-        _git(root, "add", "src/old.py")
+        _git(root, "add", "-A", "--", "src/app.py", "src/old.py")
         _git(root, "commit", "-m", "add rename source")
         (root / "src/old.py").rename(root / "src/app.py")
+        _git(root, "add", "-A", "--", "src/app.py", "src/old.py")
+        rename_status = _git_output(
+            root,
+            "diff",
+            "--cached",
+            "--name-status",
+            "-M",
+            "HEAD",
+            "--",
+            "src/app.py",
+            "src/old.py",
+        ).decode("utf-8")
+        assert rename_status.startswith("R"), rename_status
+        _git(root, "reset", "HEAD", "--", "src/app.py", "src/old.py")
+        _git(root, "add", "-N", "--", "src/app.py")
+        worktree_rename_status = _git_output(
+            root,
+            "diff",
+            "--name-status",
+            "-M",
+            "HEAD",
+            "--",
+            "src/app.py",
+            "src/old.py",
+        ).decode("utf-8")
+        assert worktree_rename_status.startswith("R"), worktree_rename_status
     if untracked_path:
         _write(root, untracked_path, "print('new untracked verification helper')\n")
     _write(root, "tests/risk_probe.py", "print('risk path verified')\n")
@@ -1586,6 +1702,8 @@ def _seed_risk_accepted_loop(
             "utf-8"
         )
     )
+    if rename_source:
+        assert snapshot["renamed_files"] == {"src/app.py": "src/old.py"}
     finding = next(
         item
         for item in first_report.findings
@@ -1593,6 +1711,15 @@ def _seed_risk_accepted_loop(
     )
     proof_ref = f".ai-sdlc/loops/implementation/{loop_id}/lean/exception-proof.txt"
     _write(root, proof_ref, "approved risk\n")
+    proof_digest = _file_digest(root / proof_ref)
+    reviewer_refs, reviewer_digests, approver = _risk_reviewer_decisions(
+        root,
+        loop_id,
+        first_report,
+        finding,
+        proof_ref,
+        proof_digest,
+    )
     exception = LeanException(
         exception_id="EX-PR",
         rule_id=finding.rule_id,
@@ -1600,12 +1727,11 @@ def _seed_risk_accepted_loop(
         stable_signature=finding.stable_signature,
         reason="The reproduction environment is unavailable for this bounded review.",
         owner="implementation-owner",
-        approver="quality-owner",
+        approver=approver,
         evidence_refs=[proof_ref],
-        evidence_digests={
-            proof_ref: "sha256:"
-            + hashlib.sha256((root / proof_ref).read_bytes()).hexdigest()
-        },
+        evidence_digests={proof_ref: proof_digest},
+        reviewer_decision_refs=reviewer_refs,
+        reviewer_decision_digests=reviewer_digests,
         scope=["src/app.py"],
         policy_digest=first_report.policy_digest,
         base_commit=snapshot["base_commit"],
@@ -1625,7 +1751,7 @@ def _seed_risk_accepted_loop(
             test_source_ref="tests/risk_probe.py",
         )
     )
-    assert verified.status == "ready"
+    assert verified.status == "ready", verified.blocker
     store.write_json_artifact(
         artifacts.progress_path,
         ImplementationProgress(
@@ -1643,7 +1769,53 @@ def _seed_risk_accepted_loop(
     second = run_lean_check(
         LeanCheckOptions(root=root, loop_id=loop_id, exception_paths=(exception_ref,))
     )
-    assert second.status == "ready", second
+    second_snapshot = json.loads(
+        (
+            artifacts.loop_dir / "lean" / "round-002" / "source-snapshot.json"
+        ).read_text("utf-8")
+    )
+    identity_fields = (
+        "base_commit",
+        "head_commit",
+        "diff_hash",
+        "changed_files",
+        "deleted_files",
+        "renamed_files",
+        "raw_change_identities",
+        "portable_change_identities",
+    )
+    assert {
+        field: second_snapshot[field] for field in identity_fields
+    } == {field: snapshot[field] for field in identity_fields}
+    assert second.status == "ready", _lean_check_diagnostic(root, second)
+
+
+def _risk_reviewer_decisions(
+    root: Path,
+    loop_id: str,
+    report: LeanEvaluationReport,
+    finding: LeanFinding,
+    proof_ref: str,
+    proof_digest: str,
+) -> tuple[list[str], dict[str, str], str]:
+    evaluation_digest = stable_artifact_digest(report)
+    snapshot_path = (
+        implementation_artifacts(root, loop_id).loop_dir
+        / "lean"
+        / "round-001"
+        / "source-snapshot.json"
+    )
+    snapshot = SourceSnapshot.model_validate_json(snapshot_path.read_bytes())
+    return trusted_reviewer_decisions(
+        root,
+        snapshot,
+        finding,
+        "EX-PR",
+        evaluation_digest,
+        proof_ref,
+        proof_digest,
+        f".ai-sdlc/loops/implementation/{loop_id}/lean",
+    )
 
 
 def _close_and_commit_risk_accepted_loop(
@@ -1813,6 +1985,23 @@ def _write(root: Path, relative: str, content: str) -> None:
     target = root / relative
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
+
+
+def _file_digest(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _lean_check_diagnostic(root: Path, result) -> str:
+    findings: list[str] = []
+    if result.report_path:
+        report = LeanEvaluationReport.model_validate_json(
+            (root / result.report_path).read_text(encoding="utf-8")
+        )
+        findings = [
+            f"{item.rule_id}: {item.claim} [{item.resolution}]"
+            for item in report.findings
+        ]
+    return f"{result}; findings={findings}"
 
 
 def _git(root: Path, *args: str) -> None:

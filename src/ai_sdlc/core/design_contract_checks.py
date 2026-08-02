@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -15,12 +16,16 @@ from ai_sdlc.core.design_contract_models import (
     DesignContractReport,
 )
 from ai_sdlc.core.loop_models import LoopStatus
+from ai_sdlc.core.stable_file_read import read_stable_bytes
 
 _CONTRACT_ID = re.compile(r"\b(?:FR|SC)(?:-[A-Za-z0-9]+)*-\d{3}\b")
-_TASK_ID = re.compile(r"\bT\d{2,3}\b")
+_TASK_ID = re.compile(r"\bT\d{2,}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
 _HEADING = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-_VERIFICATION_LABEL = re.compile(r"(?:验证|verification|validation)", re.IGNORECASE)
+_VERIFICATION_LABEL = re.compile(
+    r"(?:验证|verify|verification|validation)",
+    re.IGNORECASE,
+)
 _VERIFICATION_COMMAND = re.compile(
     r"(?i)(?:"
     r"\buv\s+run\b|"
@@ -86,6 +91,11 @@ _NON_CONTRACT_SECTION_TOKENS = (
     "non-goal",
     "non goal",
 )
+_DESIGN_SCOPE_FAMILIES = {
+    "implementation",
+    "frontend-evidence",
+    "pr-review",
+}
 
 
 def analyze_design_contract(
@@ -94,26 +104,75 @@ def analyze_design_contract(
 ) -> DesignContractReport:
     """Inspect formal docs and return a machine-readable contract report."""
 
-    findings: list[DesignContractFinding] = []
-    coverage_items: list[ContractCoverageItem] = []
-    paths = [
-        Path(contract_input.spec_path),
-        Path(contract_input.plan_path),
-        Path(contract_input.tasks_path),
-    ]
+    texts, findings = _load_contract_texts(root, contract_input)
+    coverage_items = _spec_contract_results(contract_input, texts, findings)
+    _plan_and_task_results(contract_input, texts, findings)
+    return _design_contract_report(contract_input, coverage_items, findings)
+
+
+def _load_contract_texts(
+    root: Path,
+    contract_input: DesignContractInput,
+) -> tuple[dict[str, str], list[DesignContractFinding]]:
     texts: dict[str, str] = {}
-    for relative in paths:
-        path = root / relative
-        if not path.is_file():
+    findings: list[DesignContractFinding] = []
+    for relative, expected_digest in (
+        (Path(contract_input.spec_path), contract_input.spec_digest),
+        (Path(contract_input.plan_path), contract_input.plan_digest),
+        (Path(contract_input.tasks_path), contract_input.tasks_digest),
+    ):
+        try:
+            content = read_stable_bytes(root, relative)
+        except (OSError, UnicodeError, ValueError) as exc:
             findings.append(
-                _finding("missing_doc", f"Missing required doc: {relative}", relative)
+                _finding(
+                    "untrusted_doc",
+                    f"Required doc is unavailable or unsafe: {relative}: {exc}",
+                    relative,
+                )
             )
             continue
-        texts[relative.name] = path.read_text(encoding="utf-8")
+        if _document_digest(content) != expected_digest:
+            findings.append(
+                _finding(
+                    "document_snapshot_changed",
+                    f"Formal document changed after design input freeze: {relative}",
+                    relative,
+                )
+            )
+        texts[relative.name] = content.decode("utf-8")
         findings.extend(_placeholder_findings(relative, texts[relative.name]))
+    return texts, findings
 
+
+def _verify_design_document_snapshot(
+    root: Path,
+    contract_input: DesignContractInput,
+) -> None:
+    """验证三个正式设计文档仍与已冻结输入完全一致。"""
+
+    for relative, expected_digest in (
+        (Path(contract_input.spec_path), contract_input.spec_digest),
+        (Path(contract_input.plan_path), contract_input.plan_digest),
+        (Path(contract_input.tasks_path), contract_input.tasks_digest),
+    ):
+        content = read_stable_bytes(root, relative)
+        if _document_digest(content) != expected_digest:
+            raise ValueError(
+                f"design document changed after input freeze: {relative.as_posix()}"
+            )
+
+
+def _document_digest(content: bytes) -> str:
+    return f"sha256:{hashlib.sha256(content).hexdigest()}"
+
+
+def _spec_contract_results(
+    contract_input: DesignContractInput,
+    texts: dict[str, str],
+    findings: list[DesignContractFinding],
+) -> list[ContractCoverageItem]:
     spec_text = texts.get("spec.md", "")
-    plan_text = texts.get("plan.md", "")
     tasks_text = texts.get("tasks.md", "")
     if spec_text and _is_draft_spec(spec_text):
         findings.append(
@@ -123,10 +182,11 @@ def analyze_design_contract(
                 Path(contract_input.spec_path),
             )
         )
-    if spec_text:
-        coverage_items.extend(
-            _coverage_items_for_spec(contract_input.spec_path, spec_text, tasks_text)
-        )
+    coverage_items = (
+        _coverage_items_for_spec(contract_input.spec_path, spec_text, tasks_text)
+        if spec_text
+        else []
+    )
     if not coverage_items and spec_text:
         findings.append(
             _finding(
@@ -140,17 +200,59 @@ def analyze_design_contract(
         for item in coverage_items
         if item.status == ContractCoverageStatus.MISSING
     )
+    return coverage_items
+
+
+def _plan_and_task_results(
+    contract_input: DesignContractInput,
+    texts: dict[str, str],
+    findings: list[DesignContractFinding],
+) -> None:
+    spec_text = texts.get("spec.md", "")
+    plan_text = texts.get("plan.md", "")
+    tasks_text = texts.get("tasks.md", "")
+    declared_scope_families = _declared_scope_families(spec_text)
+    authorized_scope_families = set(contract_input.authorized_scope_families)
+    unauthorized = declared_scope_families - authorized_scope_families
+    if unauthorized:
+        findings.append(
+            _finding(
+                "scope_authority_missing",
+                (
+                    "spec.md requests design scope not authorized by the frozen "
+                    f"requirement: {', '.join(sorted(unauthorized))}."
+                ),
+                Path(contract_input.spec_path),
+            )
+        )
+    effective_scope_families = (
+        declared_scope_families & authorized_scope_families
+    )
     if plan_text:
         findings.extend(_plan_findings(Path(contract_input.plan_path), plan_text))
         findings.extend(
-            _scope_drift_findings(Path(contract_input.plan_path), plan_text, contract_input)
+            _scope_drift_findings(
+                Path(contract_input.plan_path),
+                plan_text,
+                declared_scope_families=effective_scope_families,
+            )
         )
     if tasks_text:
         findings.extend(_task_findings(Path(contract_input.tasks_path), tasks_text))
         findings.extend(
-            _scope_drift_findings(Path(contract_input.tasks_path), tasks_text, contract_input)
+            _scope_drift_findings(
+                Path(contract_input.tasks_path),
+                tasks_text,
+                declared_scope_families=effective_scope_families,
+            )
         )
 
+
+def _design_contract_report(
+    contract_input: DesignContractInput,
+    coverage_items: list[ContractCoverageItem],
+    findings: list[DesignContractFinding],
+) -> DesignContractReport:
     blocker_count = sum(
         1 for finding in findings if finding.severity == ContractFindingSeverity.BLOCKER
     )
@@ -491,7 +593,8 @@ def _task_priority(section: str) -> str:
 def _scope_drift_findings(
     path: Path,
     text: str,
-    contract_input: DesignContractInput,
+    *,
+    declared_scope_families: set[str] | None = None,
 ) -> list[DesignContractFinding]:
     risky_tokens = (
         ("implementation", "implementation_loop.py"),
@@ -501,7 +604,8 @@ def _scope_drift_findings(
         ("pr-review", "ai-sdlc pr-review"),
         ("pr-review", "pr_review_"),
     )
-    allowed_scopes = _allowed_scope_families(contract_input)
+    allowed_scopes = _allowed_scope_families(declared_scope_families)
+    normalized_text = text.casefold()
     return [
         _finding(
             "scope_drift",
@@ -509,32 +613,41 @@ def _scope_drift_findings(
             path,
         )
         for family, token in risky_tokens
-        if family not in allowed_scopes and token in text
+        if family not in allowed_scopes and token.casefold() in normalized_text
     ]
 
 
-def _allowed_scope_families(contract_input: DesignContractInput) -> set[str]:
-    scope_text = " ".join(
-        [
-            contract_input.work_item_id,
-            contract_input.work_item_path,
-            contract_input.spec_path,
-            contract_input.plan_path,
-            contract_input.tasks_path,
-        ]
-    ).lower()
-    allowed: set[str] = set()
-    if "implementation-loop" in scope_text or "implementation_loop" in scope_text:
-        allowed.add("implementation")
-    if "frontend-evidence" in scope_text or "frontend_evidence" in scope_text:
-        allowed.add("frontend-evidence")
-    if (
-        "local-pr-review" in scope_text
-        or "local-adversarial-pr-review" in scope_text
-        or "pr_review" in scope_text
-    ):
-        allowed.add("pr-review")
-    return allowed
+def _allowed_scope_families(
+    declared_scope_families: set[str] | None = None,
+) -> set[str]:
+    return set(declared_scope_families or set())
+
+
+def _declared_scope_families(spec_text: str) -> set[str]:
+    """Read explicit design scope only from the spec's YAML frontmatter."""
+
+    if not spec_text.startswith("---"):
+        return set()
+    parts = spec_text.split("---", 2)
+    if len(parts) < 3:
+        return set()
+    lines = parts[1].splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() != "design_scope_families:" or line != line.lstrip():
+            continue
+        values: set[str] = set()
+        for candidate in lines[index + 1 :]:
+            if not candidate.strip():
+                continue
+            match = re.fullmatch(r"\s+-\s+([a-z][a-z-]*)\s*", candidate)
+            if not match:
+                break
+            value = match.group(1)
+            if value not in _DESIGN_SCOPE_FAMILIES:
+                return set()
+            values.add(value)
+        return values
+    return set()
 
 
 def item_to_finding(item: ContractCoverageItem) -> DesignContractFinding:

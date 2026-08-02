@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -39,6 +39,7 @@ from ai_sdlc.core.frontend_evidence_store import (
     append_unique,
     build_frontend_evidence_input,
     frontend_evidence_artifacts,
+    read_input,
     read_loop_run,
     read_report,
     read_snapshot,
@@ -56,8 +57,9 @@ from ai_sdlc.core.frontend_gate_verification import (
     FRONTEND_GATE_EXECUTE_STATE_RECHECK_REQUIRED,
     build_frontend_browser_gate_execute_decision,
 )
-from ai_sdlc.core.implementation_models import ImplementationClose
+from ai_sdlc.core.implementation_models import ImplementationClose, ImplementationReport
 from ai_sdlc.core.implementation_store import (
+    ImplementationArtifacts,
     implementation_artifacts,
     resolve_implementation_loop_run_path,
 )
@@ -77,6 +79,11 @@ from ai_sdlc.core.loop_models import (
     LoopStatus,
     LoopType,
     utc_now_iso,
+)
+from ai_sdlc.core.stage_review.adapters import FrontendEvidenceStageAdapter
+from ai_sdlc.core.stage_review.close_gate import (
+    execute_stage_close,
+    prepare_loop_stage_close,
 )
 from ai_sdlc.models.frontend_browser_gate import (
     BrowserGateProbeRuntimeSession,
@@ -114,7 +121,9 @@ def start_frontend_evidence_loop(
     artifacts = frontend_evidence_artifacts(root, loop_id)
     planned_refs = artifacts.refs(root)
     if work_item_blocker:
-        return _blocked_result(work_item_blocker, loop_id=loop_id, artifacts=planned_refs)
+        return _blocked_result(
+            work_item_blocker, loop_id=loop_id, artifacts=planned_refs
+        )
     if artifacts.loop_run_path.is_file() and not options.dry_run:
         return _blocked_result(
             "Frontend-evidence loop id already exists; choose a new --loop-id.",
@@ -347,8 +356,13 @@ def skip_frontend_evidence_loop(
     artifacts = frontend_evidence_artifacts(root, loop_id)
     planned_refs = artifacts.refs(root, include_close=True)
     if work_item_blocker:
-        return _blocked_result(work_item_blocker, loop_id=loop_id, artifacts=planned_refs)
+        return _blocked_result(
+            work_item_blocker, loop_id=loop_id, artifacts=planned_refs
+        )
     if artifacts.loop_run_path.is_file():
+        recovered = _reconcile_existing_frontend_skip(root, artifacts)
+        if recovered is not None:
+            return recovered
         return _blocked_result(
             "Frontend-evidence loop id already exists; choose a new --loop-id.",
             loop_id=loop_id,
@@ -429,7 +443,72 @@ def skip_frontend_evidence_loop(
         skip_reason=reason,
         skip_risk_acknowledgement=_FRONTEND_EVIDENCE_SKIP_RISK,
     )
-    _write_skip_artifacts(root, frontend_input, snapshot, report, loop_run, close, artifacts)
+    return _execute_frontend_close_gate(
+        root,
+        loop_run,
+        artifacts,
+        close_kind="frontend-evidence-skip",
+        writer=lambda: _write_frontend_skip(
+            root,
+            frontend_input,
+            snapshot,
+            report,
+            loop_run,
+            close,
+            artifacts,
+            reason,
+        ),
+    )
+
+
+def _reconcile_existing_frontend_skip(
+    root: Path,
+    artifacts: FrontendEvidenceArtifacts,
+) -> FrontendEvidenceCommandResult | None:
+    try:
+        loop_run = read_loop_run(artifacts.loop_run_path)
+        frontend_input = read_input(artifacts.input_path)
+    except ValueError:
+        return None
+    if (
+        loop_run.status != LoopStatus.CLOSED
+        or frontend_input.source_type != "frontend-evidence-skip"
+        or not artifacts.close_path.is_file()
+    ):
+        return None
+    result = _blocked_result(
+        "Frontend-evidence loop id already exists; choose a new --loop-id.",
+        loop_id=loop_run.loop_id,
+        artifacts=artifacts.refs(root, include_close=True),
+    )
+    return _execute_frontend_close_gate(
+        root,
+        loop_run,
+        artifacts,
+        close_kind="frontend-evidence-skip",
+        writer=lambda: result,
+    )
+
+
+def _write_frontend_skip(
+    root: Path,
+    frontend_input: FrontendEvidenceInput,
+    snapshot: FrontendEvidenceSnapshot,
+    report: FrontendEvidenceReport,
+    loop_run: LoopRun,
+    close: FrontendEvidenceClose,
+    artifacts: FrontendEvidenceArtifacts,
+    reason: str,
+) -> FrontendEvidenceCommandResult:
+    _write_skip_artifacts(
+        root,
+        frontend_input,
+        snapshot,
+        report,
+        loop_run,
+        close,
+        artifacts,
+    )
     return _result_from_report(
         report,
         artifacts=artifacts.refs(root, include_close=True),
@@ -482,7 +561,7 @@ def close_frontend_evidence_loop(
             artifacts=artifacts.refs(root),
         )
     if loop_run.status == LoopStatus.CLOSED and artifacts.close_path.is_file():
-        return _result_from_report(
+        result = _result_from_report(
             report,
             artifacts=artifacts.refs(root, include_close=True),
             result="Frontend evidence loop is already closed.",
@@ -490,7 +569,17 @@ def close_frontend_evidence_loop(
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _local_pr_review_next_action(),
         )
-    if report.blocker_count or report.status in {LoopStatus.BLOCKED, LoopStatus.NEEDS_FIX}:
+        return _execute_frontend_close_gate(
+            root,
+            loop_run,
+            artifacts,
+            close_kind="frontend-evidence-close",
+            writer=lambda: result,
+        )
+    if report.blocker_count or report.status in {
+        LoopStatus.BLOCKED,
+        LoopStatus.NEEDS_FIX,
+    }:
         return _result_from_report(
             report,
             artifacts=artifacts.refs(root),
@@ -524,24 +613,43 @@ def _implementation_gate(
     *,
     work_item_id: str,
 ) -> tuple[str, str, str]:
+    loaded, blocker = _load_implementation_gate(root, implementation_loop_id)
+    if blocker or loaded is None:
+        return "", "", blocker
+    loop_run, report, artifacts = loaded
+    blocker = _implementation_gate_state_issue(
+        loop_run,
+        report,
+        artifacts,
+        work_item_id,
+    )
+    if blocker:
+        return "", "", blocker
+    return loop_run.loop_id, repo_relative_path(root, artifacts.report_json_path), ""
+
+
+def _load_implementation_gate(
+    root: Path,
+    implementation_loop_id: str,
+) -> tuple[tuple[LoopRun, ImplementationReport, ImplementationArtifacts] | None, str]:
     loop_id = implementation_loop_id.strip()
     if loop_id:
         try:
             safe_loop_id = validate_implementation_loop_id(loop_id)
         except ValueError as exc:
-            return "", "", f"Invalid implementation loop id: {exc}"
+            return None, f"Invalid implementation loop id: {exc}"
         loop_run_path = implementation_artifacts(root, safe_loop_id).loop_run_path
     else:
         loop_run_path, blocker = resolve_implementation_loop_run_path(root, "")
         if blocker:
-            return "", "", (
+            return None, (
                 "A closed current implementation loop is required before "
                 f"frontend-evidence start: {blocker}"
             )
     try:
         loop_run = read_implementation_loop_run(loop_run_path)
     except ValueError as exc:
-        return "", "", (
+        return None, (
             "Implementation loop must exist and be closed before "
             f"frontend-evidence start: {exc}"
         )
@@ -549,23 +657,32 @@ def _implementation_gate(
     try:
         report = read_implementation_report(artifacts.report_json_path)
     except ValueError as exc:
-        return "", "", f"Implementation report is malformed: {exc}"
+        return None, f"Implementation report is malformed: {exc}"
+    return (loop_run, report, artifacts), ""
+
+
+def _implementation_gate_state_issue(
+    loop_run: LoopRun,
+    report: ImplementationReport,
+    artifacts: ImplementationArtifacts,
+    work_item_id: str,
+) -> str:
     if loop_run.status != LoopStatus.CLOSED or not artifacts.close_path.is_file():
-        return "", "", (
+        return (
             f"Implementation loop {loop_run.loop_id} must be closed before "
             "frontend-evidence start."
         )
     if loop_run.work_item_id != work_item_id or report.work_item_id != work_item_id:
-        return "", "", (
+        return (
             f"Implementation loop {loop_run.loop_id} belongs to work item "
             f"{report.work_item_id or loop_run.work_item_id}, but frontend-evidence "
             f"work item is {work_item_id}."
         )
     if not report.requires_frontend_evidence:
-        return "", "", (
+        return (
             f"Implementation loop {loop_run.loop_id} does not require frontend evidence."
         )
-    return loop_run.loop_id, repo_relative_path(root, artifacts.report_json_path), ""
+    return ""
 
 
 def _resolve_frontend_doctor_dir(
@@ -588,7 +705,12 @@ def _resolve_frontend_doctor_dir(
 
 def _configured_browser_provider() -> str:
     configured = os.environ.get("AI_SDLC_BROWSER_PROVIDER", "").strip()
-    if configured in {"codex-browser", "browser-mcp", "external-artifact", "playwright"}:
+    if configured in {
+        "codex-browser",
+        "browser-mcp",
+        "external-artifact",
+        "playwright",
+    }:
         return configured
     return ""
 
@@ -599,12 +721,16 @@ def _external_artifact_provider_check(
     artifact_available: bool,
     requested_provider: str,
 ) -> FrontendEvidenceProviderCheck:
-    selected = requested_provider in {"auto", "external-artifact"} and artifact_available
+    selected = (
+        requested_provider in {"auto", "external-artifact"} and artifact_available
+    )
     return FrontendEvidenceProviderCheck(
         provider_id="external-artifact",
         available=artifact_available,
         selected=selected,
-        evidence=[repo_relative_path(root, root / DEFAULT_FRONTEND_BROWSER_GATE_ARTIFACT_PATH)]
+        evidence=[
+            repo_relative_path(root, root / DEFAULT_FRONTEND_BROWSER_GATE_ARTIFACT_PATH)
+        ]
         if artifact_available
         else [],
         run_commands=[
@@ -671,33 +797,33 @@ def _playwright_provider_check(
     package_declared = _package_json_declares_playwright(package_json)
     playwright_runtime_path = _playwright_runtime_path(root, frontend_dir)
     available = node_available and playwright_runtime_path is not None
-    selected = requested_provider == "playwright" or (
-        requested_provider == "auto" and available
-    )
     install_commands = _playwright_install_commands(package_manager, browser)
-    evidence: list[str] = []
-    if package_json.is_file():
-        evidence.append(repo_relative_path(root, package_json))
-    if package_declared:
-        evidence.append("package.json declares Playwright")
-    if playwright_runtime_path is not None:
-        evidence.append(repo_relative_path(root, playwright_runtime_path))
-    if node_available:
-        evidence.append("node executable found on PATH")
-    if package_manager_available:
-        evidence.append(f"{package_manager} executable found on PATH")
+    evidence = _playwright_provider_evidence(
+        root,
+        package_json,
+        package_declared,
+        playwright_runtime_path,
+        node_available,
+        package_manager,
+        package_manager_available,
+    )
     return FrontendEvidenceProviderCheck(
         provider_id="playwright",
         available=available,
-        selected=selected,
+        selected=requested_provider == "playwright"
+        or (requested_provider == "auto" and available),
         package_manager=package_manager,
         package_manager_available=package_manager_available,
         node_available=node_available,
         frontend_dir=repo_relative_path(root, frontend_dir),
-        package_json_path=repo_relative_path(root, package_json) if package_json.is_file() else "",
+        package_json_path=repo_relative_path(root, package_json)
+        if package_json.is_file()
+        else "",
         evidence=evidence,
         install_commands=install_commands,
-        run_commands=["ai-sdlc program browser-gate-probe --execute"] if available else [],
+        run_commands=["ai-sdlc program browser-gate-probe --execute"]
+        if available
+        else [],
         alternatives=[
             "Use Codex browser control or a browser MCP/plugin if that capability already exists.",
             "Import a compatible project-local browser gate artifact with --artifact-path.",
@@ -707,6 +833,29 @@ def _playwright_provider_check(
             "Do not run OS-level browser dependency installation silently; require explicit user confirmation first.",
         ],
     )
+
+
+def _playwright_provider_evidence(
+    root: Path,
+    package_json: Path,
+    package_declared: bool,
+    runtime_path: Path | None,
+    node_available: bool,
+    package_manager: str,
+    package_manager_available: bool,
+) -> list[str]:
+    evidence: list[str] = []
+    if package_json.is_file():
+        evidence.append(repo_relative_path(root, package_json))
+    if package_declared:
+        evidence.append("package.json declares Playwright")
+    if runtime_path is not None:
+        evidence.append(repo_relative_path(root, runtime_path))
+    if node_available:
+        evidence.append("node executable found on PATH")
+    if package_manager_available:
+        evidence.append(f"{package_manager} executable found on PATH")
+    return evidence
 
 
 def _playwright_runtime_path(root: Path, frontend_dir: Path) -> Path | None:
@@ -839,9 +988,7 @@ def _doctor_next_guidance(
     providers: list[FrontendEvidenceProviderCheck],
 ) -> FrontendEvidenceNextGuidance:
     evidence = [
-        evidence_item
-        for provider in providers
-        for evidence_item in provider.evidence
+        evidence_item for provider in providers for evidence_item in provider.evidence
     ]
     alternatives: list[str] = []
     for provider in providers:
@@ -866,7 +1013,9 @@ def _doctor_next_guidance(
         requires_model=False,
         writes_artifacts=status != FrontendEvidenceCommandStatus.BLOCKED,
         writes_code=False,
-        safety="safe_read_only" if status == FrontendEvidenceCommandStatus.READY else "needs_user",
+        safety="safe_read_only"
+        if status == FrontendEvidenceCommandStatus.READY
+        else "needs_user",
         evidence=_unique_strings(evidence),
         alternatives=_unique_strings(alternatives),
     )
@@ -1117,7 +1266,9 @@ def _namespace_blocker(
         )
     ):
         return "Frontend browser gate artifact gate_run_id is not a safe path segment."
-    expected_artifact_root = f".ai-sdlc/artifacts/frontend-browser-gate/{bundle.gate_run_id}"
+    expected_artifact_root = (
+        f".ai-sdlc/artifacts/frontend-browser-gate/{bundle.gate_run_id}"
+    )
     expected_artifact_root_path = (root / expected_artifact_root).resolve()
     if (
         runtime_session.gate_run_id != execution_context.gate_run_id
@@ -1155,10 +1306,7 @@ def _namespace_blocker(
                 f"{record.artifact_ref}."
             )
     for receipt in bundle.check_receipts:
-        if (
-            not receipt.artifact_ids
-            and not _allows_empty_receipt_artifact_ids(receipt)
-        ):
+        if not receipt.artifact_ids and not _allows_empty_receipt_artifact_ids(receipt):
             return (
                 "Frontend browser gate receipt has no evidence artifacts for "
                 f"{receipt.check_name}."
@@ -1174,7 +1322,9 @@ def _namespace_blocker(
 
 def _is_safe_gate_run_id(gate_run_id: str) -> bool:
     text = gate_run_id.strip()
-    return bool(text) and text not in {".", ".."} and "/" not in text and "\\" not in text
+    return (
+        bool(text) and text not in {".", ".."} and "/" not in text and "\\" not in text
+    )
 
 
 def _runtime_session_scope_blocker(
@@ -1442,6 +1592,33 @@ def _write_close(
     *,
     allow_warnings: bool,
 ) -> FrontendEvidenceCommandResult:
+    return _execute_frontend_close_gate(
+        root,
+        loop_run,
+        artifacts,
+        close_kind="frontend-evidence-close",
+        writer=lambda: _write_frontend_close(
+            root,
+            loop_run,
+            report,
+            snapshot,
+            artifacts,
+            closed_by,
+            allow_warnings=allow_warnings,
+        ),
+    )
+
+
+def _write_frontend_close(
+    root: Path,
+    loop_run: LoopRun,
+    report: FrontendEvidenceReport,
+    snapshot: FrontendEvidenceSnapshot,
+    artifacts: FrontendEvidenceArtifacts,
+    closed_by: str,
+    *,
+    allow_warnings: bool,
+) -> FrontendEvidenceCommandResult:
     close = FrontendEvidenceClose(
         loop_id=loop_run.loop_id,
         closed_by=closed_by.strip() or "local-user",
@@ -1476,6 +1653,25 @@ def _write_close(
         allow_warnings=allow_warnings,
         snapshot=snapshot,
     )
+
+
+def _execute_frontend_close_gate(
+    root: Path,
+    loop_run: LoopRun,
+    artifacts: FrontendEvidenceArtifacts,
+    *,
+    close_kind: str,
+    writer: Callable[[], FrontendEvidenceCommandResult],
+) -> FrontendEvidenceCommandResult:
+    prepared = prepare_loop_stage_close(
+        root=root,
+        adapter=FrontendEvidenceStageAdapter(),
+        loop_run=loop_run,
+        close_kind=close_kind,
+        target_status=LoopStatus.CLOSED.value,
+        close_artifact_path=artifacts.close_path,
+    )
+    return execute_stage_close(prepared, writer)
 
 
 def _build_loop_run(
@@ -1643,7 +1839,9 @@ def _blocked_result(
     )
 
 
-def _command_status_for_loop_status(status: LoopStatus) -> FrontendEvidenceCommandStatus:
+def _command_status_for_loop_status(
+    status: LoopStatus,
+) -> FrontendEvidenceCommandStatus:
     if status == LoopStatus.PASSED:
         return FrontendEvidenceCommandStatus.READY
     if status == LoopStatus.NEEDS_USER:
@@ -1670,7 +1868,9 @@ def _next_guidance_for_result(
     ]
     if closed:
         return FrontendEvidenceNextGuidance(
-            command=_local_pr_review_next_action().removeprefix("Run ").removesuffix("."),
+            command=_local_pr_review_next_action()
+            .removeprefix("Run ")
+            .removesuffix("."),
             reason="Frontend evidence is closed; continue with local PR review.",
             requires_model=True,
             writes_artifacts=True,
@@ -1765,7 +1965,8 @@ def _screenshot_refs(
     refs.extend(
         record.artifact_ref
         for record in artifact_records
-        if "screenshot" in record.artifact_type or record.artifact_type == "checkpoint_screenshot"
+        if "screenshot" in record.artifact_type
+        or record.artifact_type == "checkpoint_screenshot"
     )
     return _unique_strings(refs)
 
@@ -1783,7 +1984,9 @@ def _trace_refs(
     return _unique_strings(refs)
 
 
-def _blocking_reason_codes(bundle: BrowserQualityBundleMaterializationInput) -> list[str]:
+def _blocking_reason_codes(
+    bundle: BrowserQualityBundleMaterializationInput,
+) -> list[str]:
     return _unique_strings(
         [
             *bundle.blocking_reason_codes,
@@ -1796,7 +1999,9 @@ def _blocking_reason_codes(bundle: BrowserQualityBundleMaterializationInput) -> 
     )
 
 
-def _advisory_reason_codes(bundle: BrowserQualityBundleMaterializationInput) -> list[str]:
+def _advisory_reason_codes(
+    bundle: BrowserQualityBundleMaterializationInput,
+) -> list[str]:
     return _unique_strings(
         [
             *bundle.advisory_reason_codes,

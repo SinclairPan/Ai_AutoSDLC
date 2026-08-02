@@ -229,6 +229,26 @@ class TestRunCommand:
         assert "AgentOps report" not in result.output
         assert not (tmp_path / ".ai-sdlc" / "agentops").exists()
 
+    def test_real_run_advances_bounded_optimization_maintenance_once(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_CODEX", "1")
+        monkeypatch.chdir(tmp_path)
+        assert runner.invoke(
+            app, ["init", ".", "--agent-target", "codex"]
+        ).exit_code == 0
+        self._force_passing_gates(monkeypatch)
+        calls: list[Path] = []
+        monkeypatch.setattr(
+            "ai_sdlc.cli.run_cmd._maintain_optimization_after_run",
+            lambda root, *, dry_run: calls.append(root) if not dry_run else None,
+        )
+
+        result = runner.invoke(app, ["run"])
+
+        assert result.exit_code == 0
+        assert calls == [tmp_path]
+
     def test_run_required_agentops_blocks_when_token_missing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

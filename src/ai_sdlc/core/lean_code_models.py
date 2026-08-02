@@ -6,34 +6,28 @@ import hashlib
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 
+from ai_sdlc.core.lean_code_metric_models import (
+    LEAN_ARTIFACT_SCHEMA_VERSION,
+    V2_FUNCTION_METRIC_FIELDS,
+    FileClassification,
+    FileMetric,
+    FunctionMetric,
+    LeanVersionedArtifact,
+    MetricCapability,
+)
+from ai_sdlc.core.lean_code_reviewer_models import (
+    LeanReviewerDecisionArtifact,
+    LeanReviewerFindingDecision,
+)
 from ai_sdlc.core.loop_models import LoopArtifactModel, LoopStatus
 from ai_sdlc.core.pr_review_models import FindingResolutionStatus, FindingSeverity
 from ai_sdlc.models.work import WorkType
 
 
-class FileClassification(StrEnum):
-    """Classification applied before maintainability budgets are interpreted."""
-
-    HANDWRITTEN_PRODUCT = "handwritten_product"
-    HANDWRITTEN_TEST = "handwritten_test"
-    GENERATED = "generated"
-    FIXTURE = "fixture"
-    VENDORED = "vendored"
-    SNAPSHOT = "snapshot"
-    DECLARATIVE = "declarative"
-    UNKNOWN = "unknown"
-
-
-class MetricCapability(StrEnum):
-    """Confidence contract for one language or metric adapter."""
-
-    EXACT = "exact"
-    CONSERVATIVE = "conservative"
-    UNSUPPORTED = "unsupported"
-
-
+# 分类与能力枚举继续从本模块重导出，实际定义集中在度量模型域。
+# 该兼容路径避免旧调用方因职责拆分而修改导入地址。
 class LeanEnforcementMode(StrEnum):
     """Project policy modes for non-integrity Lean findings."""
 
@@ -110,6 +104,8 @@ class RegressionEvidence(LoopArtifactModel):
         return self
 
 
+# 评审决策模型继续从本模块重导出，实际定义集中在评审协议域。
+# 该依赖方向避免评审权威与异常处置形成循环依赖。
 class LeanException(LoopArtifactModel):
     """A bounded exception that changes enforcement without hiding a finding."""
 
@@ -124,6 +120,8 @@ class LeanException(LoopArtifactModel):
     approver: str
     evidence_refs: list[str]
     evidence_digests: dict[str, str]
+    reviewer_decision_refs: list[str] = Field(default_factory=list)
+    reviewer_decision_digests: dict[str, str] = Field(default_factory=dict)
     scope: list[str]
     policy_digest: str
     base_commit: str
@@ -189,6 +187,9 @@ class LeanEvaluationInput(LoopArtifactModel):
     head_commit: str
     diff_hash: str
     declared_scope: list[str]
+    task_scopes: dict[str, list[str]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
     changed_files: list[str]
     tasks_refs: list[str]
     tasks_digest: str = ""
@@ -207,55 +208,9 @@ class LeanEvaluationInput(LoopArtifactModel):
     evaluation_round: int = Field(ge=1, le=2)
 
 
-class FunctionMetric(BaseModel):
-    """Deterministic measurements for one source function."""
-
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
-
-    symbol: str
-    logical_lines: int = Field(ge=0)
-    base_logical_lines: int = Field(default=0, ge=0)
-    complexity: int = Field(default=0, ge=0)
-    base_complexity: int = Field(default=0, ge=0)
-    max_nesting: int = Field(default=0, ge=0)
-    base_max_nesting: int = Field(default=0, ge=0)
-    caller_count: int = Field(default=0, ge=0)
-    public: bool = False
-    is_new: bool = False
-    capability: MetricCapability = MetricCapability.UNSUPPORTED
-    invocation_boundary: str = ""
-    fingerprint: str = ""
-    duplicate_count: int = Field(default=1, ge=1)
-
-
-class FileMetric(BaseModel):
-    """Classification, diff, size, and semantic metrics for one changed file."""
-
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
-
-    path: str
-    classification: FileClassification
-    language: str = "unknown"
-    capability: MetricCapability = MetricCapability.UNSUPPORTED
-    base_lines: int = Field(default=0, ge=0)
-    head_lines: int = Field(default=0, ge=0)
-    added_lines: int = Field(default=0, ge=0)
-    deleted_lines: int = Field(default=0, ge=0)
-    import_fan_out: int = Field(default=0, ge=0)
-    base_import_fan_out: int = Field(default=0, ge=0)
-    functions: list[FunctionMetric] = Field(default_factory=list)
-    parse_errors: list[str] = Field(default_factory=list)
-
-    @property
-    def is_new(self) -> bool:
-        return self.base_lines == 0 and self.head_lines > 0
-
-    @property
-    def changed_ratio(self) -> float:
-        return (self.added_lines + self.deleted_lines) / max(self.base_lines, 1)
-
-
-class LeanMetrics(LoopArtifactModel):
+# 文件与函数度量通过本模块保持旧导入路径，实际定义集中在度量模型域。
+# 聚合工件只组合度量结果，不再重复声明底层模型。
+class LeanMetrics(LeanVersionedArtifact):
     """Aggregate deterministic metrics for one source snapshot."""
 
     artifact_kind: str = "lean-code-metrics"
@@ -272,10 +227,29 @@ class LeanMetrics(LoopArtifactModel):
     unsupported_semantic_files: list[str] = Field(default_factory=list)
     duplicate_candidates: list[str] = Field(default_factory=list)
     scope_drift: list[str] = Field(default_factory=list)
+    task_scope_matches: dict[str, list[str]] = Field(
+        default_factory=dict, exclude_if=lambda value: not value
+    )
     files: list[FileMetric] = Field(default_factory=list)
 
+    @model_validator(mode="after")
+    def _require_schema_compatible_function_metrics(self) -> LeanMetrics:
+        if self.schema_version != "1":
+            return self
+        for file_metric in self.files:
+            for function_metric in file_metric.functions:
+                incompatible = (
+                    function_metric.model_fields_set & V2_FUNCTION_METRIC_FIELDS
+                )
+                if incompatible:
+                    fields = ", ".join(sorted(incompatible))
+                    raise ValueError(
+                        f"schema v1 cannot contain v2-only FunctionMetric fields: {fields}"
+                    )
+        return self
 
-class LeanEvaluationReport(LoopArtifactModel):
+
+class LeanEvaluationReport(LeanVersionedArtifact):
     """Machine truth for a single bounded Lean evaluation round."""
 
     artifact_kind: str = "lean-code-report"
@@ -296,6 +270,14 @@ class LeanEvaluationReport(LoopArtifactModel):
     risk_accepted: bool = False
     previous_signatures: list[str] = Field(default_factory=list)
     stop_reason: str = ""
+
+    @model_validator(mode="after")
+    def _require_nested_schema_version(self) -> LeanEvaluationReport:
+        if self.metrics.schema_version != self.schema_version:
+            raise ValueError(
+                "metrics schema_version must match report schema_version"
+            )
+        return self
 
     @property
     def blocking_findings(self) -> list[LeanFinding]:
@@ -386,6 +368,7 @@ def evaluation_profile_for(work_type: WorkType) -> LeanEvaluationProfile:
 
 __all__ = [
     "FileClassification",
+    "LEAN_ARTIFACT_SCHEMA_VERSION",
     "LeanEnforcementMode",
     "LeanEvaluationInput",
     "LeanEvaluationReport",
@@ -393,8 +376,11 @@ __all__ = [
     "LeanException",
     "LeanFinding",
     "LeanPolicy",
+    "LeanVersionedArtifact",
     "LeanMetrics",
     "LeanNoGoDecision",
+    "LeanReviewerDecisionArtifact",
+    "LeanReviewerFindingDecision",
     "FileMetric",
     "FunctionMetric",
     "MetricCapability",

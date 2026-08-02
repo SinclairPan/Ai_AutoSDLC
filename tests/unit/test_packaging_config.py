@@ -24,6 +24,14 @@ def test_build_system_uses_in_tree_backend() -> None:
     assert build_system["backend-path"] == ["."]
 
 
+def test_runtime_dependency_supports_pydantic_conditional_field_exclusion() -> None:
+    pyproject = tomllib.loads(
+        (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    )
+
+    assert "pydantic>=2.12" in pyproject["project"]["dependencies"]
+
+
 def test_wheel_force_includes_workitem_markdown_templates() -> None:
     pyproject = tomllib.loads(
         (REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")

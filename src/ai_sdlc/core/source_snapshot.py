@@ -10,12 +10,18 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from ai_sdlc.core.git_filter_safety import external_filter_overrides
+from ai_sdlc.core.git_filter_safety import (
+    external_filter_overrides,
+    safe_git_read_command,
+    safe_git_read_environment,
+)
 from ai_sdlc.core.loop_models import LoopArtifactModel
 from ai_sdlc.core.source_change_capture import (
     CapturedPathChange,
     capture_index_changes,
     capture_path_changes,
+    require_checked_out_gitlinks_clean,
+    staged_worktree_divergent_paths,
 )
 from ai_sdlc.core.source_content_identity import (
     CANONICAL_DIGEST_KIND,
@@ -25,7 +31,21 @@ from ai_sdlc.core.source_content_identity import (
     inspect_unsafe_attribute_paths,
 )
 
-_SOURCE_KINDS = {"local-git-range", "local-staged", "local-unstaged", "patch"}
+_SOURCE_KINDS = {
+    "local-git-range",
+    "local-staged",
+    "local-unstaged",
+    "local-worktree",
+    "loop-artifacts",
+    "patch",
+}
+_AI_SDLC_RUNTIME_PREFIXES = (
+    ".ai-sdlc/loops/",
+    ".ai-sdlc/reviews/",
+    ".ai-sdlc/work-items/",
+    ".ai-sdlc/state/stage-close-authorizations/",
+    ".ai-sdlc/state/stage-close-results/",
+)
 SOURCE_SNAPSHOT_OPTIONAL_IDENTITY_FIELDS = frozenset(
     {
         "canonical_digest_kind",
@@ -34,6 +54,7 @@ SOURCE_SNAPSHOT_OPTIONAL_IDENTITY_FIELDS = frozenset(
         "raw_change_identities",
         "portable_change_identities",
         "safe_eol_paths",
+        "source_input_digest",
     }
 )
 
@@ -62,6 +83,7 @@ class SourceSnapshot(LoopArtifactModel):
     safe_eol_paths: list[str] = Field(default_factory=list)
     index_identity: str = ""
     patch_file: str = ""
+    source_input_digest: str = ""
 
     @field_validator("source_kind")
     @classmethod
@@ -107,6 +129,7 @@ class _SnapshotParts:
     untracked_payload: bytes = b""
     captured_changes: dict[str, CapturedPathChange] = field(default_factory=dict)
     git_config_args: tuple[str, ...] = ()
+    source_input_digest: str = ""
 
 
 def build_source_snapshot(options: SourceSnapshotOptions) -> SourceSnapshot:
@@ -118,8 +141,10 @@ def build_source_snapshot(options: SourceSnapshotOptions) -> SourceSnapshot:
     parts = _build_parts(root, options)
     statuses = _parse_name_status(parts.status_bytes)
     changed = sorted({item[1] for item in statuses} | set(parts.untracked_files))
-    if not changed:
+    if not changed and options.source_kind != "loop-artifacts":
         raise ValueError("source snapshot contains no changed files")
+    if changed and options.source_kind == "loop-artifacts":
+        raise ValueError("loop artifact snapshot requires a clean source worktree")
     payload = parts.diff_bytes + parts.untracked_payload
     snapshot = SourceSnapshot(
         source_kind=options.source_kind,
@@ -142,8 +167,37 @@ def build_source_snapshot(options: SourceSnapshotOptions) -> SourceSnapshot:
         safe_eol_paths=[],
         index_identity=parts.index_identity,
         patch_file=parts.patch_file,
+        source_input_digest=parts.source_input_digest,
     )
-    return _complete_snapshot(root, snapshot, parts)
+    completed = _complete_snapshot(root, snapshot, parts)
+    if options.source_kind in {"local-unstaged", "local-worktree"}:
+        current_parts = _build_parts(root, options)
+        if _source_epoch(parts) != _source_epoch(current_parts):
+            raise ValueError("source changed during snapshot capture")
+        from ai_sdlc.core.source_snapshot_view import verify_captured_changes
+
+        final_changes = capture_path_changes(
+            root,
+            completed,
+            git_config_args=current_parts.git_config_args,
+        )
+        verify_captured_changes(completed, final_changes)
+        if _source_epoch(current_parts) != _source_epoch(_build_parts(root, options)):
+            raise ValueError("source changed during snapshot verification")
+    return completed
+
+
+def _source_epoch(parts: _SnapshotParts) -> tuple[object, ...]:
+    return (
+        parts.diff_bytes,
+        parts.status_bytes,
+        parts.numstat_bytes,
+        parts.base_commit,
+        parts.head_commit,
+        parts.index_identity,
+        parts.untracked_files,
+        parts.untracked_payload,
+    )
 
 
 def _complete_snapshot(
@@ -203,8 +257,8 @@ def source_snapshot_identity_issue(snapshot: SourceSnapshot) -> str:
         return "change identity portable paths are inconsistent"
     if len(safe_eol) != len(set(safe_eol)):
         return "change identity safe EOL paths contain duplicates"
-    if safe_eol and snapshot.source_kind != "local-unstaged":
-        return "change identity safe EOL paths require a local-unstaged source"
+    if safe_eol and snapshot.source_kind not in {"local-unstaged", "local-worktree"}:
+        return "change identity safe EOL paths require a local worktree source"
     if any(
         not _valid_identity_digest(value)
         for value in (*raw.values(), *portable.values())
@@ -267,7 +321,8 @@ def _compare_fresh_snapshot(
             current_diff_hash=current.diff_hash,
         )
     if (
-        snapshot.source_kind in {"local-staged", "local-unstaged"}
+        snapshot.source_kind
+        in {"local-staged", "local-unstaged", "loop-artifacts"}
         and current.index_identity != snapshot.index_identity
     ):
         return SourceFreshness(
@@ -295,6 +350,7 @@ def _same_source_content(
         "binary_files",
         "renamed_files",
         "file_digests",
+        "source_input_digest",
     )
     if any(getattr(expected, name) != getattr(current, name) for name in metadata):
         return False
@@ -312,6 +368,10 @@ def _build_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
     if options.source_kind == "local-staged":
         return _worktree_parts(root, staged=True)
     if options.source_kind == "local-unstaged":
+        return _worktree_parts(root, staged=False)
+    if options.source_kind == "local-worktree":
+        return _combined_worktree_parts(root)
+    if options.source_kind == "loop-artifacts":
         return _worktree_parts(root, staged=False)
     return _patch_parts(root, options)
 
@@ -354,6 +414,7 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
         )
     else:
         git_config_args = external_filter_overrides(root)
+        require_checked_out_gitlinks_clean(root)
         diff, status, numstat = _unstaged_diff_outputs(root, git_config_args)
     discovered = (
         ()
@@ -378,20 +439,149 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
     )
 
 
-def _unstaged_diff_outputs(
-    root: Path,
-    git_config_args: tuple[str, ...],
-) -> tuple[bytes, bytes, bytes]:
+def _combined_worktree_parts(root: Path) -> _SnapshotParts:
+    head = _git_text(root, "rev-parse", "HEAD")
+    git_config_args = external_filter_overrides(root)
+    index_before = _index_identity(root)
+    _require_combined_worktree_index_safe(root, git_config_args, head)
     prefix = (*git_config_args, "diff")
+    paths = ("--", ".", *_runtime_pathspecs())
     diff = _git(
         root,
         *prefix,
         "--binary",
         "--no-ext-diff",
         "--no-textconv",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        head,
+        *paths,
     )
-    status = _git(root, *prefix, "--name-status", "-z", "-M")
-    numstat = _git(root, *prefix, "--numstat", "-z", "-M")
+    status = _git(
+        root,
+        *prefix,
+        "--name-status",
+        "-z",
+        "-M",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        head,
+        *paths,
+    )
+    numstat = _git(
+        root,
+        *prefix,
+        "--numstat",
+        "-z",
+        "-M",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        head,
+        *paths,
+    )
+    discovered = tuple(
+        _nul_paths(_git(root, "ls-files", "--others", "--exclude-standard", "-z"))
+    )
+    untracked = tuple(path for path in discovered if not _is_runtime_artifact(path))
+    index_after = _index_identity(root)
+    _require_combined_worktree_index_safe(root, git_config_args, head)
+    index_final = _index_identity(root)
+    if index_after != index_before or index_final != index_after:
+        raise ValueError("stage candidate index changed during source capture")
+    return _SnapshotParts(
+        diff_bytes=diff,
+        status_bytes=status,
+        numstat_bytes=numstat,
+        base_ref="HEAD",
+        head_ref="WORKTREE",
+        base_commit=head,
+        head_commit=head,
+        index_identity=index_final,
+        untracked_files=untracked,
+        untracked_payload=_untracked_payload(root, untracked),
+        git_config_args=git_config_args,
+    )
+
+
+def _require_combined_worktree_index_safe(
+    root: Path,
+    git_config_args: tuple[str, ...],
+    base_commit: str,
+) -> None:
+    require_checked_out_gitlinks_clean(root)
+    hidden = tuple(
+        path for path in _hidden_index_paths(root) if not _is_runtime_artifact(path)
+    )
+    if hidden:
+        raise ValueError(
+            "stage candidate cannot inspect hidden index paths: " + ", ".join(hidden)
+        )
+    divergent = tuple(
+        path
+        for path in staged_worktree_divergent_paths(
+            root,
+            git_config_args,
+            base_commit,
+        )
+        if not _is_runtime_artifact(path)
+    )
+    if divergent:
+        raise ValueError(
+            "stage candidate cannot safely combine divergent staged/worktree paths: "
+            + ", ".join(divergent)
+        )
+
+
+def _hidden_index_paths(root: Path) -> tuple[str, ...]:
+    records = _git(root, "ls-files", "-v", "-z").split(b"\0")
+    hidden: list[str] = []
+    for record in records:
+        if not record:
+            continue
+        tag, separator, raw_path = record.partition(b" ")
+        if not separator or len(tag) != 1:
+            raise ValueError("git index flags are malformed")
+        if tag == b"S" or tag.islower():
+            hidden.append(_decode_path(raw_path))
+    return tuple(sorted(hidden))
+
+
+def _unstaged_diff_outputs(
+    root: Path,
+    git_config_args: tuple[str, ...],
+) -> tuple[bytes, bytes, bytes]:
+    prefix = (*git_config_args, "diff")
+    paths = ("--", ".", *_runtime_pathspecs())
+    diff = _git(
+        root,
+        *prefix,
+        "--binary",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        *paths,
+    )
+    status = _git(
+        root,
+        *prefix,
+        "--name-status",
+        "-z",
+        "-M",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        *paths,
+    )
+    numstat = _git(
+        root,
+        *prefix,
+        "--numstat",
+        "-z",
+        "-M",
+        "--ignore-submodules=dirty",
+        "--submodule=short",
+        *paths,
+    )
     return diff, status, numstat
 
 
@@ -417,7 +607,7 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
 
     with _patch_index(root, path, head) as index_env:
         with _index_worktree(root, index_env) as selected_env:
-            _diff_bytes, status, numstat = _diff_outputs(
+            filtered_diff, status, numstat = _diff_outputs(
                 ("--cached", head), selected_env
             )
         statuses = _parse_name_status(status)
@@ -427,7 +617,7 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
         changes = capture_index_changes(root, head, paths, index_env)
 
     return _SnapshotParts(
-        diff_bytes=patch,
+        diff_bytes=filtered_diff,
         status_bytes=status,
         numstat_bytes=numstat,
         base_ref="patch-file",
@@ -436,13 +626,28 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
         head_commit=head,
         patch_file=path.relative_to(root).as_posix(),
         captured_changes=changes,
+        source_input_digest=_digest(patch),
     )
 
 
 def _index_identity(root: Path) -> str:
-    entries = _git(root, "ls-files", "-s", "-z")
-    flags = _git(root, "ls-files", "-v", "-z")
+    entries = _filtered_index_records(_git(root, "ls-files", "-s", "-z"))
+    flags = _filtered_index_records(_git(root, "ls-files", "-v", "-z"))
     return _digest(entries + b"\0INDEX-FLAGS\0" + flags)
+
+
+def _filtered_index_records(payload: bytes) -> bytes:
+    selected = bytearray()
+    for record in payload.split(b"\0"):
+        if not record:
+            continue
+        _metadata, separator, raw_path = record.partition(b"\t")
+        if not separator:
+            raw_path = record[2:]
+        if _is_runtime_artifact(_decode_path(raw_path)):
+            continue
+        selected.extend(record + b"\0")
+    return bytes(selected)
 
 
 def _parse_name_status(payload: bytes) -> list[tuple[str, str, str]]:
@@ -580,13 +785,39 @@ def _is_runtime_artifact(path: str) -> bool:
     normalized = path.replace("\\", "/")
     segments = normalized.split("/")
     return (
-        normalized.startswith((".ai-sdlc/loops/", ".ai-sdlc/reviews/"))
+        normalized.startswith(_AI_SDLC_RUNTIME_PREFIXES)
         or "__pycache__" in segments
         or bool(set(segments) & {".pytest_cache", ".ruff_cache", ".mypy_cache"})
         or normalized in {".coverage"}
         or segments[0] in {"htmlcov", "build", "dist"}
         or normalized.endswith((".pyc", ".pyo"))
     )
+
+
+def is_runtime_artifact_path(path: str) -> bool:
+    """公开候选源视图的运行时排除判定，供适配器复用同一边界。"""
+
+    return _is_runtime_artifact(path)
+
+
+def _runtime_pathspecs() -> tuple[str, ...]:
+    managed = tuple(
+        f":(exclude,glob){path}**"
+        for path in _AI_SDLC_RUNTIME_PREFIXES
+    )
+    generated = (
+        ":(exclude,glob)**/__pycache__/**",
+        ":(exclude,glob)**/.pytest_cache/**",
+        ":(exclude,glob)**/.ruff_cache/**",
+        ":(exclude,glob)**/.mypy_cache/**",
+        ":(exclude,glob)htmlcov/**",
+        ":(exclude,glob)build/**",
+        ":(exclude,glob)dist/**",
+        ":(exclude).coverage",
+        ":(exclude,glob)**/*.pyc",
+        ":(exclude,glob)**/*.pyo",
+    )
+    return (*managed, *generated)
 
 
 def _decode_path(payload: bytes) -> str:
@@ -604,10 +835,11 @@ def _git_text(root: Path, *args: str) -> str:
 def _git(root: Path, *args: str) -> bytes:
     try:
         result = subprocess.run(
-            ["git", *args],
+            safe_git_read_command(*args),
             cwd=root,
             capture_output=True,
             check=False,
+            env=safe_git_read_environment(),
             timeout=30,
         )
     except subprocess.TimeoutExpired as exc:

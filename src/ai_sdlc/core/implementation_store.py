@@ -25,6 +25,7 @@ from ai_sdlc.core.lean_code_identifiers import is_safe_artifact_id
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType, utc_now_iso
 from ai_sdlc.core.loop_policy import load_loop_policy
+from ai_sdlc.core.plan_check import parse_markdown_frontmatter
 from ai_sdlc.core.state_machine import load_work_item, work_item_path
 from ai_sdlc.models.work import WorkType
 
@@ -82,7 +83,7 @@ def build_implementation_input(
     items = list(task_items or [])
     work_type, quality_profiles = _implementation_quality_profile(
         root,
-        work_item_dir.name,
+        work_item_dir,
     )
     scope = list(dict.fromkeys(path for item in items for path in item.files))
     acceptance = [value for item in items for value in item.acceptance]
@@ -98,6 +99,7 @@ def build_implementation_input(
         work_type=work_type,
         quality_profiles=quality_profiles,
         declared_scope=scope,
+        task_scopes={item.task_id: item.files for item in items},
         tasks_digest=implementation_task_items_digest(items),
         acceptance_digest=_stable_digest(acceptance),
     )
@@ -105,15 +107,29 @@ def build_implementation_input(
 
 def _implementation_quality_profile(
     root: Path,
-    work_item_id: str,
+    work_item_dir: Path,
 ) -> tuple[WorkType, list[str]]:
+    work_item_id = work_item_dir.name
     path = work_item_path(root, work_item_id)
-    if not path.is_file():
-        return WorkType.UNCERTAIN, []
-    work_item = load_work_item(root, work_item_id)
+    if path.is_file():
+        work_type = load_work_item(root, work_item_id).work_type
+    else:
+        spec_path = work_item_dir / "spec.md"
+        if not spec_path.is_file():
+            return WorkType.UNCERTAIN, []
+        frontmatter, _ = parse_markdown_frontmatter(spec_path)
+        raw_work_type = frontmatter.get("work_type")
+        try:
+            work_type = (
+                WorkType(str(raw_work_type))
+                if raw_work_type is not None
+                else WorkType.UNCERTAIN
+            )
+        except ValueError as exc:
+            raise ValueError("formal work_type metadata is invalid") from exc
     policy = load_loop_policy(root)
-    enabled = policy.lean_code_enabled and work_item.work_type != WorkType.UNCERTAIN
-    return work_item.work_type, ["lean-code"] if enabled else []
+    enabled = policy.lean_code_enabled and work_type != WorkType.UNCERTAIN
+    return work_type, ["lean-code"] if enabled else []
 
 
 def _stable_digest(payload: object) -> str:

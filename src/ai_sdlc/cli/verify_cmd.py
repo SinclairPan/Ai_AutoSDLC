@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import typer
 from rich.console import Console
 
+from ai_sdlc.core.stage_review.ci_certificate import (
+    CiCertificateVerificationError,
+    read_ci_certificate_bundle,
+    verify_ci_certificate_bundle,
+)
+from ai_sdlc.core.stage_review.ci_certificate_policy import (
+    CiCertificatePolicyError,
+    verify_ci_certificate_policy,
+)
 from ai_sdlc.core.verify_constraints import (
     build_constraint_report,
     build_verification_gate_context,
@@ -41,6 +51,104 @@ console = Console()
 
 
 @verify_app.command(
+    "stage-certificate",
+    help=(
+        "Read-only: replay a StageCloseCertificate bundle against the exact "
+        "checkout commit, source tree digest, and Git ancestry."
+    ),
+)
+def verify_stage_certificate(
+    bundle: Path = typer.Option(..., "--bundle", exists=True, dir_okay=False),
+    tested_commit: str = typer.Option(..., "--tested-commit"),
+    expected_stage_key: str = typer.Option(..., "--expected-stage-key"),
+    expected_close_kind: str = typer.Option(..., "--expected-close-kind"),
+    expected_policy_digest: str = typer.Option(..., "--expected-policy-digest"),
+    expected_mode: str = typer.Option(..., "--expected-mode"),
+    candidate_root: Path | None = typer.Option(
+        None,
+        "--root",
+        exists=True,
+        file_okay=False,
+        resolve_path=True,
+        help="Candidate checkout to verify; defaults to the current project.",
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    root = find_project_root(candidate_root)
+    if root is None:
+        _render_certificate_result(
+            as_json, False, "Not inside an AI-SDLC project (.ai-sdlc/ not found)."
+        )
+        raise typer.Exit(code=1)
+    try:
+        result = verify_ci_certificate_bundle(
+            root,
+            read_ci_certificate_bundle(bundle),
+            tested_commit=tested_commit,
+            expected_stage_key=expected_stage_key,
+            expected_close_kind=expected_close_kind,
+            expected_policy_digest=expected_policy_digest,
+            expected_mode=expected_mode,
+        )
+    except CiCertificateVerificationError as exc:
+        _render_certificate_result(as_json, False, str(exc))
+        raise typer.Exit(code=1) from exc
+    if as_json:
+        typer.echo(json.dumps(result.model_dump(mode="json"), indent=2))
+    else:
+        console.print("[green]stage certificate: valid[/green]")
+
+
+def _render_certificate_result(as_json: bool, ok: bool, error: str) -> None:
+    if as_json:
+        typer.echo(json.dumps({"ok": ok, "error": error}, indent=2))
+    else:
+        console.print(f"[red]{error}[/red]")
+
+
+@verify_app.command(
+    "stage-certificate-policy",
+    help=(
+        "Read-only: independently recompute whether the current PR Candidate "
+        "requires a StageCloseCertificate from the protected Activation Policy."
+    ),
+)
+def verify_stage_certificate_policy(
+    base_commit: str = typer.Option(..., "--base-commit"),
+    tested_commit: str = typer.Option(..., "--tested-commit"),
+    candidate_root: Path | None = typer.Option(
+        None,
+        "--root",
+        exists=True,
+        file_okay=False,
+        resolve_path=True,
+        help="Candidate checkout to verify; defaults to the current project.",
+    ),
+    as_json: bool = typer.Option(False, "--json"),
+) -> None:
+    root = find_project_root(candidate_root)
+    if root is None:
+        _render_certificate_result(
+            as_json, False, "Not inside an AI-SDLC project (.ai-sdlc/ not found)."
+        )
+        raise typer.Exit(code=1)
+    try:
+        result = verify_ci_certificate_policy(
+            root,
+            base_commit=base_commit,
+            tested_commit=tested_commit,
+        )
+    except CiCertificatePolicyError as exc:
+        _render_certificate_result(as_json, False, str(exc))
+        raise typer.Exit(code=1) from exc
+    if as_json:
+        typer.echo(json.dumps(result.model_dump(mode="json"), indent=2))
+    else:
+        requirement = "required" if result.certificate_required else "not required"
+        console.print(f"[green]stage certificate: {requirement}[/green]")
+
+
+@verify_app.command(
     "constraints",
     help=(
         "Read-only: required governance files and checkpoint/specs consistency; "
@@ -68,7 +176,9 @@ def verify_constraints(
         msg = "Not inside an AI-SDLC project (.ai-sdlc/ not found)."
         if as_json:
             typer.echo(
-                json.dumps({"ok": False, "error": msg, "blockers": [], "root": None}, indent=2)
+                json.dumps(
+                    {"ok": False, "error": msg, "blockers": [], "root": None}, indent=2
+                )
             )
         else:
             console.print(f"[red]{msg}[/red]")
@@ -79,7 +189,9 @@ def verify_constraints(
     verification_sources = tuple(
         verification_context.get("verification_sources", (report.source_name,))
     )
-    frontend_contract_summary = verification_context.get("frontend_contract_verification")
+    frontend_contract_summary = verification_context.get(
+        "frontend_contract_verification"
+    )
     frontend_runtime_attachment = verification_context.get(
         "frontend_contract_runtime_attachment"
     )
@@ -100,9 +212,7 @@ def verify_constraints(
         capture_mode=CaptureMode.AUTO,
         confidence=Confidence.HIGH,
         status=(
-            TelemetryEventStatus.FAILED
-            if blockers
-            else TelemetryEventStatus.SUCCEEDED
+            TelemetryEventStatus.FAILED if blockers else TelemetryEventStatus.SUCCEEDED
         ),
     )
     telemetry.writer.write_event(evaluation_event)
@@ -149,9 +259,7 @@ def verify_constraints(
     telemetry.close_session(
         goal_session_id,
         status=(
-            TelemetryEventStatus.FAILED
-            if blockers
-            else TelemetryEventStatus.SUCCEEDED
+            TelemetryEventStatus.FAILED if blockers else TelemetryEventStatus.SUCCEEDED
         ),
     )
 
@@ -180,7 +288,9 @@ def verify_constraints(
                         "event_id": evaluation_event.event_id,
                         "evidence_id": report_evidence.evidence_id,
                         "evaluation_id": evaluation.evaluation_id,
-                        "violation_id": violation.violation_id if violation is not None else None,
+                        "violation_id": violation.violation_id
+                        if violation is not None
+                        else None,
                         "report_digest": report_digest,
                         "report_locator": report_locator,
                     },
@@ -204,7 +314,9 @@ def verify_constraints(
         _render_frontend_gate_summary(frontend_gate_summary)
 
     raise typer.Exit(
-        code=1 if governance["gate_decision_payload"]["decision_result"] == "block" else 0
+        code=1
+        if governance["gate_decision_payload"]["decision_result"] == "block"
+        else 0
     )
 
 

@@ -5,12 +5,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from ai_sdlc.core.requirement_loop import (
     CURRENT_REQUIREMENT_PATH,
     RequirementFreezeOptions,
     RequirementStartOptions,
     freeze_requirement_loop,
     start_requirement_loop,
+)
+from ai_sdlc.core.stage_review.artifacts import (
+    resolve_canonical_shared_state,
+    resolve_repository_project_id,
+)
+from ai_sdlc.core.stage_review.stage_review_execution import (
+    StageCloseGateUnavailableError,
 )
 
 
@@ -215,6 +224,25 @@ def test_start_requirement_loop_blocks_missing_input(tmp_path: Path) -> None:
     assert not (tmp_path / ".ai-sdlc").exists()
 
 
+def test_start_requirement_loop_blocks_unknown_design_scope_structurally(
+    tmp_path: Path,
+) -> None:
+    result = start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            idea="Build a service.",
+            acceptance=("Service works.",),
+            design_scope_families=("unknown",),
+            dry_run=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert result.result == "Requirement input is invalid."
+    assert "unknown design scope families: unknown" in result.blocker
+    assert not (tmp_path / ".ai-sdlc").exists()
+
+
 def test_start_requirement_loop_blocks_unsafe_loop_id(tmp_path: Path) -> None:
     result = start_requirement_loop(
         RequirementStartOptions(
@@ -266,6 +294,100 @@ def test_freeze_requirement_loop_blocks_unquoted_command_loop_id(
     assert result.status == "blocked"
     assert "Invalid requirement loop id" in result.blocker
     assert "letters, digits, hyphen, and underscore" in result.blocker
+
+
+def test_freeze_requirement_loop_blocks_cross_loop_run_substitution(
+    tmp_path: Path,
+) -> None:
+    for loop_id in ("req-target-a", "req-source-b"):
+        start_requirement_loop(
+            RequirementStartOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                idea=f"Requirement for {loop_id}.",
+                acceptance=(f"{loop_id} is accepted.",),
+            )
+        )
+    root = tmp_path / ".ai-sdlc" / "loops" / "requirement"
+    target_run = root / "req-target-a" / "loop-run.json"
+    source_run = root / "req-source-b" / "loop-run.json"
+    target_run.write_text(source_run.read_text(encoding="utf-8"), encoding="utf-8")
+
+    result = freeze_requirement_loop(
+        RequirementFreezeOptions(root=tmp_path, loop_id="req-target-a", yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "loop identity" in result.blocker
+    assert not (root / "req-target-a" / "requirement-freeze.json").exists()
+    assert not (root / "req-source-b" / "requirement-freeze.json").exists()
+
+
+def test_freeze_requirement_loop_blocks_current_pointer_identity_mismatch(
+    tmp_path: Path,
+) -> None:
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-pointer-target",
+            idea="Requirement for the current pointer.",
+            acceptance=("The pointer remains bound.",),
+        )
+    )
+    pointer_path = tmp_path / CURRENT_REQUIREMENT_PATH
+    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    pointer["loop_id"] = "req-pointer-other"
+    pointer_path.write_text(json.dumps(pointer), encoding="utf-8")
+
+    result = freeze_requirement_loop(
+        RequirementFreezeOptions(root=tmp_path, yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "pointer" in result.blocker.lower()
+    assert "identity" in result.blocker.lower()
+
+
+@pytest.mark.parametrize("artifact_name", ("loop-run.json", "requirement-intake.json"))
+def test_freeze_requirement_loop_rejects_symlinked_identity_artifact(
+    tmp_path: Path,
+    artifact_name: str,
+) -> None:
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-symlink-target",
+            idea="Requirement artifacts remain local to their loop.",
+            acceptance=("Symlinked identity artifacts are rejected.",),
+        )
+    )
+    loop_dir = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "requirement"
+        / "req-symlink-target"
+    )
+    artifact = loop_dir / artifact_name
+    external = tmp_path / f"external-{artifact_name}"
+    external.write_text(artifact.read_text(encoding="utf-8"), encoding="utf-8")
+    artifact.unlink()
+    try:
+        artifact.symlink_to(external)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+    result = freeze_requirement_loop(
+        RequirementFreezeOptions(
+            root=tmp_path,
+            loop_id="req-symlink-target",
+            yes=True,
+        )
+    )
+
+    assert result.status == "blocked"
+    assert "symlink" in result.blocker.lower()
+    assert not (loop_dir / "requirement-freeze.json").exists()
 
 
 def test_freeze_requirement_loop_closes_current_loop(tmp_path: Path) -> None:
@@ -361,6 +483,182 @@ def test_freeze_requirement_loop_is_idempotent_after_closed(tmp_path: Path) -> N
     assert first.status == "ready"
     assert second.status == "ready"
     assert second.result == "Requirement loop is already frozen."
+
+
+def test_freeze_requirement_loop_does_not_self_anchor_legacy_closed_state(
+    tmp_path: Path,
+) -> None:
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-missing-anchor",
+            idea="Ops users need a frozen requirement.",
+            acceptance=("Requirement is frozen.",),
+        )
+    )
+    first = freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
+    assert first.status == "ready"
+    project_id = resolve_repository_project_id(tmp_path)
+    shared = resolve_canonical_shared_state(tmp_path, project_id)
+    anchor = (
+        shared
+        / "scope-authority"
+        / "requirement"
+        / "req-missing-anchor.json"
+    )
+    intent = (
+        shared
+        / "scope-authority"
+        / "requirement-intent"
+        / "req-missing-anchor.json"
+    )
+    anchor.unlink()
+    intent.unlink()
+
+    result = freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
+
+    assert result.status == "blocked"
+    assert "anchor is unavailable" in result.blocker
+    assert "new requirement loop" in result.next_action
+    assert not anchor.exists()
+    assert not intent.exists()
+
+
+def test_freeze_requirement_loop_recovers_commit_from_existing_intent(
+    tmp_path: Path,
+) -> None:
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-recover-anchor",
+            idea="Ops users need a recoverable requirement.",
+            acceptance=("Requirement is frozen.",),
+        )
+    )
+    first = freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
+    assert first.status == "ready"
+    project_id = resolve_repository_project_id(tmp_path)
+    shared = resolve_canonical_shared_state(tmp_path, project_id)
+    anchor = (
+        shared / "scope-authority" / "requirement" / "req-recover-anchor.json"
+    )
+    anchor.unlink()
+
+    result = freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
+
+    assert result.status == "ready"
+    assert result.result == "Requirement loop is already frozen."
+    assert anchor.is_file()
+
+
+def test_freeze_requirement_loop_commits_anchor_only_after_stage_close(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-post-close-anchor",
+            idea="Ops users need a committed requirement.",
+            acceptance=("Requirement is frozen.",),
+        )
+    )
+
+    def fail_after_writer(_prepared, writer):
+        writer()
+        raise StageCloseGateUnavailableError("simulated-close-failure")
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.requirement_loop.execute_stage_close",
+        fail_after_writer,
+    )
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="simulated-close-failure",
+    ):
+        freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
+
+    project_id = resolve_repository_project_id(tmp_path)
+    shared = resolve_canonical_shared_state(tmp_path, project_id)
+    authority = shared / "scope-authority"
+    assert (
+        authority
+        / "requirement-intent"
+        / "req-post-close-anchor.json"
+    ).is_file()
+    assert not (
+        authority / "requirement" / "req-post-close-anchor.json"
+    ).exists()
+
+
+def test_freeze_requirement_loop_recovers_intent_after_pre_writer_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id="req-pre-writer-recovery",
+            idea="Ops users need a retry-safe requirement.",
+            acceptance=("Requirement close can be retried.",),
+        )
+    )
+    from ai_sdlc.core import requirement_loop as requirement_module
+
+    original_execute = requirement_module.execute_stage_close
+    monkeypatch.setattr(
+        requirement_module,
+        "utc_now_iso",
+        lambda: "2026-07-27T10:00:00Z",
+    )
+
+    def fail_before_writer(_prepared, _writer):
+        raise StageCloseGateUnavailableError("simulated-pre-writer-failure")
+
+    monkeypatch.setattr(
+        requirement_module,
+        "execute_stage_close",
+        fail_before_writer,
+    )
+    with pytest.raises(
+        StageCloseGateUnavailableError,
+        match="simulated-pre-writer-failure",
+    ):
+        freeze_requirement_loop(RequirementFreezeOptions(root=tmp_path, yes=True))
+
+    monkeypatch.setattr(requirement_module, "execute_stage_close", original_execute)
+    monkeypatch.setattr(
+        requirement_module,
+        "utc_now_iso",
+        lambda: "2026-07-27T10:00:02Z",
+    )
+    result = freeze_requirement_loop(
+        RequirementFreezeOptions(root=tmp_path, yes=True)
+    )
+
+    assert result.status == "ready"
+    assert result.frozen is True
+    freeze = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "requirement"
+            / "req-pre-writer-recovery"
+            / "requirement-freeze.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert freeze["accepted_by"] == "local-user"
+    assert freeze["accepted_at"] == "2026-07-27T10:00:00Z"
+    assert freeze["created_at"] == freeze["accepted_at"]
+    project_id = resolve_repository_project_id(tmp_path)
+    shared = resolve_canonical_shared_state(tmp_path, project_id)
+    assert (
+        shared
+        / "scope-authority"
+        / "requirement"
+        / "req-pre-writer-recovery.json"
+    ).is_file()
 
 
 def test_start_requirement_loop_blocks_restart_after_freeze(tmp_path: Path) -> None:
