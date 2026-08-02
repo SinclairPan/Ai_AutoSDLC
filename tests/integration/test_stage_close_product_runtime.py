@@ -6,7 +6,7 @@ import os
 import threading
 from dataclasses import replace
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, TypeAlias
 
 import pytest
 
@@ -81,13 +81,60 @@ from tests.integration.test_canonical_stage_review_executor import (
     _ExecutorRig,
 )
 
+_HardExitPayload: TypeAlias = tuple[
+    StageReviewExecutionRequest,
+    PreparedStageClose,
+    GateApplicabilityDecision,
+    StageReviewExecutionOutcome,
+]
+
 
 class _ResultQueue(Protocol):
     def put(self, value: object) -> None: ...
 
+    def get(self, *, timeout: float) -> _HardExitPayload: ...
+
     def close(self) -> None: ...
 
     def join_thread(self) -> None: ...
+
+
+class _HardExitProcess(Protocol):
+    @property
+    def exitcode(self) -> int | None: ...
+
+    def is_alive(self) -> bool: ...
+
+    def join(self, timeout: float | None = None) -> None: ...
+
+    def terminate(self) -> None: ...
+
+    def kill(self) -> None: ...
+
+
+def _receive_hard_exit_payload(
+    process: _HardExitProcess,
+    result_queue: _ResultQueue,
+    *,
+    expected_exitcode: int,
+) -> _HardExitPayload:
+    try:
+        # Windows pipes can fill while the Queue feeder flushes this large payload.
+        # Draining it before join lets the worker reach its intentional hard exit.
+        payload = result_queue.get(timeout=60)
+        process.join(timeout=60)
+        assert not process.is_alive()
+        assert process.exitcode == expected_exitcode
+        return payload
+    finally:
+        if process.is_alive():
+            process.terminate()
+            process.join(timeout=5)
+        if process.is_alive():
+            process.kill()
+            process.join(timeout=5)
+        result_queue.close()
+        result_queue.join_thread()
 
 
 class _ReviewExecutor(Protocol):
@@ -325,13 +372,11 @@ def test_enforce_prepared_claim_resumes_original_review_and_close_transaction(
         args=(str(tmp_path), result_queue),
     )
     interrupted.start()
-    interrupted.join(timeout=60)
-
-    assert not interrupted.is_alive()
-    assert interrupted.exitcode == 86
-    request, prepared, decision, first_outcome = result_queue.get(timeout=5)
-    result_queue.close()
-    result_queue.join_thread()
+    request, prepared, decision, first_outcome = _receive_hard_exit_payload(
+        interrupted,
+        result_queue,
+        expected_exitcode=86,
+    )
     runtime = HeldStageReviewPlan(
         planned=request.proposal,
         held=_held_plan(request),
@@ -419,13 +464,11 @@ def test_committed_close_recovery_consumes_the_review_session(
         args=(str(tmp_path), result_queue),
     )
     interrupted.start()
-    interrupted.join(timeout=60)
-
-    assert not interrupted.is_alive()
-    assert interrupted.exitcode == 88
-    request, prepared, decision, first_outcome = result_queue.get(timeout=5)
-    result_queue.close()
-    result_queue.join_thread()
+    request, prepared, decision, first_outcome = _receive_hard_exit_payload(
+        interrupted,
+        result_queue,
+        expected_exitcode=88,
+    )
     close_store = StageCloseStore(
         tmp_path,
         project_id=request.candidate.project_id,
@@ -559,11 +602,14 @@ def test_recovered_close_rejects_rehashed_session_receipt(
                 AssertionError("forged recovery reran product writer")
             ),
         )
-    assert recover_product_stage_close(
-        prepared,
-        decision,
-        runtime.planned.candidate,
-    ) is not None
+    assert (
+        recover_product_stage_close(
+            prepared,
+            decision,
+            runtime.planned.candidate,
+        )
+        is not None
+    )
 
 
 def test_recovered_product_runtime_rejects_rehashed_session_receipt(
@@ -710,7 +756,10 @@ def test_consuming_review_recovery_rejects_rehashed_completion_tamper(
             sessions[0],
             interrupted_writer,
         )
-    path = sessions[0].projection_path(execution_scope(rig.request)).parent / "completion.json"
+    path = (
+        sessions[0].projection_path(execution_scope(rig.request)).parent
+        / "completion.json"
+    )
     payload = json.loads(path.read_text(encoding="utf-8"))
     payload[field] = value
     payload["completion_digest"] = ""
@@ -826,12 +875,11 @@ def _interrupted_committed_close(
         args=(str(root), result_queue),
     )
     interrupted.start()
-    interrupted.join(timeout=60)
-    assert not interrupted.is_alive()
-    assert interrupted.exitcode == 88
-    request, prepared, decision, _ = result_queue.get(timeout=5)
-    result_queue.close()
-    result_queue.join_thread()
+    request, prepared, decision, _ = _receive_hard_exit_payload(
+        interrupted,
+        result_queue,
+        expected_exitcode=88,
+    )
     return request, prepared, decision
 
 
