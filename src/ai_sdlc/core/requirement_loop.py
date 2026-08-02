@@ -865,6 +865,7 @@ def _bind_requirement_scope_authority(
         anchor = _verify_requirement_scope_authority_intent(root, **values)
     authoritative_freeze = freeze.model_copy(
         update={
+            "created_at": anchor.accepted_at,
             "accepted_by": anchor.accepted_by,
             "accepted_at": anchor.accepted_at,
         }

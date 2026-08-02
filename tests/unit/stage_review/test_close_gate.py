@@ -3,10 +3,11 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
-from threading import Barrier, Event
+from threading import Barrier, Event, local
 
 import pytest
 
+import ai_sdlc.core.requirement_loop as requirement_loop_module
 from ai_sdlc.core.frontend_evidence_loop import (
     FrontendEvidenceSkipOptions,
 )
@@ -216,12 +217,47 @@ def test_close_artifact_change_creates_a_superseding_current_attestation(
 
 def test_concurrent_requirement_writers_leave_a_current_final_attestation(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _start_requirement(tmp_path, "req-concurrent-real")
     barrier = Barrier(2)
+    approval_barrier = Barrier(2)
+    freeze_clock = local()
+    original_approval = (
+        requirement_loop_module._requirement_scope_authority_intent_approval
+    )
+    original_utc_now_iso = requirement_loop_module.utc_now_iso
+
+    def synchronized_approval(
+        root: Path,
+        loop_id: str,
+    ) -> tuple[str, str] | None:
+        approval = original_approval(root, loop_id)
+        approval_barrier.wait(timeout=30)
+        return approval
+
+    def reviewer_utc_now_iso() -> str:
+        accepted_by = getattr(freeze_clock, "accepted_by", "")
+        if accepted_by == "reviewer-a":
+            return "2026-08-02T00:00:00Z"
+        if accepted_by == "reviewer-b":
+            return "2026-08-02T00:00:01Z"
+        return original_utc_now_iso()
+
+    monkeypatch.setattr(
+        requirement_loop_module,
+        "_requirement_scope_authority_intent_approval",
+        synchronized_approval,
+    )
+    monkeypatch.setattr(
+        requirement_loop_module,
+        "utc_now_iso",
+        reviewer_utc_now_iso,
+    )
 
     def synchronized_freeze(accepted_by: str):
         # 在安全租约外同步两个真实命令；writer 内设置屏障会与写前独占检查形成循环等待。
+        freeze_clock.accepted_by = accepted_by
         barrier.wait(timeout=30)
         return freeze_requirement_loop(
             RequirementFreezeOptions(
@@ -239,12 +275,26 @@ def test_concurrent_requirement_writers_leave_a_current_final_attestation(
             )
         )
 
-    assert all(result.status == "ready" for result in results)
+    diagnostics = [
+        (result.status, result.result, result.blocker, result.frozen)
+        for result in results
+    ]
+    assert [
+        (result.status, result.blocker, result.frozen) for result in results
+    ] == [("ready", "", True), ("ready", "", True)], diagnostics
     attestations = read_stage_close_gate_attestations(tmp_path)
     close_path = tmp_path / attestations[0].close_artifact_path
-    assert any(
-        item.close_artifact_digest == file_digest(close_path) for item in attestations
-    )
+    close_digest = file_digest(close_path)
+    current_operations = []
+    for item in attestations:
+        if item.close_artifact_digest != close_digest:
+            continue
+        operation = read_gate_operation(tmp_path, item.operation_id)
+        if operation is None or operation.state != "shadow_observed":
+            continue
+        if gate_attestation_is_current(tmp_path, operation, close_path):
+            current_operations.append(operation)
+    assert current_operations
 
 
 def test_enforce_cannot_use_an_unmaterialized_shadow_route(tmp_path: Path) -> None:
