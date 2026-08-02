@@ -9,7 +9,10 @@ from typing import cast
 import pytest
 
 from ai_sdlc.core.config import save_project_config
-from ai_sdlc.core.stage_review import codex_review_runtime
+from ai_sdlc.core.stage_review import (
+    codex_review_runtime,
+    stage_review_plan_runtime,
+)
 from ai_sdlc.core.stage_review.close_gate_models import (
     GateApplicabilityDecision,
     PreparedStageClose,
@@ -457,6 +460,67 @@ def test_codex_enforce_surfaces_release_failure_after_writer(
         )
 
     assert writer_calls == ["called"]
+
+
+@pytest.mark.parametrize(
+    "release_error",
+    [ValueError("release failed"), KeyboardInterrupt("release interrupted")],
+)
+def test_plan_hold_preserves_persistence_failure_when_release_also_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    release_error: BaseException,
+) -> None:
+    planned = SimpleNamespace(resolution=SimpleNamespace(proposal=object()))
+    held = SimpleNamespace(plan=object())
+    primary_error = RuntimeError("plan persistence failed")
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "resolve_active_optimization_snapshot",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "_policy_from_decision",
+        lambda *_args, **_kwargs: object(),
+    )
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "build_shadow_panel_proposal",
+        lambda **_kwargs: planned,
+    )
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "hold_shadow_panel_plan",
+        lambda *_args: held,
+    )
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "persist_shadow_plan",
+        lambda *_args: (_ for _ in ()).throw(primary_error),
+    )
+    monkeypatch.setattr(
+        stage_review_plan_runtime,
+        "release_shadow_panel_plan",
+        lambda _held: (_ for _ in ()).throw(release_error),
+    )
+    available = object()
+    prepared = SimpleNamespace(root=Path("/unused"))
+    candidate = SimpleNamespace(project_id="project.persistence-failure")
+    decision = SimpleNamespace(mode=available)
+
+    with pytest.raises(RuntimeError, match="plan persistence failed") as caught:
+        stage_review_plan_runtime.hold_stage_review_plan(
+            cast(PreparedStageClose, prepared),
+            cast(GateApplicabilityDecision, decision),
+            cast(object, candidate),
+            cast(object, available),
+        )
+
+    assert caught.value is primary_error
+    assert any(
+        f"{type(release_error).__name__}: {release_error}" in note
+        for note in caught.value.__notes__
+    )
 
 
 @pytest.mark.parametrize(

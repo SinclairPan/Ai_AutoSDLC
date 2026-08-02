@@ -118,8 +118,14 @@ def hold_stage_review_plan(
             held.plan,
             source_snapshot,
         )
-    except Exception:
-        release_shadow_panel_plan(held)
+    except BaseException as primary_error:
+        try:
+            release_shadow_panel_plan(held)
+        except BaseException as release_error:
+            primary_error.add_note(
+                "stage review plan release deferred after persistence failure: "
+                f"{type(release_error).__name__}: {release_error}"
+            )
         raise
     return HeldStageReviewPlan(planned, held, source_snapshot, refs)
 
