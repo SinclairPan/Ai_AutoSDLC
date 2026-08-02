@@ -10,6 +10,7 @@ import json
 import os
 import secrets
 import subprocess
+import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -294,31 +295,47 @@ def bind_repository_project(shared_root: Path, project_id: str) -> None:
 def _git_common_dir(root: Path) -> Path | None:
     git_marker = _find_git_marker(root)
     try:
-        result = subprocess.run(
-            ["git", "rev-parse", "--git-common-dir"],
-            cwd=root,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            check=False,
-            timeout=5,
-        )
-    except (FileNotFoundError, NotADirectoryError) as exc:
-        if git_marker is None:
-            return None
+        stdout_file = tempfile.TemporaryFile()
+    except OSError as exc:
         raise SharedStateIntegrityError(
-            "Git metadata exists but Git is unavailable"
+            "Git common-dir output capture could not be created"
         ) from exc
-    except subprocess.TimeoutExpired as exc:
-        raise SharedStateIntegrityError("Git common-dir resolution timed out") from exc
+    try:
+        try:
+            result = subprocess.run(
+                ["git", "rev-parse", "--git-common-dir"],
+                cwd=root,
+                stdout=stdout_file,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5,
+            )
+        except (FileNotFoundError, NotADirectoryError) as exc:
+            if git_marker is None:
+                return None
+            raise SharedStateIntegrityError(
+                "Git metadata exists but Git is unavailable"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise SharedStateIntegrityError(
+                "Git common-dir resolution timed out"
+            ) from exc
+        try:
+            stdout_file.seek(0)
+            raw_output = stdout_file.read()
+        except OSError as exc:
+            raise SharedStateIntegrityError(
+                "Git common-dir output capture could not be read"
+            ) from exc
+    finally:
+        stdout_file.close()
     if result.returncode != 0:
         if git_marker is not None:
             raise SharedStateIntegrityError(
                 "Git metadata exists but common-dir resolution failed"
             )
         return None
-    raw_path = result.stdout.strip()
+    raw_path = raw_output.decode("utf-8", errors="replace").strip()
     if not raw_path:
         raise SharedStateIntegrityError("Git returned an empty common-dir path")
     path = Path(raw_path)

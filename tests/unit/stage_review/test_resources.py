@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import multiprocessing
 import subprocess
+import sys
+import time
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager
@@ -2304,6 +2306,84 @@ def test_git_worktrees_share_project_state_root(tmp_path: Path) -> None:
     secondary = resolve_canonical_shared_state(worktree, "project.shared")
 
     assert primary == secondary
+
+
+def test_git_resolution_does_not_wait_for_descendant_pipe_eof(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    release = tmp_path / "release-descendant"
+    released = tmp_path / "descendant-released-output"
+    holder = tmp_path / "hold-inherited-output.py"
+    holder.write_text(
+        "import sys\n"
+        "import time\n"
+        "from pathlib import Path\n"
+        "release = Path(sys.argv[1])\n"
+        "released = Path(sys.argv[2])\n"
+        "deadline = time.monotonic() + 7\n"
+        "while not release.exists() and time.monotonic() < deadline:\n"
+        "    time.sleep(0.01)\n"
+        "sys.stdout.close()\n"
+        "sys.stderr.close()\n"
+        "released.touch()\n",
+        encoding="utf-8",
+    )
+    helper = tmp_path / "git-with-inherited-output.py"
+    helper.write_text(
+        "import subprocess\n"
+        "import sys\n"
+        "subprocess.Popen(\n"
+        f"    [sys.executable, {str(holder)!r}, {str(release)!r}, {str(released)!r}],\n"
+        "    stdout=sys.stdout,\n"
+        "    stderr=sys.stderr,\n"
+        ")\n"
+        "print('.git', flush=True)\n",
+        encoding="utf-8",
+    )
+    original_run = subprocess.run
+
+    def inherited_output_run(*_args: object, **kwargs: object):
+        return original_run([sys.executable, str(helper)], **kwargs)
+
+    monkeypatch.setattr(artifacts.subprocess, "run", inherited_output_run)
+
+    try:
+        shared = resolve_canonical_shared_state(repository, "project.shared")
+    finally:
+        release.touch()
+        deadline = time.monotonic() + 2
+        while not released.exists() and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    assert released.exists(), "descendant did not release inherited output handles"
+
+    assert shared == (
+        repository.resolve()
+        / ".git"
+        / "ai-sdlc-shared-state"
+        / "projects"
+        / "project.shared"
+    )
+
+
+def test_git_output_capture_failure_never_falls_back_to_local_state(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+
+    def capture_failure(*args: object, **kwargs: object) -> object:
+        raise FileNotFoundError("temporary output directory is unavailable")
+
+    monkeypatch.setattr(artifacts.tempfile, "TemporaryFile", capture_failure)
+
+    with pytest.raises(SharedStateIntegrityError, match="output capture"):
+        resolve_canonical_shared_state(repository, "project.shared")
 
 
 def test_git_resolution_failure_does_not_fall_back_to_worktree_local_state(

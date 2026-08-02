@@ -2551,7 +2551,7 @@ def test_close_rejects_task_and_acceptance_byte_changes(tmp_path: Path) -> None:
     _write(tmp_path, "src/app.py", "def _small():\n    return 1\n")
     run_lean_check(LeanCheckOptions(root=tmp_path, loop_id=loop_id))
     artifacts = implementation_artifacts(tmp_path, loop_id)
-    tasks_before = artifacts.tasks_path.read_text("utf-8")
+    tasks_before = artifacts.tasks_path.read_bytes()
     tasks = json.loads(tasks_before)
     tasks["items"][0]["title"] = "changed after evaluation"
     artifacts.tasks_path.write_text(json.dumps(tasks), encoding="utf-8")
@@ -2559,7 +2559,7 @@ def test_close_rejects_task_and_acceptance_byte_changes(tmp_path: Path) -> None:
     tasks_blocker = validate_lean_close(tmp_path, loop_id)
 
     assert "tasks" in tasks_blocker.lower()
-    artifacts.tasks_path.write_text(tasks_before, encoding="utf-8")
+    artifacts.tasks_path.write_bytes(tasks_before)
     spec_path = tmp_path / "specs/WI-LEAN/spec.md"
     spec_path.write_text("# Changed acceptance\n", encoding="utf-8")
 
