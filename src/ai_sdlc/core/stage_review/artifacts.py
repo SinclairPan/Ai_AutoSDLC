@@ -27,6 +27,7 @@ else:
 from ai_sdlc.core.stage_review.registry_versions import require_machine_id
 
 _FILESYSTEM_RETRY_DELAYS = (0.02, 0.05, 0.1)
+_GIT_COMMON_DIR_ATTEMPT_TIMEOUTS = (5.0, 15.0)
 _PENDING_TEMPORARY_CLEANUP: set[Path] = set()
 _PENDING_TEMPORARY_CLEANUP_LOCK = threading.Lock()
 
@@ -294,41 +295,49 @@ def bind_repository_project(shared_root: Path, project_id: str) -> None:
 
 def _git_common_dir(root: Path) -> Path | None:
     git_marker = _find_git_marker(root)
-    try:
-        stdout_file = tempfile.TemporaryFile()
-    except OSError as exc:
-        raise SharedStateIntegrityError(
-            "Git common-dir output capture could not be created"
-        ) from exc
-    try:
+    result: subprocess.CompletedProcess[bytes] | None = None
+    raw_output: bytes | None = None
+    last_timeout: subprocess.TimeoutExpired | None = None
+    for timeout_seconds in _GIT_COMMON_DIR_ATTEMPT_TIMEOUTS:
         try:
-            result = subprocess.run(
-                ["git", "rev-parse", "--git-common-dir"],
-                cwd=root,
-                stdout=stdout_file,
-                stderr=subprocess.DEVNULL,
-                check=False,
-                timeout=5,
-            )
-        except (FileNotFoundError, NotADirectoryError) as exc:
-            if git_marker is None:
-                return None
-            raise SharedStateIntegrityError(
-                "Git metadata exists but Git is unavailable"
-            ) from exc
-        except subprocess.TimeoutExpired as exc:
-            raise SharedStateIntegrityError(
-                "Git common-dir resolution timed out"
-            ) from exc
-        try:
-            stdout_file.seek(0)
-            raw_output = stdout_file.read()
+            stdout_file = tempfile.TemporaryFile()
         except OSError as exc:
             raise SharedStateIntegrityError(
-                "Git common-dir output capture could not be read"
+                "Git common-dir output capture could not be created"
             ) from exc
-    finally:
-        stdout_file.close()
+        try:
+            try:
+                result = subprocess.run(
+                    ["git", "rev-parse", "--git-common-dir"],
+                    cwd=root,
+                    stdout=stdout_file,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                    timeout=timeout_seconds,
+                )
+            except (FileNotFoundError, NotADirectoryError) as exc:
+                if git_marker is None:
+                    return None
+                raise SharedStateIntegrityError(
+                    "Git metadata exists but Git is unavailable"
+                ) from exc
+            except subprocess.TimeoutExpired as exc:
+                last_timeout = exc
+                continue
+            try:
+                stdout_file.seek(0)
+                raw_output = stdout_file.read()
+            except OSError as exc:
+                raise SharedStateIntegrityError(
+                    "Git common-dir output capture could not be read"
+                ) from exc
+        finally:
+            stdout_file.close()
+        break
+    if result is None or raw_output is None:
+        raise SharedStateIntegrityError(
+            "Git common-dir resolution timed out"
+        ) from last_timeout
     if result.returncode != 0:
         if git_marker is not None:
             raise SharedStateIntegrityError(

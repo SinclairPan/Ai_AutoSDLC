@@ -11,6 +11,7 @@ from contextlib import AbstractContextManager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from threading import Event, Lock
+from typing import BinaryIO, cast
 
 import pytest
 
@@ -2386,6 +2387,41 @@ def test_git_output_capture_failure_never_falls_back_to_local_state(
         resolve_canonical_shared_state(repository, "project.shared")
 
 
+def test_git_resolution_retries_a_transient_timeout_with_fresh_output_capture(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / ".git").mkdir()
+    calls = 0
+
+    def transient_timeout(
+        *args: object, **kwargs: object
+    ) -> subprocess.CompletedProcess:
+        nonlocal calls
+        calls += 1
+        output = cast(BinaryIO, kwargs["stdout"])
+        if calls == 1:
+            output.write(b"stale-timeout-output")
+            raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+        output.write(b".git\n")
+        return subprocess.CompletedProcess(args[0], 0)
+
+    monkeypatch.setattr(artifacts.subprocess, "run", transient_timeout)
+
+    shared = resolve_canonical_shared_state(repository, "project.shared")
+
+    assert calls == 2
+    assert shared == (
+        repository.resolve()
+        / ".git"
+        / "ai-sdlc-shared-state"
+        / "projects"
+        / "project.shared"
+    )
+
+
 def test_git_resolution_failure_does_not_fall_back_to_worktree_local_state(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -2393,13 +2429,18 @@ def test_git_resolution_failure_does_not_fall_back_to_worktree_local_state(
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / ".git").mkdir()
+    calls = 0
 
     def timeout(*args: object, **kwargs: object) -> object:
+        nonlocal calls
+        calls += 1
         raise subprocess.TimeoutExpired("git", 5)
 
     monkeypatch.setattr("subprocess.run", timeout)
     with pytest.raises(SharedStateIntegrityError, match="Git"):
         resolve_canonical_shared_state(repository, "project.shared")
+
+    assert calls == 2
 
 
 def test_shared_state_symlink_loop_is_reported_as_integrity_failure(
