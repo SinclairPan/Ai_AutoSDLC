@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 
@@ -236,13 +237,16 @@ def test_phase_two_local_pr_user_journey_exports_and_replays_ci_bundle(
 
     closed = close_pr_review(tmp_path)
     assert closed.status == "closed"
-    assert len(
-        tuple(
-            item
-            for item in read_activation_session_records(tmp_path)
-            if item.observation.mode == "enforce"
+    assert (
+        len(
+            tuple(
+                item
+                for item in read_activation_session_records(tmp_path)
+                if item.observation.mode == "enforce"
+            )
         )
-    ) == 1
+        == 1
+    )
     assert len(captured_closes) == 1
     executor_count = len(built_executor_sessions)
     release_count = len(released_sessions)
@@ -724,9 +728,209 @@ def _git(root: Path, *args: str) -> str:
     return result.stdout.strip()
 
 
-def _tree_digest(root: Path) -> str:
-    payload = "\n".join(
-        f"{path.relative_to(root).as_posix()}:{hashlib.sha256(path.read_bytes()).hexdigest()}"
-        for path in sorted(item for item in root.rglob("*") if item.is_file())
+def test_tree_digest_excludes_git_database_churn(tmp_path: Path) -> None:
+    _initialize_digest_repository(tmp_path)
+    object_path = tmp_path / ".git" / "objects" / "aa" / "temporary"
+    object_path.parent.mkdir(parents=True)
+    object_path.write_bytes(b"temporary git object")
+    before = _tree_digest(tmp_path)
+
+    object_path.unlink()
+
+    assert before == _tree_digest(tmp_path)
+
+
+def test_tree_digest_prunes_git_database_before_scanning(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _initialize_digest_repository(tmp_path)
+    original_scandir = os.scandir
+
+    def guarded_scandir(path: str | os.PathLike[str]) -> os.ScandirIterator[str]:
+        relative = Path(path).relative_to(tmp_path)
+        if ".git" in relative.parts:
+            raise AssertionError(f"scanned Git database: {relative}")
+        return original_scandir(path)
+
+    monkeypatch.setattr(os, "scandir", guarded_scandir)
+
+    _tree_digest(tmp_path)
+
+
+def test_tree_digest_hashes_symlink_without_following_target(tmp_path: Path) -> None:
+    _initialize_digest_repository(tmp_path)
+    target_path = tmp_path / ".git" / "objects" / "aa" / "target"
+    target_path.parent.mkdir(parents=True)
+    target_path.write_bytes(b"first target")
+    link_path = tmp_path / "linked-object"
+    _symlink_or_skip(link_path, Path(".git") / "objects" / "aa" / "target")
+    before = _tree_digest(tmp_path)
+
+    target_path.write_bytes(b"changed target")
+
+    assert before == _tree_digest(tmp_path)
+    link_path.unlink()
+    _symlink_or_skip(link_path, Path(".git") / "objects" / "bb" / "other")
+    assert before != _tree_digest(tmp_path)
+
+
+def test_tree_digest_hashes_directory_symlink_without_traversal(tmp_path: Path) -> None:
+    _initialize_digest_repository(tmp_path)
+    target_path = tmp_path / ".git" / "objects" / "aa"
+    target_path.mkdir(parents=True, exist_ok=True)
+    link_path = tmp_path / "linked-directory"
+    _symlink_or_skip(
+        link_path,
+        Path(".git") / "objects" / "aa",
+        target_is_directory=True,
     )
+    before = _tree_digest(tmp_path)
+
+    (target_path / "temporary").write_bytes(b"object churn")
+
+    assert before == _tree_digest(tmp_path)
+    link_path.unlink()
+    _symlink_or_skip(
+        link_path,
+        Path(".git") / "objects" / "bb",
+        target_is_directory=True,
+    )
+    assert before != _tree_digest(tmp_path)
+
+
+def test_tree_digest_detects_worktree_churn(tmp_path: Path) -> None:
+    source_path = _initialize_digest_repository(tmp_path)
+    before = _tree_digest(tmp_path)
+
+    source_path.write_text("changed\n", encoding="utf-8")
+
+    assert before != _tree_digest(tmp_path)
+
+
+@pytest.mark.parametrize("mutation", ["ref", "config", "index"])
+def test_tree_digest_detects_git_semantic_churn(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    _initialize_digest_repository(tmp_path)
+    before = _tree_digest(tmp_path)
+
+    if mutation == "ref":
+        _git(tmp_path, "branch", "unexpected")
+    elif mutation == "config":
+        _git(tmp_path, "config", "test.unexpected", "true")
+    else:
+        _git(tmp_path, "rm", "--cached", "source.txt")
+
+    assert before != _tree_digest(tmp_path)
+
+
+def _initialize_digest_repository(root: Path) -> Path:
+    _git(root, "init")
+    _git(root, "config", "user.email", "ci@example.com")
+    _git(root, "config", "user.name", "CI")
+    source_path = root / "source.txt"
+    source_path.write_text("stable\n", encoding="utf-8")
+    _commit(root, "initial")
+    return source_path
+
+
+def _symlink_or_skip(
+    link_path: Path,
+    target: Path,
+    *,
+    target_is_directory: bool = False,
+) -> None:
+    try:
+        link_path.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as exc:
+        pytest.skip(f"symlink creation is unavailable: {exc}")
+
+
+def _tree_digest(root: Path) -> str:
+    payload = "\n".join((*_worktree_entries(root), *_git_semantic_entries(root)))
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def _worktree_entries(root: Path) -> tuple[str, ...]:
+    entries: list[str] = []
+    for current_root, directory_names, file_names in os.walk(
+        root,
+        topdown=True,
+        followlinks=False,
+    ):
+        current_path = Path(current_root)
+        traversable_directories: list[str] = []
+        for directory_name in sorted(directory_names):
+            path = current_path / directory_name
+            if directory_name == ".git":
+                continue
+            if path.is_symlink():
+                entries.append(_symlink_entry(root, path))
+            else:
+                traversable_directories.append(directory_name)
+        directory_names[:] = traversable_directories
+
+        for file_name in sorted(file_names):
+            if file_name == ".git":
+                continue
+            path = current_path / file_name
+            if path.is_symlink():
+                entries.append(_symlink_entry(root, path))
+            elif path.is_file():
+                entries.append(
+                    "worktree:file:"
+                    f"{path.relative_to(root).as_posix()}:"
+                    f"{hashlib.sha256(path.read_bytes()).hexdigest()}"
+                )
+    return tuple(sorted(entries))
+
+
+def _symlink_entry(root: Path, path: Path) -> str:
+    target_digest = hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+    return f"worktree:symlink:{path.relative_to(root).as_posix()}:{target_digest}"
+
+
+def _git_semantic_entries(root: Path) -> tuple[str, ...]:
+    git_entry = root / ".git"
+    if git_entry.is_file():
+        git_entry_state = f"file:{hashlib.sha256(git_entry.read_bytes()).hexdigest()}"
+    elif git_entry.is_dir():
+        git_entry_state = "directory"
+    else:
+        git_entry_state = "missing"
+
+    symbolic_ref = subprocess.run(
+        ["git", "symbolic-ref", "-q", "HEAD"],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    if symbolic_ref.returncode not in {0, 1}:
+        symbolic_ref.check_returncode()
+
+    return (
+        f"git-entry:{git_entry_state}",
+        f"git-head:{_git(root, 'rev-parse', '--verify', 'HEAD')}",
+        f"git-symbolic-head:{symbolic_ref.returncode}:{symbolic_ref.stdout.strip()}",
+        "git-refs:"
+        + _git(
+            root,
+            "for-each-ref",
+            "--sort=refname",
+            "--format=%(refname)%00%(objectname)%00%(symref)",
+        ),
+        f"git-config:{_git(root, 'config', '--local', '--null', '--list')}",
+        f"git-index:{_git(root, 'ls-files', '--stage', '-z')}",
+        "git-status:"
+        + _git(
+            root,
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+        ),
+    )
