@@ -137,15 +137,16 @@ def _artifact_child_dir(base: Path, identifier: str) -> Path:
 
 def _atomic_write_text(path: Path, content: str) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    if path.exists() and path.read_text(encoding="utf-8") == content:
+    payload = content.encode("utf-8")
+    if path.exists() and path.read_bytes() == payload:
         return path
 
     temp_path = path.with_name(f".{path.name}.{secrets.token_hex(8)}.tmp")
     try:
         try:
-            temp_path.write_text(content, encoding="utf-8")
+            temp_path.write_bytes(payload)
         except PermissionError:
-            path.write_text(content, encoding="utf-8")
+            path.write_bytes(payload)
             return path
         _replace_with_retry(temp_path, path)
     except Exception:

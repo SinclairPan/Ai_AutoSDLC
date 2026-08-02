@@ -634,22 +634,33 @@ if os.name == "nt":
         assert completed.returncode == 0, completed.stderr
 
     def _assert_current_user_owner(path: Path) -> None:
+        target_kind = "directory" if path.is_dir() else "file"
         completed = subprocess.run(
             [
                 "powershell",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
+                "$ErrorActionPreference='Stop'; "
+                "$path=$env:AI_SDLC_TEST_ACL_PATH; "
+                "$kind=$env:AI_SDLC_TEST_ACL_KIND; "
                 "$user=[System.Security.Principal.WindowsIdentity]::GetCurrent().User; "
-                "$owner=(Get-Acl -LiteralPath $args[0]).Owner; "
+                "$acl=if($kind -eq 'directory'){"
+                "[System.IO.Directory]::GetAccessControl($path)"
+                "}else{[System.IO.File]::GetAccessControl($path)}; "
+                "$owner=$acl.Owner; "
                 "$ownerSid=([System.Security.Principal.NTAccount]$owner).Translate("
                 "[System.Security.Principal.SecurityIdentifier]); "
                 "if ($ownerSid.Value -ne $user.Value) { exit 17 }",
-                str(path),
             ],
             capture_output=True,
             text=True,
             check=False,
+            env={
+                **os.environ,
+                "AI_SDLC_TEST_ACL_PATH": str(path),
+                "AI_SDLC_TEST_ACL_KIND": target_kind,
+            },
         )
         assert completed.returncode == 0, completed.stderr
 
@@ -692,10 +703,31 @@ if os.name == "nt":
     ) -> None:
         root = tmp_path / "project;Write-Error injected#.shared"
         root.mkdir()
+        original_run = subprocess.run
+
+        def reject_shell(command, *args, **kwargs):
+            executable = ""
+            if isinstance(command, (list, tuple)) and command:
+                executable = Path(os.fspath(command[0])).name.casefold()
+            if isinstance(command, (str, bytes)) or kwargs.get("shell") or executable in {
+                "bash",
+                "bash.exe",
+                "cmd",
+                "cmd.exe",
+                "powershell",
+                "powershell.exe",
+                "pwsh",
+                "pwsh.exe",
+                "sh",
+                "sh.exe",
+            }:
+                pytest.fail("trusted setup invoked a shell")
+            return original_run(command, *args, **kwargs)
+
         monkeypatch.setattr(
             subprocess,
             "run",
-            lambda *_args, **_kwargs: pytest.fail("trusted setup invoked a shell"),
+            reject_shell,
         )
 
         anchor = SnapshotControlTrustAnchor(root, project_id="project.shared")
@@ -796,20 +828,30 @@ if os.name == "nt":
         external_root = external / anchor.root.relative_to(projects)
         original_open = snapshot_windows_io._open_windows_relative
         opened = 0
+        attempted = 0
+        switch_blocked = 0
+        switched = 0
 
         def switch_around_open(
             directory_handle: int,
             name: str,
             **kwargs: object,
         ) -> int:
-            nonlocal opened
-            projects.rename(original_projects)
+            nonlocal attempted, opened, switch_blocked, switched
+            attempted += 1
+            try:
+                projects.rename(original_projects)
+            except OSError:
+                switch_blocked += 1
+                opened += 1
+                return original_open(directory_handle, name, **kwargs)
             _junction(projects, external)
             try:
                 handle = original_open(directory_handle, name, **kwargs)
             finally:
                 _remove_junction(projects)
                 original_projects.rename(projects)
+            switched += 1
             opened += 1
             return handle
 
@@ -841,7 +883,9 @@ if os.name == "nt":
         ):
             pass
 
+        assert attempted == 5
         assert opened == 5
+        assert switch_blocked + switched == 5
         assert (anchor.root / "created.json").read_bytes() == b"created"
         assert (anchor.root / "replaced.json").read_bytes() == b"new"
         assert not (anchor.root / "removed.json").exists()

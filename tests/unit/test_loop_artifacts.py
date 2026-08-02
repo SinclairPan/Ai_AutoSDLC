@@ -48,6 +48,8 @@ def test_write_json_artifact_serializes_pydantic_model(tmp_path) -> None:
     assert payload["artifact_kind"] == "loop-run"
     assert payload["loop_id"] == "loop-001"
     assert payload["loop_type"] == "local-pr-review"
+    assert written.read_bytes().endswith(b"}\n")
+    assert b"\r\n" not in written.read_bytes()
     assert not list(written.parent.glob("*.tmp"))
 
 
@@ -75,6 +77,16 @@ def test_write_markdown_artifact_normalizes_trailing_newline(tmp_path) -> None:
     written = store.write_markdown_artifact(path, "# Report")
 
     assert written.read_text(encoding="utf-8") == "# Report\n"
+
+
+def test_write_markdown_artifact_rewrites_legacy_crlf_bytes(tmp_path) -> None:
+    store = LoopArtifactStore(tmp_path)
+    path = store.create_review_run_dir("review-001") / "final-report.md"
+    path.write_bytes(b"# Report\r\n")
+
+    written = store.write_markdown_artifact(path, "# Report")
+
+    assert written.read_bytes() == b"# Report\n"
 
 
 def test_concurrent_writers_do_not_share_a_coarse_clock_temporary(

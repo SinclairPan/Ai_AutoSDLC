@@ -243,23 +243,37 @@ def test_trust_anchor_recovers_key_publish_crash_before_first_event(
         / "snapshot-control"
         / "event-anchor.key"
     )
-    script = (
-        "import os, pathlib, sys; "
-        "path = pathlib.Path(sys.argv[1]); "
-        "path.parent.mkdir(parents=True, exist_ok=True, mode=0o700); "
-        "os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600); "
-        "os._exit(0)"
-    )
-    subprocess.run([sys.executable, "-c", script, str(key_path)], check=True)
+    if os.name == "nt":
+        snapshot_trusted_files._prepare_trusted_directory(key_path.parent)
+        with snapshot_windows_io._open_registered_directory(
+            key_path.parent
+        ) as directory_handle:
+            handle = snapshot_windows_io._open_windows_relative(
+                directory_handle,
+                key_path.name,
+                desired_access=0x40000000,
+                creation_disposition=1,
+            )
+            snapshot_windows_io._close_windows_handle(handle)
+    else:
+        script = (
+            "import os, pathlib, sys; "
+            "path = pathlib.Path(sys.argv[1]); "
+            "path.parent.mkdir(parents=True, exist_ok=True, mode=0o700); "
+            "os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600); "
+            "os._exit(0)"
+        )
+        subprocess.run([sys.executable, "-c", script, str(key_path)], check=True)
     assert key_path.stat().st_size == 0
     trusted = root / ".ai-sdlc" / "state" / "trusted"
-    for directory in (
-        trusted,
-        trusted / "projects",
-        trusted / "projects" / "project.shared",
-        key_path.parent,
-    ):
-        directory.chmod(0o700)
+    if os.name != "nt":
+        for directory in (
+            trusted,
+            trusted / "projects",
+            trusted / "projects" / "project.shared",
+            key_path.parent,
+        ):
+            directory.chmod(0o700)
 
     anchor = SnapshotControlTrustAnchor(root, project_id="project.shared")
 
@@ -346,16 +360,18 @@ def test_trust_anchor_rejects_or_removes_unsafe_intermediate_permissions(
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$rules=(Get-Acl -LiteralPath $args[0]).Access; "
-                "$ids=$rules | ForEach-Object { "
-                "$_.IdentityReference.Translate("
-                "[System.Security.Principal.SecurityIdentifier]).Value }; "
+                "$ErrorActionPreference='Stop'; "
+                "$acl=[System.IO.Directory]::GetAccessControl("
+                "$env:AI_SDLC_TEST_ACL_PATH); "
+                "$rules=$acl.GetAccessRules($true,$true,"
+                "[System.Security.Principal.SecurityIdentifier]); "
+                "$ids=$rules | ForEach-Object { $_.IdentityReference.Value }; "
                 "if ($ids -contains 'S-1-1-0') { exit 1 }",
-                str(projects),
             ],
             capture_output=True,
             text=True,
             check=False,
+            env={**os.environ, "AI_SDLC_TEST_ACL_PATH": str(projects)},
         )
         assert verified.returncode == 0, verified.stderr
     else:
@@ -498,21 +514,34 @@ if os.name != "nt":
 if os.name == "nt":
 
     def _set_windows_owner_to_administrators(path: Path) -> None:
+        target_kind = "directory" if path.is_dir() else "file"
         completed = subprocess.run(
             [
                 "powershell",
                 "-NoProfile",
                 "-NonInteractive",
                 "-Command",
-                "$acl=Get-Acl -LiteralPath $args[0]; "
+                "$ErrorActionPreference='Stop'; "
+                "$path=$env:AI_SDLC_TEST_ACL_PATH; "
+                "$kind=$env:AI_SDLC_TEST_ACL_KIND; "
+                "$acl=if($kind -eq 'directory'){"
+                "[System.IO.Directory]::GetAccessControl($path)"
+                "}else{[System.IO.File]::GetAccessControl($path)}; "
                 "$owner=[System.Security.Principal.NTAccount]::new("
                 "'BUILTIN','Administrators'); "
-                "$acl.SetOwner($owner); Set-Acl -LiteralPath $args[0] -AclObject $acl",
-                str(path),
+                "$acl.SetOwner($owner); "
+                "if($kind -eq 'directory'){"
+                "[System.IO.Directory]::SetAccessControl($path,$acl)"
+                "}else{[System.IO.File]::SetAccessControl($path,$acl)}",
             ],
             capture_output=True,
             text=True,
             check=False,
+            env={
+                **os.environ,
+                "AI_SDLC_TEST_ACL_PATH": str(path),
+                "AI_SDLC_TEST_ACL_KIND": target_kind,
+            },
         )
         assert completed.returncode == 0, completed.stderr
 
