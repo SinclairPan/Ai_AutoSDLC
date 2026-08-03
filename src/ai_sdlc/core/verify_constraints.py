@@ -266,18 +266,20 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     USER_GUIDE_REL: (
         "# AI-SDLC 1.0.1 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1",
-        "git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "## 第一章：全新用户 + 全新空项目",
+        "## 第二章：全新用户 + 已有项目",
         "Windows",
         "macOS",
         "Linux",
+        "ai-sdlc-offline-1.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
         "-AddToPath",
         "--add-to-path",
-        "python -m ai_sdlc",
-        "ai-sdlc init . --agent-target codex --shell powershell",
-        "--require-checksums",
-        "--expected-package-version 1.0.1",
-        "--archive-checksum",
+        "ai-sdlc init .",
+        "ai-sdlc adopt .",
+        "当前结果 / Result",
+        "下一步 / Next",
     ),
     OFFLINE_README_REL: (
         "# AI-SDLC 1.0.1 离线打包说明",
@@ -322,17 +324,14 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
 }
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "# AI-SDLC 1.0.1 中文用户指南",
-    "## 2. 安装 AI-SDLC",
-    "## 3. 初始化项目：Codex + PowerShell",
-    "## 4. 接入已有项目",
-    "## 5. 日常研发工作流",
-    "## 6. 恢复与连续工作",
-    "## 7. 质量门禁",
-    "## 8. 本地对抗 PR 审查",
-    "## 9. AgentOps 接入",
-    "## 10. 离线包构建",
-    "## 11. 常见问题",
-    "## 12. 验收清单",
+    "## 第一章：全新用户 + 全新空项目",
+    "## 第二章：全新用户 + 已有项目",
+    "### 1.1 Windows",
+    "### 1.2 macOS（Apple Silicon）",
+    "### 1.3 Linux（amd64）",
+    "### 1.4 选择 AI 适配器和 Shell",
+    "### 2.4 选择 AI 适配器和 Shell",
+    "## 异常情况速查",
     "ai-sdlc-offline-1.0.1-windows-amd64.zip",
     "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
     "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
@@ -341,18 +340,34 @@ BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "sha256sum -c",
     "-AddToPath",
     "--add-to-path",
-    "python -m ai_sdlc",
-    "ai-sdlc init . --agent-target codex --shell powershell",
-    "ai-sdlc run --dry-run",
+    "Claude Code",
+    "Codex",
+    "Cursor",
+    "VS Code",
+    "其他-通用",
+    "实际用于聊天开发的 AI 代理入口",
+    "ai-sdlc init .",
+    "Initialized AI-SDLC project",
+    "当前结果 / Result",
+    "下一步 / Next",
 )
 BEGINNER_GUIDE_EXISTING_PROJECT_INIT_TOKENS = (
-    "## 4. 接入已有项目",
+    "## 第二章：全新用户 + 已有项目",
     "ai-sdlc adopt .",
-    "ai-sdlc scan .",
-    "ai-sdlc index .",
-    "不修改业务源文件",
+    "接入已有项目：已生成桥接结果",
+    "原任务文件不会被修改",
+    "推荐继续点",
 )
-BEGINNER_GUIDE_FORBIDDEN_TOKENS: tuple[str, ...] = ()
+BEGINNER_GUIDE_FORBIDDEN_TOKENS = (
+    "老版本升级",
+    "从源码运行",
+    "@main",
+    "uv sync",
+    "git+https://github.com/SinclairPan/Ai_AutoSDLC.git",
+    "git clone --branch",
+    "开发版",
+    "Codex + PowerShell 为默认组合",
+)
 README_CLI_PATH_REQUIRED_TOKENS = (
     "## 快速开始",
     "ai-sdlc init . --agent-target codex --shell powershell",
@@ -4595,7 +4610,7 @@ def _beginner_guide_cli_path_blockers(root: Path) -> list[str]:
     forbidden = [token for token in BEGINNER_GUIDE_FORBIDDEN_TOKENS if token in text]
     if forbidden:
         blockers.append(
-            "BLOCKER: beginner guide CLI path regressed to old manual setup steps: "
+            "BLOCKER: beginner guide CLI path contains out-of-scope content: "
             f"{', '.join(forbidden)}"
         )
     return blockers

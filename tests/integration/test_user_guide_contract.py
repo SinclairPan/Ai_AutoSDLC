@@ -4,7 +4,6 @@ from pathlib import Path
 
 from ai_sdlc.integrations.agent_target import AGENT_TARGET_OPTIONS, agent_target_label
 
-
 ROOT = Path(__file__).resolve().parents[2]
 GUIDE = ROOT / "USER_GUIDE.zh-CN.md"
 
