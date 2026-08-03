@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the public AI-SDLC 1.0.0 release identity."""
+"""Validate the public AI-SDLC 1.0.1 release identity."""
 
 from __future__ import annotations
 
@@ -11,7 +11,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CURRENT_REPOSITORY_URL = "https://github.com/SinclairPan/Ai_AutoSDLC"
-CURRENT_VERSION = "1.0.0"
+CURRENT_VERSION = "1.0.1"
+STABLE_SOURCE_CLONE = (
+    "git clone --branch v1.0.1 --depth 1 "
+    "https://github.com/SinclairPan/Ai_AutoSDLC.git"
+)
 
 PUBLIC_DOC_PATHS = {
     "docs/enterprise-agentops-setup.zh-CN.md",
@@ -22,10 +26,21 @@ PUBLIC_DOC_PATHS = {
 }
 
 REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
-    "README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
-    "USER_GUIDE.zh-CN.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
+    "README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION, STABLE_SOURCE_CLONE),
+    "USER_GUIDE.zh-CN.md": (
+        CURRENT_REPOSITORY_URL,
+        CURRENT_VERSION,
+        STABLE_SOURCE_CLONE,
+        "--require-checksums",
+        "--expected-package-version 1.0.1",
+        "--archive-checksum",
+    ),
     "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
-    "packaging/offline/README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
+    "packaging/offline/README.md": (
+        CURRENT_REPOSITORY_URL,
+        CURRENT_VERSION,
+        STABLE_SOURCE_CLONE,
+    ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,

@@ -1,4 +1,4 @@
-# AI-SDLC 1.0.0 中文用户指南
+# AI-SDLC 1.0.1 中文用户指南
 
 AI-SDLC 用一套本地命令把项目规则、AI 代理、工程闭环、质量门禁和交付证据连接起来。本指南以 Codex + PowerShell 为默认组合，同时给出 macOS、Linux 和 Windows 的安装方式。
 
@@ -26,15 +26,17 @@ git --version
 Windows、macOS 和 Linux 都可以执行：
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@main"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1"
 ai-sdlc --version
 ```
 
 正确版本为：
 
 ```text
-1.0.0
+1.0.1
 ```
+
+如果需要验证尚未发布的开发版，可显式使用 `@main`；开发版会随主线变化，不承诺输出稳定版版本号。
 
 如果命令没有加入 PATH，可改用模块入口：
 
@@ -46,7 +48,7 @@ python -m ai_sdlc --help
 ### 2.2 从源码运行
 
 ```powershell
-git clone https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -58,17 +60,23 @@ uv run ai-sdlc --version
 
 离线包名称：
 
-- Windows：`ai-sdlc-offline-1.0.0-windows-amd64.zip`
-- macOS：`ai-sdlc-offline-1.0.0-macos-arm64.tar.gz`
-- Linux：`ai-sdlc-offline-1.0.0-linux-amd64.tar.gz`
+- Windows：`ai-sdlc-offline-1.0.1-windows-amd64.zip`
+- macOS：`ai-sdlc-offline-1.0.1-macos-arm64.tar.gz`
+- Linux：`ai-sdlc-offline-1.0.1-linux-amd64.tar.gz`
 
 #### Windows
 
 ```powershell
-$PackageName = "ai-sdlc-offline-1.0.0-windows-amd64.zip"
-$BundleName = "ai-sdlc-offline-1.0.0-windows-amd64"
+$PackageName = "ai-sdlc-offline-1.0.1-windows-amd64.zip"
+$ChecksumName = "$PackageName.sha256"
+$BundleName = "ai-sdlc-offline-1.0.1-windows-amd64"
 $InstallRoot = Join-Path (Get-Location) ".ai-sdlc-install"
 
+$ChecksumParts = (Get-Content -LiteralPath $ChecksumName -Raw).Trim() -split '\s+', 2
+$ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackageName).Hash.ToLowerInvariant()
+if ($ChecksumParts.Count -ne 2 -or $ChecksumParts[1] -ne $PackageName -or $ChecksumParts[0].ToLowerInvariant() -ne $ActualHash) {
+  throw "SHA256 verification failed for $PackageName"
+}
 New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
 Expand-Archive -LiteralPath $PackageName -DestinationPath $InstallRoot -Force
 Set-Location (Join-Path $InstallRoot $BundleName)
@@ -81,8 +89,9 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddTo
 #### macOS
 
 ```bash
-tar xzf ai-sdlc-offline-1.0.0-macos-arm64.tar.gz
-cd ai-sdlc-offline-1.0.0-macos-arm64
+shasum -a 256 -c ai-sdlc-offline-1.0.1-macos-arm64.tar.gz.sha256
+tar xzf ai-sdlc-offline-1.0.1-macos-arm64.tar.gz
+cd ai-sdlc-offline-1.0.1-macos-arm64
 ./install_offline.sh --add-to-path
 ./.venv/bin/ai-sdlc --version
 ```
@@ -90,8 +99,9 @@ cd ai-sdlc-offline-1.0.0-macos-arm64
 #### Linux
 
 ```bash
-tar xzf ai-sdlc-offline-1.0.0-linux-amd64.tar.gz
-cd ai-sdlc-offline-1.0.0-linux-amd64
+sha256sum -c ai-sdlc-offline-1.0.1-linux-amd64.tar.gz.sha256
+tar xzf ai-sdlc-offline-1.0.1-linux-amd64.tar.gz
+cd ai-sdlc-offline-1.0.1-linux-amd64
 ./install_offline.sh --add-to-path
 ./.venv/bin/ai-sdlc --version
 ```
@@ -410,12 +420,14 @@ ai-sdlc enterprise configure --help
 bash packaging/offline/build_offline_bundle.sh
 ```
 
-产物位于 `dist-offline/`。打包脚本读取 `pyproject.toml` 中的 `1.0.0` 版本，并生成 manifest、SHA256 校验和、wheelhouse 与安装脚本。
+产物位于 `dist-offline/`。打包脚本读取 `pyproject.toml` 中的 `1.0.1` 版本，并生成 manifest、SHA256 校验和、wheelhouse 与安装脚本。
 
 验证包内容：
 
 ```powershell
-python packaging/offline/verify_offline_bundle.py dist-offline/<解压后的包目录> --require-bundled-runtime
+$BundleDir = "dist-offline/ai-sdlc-offline-1.0.1-windows-amd64"
+$Archive = "dist-offline/ai-sdlc-offline-1.0.1-windows-amd64.zip"
+python packaging/offline/verify_offline_bundle.py $BundleDir --require-bundled-runtime --require-checksums --expected-package-version 1.0.1 --archive-checksum $Archive "$Archive.sha256"
 ```
 
 正式交付前，应在目标操作系统上完成：解压、离线安装、`--version`、`--help`、Codex 初始化、adapter status 和 `run --dry-run`。
@@ -464,7 +476,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddTo
 
 ## 12. 验收清单
 
-- `ai-sdlc --version` 输出 `1.0.0`；
+- `ai-sdlc --version` 输出 `1.0.1`；
 - `ai-sdlc adapter status` 显示 Codex 项目规则已准备；
 - 项目 Shell 偏好为 PowerShell；
 - `ai-sdlc status` 能读取 checkpoint；

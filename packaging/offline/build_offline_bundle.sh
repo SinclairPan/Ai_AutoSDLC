@@ -26,7 +26,13 @@ OUT="${ROOT}/dist-offline/${OUT_BASENAME}"
 ARCHIVE="${ROOT}/dist-offline/${OUT_BASENAME}.tar.gz"
 ZIP_ARCHIVE="${ROOT}/dist-offline/${OUT_BASENAME}.zip"
 MANIFEST="${OUT}/bundle-manifest.json"
+CHECKSUMS="${OUT}/SHA256SUMS"
 RUNTIME_BUNDLED="false"
+
+if [[ -n "${RELEASE_TAG:-}" && "${RELEASE_TAG}" != "v${VERSION}" ]]; then
+  echo "error: RELEASE_TAG=${RELEASE_TAG} does not match package version ${VERSION}" >&2
+  exit 1
+fi
 
 _pick_py() {
   local c
@@ -165,7 +171,23 @@ manifest_path.write_text(
 )
 PY
 
-"${PY}" "${SCRIPT_DIR}/verify_offline_bundle.py" "${OUT}"
+"${PY}" - "${OUT}" "${CHECKSUMS}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import sys
+from pathlib import Path
+
+bundle_root = Path(sys.argv[1]).resolve()
+checksums_path = Path(sys.argv[2]).resolve()
+entries: list[str] = []
+for path in sorted(bundle_root.rglob("*"), key=lambda item: item.as_posix()):
+    if not path.is_file() or path.resolve() == checksums_path:
+        continue
+    digest = hashlib.sha256(path.read_bytes()).hexdigest()
+    entries.append(f"{digest}  {path.relative_to(bundle_root).as_posix()}")
+checksums_path.write_text("\n".join(entries) + "\n", encoding="utf-8")
+PY
 
 mkdir -p "${ROOT}/dist-offline"
 rm -f "${ARCHIVE}"
@@ -190,6 +212,29 @@ with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as zf:
         if path.is_file():
             zf.write(path, path.relative_to(root))
 PY
+
+"${PY}" - "${ARCHIVE}" "${ZIP_ARCHIVE}" <<'PY'
+from __future__ import annotations
+
+import hashlib
+import sys
+from pathlib import Path
+
+for raw_path in sys.argv[1:]:
+    archive_path = Path(raw_path).resolve()
+    digest = hashlib.sha256(archive_path.read_bytes()).hexdigest()
+    sidecar_path = archive_path.with_name(archive_path.name + ".sha256")
+    sidecar_path.write_text(
+        f"{digest}  {archive_path.name}\n",
+        encoding="utf-8",
+    )
+PY
+
+"${PY}" "${SCRIPT_DIR}/verify_offline_bundle.py" "${OUT}" \
+  --require-checksums \
+  --expected-package-version "${VERSION}" \
+  --archive-checksum "${ARCHIVE}" "${ARCHIVE}.sha256" \
+  --archive-checksum "${ZIP_ARCHIVE}" "${ZIP_ARCHIVE}.sha256"
 
 echo ""
 echo "Done."

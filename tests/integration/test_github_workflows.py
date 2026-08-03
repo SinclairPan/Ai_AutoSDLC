@@ -202,19 +202,25 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v1.0.0" in workflow
+    assert "default: v1.0.1" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
-    assert "ai-sdlc-offline-*-windows-*.zip" in workflow
-    assert "ai-sdlc-offline-*-${RELEASE_ASSET_OS}-*.tar.gz" in workflow
+    assert "ref: ${{ github.event.release.tag_name || inputs.tag }}" in workflow
+    assert "ai-sdlc-offline-$releaseVersion-windows-$env:RELEASE_ASSET_MACHINE.zip" in workflow
+    assert "ai-sdlc-offline-${release_version}-${RELEASE_ASSET_OS}-${RELEASE_ASSET_MACHINE}.tar.gz" in workflow
     assert "RELEASE_ASSET_OS" in workflow
+    assert "RELEASE_ASSET_MACHINE" in workflow
+    assert ".sha256" in workflow
     assert "install_offline.ps1" in workflow
     assert "./install_offline.sh" in workflow
     assert "actions/setup-python@v6" in workflow
     assert "verify_offline_bundle.py" in workflow
     assert "--require-bundled-runtime" in workflow
+    assert "--require-checksums" in workflow
+    assert "--expected-package-version" in workflow
+    assert "--archive-checksum" in workflow
     assert "--install-log" in workflow
     assert "verify_offline_bundle.py failed with exit code" in workflow
     assert "adapter status" in workflow
@@ -229,8 +235,21 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
     assert "$env:Path = $cliDir + [IO.Path]::PathSeparator + $env:Path" in workflow
     assert "Get-Command ai-sdlc" in workflow
     assert "ai-sdlc --help" in workflow
+    assert "ai-sdlc --version" in workflow
     assert "install_offline.sh --add-to-path" in workflow
     assert "command -v ai-sdlc" in workflow
+    windows_hash = workflow.index(
+        "Get-FileHash -Algorithm SHA256 -LiteralPath $archive.FullName"
+    )
+    windows_extract = workflow.index("Expand-Archive -LiteralPath $archive.FullName")
+    windows_verify = workflow.index("--require-checksums", windows_extract)
+    windows_install = workflow.index("install_offline.ps1 -AddToPath", windows_extract)
+    assert windows_hash < windows_extract < windows_verify < windows_install
+    posix_hash = workflow.index('actual_archive_hash="$(')
+    posix_extract = workflow.index('tar xzf "${archive}"')
+    posix_verify = workflow.index("--require-checksums", posix_extract)
+    posix_install = workflow.index("./install_offline.sh --add-to-path", posix_extract)
+    assert posix_hash < posix_extract < posix_verify < posix_install
 
 
 def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> None:
@@ -241,7 +260,9 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v1.0.0" in workflow
+    assert "default: v1.0.1" in workflow
+    assert "ref: ${{ inputs.tag }}" in workflow
+    assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
@@ -254,12 +275,16 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     assert "./install_offline.sh" in workflow
     assert "verify_offline_bundle.py" in workflow
     assert "--require-bundled-runtime" in workflow
+    assert "--require-checksums" in workflow
+    assert "--expected-package-version" in workflow
+    assert "--archive-checksum" in workflow
     assert "--install-log" in workflow
     assert "verify_offline_bundle.py failed with exit code" in workflow
     assert "adapter status" in workflow
     assert "run --dry-run" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "gh release upload" in workflow
+    assert '"${asset}.sha256"' in workflow
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in workflow
     assert (
         "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath"
@@ -269,8 +294,21 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     assert "$env:Path = $cliDir + [IO.Path]::PathSeparator + $env:Path" in workflow
     assert "Get-Command ai-sdlc" in workflow
     assert "ai-sdlc --help" in workflow
+    assert "ai-sdlc --version" in workflow
     assert "install_offline.sh --add-to-path" in workflow
     assert "command -v ai-sdlc" in workflow
+    windows_hash = workflow.index(
+        "Get-FileHash -Algorithm SHA256 -LiteralPath $archive.FullName"
+    )
+    windows_extract = workflow.index("Expand-Archive -LiteralPath $archive.FullName")
+    windows_verify = workflow.index("--require-checksums", windows_extract)
+    windows_install = workflow.index("install_offline.ps1 -AddToPath", windows_extract)
+    assert windows_hash < windows_extract < windows_verify < windows_install
+    posix_hash = workflow.index('actual_archive_hash="$(')
+    posix_extract = workflow.index('tar xzf "${archive}"')
+    posix_verify = workflow.index("--require-checksums", posix_extract)
+    posix_install = workflow.index("./install_offline.sh --add-to-path", posix_extract)
+    assert posix_hash < posix_extract < posix_verify < posix_install
 
 
 def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
@@ -283,16 +321,18 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v1.0.0" in workflow
+    assert "default: v1.0.1" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2, Scenario B" in workflow
     assert "my-existing-project" in workflow
-    assert "ai-sdlc-offline-1.0.0-windows-amd64" in workflow
-    assert "releases/download/v1.0.0" in workflow
+    assert "ai-sdlc-offline-1.0.1-windows-amd64" in workflow
+    assert "releases/download/v1.0.1" in workflow
     assert "Invoke-WebRequest" in workflow
+    assert ".sha256" in workflow
+    assert "Get-FileHash -Algorithm SHA256" in workflow
     assert "Expand-Archive" in workflow
     assert "-ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath" in workflow
     assert ".\\.venv\\Scripts\\python.exe -m ai_sdlc --help" in workflow
@@ -334,6 +374,7 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     )
     assert all(path_filter in workflow for path_filter in install_inputs)
     assert "clean-online-interactive-user-journey:" in workflow
+    assert "remote-release-tag" in workflow
     assert (
         "raw.githubusercontent.com/$sourceRepository/"
         "$remoteSha/packaging/install_online.ps1" in workflow
@@ -352,15 +393,15 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert "import ai_sdlc" not in driver
 
 
-def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None:
+def test_windows_clean_user_e2e_pins_release_tag_before_online_install() -> None:
     workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
 
     workflow = workflow_path.read_text(encoding="utf-8").split(
         "clean-online-interactive-user-journey:", 1
     )[1]
-    resolve_remote_main = (
-        "$remoteSha = ((git ls-remote "
-        "https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main)"
+    resolve_release_tag = (
+        'git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git '
+        '"refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}"'
     )
     pinned_installer = (
         "raw.githubusercontent.com/$sourceRepository/"
@@ -368,12 +409,13 @@ def test_windows_clean_user_e2e_pins_remote_main_before_online_install() -> None
     )
     pinned_package = "git+https://github.com/$sourceRepository.git@$remoteSha"
 
-    assert resolve_remote_main in workflow
+    assert resolve_release_tag in workflow
+    assert '$sourceKind = "remote-release-tag"' in workflow
     assert pinned_installer in workflow
     assert pinned_package in workflow
-    assert workflow.index(resolve_remote_main) < workflow.index(pinned_installer)
+    assert workflow.index(resolve_release_tag) < workflow.index(pinned_installer)
     assert workflow.index(pinned_installer) < workflow.index("Invoke-WebRequest")
-    assert workflow.count(resolve_remote_main) == 1
+    assert workflow.count(resolve_release_tag) == 1
     assert "$directUrl.vcs_info.requested_revision -ne $remoteSha" in workflow
 
 

@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag that will receive the platform assets.
         required: true
-        default: v1.0.0
+        default: v1.0.1
       upload_to_release:
         description: Upload smoke-passed assets to the existing GitHub Release.
         required: true
@@ -33,12 +33,15 @@ jobs:
       matrix:
         include:
           - asset_os: windows
+            asset_machine: amd64
             runner: windows-latest
             archive: zip
           - asset_os: macos
+            asset_machine: arm64
             runner: macos-latest
             archive: tar.gz
           - asset_os: linux
+            asset_machine: amd64
             runner: ubuntu-latest
             archive: tar.gz
 
@@ -51,6 +54,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Validate exact release tag source
+        shell: bash
+        run: |
+          set -euo pipefail
+          package_version="$(awk -F'"' '/^version =/ {print $2; exit}' pyproject.toml)"
+          if [[ "${RELEASE_TAG}" != "v${package_version}" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not match package version ${package_version}." >&2
+            exit 1
+          fi
+          head_commit="$(git rev-parse HEAD)"
+          tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+          if [[ "${head_commit}" != "${tag_commit}" ]]; then
+            echo "Checked-out source ${head_commit} does not match ${RELEASE_TAG} commit ${tag_commit}." >&2
+            exit 1
+          fi
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -101,6 +123,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${AI_SDLC_RELEASE_ASSET_OS}" != "${{ matrix.asset_os }}" || "${AI_SDLC_RELEASE_ASSET_MACHINE}" != "${{ matrix.asset_machine }}" ]]; then
+            echo "Runner identity ${AI_SDLC_RELEASE_ASSET_OS}-${AI_SDLC_RELEASE_ASSET_MACHINE} does not match required release asset ${{ matrix.asset_os }}-${{ matrix.asset_machine }}." >&2
+            exit 1
+          fi
           uv python install 3.11
           runtime_python="$(uv python find --managed-python 3.11)"
           if command -v cygpath >/dev/null 2>&1; then
@@ -129,9 +155,21 @@ jobs:
           [Console]::OutputEncoding = $utf8
           $OutputEncoding = $utf8
 
-          $archive = Get-ChildItem -Path "dist-offline" -Filter "ai-sdlc-offline-*.zip" -File | Select-Object -First 1
-          if (-not $archive) {
-            throw "Expected platform zip archive was not produced."
+          $releaseVersion = $env:RELEASE_TAG.Substring(1)
+          $archivePath = Join-Path "dist-offline" "ai-sdlc-offline-$releaseVersion-$env:AI_SDLC_RELEASE_ASSET_OS-$env:AI_SDLC_RELEASE_ASSET_MACHINE.zip"
+          $archive = Get-Item -LiteralPath $archivePath -ErrorAction SilentlyContinue
+          $checksumPath = "$($archive.FullName).sha256"
+          if (-not $archive -or -not (Test-Path -LiteralPath $checksumPath)) {
+            throw "Expected exact platform zip archive and SHA256 sidecar were not produced: $archivePath"
+          }
+          $checksumParts = (Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+', 2
+          $actualArchiveHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $archive.FullName).Hash.ToLowerInvariant()
+          if (
+            $checksumParts.Count -ne 2 -or
+            $checksumParts[1] -ne $archive.Name -or
+            $checksumParts[0].ToLowerInvariant() -ne $actualArchiveHash
+          ) {
+            throw "Archive SHA256 verification failed before extraction: $($archive.Name)"
           }
 
           $smokeRoot = Join-Path $env:RUNNER_TEMP "ai-sdlc-release-build-smoke"
@@ -143,6 +181,15 @@ jobs:
           $bundleDir = Get-ChildItem -Path $smokeRoot -Directory | Select-Object -First 1
           if (-not $bundleDir) {
             throw "Expanded archive did not contain a bundle directory."
+          }
+
+          python packaging/offline/verify_offline_bundle.py $bundleDir.FullName `
+            --require-bundled-runtime `
+            --require-checksums `
+            --expected-package-version $releaseVersion `
+            --archive-checksum $archive.FullName $checksumPath
+          if ($LASTEXITCODE -ne 0) {
+            throw "Pre-install verify_offline_bundle.py failed with exit code $LASTEXITCODE"
           }
 
           $digest = (Get-FileHash -Algorithm SHA256 "AGENTS.md").Hash.ToLowerInvariant()
@@ -162,6 +209,7 @@ jobs:
 
           python packaging/offline/verify_offline_bundle.py $bundleDir.FullName `
             --require-bundled-runtime `
+            --expected-package-version $releaseVersion `
             --install-log (Join-Path $evidenceRoot "install.log")
           if ($LASTEXITCODE -ne 0) {
             throw "verify_offline_bundle.py failed with exit code $LASTEXITCODE"
@@ -176,6 +224,12 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "ai-sdlc --help failed with exit code $LASTEXITCODE"
           }
+          $actualVersion = (ai-sdlc --version).Trim()
+          $expectedVersion = $env:RELEASE_TAG.Substring(1)
+          if ($actualVersion -ne $expectedVersion) {
+            throw "Installed CLI version $actualVersion does not match release tag $env:RELEASE_TAG."
+          }
+          $actualVersion | Out-File -FilePath (Join-Path $evidenceRoot "version.txt") -Encoding utf8
           Push-Location $env:GITHUB_WORKSPACE
           ai-sdlc adapter status *>&1 | Tee-Object -FilePath (Join-Path $evidenceRoot "adapter-status.txt")
           if ($LASTEXITCODE -ne 0) {
@@ -193,9 +247,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          archive="$(find dist-offline -maxdepth 1 -name 'ai-sdlc-offline-*.tar.gz' -type f | head -n 1)"
-          if [[ -z "${archive}" ]]; then
-            echo "Expected platform tar archive was not produced." >&2
+          release_version="${RELEASE_TAG#v}"
+          archive="dist-offline/ai-sdlc-offline-${release_version}-${AI_SDLC_RELEASE_ASSET_OS}-${AI_SDLC_RELEASE_ASSET_MACHINE}.tar.gz"
+          checksum_path="${archive}.sha256"
+          if [[ ! -f "${archive}" || ! -f "${checksum_path}" ]]; then
+            echo "Expected exact platform tar archive and SHA256 sidecar were not produced: ${archive}" >&2
+            exit 1
+          fi
+          checksum_line="$(tr -d '\r' < "${checksum_path}")"
+          expected_archive_hash="${checksum_line%%  *}"
+          sidecar_archive_name="${checksum_line#*  }"
+          if command -v sha256sum >/dev/null 2>&1; then
+            actual_archive_hash="$(sha256sum "${archive}" | awk '{print $1}')"
+          else
+            actual_archive_hash="$(shasum -a 256 "${archive}" | awk '{print $1}')"
+          fi
+          expected_archive_hash_lower="$(printf '%s' "${expected_archive_hash}" | tr '[:upper:]' '[:lower:]')"
+          if [[ ! "${expected_archive_hash}" =~ ^[0-9a-fA-F]{64}$ || "${sidecar_archive_name}" != "$(basename "${archive}")" || "${actual_archive_hash}" != "${expected_archive_hash_lower}" ]]; then
+            echo "Archive SHA256 verification failed before extraction: ${archive}" >&2
             exit 1
           fi
 
@@ -210,6 +279,12 @@ jobs:
             echo "Expanded archive did not contain a bundle directory." >&2
             exit 1
           fi
+
+          python packaging/offline/verify_offline_bundle.py "${bundle_dir}" \
+            --require-bundled-runtime \
+            --require-checksums \
+            --expected-package-version "${release_version}" \
+            --archive-checksum "${archive}" "${checksum_path}"
 
           digest="$(python - <<'PY'
           from pathlib import Path
@@ -227,11 +302,18 @@ jobs:
 
           python packaging/offline/verify_offline_bundle.py "${bundle_dir}" \
             --require-bundled-runtime \
+            --expected-package-version "${release_version}" \
             --install-log "${evidence_root}/install.log"
 
           export PATH="${HOME}/.local/bin:${PATH}"
           command -v ai-sdlc >/dev/null
           ai-sdlc --help 2>&1 | tee "${evidence_root}/help.txt"
+          actual_version="$(ai-sdlc --version)"
+          if [[ "${actual_version}" != "${release_version}" ]]; then
+            echo "Installed CLI version ${actual_version} does not match release tag ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          printf '%s\n' "${actual_version}" > "${evidence_root}/version.txt"
           ai-sdlc adapter status 2>&1 | tee "${evidence_root}/adapter-status.txt"
           ai-sdlc run --dry-run 2>&1 | tee "${evidence_root}/run-dry-run.txt"
           cp "${bundle_dir}/bundle-manifest.json" "${evidence_root}/"
@@ -249,14 +331,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          release_version="${RELEASE_TAG#v}"
+          asset_base="dist-offline/ai-sdlc-offline-${release_version}-${AI_SDLC_RELEASE_ASSET_OS}-${AI_SDLC_RELEASE_ASSET_MACHINE}"
           if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            asset="$(find dist-offline -maxdepth 1 -name 'ai-sdlc-offline-*.zip' -type f | head -n 1)"
+            asset="${asset_base}.zip"
           else
-            asset="$(find dist-offline -maxdepth 1 -name 'ai-sdlc-offline-*.tar.gz' -type f | head -n 1)"
+            asset="${asset_base}.tar.gz"
           fi
-          if [[ -z "${asset}" ]]; then
-            echo "No asset found for release upload." >&2
+          if [[ ! -f "${asset}" || ! -f "${asset}.sha256" ]]; then
+            echo "Release asset or SHA256 sidecar is missing: ${asset}" >&2
             exit 1
           fi
           gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
-          gh release upload "${RELEASE_TAG}" "${asset}" --clobber --repo "${GITHUB_REPOSITORY}"
+          gh release upload "${RELEASE_TAG}" "${asset}" "${asset}.sha256" --clobber --repo "${GITHUB_REPOSITORY}"
