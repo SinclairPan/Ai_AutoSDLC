@@ -1,4 +1,4 @@
-# AI-SDLC 1.0.1 离线打包说明
+# AI-SDLC 1.0.2 离线打包说明
 
 离线打包用于在可联网构建机准备完整制品，再交付到无法访问软件源的 Windows、macOS 或 Linux 环境。
 
@@ -8,7 +8,7 @@
 
 每个离线包包含：
 
-- AI-SDLC 1.0.1 wheel；
+- AI-SDLC 1.0.2 wheel；
 - 运行依赖 wheelhouse；
 - `install_offline.ps1`、`install_offline.bat`、`install_offline.sh`；
 - `bundle-manifest.json`；
@@ -18,16 +18,16 @@
 
 平台制品名称：
 
-- `ai-sdlc-offline-1.0.1-windows-amd64.zip`
-- `ai-sdlc-offline-1.0.1-macos-arm64.tar.gz`
-- `ai-sdlc-offline-1.0.1-linux-amd64.tar.gz`
+- `ai-sdlc-offline-1.0.2-windows-amd64.zip`
+- `ai-sdlc-offline-1.0.2-macos-arm64.tar.gz`
+- `ai-sdlc-offline-1.0.2-linux-amd64.tar.gz`
 
 ## 通用构建
 
 在仓库根目录执行：
 
 ```bash
-git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 cd Ai_AutoSDLC
 uv sync
 bash packaging/offline/build_offline_bundle.sh
@@ -75,13 +75,13 @@ bash packaging/offline/build_offline_bundle.sh
 先使用压缩包旁的同名 `.sha256` 文件校验下载结果，再解压制品。解压后执行：
 
 ```powershell
-python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --require-checksums --expected-package-version 1.0.1 --archive-checksum <archive> <archive>.sha256
+python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --require-checksums --expected-package-version 1.0.2 --archive-checksum <archive> <archive>.sha256
 ```
 
 安装 smoke 后补充安装日志：
 
 ```powershell
-python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --expected-package-version 1.0.1 --archive-checksum <archive> <archive>.sha256 --install-log <install-log>
+python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --expected-package-version 1.0.2 --archive-checksum <archive> <archive>.sha256 --install-log <install-log>
 ```
 
 安装前命令会检查 tag 对应版本、目录名、manifest、wheel、包内文件摘要、压缩包摘要、Python 运行时、平台一致性和逃逸符号链接。安装会新增 `.venv/`，因此安装后命令不再要求原始文件集合完全相等，只复验版本、归档摘要、运行时和安装回执。
@@ -89,7 +89,7 @@ python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled
 ## Windows 安装 smoke
 
 ```powershell
-$Bundle = "ai-sdlc-offline-1.0.1-windows-amd64"
+$Bundle = "ai-sdlc-offline-1.0.2-windows-amd64"
 Set-Location $Bundle
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddToPath
 .\.venv\Scripts\ai-sdlc.exe --version
@@ -101,15 +101,15 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddTo
 ```powershell
 New-Item -ItemType Directory -Path smoke-project -Force | Out-Null
 Set-Location smoke-project
-..\ai-sdlc-offline-1.0.1-windows-amd64\.venv\Scripts\ai-sdlc.exe init . --agent-target codex --shell powershell
-..\ai-sdlc-offline-1.0.1-windows-amd64\.venv\Scripts\ai-sdlc.exe adapter status
-..\ai-sdlc-offline-1.0.1-windows-amd64\.venv\Scripts\ai-sdlc.exe run --dry-run
+..\.venv\Scripts\ai-sdlc.exe init . --agent-target codex --shell powershell
+..\.venv\Scripts\ai-sdlc.exe adapter status
+..\.venv\Scripts\ai-sdlc.exe run --dry-run
 ```
 
 ## macOS / Linux 安装 smoke
 
 ```bash
-cd ai-sdlc-offline-1.0.1-<platform>
+cd ai-sdlc-offline-1.0.2-<platform>
 ./install_offline.sh --add-to-path
 ./.venv/bin/ai-sdlc --version
 ./.venv/bin/ai-sdlc --help
@@ -118,9 +118,9 @@ cd ai-sdlc-offline-1.0.1-<platform>
 ```bash
 mkdir -p smoke-project
 cd smoke-project
-../ai-sdlc-offline-1.0.1-<platform>/.venv/bin/ai-sdlc init . --agent-target codex --shell powershell
-../ai-sdlc-offline-1.0.1-<platform>/.venv/bin/ai-sdlc adapter status
-../ai-sdlc-offline-1.0.1-<platform>/.venv/bin/ai-sdlc run --dry-run
+../.venv/bin/ai-sdlc init . --agent-target codex --shell powershell
+../.venv/bin/ai-sdlc adapter status
+../.venv/bin/ai-sdlc run --dry-run
 ```
 
 ## GitHub Actions
@@ -130,11 +130,11 @@ cd smoke-project
 - `.github/workflows/windows-offline-smoke.yml`：验证 Windows 构建、安装、Codex 初始化和 dry-run；
 - `.github/workflows/posix-offline-smoke.yml`：验证 macOS 与 Linux 安装路径。
 
-工作流默认发布标识为 `v1.0.1`。上传动作必须由有权限的维护者明确触发。
+工作流默认发布标识为 `v1.0.2`。上传动作必须由有权限的维护者明确触发。
 
 ## 交付要求
 
-- 包版本、目录名、manifest 和 wheel 版本均为 `1.0.1`；
+- 包版本、目录名、manifest 和 wheel 版本均为 `1.0.2`；
 - 使用目标操作系统和 CPU 架构完成 smoke；
 - `--version`、`--help`、Codex 初始化、adapter status 与 dry-run 均成功；
 - 完整性验证通过；

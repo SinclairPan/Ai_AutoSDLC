@@ -202,7 +202,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v1.0.1" in workflow
+    assert "default: v1.0.2" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -260,7 +260,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v1.0.1" in workflow
+    assert "default: v1.0.2" in workflow
     assert "ref: ${{ inputs.tag }}" in workflow
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert "windows-latest" in workflow
@@ -321,15 +321,15 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v1.0.1" in workflow
+    assert "default: v1.0.2" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "ai-sdlc-offline-1.0.1-windows-amd64" in workflow
-    assert "releases/download/v1.0.1" in workflow
+    assert "ai-sdlc-offline-1.0.2-windows-amd64" in workflow
+    assert "releases/download/v1.0.2" in workflow
     assert "Invoke-WebRequest" in workflow
     assert ".sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
@@ -368,11 +368,26 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v1.0.1"' in workflow
+    assert 'default: "v1.0.2"' in workflow
+    for path_filter in (
+        '      - "src/**"',
+        '      - "pyproject.toml"',
+        '      - "packaging_backend.py"',
+        '      - "README.md"',
+        '      - "templates/**"',
+        '      - "packaging/offline/**"',
+    ):
+        assert path_filter in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
     assert "USER_GUIDE.zh-CN.md" in workflow
     assert '- "scripts/posix_clean_user_e2e.py"' in workflow
+    assert "Build POSIX offline bundle for pull request replay" in workflow
+    assert "github.event_name == 'pull_request'" in workflow
+    assert "bash packaging/offline/build_offline_bundle.sh" in workflow
+    assert 'package_source="pull_request_local_bundle"' in workflow
+    assert 'package_source="published_release"' in workflow
+    assert 'dist-offline/${PACKAGE_NAME}' in workflow
     assert "curl --fail --location --retry 3" in workflow
     assert "releases/download/$RELEASE_TAG/$PACKAGE_NAME" in workflow
     assert "shasum -a 256 -c" in workflow
