@@ -326,7 +326,7 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
-    assert "USER_GUIDE.zh-CN.md Chapter 2, Scenario B" in workflow
+    assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
     assert "ai-sdlc-offline-1.0.1-windows-amd64" in workflow
     assert "releases/download/v1.0.1" in workflow
@@ -339,7 +339,7 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "Direct shim" in workflow
     assert "Codex \\+ PowerShell project init" in workflow
     assert "released-package-guide-gap.txt" in workflow
-    assert "& $directShim init . --agent-target codex --shell powershell" in workflow
+    assert "& $directShim init . --agent-target vscode --shell powershell" in workflow
     assert "当前结果 / Result" in workflow
     assert "下一步 / Next" in workflow
     assert "adapter ingress|materialized|unverified|host ingress" in workflow
@@ -349,7 +349,38 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "business-file-hashes-after.txt" in workflow
     assert "Compare-Object" in workflow
     assert "init/adopt modified existing business files" in workflow
+    assert "my-new-project" in workflow
+    assert "& $directShim init . --agent-target cursor --shell powershell" in workflow
+    assert "windows-empty-project-init.txt" in workflow
+    assert ".cursor\\rules\\ai-sdlc.mdc" in workflow
     assert "windows-user-guide-existing-project-evidence" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+
+
+def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+
+    assert workflow_path.is_file()
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in workflow
+    assert "pull_request:" in workflow
+    assert 'default: "v1.0.1"' in workflow
+    assert "macos-latest" in workflow
+    assert "ubuntu-latest" in workflow
+    assert "USER_GUIDE.zh-CN.md" in workflow
+    assert "curl --fail --location --retry 3" in workflow
+    assert "releases/download/$RELEASE_TAG/$PACKAGE_NAME" in workflow
+    assert "shasum -a 256 -c" in workflow
+    assert "sha256sum -c" in workflow
+    assert "./install_offline.sh --add-to-path" in workflow
+    assert '"$DIRECT_CLI" --version' in workflow
+    assert '"$DIRECT_CLI" init .' in workflow
+    assert '"$DIRECT_CLI" adopt .' in workflow
+    assert "business-before.sha256" in workflow
+    assert "business-after.sha256" in workflow
+    assert "diff -u" in workflow
+    assert "posix-user-guide-e2e-evidence" in workflow
     assert "actions/upload-artifact@v7" in workflow
 
 

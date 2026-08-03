@@ -161,6 +161,8 @@ git commit -m "docs: rewrite Chinese guide for new users"
 - Verify: `USER_GUIDE.zh-CN.md`
 - Verify: `.github/workflows/windows-user-guide-e2e.yml`
 - Verify: `.github/workflows/release-artifact-smoke.yml`
+- Create: `.github/workflows/posix-user-guide-e2e.yml`
+- Modify: `tests/integration/test_github_workflows.py`
 
 **Interfaces:**
 - Consumes: v1.0.1 GitHub Release 三平台资产及新指南命令。
@@ -174,17 +176,21 @@ Expected: 下载和 SHA256 校验通过；安装输出包含 `Offline installati
 
 Expected: `adopt` 输出包含 `接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`推荐继续点`；`init`/`adopt` 前后业务文件 SHA256 相同。
 
-- [ ] **Step 3: 推送分支并创建草稿 PR，触发 Windows 用户指南 E2E**
+- [ ] **Step 3: 新增 macOS/Linux 用户指南 E2E**
+
+工作流必须在 `macos-latest` 与 `ubuntu-latest` 上直接使用手册中的 `curl` URL、平台校验命令、解压目录、`install_offline.sh --add-to-path`、包内 Direct CLI、空项目 `init`、已有项目 `init`/`adopt` 和业务文件哈希比较，不得用静态检查代替运行。
+
+- [ ] **Step 4: 推送分支并创建草稿 PR，触发 Windows 与 POSIX 用户指南 E2E**
 
 Expected: `existing-project-online-install` 与 `clean-online-interactive-user-journey` 通过，并上传交互式 init 与业务文件哈希证据。
 
-- [ ] **Step 4: 在 v1.0.1 正式资产上运行三平台 Release Artifact Smoke**
+- [ ] **Step 5: 在 v1.0.1 正式资产上运行三平台 Release Artifact Smoke**
 
 Run: `gh workflow run release-artifact-smoke.yml --repo SinclairPan/Ai_AutoSDLC --ref main -f tag=v1.0.1`
 
 Expected: Windows zip、macOS arm64 tar.gz、Linux amd64 tar.gz 三个作业全部通过。
 
-- [ ] **Step 5: 核对 E2E 日志与手册稳定输出**
+- [ ] **Step 6: 核对 E2E 日志与手册稳定输出**
 
 逐项确认手册声明的版本、安装完成、适配器菜单、Shell 菜单、`Result / Next`、`adopt` 和业务文件不变均能在本地或 CI evidence 中找到；任何不一致优先修正文档，除非真实 CLI 本身失败。
 
