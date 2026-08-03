@@ -372,6 +372,7 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
     assert "USER_GUIDE.zh-CN.md" in workflow
+    assert '- "scripts/posix_clean_user_e2e.py"' in workflow
     assert "curl --fail --location --retry 3" in workflow
     assert "releases/download/$RELEASE_TAG/$PACKAGE_NAME" in workflow
     assert "shasum -a 256 -c" in workflow

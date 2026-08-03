@@ -11,6 +11,7 @@ on:
     paths:
       - "USER_GUIDE.zh-CN.md"
       - ".github/workflows/posix-user-guide-e2e.yml"
+      - "scripts/posix_clean_user_e2e.py"
       - "tests/integration/test_github_workflows.py"
 
 permissions:
