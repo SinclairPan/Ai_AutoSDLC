@@ -536,3 +536,4 @@ jobs:
           name: windows-clean-online-user-e2e-evidence
           path: ${{ runner.temp }}/windows-clean-online-user-e2e-evidence
           if-no-files-found: error
+          include-hidden-files: true

@@ -458,6 +458,8 @@ def test_windows_clean_user_e2e_uses_real_codex_cli_and_archives_adapter_files()
     assert 'project_root / ".ai-sdlc" / "project" / "config"' in driver
     assert '"project-config.yaml"' in driver
     assert "hashlib.sha256" in driver
+    clean_upload = workflow.split("Upload clean online ordinary-user evidence", 1)[1]
+    assert "include-hidden-files: true" in clean_upload
 
 
 def test_windows_clean_user_e2e_pins_release_tag_before_online_install() -> None:
