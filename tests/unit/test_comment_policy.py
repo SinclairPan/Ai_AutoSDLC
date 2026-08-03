@@ -153,6 +153,19 @@ def test_markdown_heading_deletion_is_not_code_comment_removal() -> None:
     assert findings == ()
 
 
+def test_markdown_bold_metadata_keeps_existing_comment_policy_behavior() -> None:
+    findings = collect_removed_comment_findings(
+        diff_text="""diff --git a/docs/plan.md b/docs/plan.md
+--- a/docs/plan.md
++++ /dev/null
+@@ -1 +0,0 @@
+-**Goal:** rewrite the public user guide.
+"""
+    )
+
+    assert len(findings) == 1
+
+
 def _init_git_repo(root: Path) -> None:
     subprocess.run(["git", "init", "--initial-branch=main"], cwd=root, check=True)
     subprocess.run(["git", "config", "user.email", "t@t.com"], cwd=root, check=True)

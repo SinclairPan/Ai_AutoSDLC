@@ -25,6 +25,7 @@ def test_release_workflow_defaults_target_v1_0_1() -> None:
     workflows = (
         "release-artifact-smoke.yml",
         "release-build.yml",
+        "posix-user-guide-e2e.yml",
         "windows-user-guide-e2e.yml",
     )
 
@@ -36,11 +37,10 @@ def test_release_workflow_defaults_target_v1_0_1() -> None:
 
 
 def test_stable_git_install_examples_pin_v1_0_1() -> None:
-    for name in ("README.md", "USER_GUIDE.zh-CN.md"):
-        text = (REPO_ROOT / name).read_text(encoding="utf-8")
-        assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1" in text
-        assert "@main" in text
-        assert "开发版" in text
+    text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1" in text
+    assert "@main" in text
+    assert "开发版" in text
 
 
 def test_stable_source_checkout_examples_pin_v1_0_1() -> None:
@@ -48,21 +48,34 @@ def test_stable_source_checkout_examples_pin_v1_0_1() -> None:
         "git clone --branch v1.0.1 --depth 1 "
         "https://github.com/SinclairPan/Ai_AutoSDLC.git"
     )
-    for name in ("README.md", "USER_GUIDE.zh-CN.md", "packaging/offline/README.md"):
+    for name in ("README.md", "packaging/offline/README.md"):
         text = (REPO_ROOT / name).read_text(encoding="utf-8")
         assert stable_clone in text, name
 
 
-def test_user_guide_requires_complete_offline_integrity_verification() -> None:
+def test_user_guide_pins_published_assets_and_integrity_commands() -> None:
     text = (REPO_ROOT / "USER_GUIDE.zh-CN.md").read_text(encoding="utf-8")
 
+    for asset in (
+        "ai-sdlc-offline-1.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
+    ):
+        assert f"releases/download/v1.0.1/{asset}" in text
+        assert f"{asset}.sha256" in text
     for marker in (
-        "--require-bundled-runtime",
-        "--require-checksums",
-        "--expected-package-version 1.0.1",
-        "--archive-checksum",
+        "Get-FileHash -Algorithm SHA256",
+        "shasum -a 256 -c",
+        "sha256sum -c",
     ):
         assert marker in text
+
+
+def test_user_guide_excludes_source_and_upgrade_guidance() -> None:
+    text = (REPO_ROOT / "USER_GUIDE.zh-CN.md").read_text(encoding="utf-8")
+
+    for marker in ("老版本升级", "从源码运行", "@main", "uv sync"):
+        assert marker not in text
 
 
 def test_post_install_offline_example_allows_installer_created_files() -> None:

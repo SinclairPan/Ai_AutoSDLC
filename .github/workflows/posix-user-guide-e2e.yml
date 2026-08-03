@@ -1,0 +1,169 @@
+name: POSIX User Guide E2E
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag described by the user guide.
+        required: true
+        default: "v1.0.1"
+  pull_request:
+    paths:
+      - "USER_GUIDE.zh-CN.md"
+      - ".github/workflows/posix-user-guide-e2e.yml"
+      - "scripts/posix_clean_user_e2e.py"
+      - "tests/integration/test_github_workflows.py"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: posix-user-guide-e2e-${{ github.event.pull_request.number || inputs.tag || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  replay-published-guide:
+    name: ${{ matrix.asset_os }} published guide
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset_os: macos
+            asset_machine: arm64
+            runner: macos-latest
+            project_shell: zsh
+          - asset_os: linux
+            asset_machine: amd64
+            runner: ubuntu-latest
+            project_shell: bash
+    env:
+      RELEASE_TAG: ${{ inputs.tag || 'v1.0.1' }}
+      ASSET_OS: ${{ matrix.asset_os }}
+      ASSET_MACHINE: ${{ matrix.asset_machine }}
+      PROJECT_SHELL: ${{ matrix.project_shell }}
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out the PTY user-flow driver
+        uses: actions/checkout@v6
+
+      - name: Replay both new-user guide scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          evidence_root="${RUNNER_TEMP}/posix-user-guide-e2e-evidence"
+          export HOME="${RUNNER_TEMP}/guide-home"
+          download_root="${RUNNER_TEMP}/ai-sdlc-v1.0.1-download"
+          if [[ "${ASSET_OS}" == "macos" ]]; then
+            install_root="${HOME}/Applications/AI-SDLC"
+          else
+            install_root="${HOME}/.local/share/AI-SDLC"
+          fi
+          new_project_root="${HOME}/projects/my-new-project"
+          existing_project_root="${HOME}/projects/my-existing-project"
+          bundle_name="ai-sdlc-offline-1.0.1-${ASSET_OS}-${ASSET_MACHINE}"
+          PACKAGE_NAME="${bundle_name}.tar.gz"
+
+          mkdir -p \
+            "${evidence_root}" \
+            "${download_root}" \
+            "${install_root}" \
+            "${new_project_root}" \
+            "${existing_project_root}/src"
+
+          curl --fail --location --retry 3 \
+            --output "${download_root}/${PACKAGE_NAME}" \
+            "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$RELEASE_TAG/$PACKAGE_NAME"
+          curl --fail --location --retry 3 \
+            --output "${download_root}/${PACKAGE_NAME}.sha256" \
+            "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$RELEASE_TAG/$PACKAGE_NAME.sha256"
+
+          if [[ "${ASSET_OS}" == "macos" ]]; then
+            (cd "${download_root}" && shasum -a 256 -c "${PACKAGE_NAME}.sha256") |
+              tee "${evidence_root}/checksum.txt"
+          else
+            (cd "${download_root}" && sha256sum -c "${PACKAGE_NAME}.sha256") |
+              tee "${evidence_root}/checksum.txt"
+          fi
+
+          tar xzf "${download_root}/${PACKAGE_NAME}" -C "${install_root}"
+          bundle_root="${install_root}/${bundle_name}"
+          (
+            cd "${bundle_root}"
+            ./install_offline.sh --add-to-path
+          ) 2>&1 | tee "${evidence_root}/install.txt"
+
+          DIRECT_CLI="${bundle_root}/.venv/bin/ai-sdlc"
+          "$DIRECT_CLI" --version | tee "${evidence_root}/version.txt"
+          grep -Fx "1.0.1" "${evidence_root}/version.txt"
+          grep -F "Offline installation completed" "${evidence_root}/install.txt"
+
+          python3 scripts/posix_clean_user_e2e.py \
+            --cli "$DIRECT_CLI" \
+            --project "${new_project_root}" \
+            2>&1 | tee "${evidence_root}/empty-init.txt"
+          grep -F "POSIX_INTERACTIVE_SELECTION_COMPLETED" \
+            "${evidence_root}/empty-init.txt"
+          grep -F "AI 代理入口: Cursor" "${evidence_root}/empty-init.txt"
+          grep -F "Project shell: ${PROJECT_SHELL}" "${evidence_root}/empty-init.txt"
+          grep -F "Initialized AI-SDLC project" "${evidence_root}/empty-init.txt"
+          grep -F "当前结果 / Result" "${evidence_root}/empty-init.txt"
+          grep -F "下一步 / Next" "${evidence_root}/empty-init.txt"
+
+          printf '%s\n' '{"scripts":{"build":"echo build"}}' > "${existing_project_root}/package.json"
+          printf '%s\n' "console.log('existing');" > "${existing_project_root}/src/main.js"
+          printf '%s\n' "- [ ] Existing imported task" > "${existing_project_root}/TODO.md"
+          (
+            cd "${existing_project_root}"
+            git init --quiet
+            git add .
+            git -c user.name=E2E -c user.email=e2e@example.invalid \
+              commit --quiet -m baseline
+          )
+
+          business_files=(
+            "${existing_project_root}/package.json"
+            "${existing_project_root}/src/main.js"
+            "${existing_project_root}/TODO.md"
+          )
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${business_files[@]}" | sort > "${evidence_root}/business-before.sha256"
+          else
+            shasum -a 256 "${business_files[@]}" | sort > "${evidence_root}/business-before.sha256"
+          fi
+
+          (
+            cd "${existing_project_root}"
+            "$DIRECT_CLI" init . --agent-target vscode --shell "${PROJECT_SHELL}"
+            "$DIRECT_CLI" adopt .
+          ) 2>&1 | tee "${evidence_root}/existing-init-adopt.txt"
+
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "${business_files[@]}" | sort > "${evidence_root}/business-after.sha256"
+          else
+            shasum -a 256 "${business_files[@]}" | sort > "${evidence_root}/business-after.sha256"
+          fi
+          diff -u \
+            "${evidence_root}/business-before.sha256" \
+            "${evidence_root}/business-after.sha256"
+
+          grep -F "Detected existing project" \
+            "${evidence_root}/existing-init-adopt.txt"
+          grep -F "接入已有项目：已生成桥接结果" \
+            "${evidence_root}/existing-init-adopt.txt"
+          grep -F "原任务文件不会被修改" \
+            "${evidence_root}/existing-init-adopt.txt"
+          grep -F "推荐继续点" \
+            "${evidence_root}/existing-init-adopt.txt"
+
+      - name: Upload POSIX user guide evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: posix-user-guide-e2e-evidence-${{ matrix.asset_os }}
+          path: ${{ runner.temp }}/posix-user-guide-e2e-evidence
+          if-no-files-found: error

@@ -123,7 +123,7 @@ jobs:
             Out-String |
             Out-File -FilePath (Join-Path $evidenceRoot "business-file-hashes-before.txt") -Encoding utf8
 
-          # USER_GUIDE.zh-CN.md Chapter 2, Scenario B: online download from Release.
+          # USER_GUIDE.zh-CN.md Chapter 2: existing project online download from Release.
           Push-Location $projectRoot
           cd ..
           $BundleName = "ai-sdlc-offline-1.0.1-windows-amd64"
@@ -236,13 +236,13 @@ jobs:
             throw "expected Direct shim executable was missing: $directShim"
           }
 
-          # USER_GUIDE.zh-CN.md Chapter 2, Step 3: return to the existing project
-          # root and run the Direct shim init command shape.
+          # USER_GUIDE.zh-CN.md Chapter 2: return to the existing project root,
+          # then use the Direct shim with a non-Codex adapter target.
           Set-Location $projectRoot
-          & $directShim init . --agent-target codex --shell powershell *>&1 |
+          & $directShim init . --agent-target vscode --shell powershell *>&1 |
             Tee-Object -FilePath (Join-Path $evidenceRoot "init-existing-project.txt")
           if ($LASTEXITCODE -ne 0) {
-            throw "Direct shim Codex + PowerShell init failed with exit code $LASTEXITCODE"
+            throw "Direct shim VS Code + PowerShell init failed with exit code $LASTEXITCODE"
           }
           $initOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "init-existing-project.txt") -Raw
           if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
@@ -254,8 +254,8 @@ jobs:
           if (-not (Test-Path (Join-Path $projectRoot ".ai-sdlc"))) {
             throw "init did not create .ai-sdlc in the existing project"
           }
-          if (-not (Test-Path (Join-Path $projectRoot "AGENTS.md"))) {
-            throw "init did not create the Codex adapter guidance file AGENTS.md"
+          if (-not (Test-Path (Join-Path $projectRoot ".github\copilot-instructions.md"))) {
+            throw "init did not create the VS Code adapter guidance file"
           }
 
           & $directShim adopt . *>&1 |
@@ -290,6 +290,28 @@ jobs:
             Out-String |
             Out-File -FilePath (Join-Path $evidenceRoot "existing-project-after.txt") -Encoding utf8
 
+          # USER_GUIDE.zh-CN.md Chapter 1: an empty Windows project uses the
+          # same installed Direct shim and can select another supported adapter.
+          $emptyProjectRoot = Join-Path $workRoot "my-new-project"
+          New-Item -ItemType Directory -Force -Path $emptyProjectRoot | Out-Null
+          Set-Location $emptyProjectRoot
+          & $directShim init . --agent-target cursor --shell powershell *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "windows-empty-project-init.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "Direct shim Cursor + PowerShell empty-project init failed with exit code $LASTEXITCODE"
+          }
+          $emptyInitOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "windows-empty-project-init.txt") -Raw
+          if (
+            ($emptyInitOutput -notmatch "Initialized AI-SDLC project") -or
+            ($emptyInitOutput -notmatch "当前结果 / Result") -or
+            ($emptyInitOutput -notmatch "下一步 / Next")
+          ) {
+            throw "empty-project init output did not match the user-guide Result/Next contract"
+          }
+          if (-not (Test-Path (Join-Path $emptyProjectRoot ".cursor\rules\ai-sdlc.mdc"))) {
+            throw "empty-project init did not create the Cursor adapter guidance file"
+          }
+
       - name: Upload guide replay evidence
         if: always()
         uses: actions/upload-artifact@v7
@@ -313,6 +335,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Set up Node.js for the real Codex CLI
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
 
       - name: Assert fresh runner prerequisites
         shell: pwsh
@@ -338,6 +365,43 @@ jobs:
           }
           "ai_sdlc_preinstalled=false" |
             Out-File -FilePath (Join-Path $evidenceRoot "fresh-runner.txt") -Encoding utf8
+
+      - name: Install and verify the real Codex CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          $codexPrefix = Join-Path $env:RUNNER_TEMP "codex-cli"
+          npm install --prefix $codexPrefix "@openai/codex@0.138.0" *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "codex-cli-install.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "The official Codex CLI package installation failed."
+          }
+          $codexBin = Join-Path $codexPrefix "node_modules\.bin"
+          $codexShim = Join-Path $codexBin "codex.cmd"
+          if (-not (Test-Path $codexShim)) {
+            throw "The official Codex CLI shim is missing: $codexShim"
+          }
+          $env:Path = "$codexBin;$env:Path"
+          $resolvedCodex = Get-Command codex -ErrorAction Stop
+          $resolvedCodexDirectory = Split-Path -Parent $resolvedCodex.Source
+          if ($resolvedCodexDirectory -ne $codexBin) {
+            throw "Windows did not resolve the pinned Codex CLI shim: $($resolvedCodex.Source)"
+          }
+          codex --version *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "codex-cli-version-install-step.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installed Codex CLI version command failed."
+          }
+          $codexVersion = Get-Content `
+            -LiteralPath (Join-Path $evidenceRoot "codex-cli-version-install-step.txt") `
+            -Raw
+          if ($codexVersion -notmatch "codex-cli 0\.138\.0") {
+            throw "The installed Codex CLI version was unexpected: $($codexVersion.Trim())"
+          }
+          $codexBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CODEX_CLI_E2E_EXPECTED_VERSION=0.138.0" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install AI-SDLC through the public remote online path
         shell: pwsh
@@ -472,3 +536,4 @@ jobs:
           name: windows-clean-online-user-e2e-evidence
           path: ${{ runner.temp }}/windows-clean-online-user-e2e-evidence
           if-no-files-found: error
+          include-hidden-files: true

@@ -326,7 +326,7 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
-    assert "USER_GUIDE.zh-CN.md Chapter 2, Scenario B" in workflow
+    assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
     assert "ai-sdlc-offline-1.0.1-windows-amd64" in workflow
     assert "releases/download/v1.0.1" in workflow
@@ -339,7 +339,7 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "Direct shim" in workflow
     assert "Codex \\+ PowerShell project init" in workflow
     assert "released-package-guide-gap.txt" in workflow
-    assert "& $directShim init . --agent-target codex --shell powershell" in workflow
+    assert "& $directShim init . --agent-target vscode --shell powershell" in workflow
     assert "当前结果 / Result" in workflow
     assert "下一步 / Next" in workflow
     assert "adapter ingress|materialized|unverified|host ingress" in workflow
@@ -349,7 +349,53 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "business-file-hashes-after.txt" in workflow
     assert "Compare-Object" in workflow
     assert "init/adopt modified existing business files" in workflow
+    assert "my-new-project" in workflow
+    assert "& $directShim init . --agent-target cursor --shell powershell" in workflow
+    assert "windows-empty-project-init.txt" in workflow
+    assert ".cursor\\rules\\ai-sdlc.mdc" in workflow
     assert "windows-user-guide-existing-project-evidence" in workflow
+    assert "actions/upload-artifact@v7" in workflow
+
+
+def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "posix_clean_user_e2e.py"
+
+    assert workflow_path.is_file()
+    assert driver_path.is_file()
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    driver = driver_path.read_text(encoding="utf-8")
+    assert "workflow_dispatch:" in workflow
+    assert "pull_request:" in workflow
+    assert 'default: "v1.0.1"' in workflow
+    assert "macos-latest" in workflow
+    assert "ubuntu-latest" in workflow
+    assert "USER_GUIDE.zh-CN.md" in workflow
+    assert '- "scripts/posix_clean_user_e2e.py"' in workflow
+    assert "curl --fail --location --retry 3" in workflow
+    assert "releases/download/$RELEASE_TAG/$PACKAGE_NAME" in workflow
+    assert "shasum -a 256 -c" in workflow
+    assert "sha256sum -c" in workflow
+    assert "./install_offline.sh --add-to-path" in workflow
+    assert '"$DIRECT_CLI" --version' in workflow
+    assert '"$DIRECT_CLI" init .' in workflow
+    assert '"$DIRECT_CLI" adopt .' in workflow
+    assert "python3 scripts/posix_clean_user_e2e.py" in workflow
+    assert "POSIX_INTERACTIVE_SELECTION_COMPLETED" in workflow
+    assert "pty.fork()" in driver
+    assert 'os.execv(str(cli_path), [str(cli_path), "init", "."])' in driver
+    assert 'os.write(master_fd, b"\\x1b[A")' in driver
+    assert "agent_renders > observed_agent_renders" in driver
+    assert "AGENT_PROMPT" in driver
+    assert "SHELL_PROMPT" in driver
+    assert '"--agent-target"' not in driver
+    assert '"--shell"' not in driver
+    assert "import ai_sdlc" not in driver
+    assert "business-before.sha256" in workflow
+    assert "business-after.sha256" in workflow
+    assert "diff -u" in workflow
+    assert "posix-user-guide-e2e-evidence" in workflow
     assert "actions/upload-artifact@v7" in workflow
 
 
@@ -391,6 +437,29 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert '"--agent-target"' not in driver
     assert '"--shell"' not in driver
     assert "import ai_sdlc" not in driver
+
+
+def test_windows_clean_user_e2e_uses_real_codex_cli_and_archives_adapter_files() -> (
+    None
+):
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert "actions/setup-node@v6" in workflow
+    assert '"@openai/codex@0.138.0"' in workflow
+    assert "shutil.which(\"codex\")" in driver
+    assert "codex-cli-version.txt" in driver
+    assert "codex-adapter-files" in driver
+    assert "codex-adapter-manifest.json" in driver
+    assert 'project_root / "AGENTS.md"' in driver
+    assert 'project_root / ".ai-sdlc" / "project" / "config"' in driver
+    assert '"project-config.yaml"' in driver
+    assert "hashlib.sha256" in driver
+    clean_upload = workflow.split("Upload clean online ordinary-user evidence", 1)[1]
+    assert "include-hidden-files: true" in clean_upload
 
 
 def test_windows_clean_user_e2e_pins_release_tag_before_online_install() -> None:
