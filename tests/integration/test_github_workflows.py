@@ -439,6 +439,27 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert "import ai_sdlc" not in driver
 
 
+def test_windows_clean_user_e2e_uses_real_codex_cli_and_archives_adapter_files() -> (
+    None
+):
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
+
+    workflow = workflow_path.read_text(encoding="utf-8")
+    driver = driver_path.read_text(encoding="utf-8")
+
+    assert "actions/setup-node@v6" in workflow
+    assert '"@openai/codex@0.138.0"' in workflow
+    assert "shutil.which(\"codex\")" in driver
+    assert "codex-cli-version.txt" in driver
+    assert "codex-adapter-files" in driver
+    assert "codex-adapter-manifest.json" in driver
+    assert 'project_root / "AGENTS.md"' in driver
+    assert 'project_root / ".ai-sdlc" / "project" / "config"' in driver
+    assert '"project-config.yaml"' in driver
+    assert "hashlib.sha256" in driver
+
+
 def test_windows_clean_user_e2e_pins_release_tag_before_online_install() -> None:
     workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
 

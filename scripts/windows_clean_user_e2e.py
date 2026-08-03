@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
 import queue
 import re
+import shutil
 import subprocess
 import threading
 import time
@@ -125,6 +128,72 @@ def _run_cli(
     return output
 
 
+def _verify_codex_cli_available(evidence_root: Path) -> None:
+    codex_path = shutil.which("codex")
+    if not codex_path:
+        raise AssertionError("干净 Windows E2E 未找到已安装的真实 Codex CLI")
+    completed = subprocess.run(
+        [codex_path, "--version"],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+        check=False,
+    )
+    output = _plain_text(completed.stdout + completed.stderr).strip()
+    (evidence_root / "codex-cli-version.txt").write_text(
+        f"resolved_path={codex_path}\nversion={output}\n",
+        encoding="utf-8",
+    )
+    if completed.returncode != 0 or "codex-cli" not in output:
+        raise AssertionError(
+            f"真实 Codex CLI 版本检查失败 ({completed.returncode}): {output}"
+        )
+    expected_version = os.environ.get("CODEX_CLI_E2E_EXPECTED_VERSION", "").strip()
+    if expected_version and expected_version not in output:
+        raise AssertionError(
+            f"Codex CLI 版本为 {output!r}，预期包含 {expected_version!r}"
+        )
+
+
+def _archive_codex_adapter_files(project_root: Path, evidence_root: Path) -> None:
+    sources = {
+        "AGENTS.md": project_root / "AGENTS.md",
+        ".ai-sdlc/project/config/project-config.yaml": (
+            project_root
+            / ".ai-sdlc"
+            / "project"
+            / "config"
+            / "project-config.yaml"
+        ),
+    }
+    archive_root = evidence_root / "codex-adapter-files"
+    files: list[dict[str, str]] = []
+    for relative_path, source in sources.items():
+        if not source.is_file():
+            raise AssertionError(f"Codex 适配证据文件不存在: {relative_path}")
+        destination = archive_root / relative_path
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+        files.append(
+            {
+                "path": relative_path,
+                "sha256": hashlib.sha256(source.read_bytes()).hexdigest(),
+            }
+        )
+    manifest = {
+        "adapter_target": "codex",
+        "preferred_shell": "powershell",
+        "canonical_path": "AGENTS.md",
+        "files": files,
+    }
+    (evidence_root / "codex-adapter-manifest.json").write_text(
+        json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
 def _run_interactive_init(
     cli_path: str,
     project_root: Path,
@@ -202,6 +271,7 @@ def _verify_interactive_init(
         "进入实现前必须先给出技术栈 / 组件库建议",
         "program solution-confirm --dry-run --mode advanced",
     )
+    _archive_codex_adapter_files(project_root, evidence_root)
 
 
 def _run_requirement_and_workitem_flow(
@@ -358,6 +428,7 @@ def _verify_no_delivery_apply(project_root: Path) -> None:
 def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     project_root.mkdir(parents=True, exist_ok=True)
     evidence_root.mkdir(parents=True, exist_ok=True)
+    _verify_codex_cli_available(evidence_root)
     business_files = _write_existing_project(project_root)
     _initialize_existing_repo(project_root)
     hashes_before = _business_hashes(project_root, business_files)

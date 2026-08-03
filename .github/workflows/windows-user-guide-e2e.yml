@@ -336,6 +336,11 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node.js for the real Codex CLI
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+
       - name: Assert fresh runner prerequisites
         shell: pwsh
         run: |
@@ -360,6 +365,43 @@ jobs:
           }
           "ai_sdlc_preinstalled=false" |
             Out-File -FilePath (Join-Path $evidenceRoot "fresh-runner.txt") -Encoding utf8
+
+      - name: Install and verify the real Codex CLI
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          $codexPrefix = Join-Path $env:RUNNER_TEMP "codex-cli"
+          npm install --prefix $codexPrefix "@openai/codex@0.138.0" *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "codex-cli-install.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "The official Codex CLI package installation failed."
+          }
+          $codexBin = Join-Path $codexPrefix "node_modules\.bin"
+          $codexShim = Join-Path $codexBin "codex.cmd"
+          if (-not (Test-Path $codexShim)) {
+            throw "The official Codex CLI shim is missing: $codexShim"
+          }
+          $env:Path = "$codexBin;$env:Path"
+          $resolvedCodex = Get-Command codex -ErrorAction Stop
+          $resolvedCodexDirectory = Split-Path -Parent $resolvedCodex.Source
+          if ($resolvedCodexDirectory -ne $codexBin) {
+            throw "Windows did not resolve the pinned Codex CLI shim: $($resolvedCodex.Source)"
+          }
+          codex --version *>&1 |
+            Tee-Object -FilePath (Join-Path $evidenceRoot "codex-cli-version-install-step.txt")
+          if ($LASTEXITCODE -ne 0) {
+            throw "The installed Codex CLI version command failed."
+          }
+          $codexVersion = Get-Content `
+            -LiteralPath (Join-Path $evidenceRoot "codex-cli-version-install-step.txt") `
+            -Raw
+          if ($codexVersion -notmatch "codex-cli 0\.138\.0") {
+            throw "The installed Codex CLI version was unexpected: $($codexVersion.Trim())"
+          }
+          $codexBin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          "CODEX_CLI_E2E_EXPECTED_VERSION=0.138.0" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Install AI-SDLC through the public remote online path
         shell: pwsh
