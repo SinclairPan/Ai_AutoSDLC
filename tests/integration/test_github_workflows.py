@@ -369,6 +369,15 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert 'default: "v1.0.2"' in workflow
+    for path_filter in (
+        '      - "src/**"',
+        '      - "pyproject.toml"',
+        '      - "packaging_backend.py"',
+        '      - "README.md"',
+        '      - "templates/**"',
+        '      - "packaging/offline/**"',
+    ):
+        assert path_filter in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
     assert "USER_GUIDE.zh-CN.md" in workflow

@@ -9,7 +9,13 @@ on:
         default: "v1.0.2"
   pull_request:
     paths:
+      - "src/**"
+      - "pyproject.toml"
+      - "packaging_backend.py"
+      - "README.md"
       - "USER_GUIDE.zh-CN.md"
+      - "templates/**"
+      - "packaging/offline/**"
       - ".github/workflows/posix-user-guide-e2e.yml"
       - "scripts/posix_clean_user_e2e.py"
       - "tests/integration/test_github_workflows.py"
