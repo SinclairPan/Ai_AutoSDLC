@@ -2289,7 +2289,7 @@ def test_release_docs_consistency_blocks_when_current_identity_is_missing(
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any("release docs consistency drift" in item for item in blockers)
-    assert any("README.md" in item and "1.0.1" in item for item in blockers)
+    assert any("README.md" in item and "1.0.2" in item for item in blockers)
 
 
 def test_release_docs_consistency_passes_when_current_surfaces_align(
@@ -2338,7 +2338,7 @@ def test_beginner_guide_blocks_missing_current_sections(tmp_path: Path) -> None:
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
     (tmp_path / "USER_GUIDE.zh-CN.md").write_text(
-        "# AI-SDLC 1.0.1 中文用户指南\n",
+        "# AI-SDLC 1.0.2 中文用户指南\n",
         encoding="utf-8",
     )
 
@@ -2406,7 +2406,7 @@ def test_readme_blocks_missing_codex_init_path(tmp_path: Path) -> None:
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
     (tmp_path / "README.md").write_text(
-        "# AI-SDLC 1.0.1\n\n## 快速开始\n",
+        "# AI-SDLC 1.0.2\n\n## 快速开始\n",
         encoding="utf-8",
     )
 

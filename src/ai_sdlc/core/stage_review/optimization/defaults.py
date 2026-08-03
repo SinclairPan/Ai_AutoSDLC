@@ -1,4 +1,4 @@
-"""AI-SDLC 1.0.1 随包离线优化基线与版本化硬边界。"""
+"""AI-SDLC 1.0.2 随包离线优化基线与版本化硬边界。"""
 
 from __future__ import annotations
 

@@ -6,7 +6,7 @@ on:
       tag:
         description: Published release tag described by the user guide.
         required: true
-        default: "v1.0.1"
+        default: "v1.0.2"
   pull_request:
     paths:
       - "USER_GUIDE.zh-CN.md"
@@ -39,7 +39,7 @@ jobs:
             runner: ubuntu-latest
             project_shell: bash
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v1.0.1' }}
+      RELEASE_TAG: ${{ inputs.tag || 'v1.0.2' }}
       ASSET_OS: ${{ matrix.asset_os }}
       ASSET_MACHINE: ${{ matrix.asset_machine }}
       PROJECT_SHELL: ${{ matrix.project_shell }}
@@ -50,6 +50,48 @@ jobs:
       - name: Check out the PTY user-flow driver
         uses: actions/checkout@v6
 
+      - name: Set up package build Python
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        if: ${{ github.event_name == 'pull_request' }}
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Build POSIX offline bundle for pull request replay
+        if: ${{ github.event_name == 'pull_request' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          actual_os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+          case "${actual_os}" in
+            darwin) actual_os="macos" ;;
+            linux) actual_os="linux" ;;
+          esac
+          actual_machine="$(uname -m | tr '[:upper:]' '[:lower:]')"
+          case "${actual_machine}" in
+            x86_64|amd64) actual_machine="amd64" ;;
+            arm64|aarch64) actual_machine="arm64" ;;
+          esac
+          if [[ "${actual_os}" != "${ASSET_OS}" || "${actual_machine}" != "${ASSET_MACHINE}" ]]; then
+            echo "Runner identity ${actual_os}-${actual_machine} does not match required PR asset ${ASSET_OS}-${ASSET_MACHINE}." >&2
+            exit 1
+          fi
+
+          uv python install 3.11
+          runtime_python="$(uv python find --managed-python 3.11)"
+          runtime_dir="$(dirname "${runtime_python}")"
+          runtime_root="$(cd "${runtime_dir}/.." && pwd)"
+          PYTHON="${runtime_python}" \
+            AI_SDLC_OFFLINE_PYTHON_RUNTIME="${runtime_root}" \
+            AI_SDLC_OFFLINE_ASSET_SUFFIX="-${ASSET_OS}-${ASSET_MACHINE}" \
+            bash packaging/offline/build_offline_bundle.sh
+
       - name: Replay both new-user guide scenarios
         shell: bash
         run: |
@@ -57,7 +99,7 @@ jobs:
 
           evidence_root="${RUNNER_TEMP}/posix-user-guide-e2e-evidence"
           export HOME="${RUNNER_TEMP}/guide-home"
-          download_root="${RUNNER_TEMP}/ai-sdlc-v1.0.1-download"
+          download_root="${RUNNER_TEMP}/ai-sdlc-v1.0.2-download"
           if [[ "${ASSET_OS}" == "macos" ]]; then
             install_root="${HOME}/Applications/AI-SDLC"
           else
@@ -65,8 +107,9 @@ jobs:
           fi
           new_project_root="${HOME}/projects/my-new-project"
           existing_project_root="${HOME}/projects/my-existing-project"
-          bundle_name="ai-sdlc-offline-1.0.1-${ASSET_OS}-${ASSET_MACHINE}"
+          bundle_name="ai-sdlc-offline-1.0.2-${ASSET_OS}-${ASSET_MACHINE}"
           PACKAGE_NAME="${bundle_name}.tar.gz"
+          package_source="published_release"
 
           mkdir -p \
             "${evidence_root}" \
@@ -75,12 +118,20 @@ jobs:
             "${new_project_root}" \
             "${existing_project_root}/src"
 
-          curl --fail --location --retry 3 \
-            --output "${download_root}/${PACKAGE_NAME}" \
-            "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$RELEASE_TAG/$PACKAGE_NAME"
-          curl --fail --location --retry 3 \
-            --output "${download_root}/${PACKAGE_NAME}.sha256" \
-            "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$RELEASE_TAG/$PACKAGE_NAME.sha256"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            package_source="pull_request_local_bundle"
+            cp "dist-offline/${PACKAGE_NAME}" "${download_root}/${PACKAGE_NAME}"
+            cp "dist-offline/${PACKAGE_NAME}.sha256" "${download_root}/${PACKAGE_NAME}.sha256"
+          else
+            curl --fail --location --retry 3 \
+              --output "${download_root}/${PACKAGE_NAME}" \
+              "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$RELEASE_TAG/$PACKAGE_NAME"
+            curl --fail --location --retry 3 \
+              --output "${download_root}/${PACKAGE_NAME}.sha256" \
+              "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$RELEASE_TAG/$PACKAGE_NAME.sha256"
+          fi
+          printf 'release_tag=%s; package_source=%s\n' "${RELEASE_TAG}" "${package_source}" \
+            > "${evidence_root}/scenario.txt"
 
           if [[ "${ASSET_OS}" == "macos" ]]; then
             (cd "${download_root}" && shasum -a 256 -c "${PACKAGE_NAME}.sha256") |
@@ -99,7 +150,7 @@ jobs:
 
           DIRECT_CLI="${bundle_root}/.venv/bin/ai-sdlc"
           "$DIRECT_CLI" --version | tee "${evidence_root}/version.txt"
-          grep -Fx "1.0.1" "${evidence_root}/version.txt"
+          grep -Fx "1.0.2" "${evidence_root}/version.txt"
           grep -F "Offline installation completed" "${evidence_root}/install.txt"
 
           python3 scripts/posix_clean_user_e2e.py \
