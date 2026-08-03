@@ -46,6 +46,9 @@ jobs:
       PYTHONIOENCODING: utf-8
 
     steps:
+      - name: Check out the PTY user-flow driver
+        uses: actions/checkout@v6
+
       - name: Replay both new-user guide scenarios
         shell: bash
         run: |
@@ -98,10 +101,12 @@ jobs:
           grep -Fx "1.0.1" "${evidence_root}/version.txt"
           grep -F "Offline installation completed" "${evidence_root}/install.txt"
 
-          (
-            cd "${new_project_root}"
-            "$DIRECT_CLI" init . --agent-target cursor --shell "${PROJECT_SHELL}"
-          ) 2>&1 | tee "${evidence_root}/empty-init.txt"
+          python3 scripts/posix_clean_user_e2e.py \
+            --cli "$DIRECT_CLI" \
+            --project "${new_project_root}" \
+            2>&1 | tee "${evidence_root}/empty-init.txt"
+          grep -F "POSIX_INTERACTIVE_SELECTION_COMPLETED" \
+            "${evidence_root}/empty-init.txt"
           grep -F "AI 代理入口: Cursor" "${evidence_root}/empty-init.txt"
           grep -F "Project shell: ${PROJECT_SHELL}" "${evidence_root}/empty-init.txt"
           grep -F "Initialized AI-SDLC project" "${evidence_root}/empty-init.txt"

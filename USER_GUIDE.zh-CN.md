@@ -48,7 +48,12 @@ Write-Host "SHA256 verified: $PackageName"
 
 Expand-Archive -LiteralPath $PackagePath -DestinationPath $InstallRoot -Force
 $BundleRoot = Join-Path $InstallRoot $BundleName
-powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $BundleRoot "install_offline.ps1") -AddToPath
+Push-Location $BundleRoot
+try {
+  powershell -NoProfile -ExecutionPolicy Bypass -File ".\install_offline.ps1" -AddToPath
+} finally {
+  Pop-Location
+}
 $DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
 & $DirectCli --version
 ```
@@ -313,7 +318,12 @@ Write-Host "SHA256 verified: $PackageName"
 
 Expand-Archive -LiteralPath $PackagePath -DestinationPath $InstallRoot -Force
 $BundleRoot = Join-Path $InstallRoot $BundleName
-powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $BundleRoot "install_offline.ps1") -AddToPath
+Push-Location $BundleRoot
+try {
+  powershell -NoProfile -ExecutionPolicy Bypass -File ".\install_offline.ps1" -AddToPath
+} finally {
+  Pop-Location
+}
 $DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
 & $DirectCli --version
 ```

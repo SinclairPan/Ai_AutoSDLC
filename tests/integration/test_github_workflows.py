@@ -359,10 +359,13 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
 
 def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "posix_clean_user_e2e.py"
 
     assert workflow_path.is_file()
+    assert driver_path.is_file()
 
     workflow = workflow_path.read_text(encoding="utf-8")
+    driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert 'default: "v1.0.1"' in workflow
@@ -377,6 +380,17 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert '"$DIRECT_CLI" --version' in workflow
     assert '"$DIRECT_CLI" init .' in workflow
     assert '"$DIRECT_CLI" adopt .' in workflow
+    assert "python3 scripts/posix_clean_user_e2e.py" in workflow
+    assert "POSIX_INTERACTIVE_SELECTION_COMPLETED" in workflow
+    assert "pty.fork()" in driver
+    assert 'os.execv(str(cli_path), [str(cli_path), "init", "."])' in driver
+    assert 'os.write(master_fd, b"\\x1b[A")' in driver
+    assert "agent_renders > observed_agent_renders" in driver
+    assert "AGENT_PROMPT" in driver
+    assert "SHELL_PROMPT" in driver
+    assert '"--agent-target"' not in driver
+    assert '"--shell"' not in driver
+    assert "import ai_sdlc" not in driver
     assert "business-before.sha256" in workflow
     assert "business-after.sha256" in workflow
     assert "diff -u" in workflow

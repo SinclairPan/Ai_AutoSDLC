@@ -1819,6 +1819,9 @@ def test_windows_release_guidance_uses_repeat_safe_extract_cache() -> None:
     guide = (_REPO_ROOT / "USER_GUIDE.zh-CN.md").read_text(encoding="utf-8")
     assert '$InstallRoot = Join-Path $HOME "AI-SDLC"' in guide
     assert "-DestinationPath $InstallRoot -Force" in guide
+    assert guide.count("Push-Location $BundleRoot") >= 2
+    assert guide.count('powershell -NoProfile -ExecutionPolicy Bypass -File ".\\install_offline.ps1" -AddToPath') >= 2
+    assert guide.count("Pop-Location") >= 2
 
     for path in guidance_paths:
         text = path.read_text(encoding="utf-8")
