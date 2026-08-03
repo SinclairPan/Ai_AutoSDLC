@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
@@ -127,6 +128,8 @@ def _write(path: Path, content: str) -> None:
 
 args = sys.argv[1:]
 if len(args) >= 2 and args[0] == "-c" and "sys.version_info" in args[1]:
+    if "print(" in args[1]:
+        print(f"{sys.version_info.major}.{sys.version_info.minor}")
     raise SystemExit(0)
 if args[:3] == ["-m", "pip", "--version"]:
     print("pip 24.0 from fake-python")
@@ -474,6 +477,7 @@ def test_build_offline_bundle_emits_platform_manifest_and_archives(tmp_path: Pat
     )
 
     assert result.returncode == 0, result.stderr
+    assert "Offline bundle runtime verification passed." in result.stdout
     bundle_root = repo / "dist-offline" / "ai-sdlc-offline-1.2.0"
     manifest_path = bundle_root / "bundle-manifest.json"
     assert manifest_path.is_file()
@@ -485,6 +489,9 @@ def test_build_offline_bundle_emits_platform_manifest_and_archives(tmp_path: Pat
     assert manifest["wheel_python_tag"].startswith("cp")
     assert manifest["supported_python_versions"] == [manifest["wheel_python_version"]]
     assert manifest["supported_wheel_python_tags"] == [manifest["wheel_python_tag"]]
+    checksums_path = bundle_root / "SHA256SUMS"
+    assert checksums_path.is_file()
+    assert "bundle-manifest.json" in checksums_path.read_text(encoding="utf-8")
 
     tar_path = repo / "dist-offline" / "ai-sdlc-offline-1.2.0.tar.gz"
     zip_path = repo / "dist-offline" / "ai-sdlc-offline-1.2.0.zip"
@@ -494,6 +501,115 @@ def test_build_offline_bundle_emits_platform_manifest_and_archives(tmp_path: Pat
         assert "ai-sdlc-offline-1.2.0/bundle-manifest.json" in archive.getnames()
     with zipfile.ZipFile(zip_path) as archive:
         assert "ai-sdlc-offline-1.2.0/bundle-manifest.json" in archive.namelist()
+        assert "ai-sdlc-offline-1.2.0/SHA256SUMS" in archive.namelist()
+    for archive_path in (tar_path, zip_path):
+        sidecar = archive_path.with_name(archive_path.name + ".sha256")
+        assert sidecar.is_file()
+        digest, filename = sidecar.read_text(encoding="utf-8").strip().split(maxsplit=1)
+        assert filename == archive_path.name
+        assert digest == hashlib.sha256(archive_path.read_bytes()).hexdigest()
+
+
+def test_build_offline_bundle_rejects_release_tag_version_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo = _prepare_fake_bundle_repo(tmp_path)
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_fake_uv(wrapper_dir)
+    env = _script_env(wrapper_dir, fake_python)
+    env["RELEASE_TAG"] = "v1.2.1"
+
+    result = subprocess.run(
+        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "does not match package version 1.2.0" in result.stderr
+    assert not (repo / "dist-offline").exists()
+
+
+def test_verify_offline_bundle_rejects_tampered_checksum_payload(
+    tmp_path: Path,
+) -> None:
+    repo = _prepare_fake_bundle_repo(tmp_path)
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_fake_uv(wrapper_dir)
+
+    build = subprocess.run(
+        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=_script_env(wrapper_dir, fake_python),
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    bundle_root = repo / "dist-offline" / "ai-sdlc-offline-1.2.0"
+    (bundle_root / "README.txt").write_text("tampered\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_OFFLINE_DIR / "verify_offline_bundle.py"),
+            str(bundle_root),
+            "--require-checksums",
+            "--expected-package-version",
+            "1.2.0",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "checksum mismatch" in result.stderr
+
+
+def test_verify_offline_bundle_rejects_expected_package_version_mismatch(
+    tmp_path: Path,
+) -> None:
+    repo = _prepare_fake_bundle_repo(tmp_path)
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_fake_uv(wrapper_dir)
+
+    build = subprocess.run(
+        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+        env=_script_env(wrapper_dir, fake_python),
+        check=False,
+    )
+    assert build.returncode == 0, build.stderr
+    bundle_root = repo / "dist-offline" / "ai-sdlc-offline-1.2.0"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(_OFFLINE_DIR / "verify_offline_bundle.py"),
+            str(bundle_root),
+            "--require-checksums",
+            "--expected-package-version",
+            "1.2.1",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "manifest package version" in result.stderr
 
 
 def test_build_offline_bundle_embeds_portable_python_runtime_when_configured(
@@ -641,7 +757,27 @@ def test_verify_offline_bundle_accepts_install_log_with_bundled_runtime(
     )
 
     assert result.returncode == 0, result.stderr
-    assert "Offline bundle runtime verification passed." in result.stdout
+
+
+def test_runtime_probe_disables_bytecode_writes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module = _load_verify_offline_bundle_module()
+    runtime_python = tmp_path / "python3"
+    runtime_python.write_text("", encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        captured.update(kwargs)
+        return subprocess.CompletedProcess(command, 0, "3.11\n", "")
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    module._assert_runtime_executes(runtime_python, "3.11")
+
+    assert isinstance(captured["env"], dict)
+    assert captured["env"]["PYTHONDONTWRITEBYTECODE"] == "1"
 
 
 def test_verify_offline_bundle_rejects_macos_framework_dependency(
@@ -1661,9 +1797,12 @@ def test_user_guide_documents_git_source_and_offline_install_paths() -> None:
     assert "### 2.2 从源码运行" in guide
     assert "### 2.3 使用离线包" in guide
     assert "https://github.com/SinclairPan/Ai_AutoSDLC" in guide
-    assert "ai-sdlc-offline-1.0.0-windows-amd64.zip" in guide
-    assert "ai-sdlc-offline-1.0.0-macos-arm64.tar.gz" in guide
-    assert "ai-sdlc-offline-1.0.0-linux-amd64.tar.gz" in guide
+    assert "ai-sdlc-offline-1.0.1-windows-amd64.zip" in guide
+    assert "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz" in guide
+    assert "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz" in guide
+    assert "Get-FileHash -Algorithm SHA256" in guide
+    assert "shasum -a 256 -c" in guide
+    assert "sha256sum -c" in guide
     assert "ai-sdlc init . --agent-target codex --shell powershell" in guide
     assert "Invoke-WebRequest -Uri" not in guide
 

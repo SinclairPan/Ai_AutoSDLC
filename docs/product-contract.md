@@ -1,4 +1,4 @@
-# AI-SDLC 1.0.0 产品能力契约
+# AI-SDLC 1.0.1 产品能力契约
 
 ## 产品定位
 
@@ -62,13 +62,14 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 不默认向远程模型发送代码；
 - 不在项目文件中保存密钥或令牌值。
 
-## 1.0.0 发布真值
+## 1.0.1 发布真值
 
-- Python 包版本：`1.0.0`；
+- Python 包版本：`1.0.1`；
 - Git 仓库：`https://github.com/SinclairPan/Ai_AutoSDLC`；
-- Windows 包：`ai-sdlc-offline-1.0.0-windows-amd64.zip`；
-- macOS 包：`ai-sdlc-offline-1.0.0-macos-arm64.tar.gz`；
-- Linux 包：`ai-sdlc-offline-1.0.0-linux-amd64.tar.gz`。
+- Windows 包：`ai-sdlc-offline-1.0.1-windows-amd64.zip`；
+- macOS 包：`ai-sdlc-offline-1.0.1-macos-arm64.tar.gz`；
+- Linux 包：`ai-sdlc-offline-1.0.1-linux-amd64.tar.gz`；
+- 每个压缩包均带同名 `.sha256` 文件，包内包含 `SHA256SUMS`。
 
 ## 验收接口
 

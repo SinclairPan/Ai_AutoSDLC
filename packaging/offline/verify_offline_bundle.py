@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import hmac
 import json
 import os
 import platform
+import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 
 def _fail(message: str) -> None:
@@ -19,6 +22,119 @@ def _load_manifest(bundle_dir: Path) -> dict[str, object]:
     if not manifest_path.is_file():
         _fail(f"missing bundle manifest: {manifest_path}")
     return json.loads(manifest_path.read_text(encoding="utf-8"))
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _assert_expected_package_version(
+    bundle_dir: Path,
+    manifest: dict[str, object],
+    expected_version: str,
+) -> None:
+    actual_version = str(manifest.get("package_version") or "").strip()
+    if actual_version != expected_version:
+        _fail(
+            "manifest package version does not match expected release version: "
+            f"manifest={actual_version or '<missing>'}, expected={expected_version}"
+        )
+    expected_name = f"ai-sdlc-offline-{expected_version}"
+    if bundle_dir.name != expected_name and not bundle_dir.name.startswith(
+        expected_name + "-"
+    ):
+        _fail(
+            "bundle directory does not match expected release version: "
+            f"directory={bundle_dir.name}, expected_prefix={expected_name}"
+        )
+    wheels = sorted((bundle_dir / "wheels").glob("ai_sdlc-*.whl"))
+    if len(wheels) != 1:
+        _fail(
+            "bundle must contain exactly one AI-SDLC wheel for release binding: "
+            f"found={len(wheels)}"
+        )
+    if not wheels[0].name.startswith(f"ai_sdlc-{expected_version}-"):
+        _fail(
+            "AI-SDLC wheel version does not match expected release version: "
+            f"wheel={wheels[0].name}, expected={expected_version}"
+        )
+
+
+def _assert_bundle_checksums(bundle_dir: Path) -> None:
+    checksums_path = bundle_dir / "SHA256SUMS"
+    if not checksums_path.is_file():
+        _fail(f"missing bundle checksum manifest: {checksums_path}")
+    expected: dict[str, str] = {}
+    for line_number, raw_line in enumerate(
+        checksums_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        if not raw_line:
+            continue
+        parts = raw_line.split("  ", 1)
+        if len(parts) != 2 or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
+            _fail(f"malformed SHA256SUMS line {line_number}")
+        relative = PurePosixPath(parts[1])
+        if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+            _fail(f"unsafe SHA256SUMS path on line {line_number}: {parts[1]}")
+        relative_text = relative.as_posix()
+        if relative_text == "SHA256SUMS" or relative_text in expected:
+            _fail(f"duplicate or recursive SHA256SUMS entry: {relative_text}")
+        candidate = bundle_dir.joinpath(*relative.parts)
+        try:
+            candidate.resolve().relative_to(bundle_dir.resolve())
+        except ValueError:
+            _fail(f"SHA256SUMS entry escapes bundle: {relative_text}")
+        if not candidate.is_file():
+            _fail(f"SHA256SUMS entry is missing from bundle: {relative_text}")
+        expected[relative_text] = parts[0].lower()
+
+    actual_files = {
+        path.relative_to(bundle_dir).as_posix()
+        for path in bundle_dir.rglob("*")
+        if path.is_file() and path != checksums_path
+    }
+    expected_files = set(expected)
+    if expected_files != actual_files:
+        missing = sorted(actual_files - expected_files)
+        unexpected = sorted(expected_files - actual_files)
+        _fail(
+            "SHA256SUMS file coverage mismatch: "
+            f"missing_entries={missing}, unexpected_entries={unexpected}"
+        )
+    for relative_text in sorted(expected):
+        actual_digest = _sha256(bundle_dir / relative_text)
+        if not hmac.compare_digest(expected[relative_text], actual_digest):
+            _fail(f"checksum mismatch for bundle file: {relative_text}")
+
+
+def _assert_archive_checksum(archive_path: Path, checksum_path: Path) -> None:
+    if not archive_path.is_file():
+        _fail(f"archive does not exist: {archive_path}")
+    if not checksum_path.is_file():
+        _fail(f"archive checksum sidecar does not exist: {checksum_path}")
+    lines = [
+        line
+        for line in checksum_path.read_text(encoding="utf-8").splitlines()
+        if line
+    ]
+    if len(lines) != 1:
+        _fail(f"archive checksum sidecar must contain exactly one entry: {checksum_path}")
+    parts = lines[0].split("  ", 1)
+    if len(parts) != 2 or not re.fullmatch(r"[0-9a-fA-F]{64}", parts[0]):
+        _fail(f"malformed archive checksum sidecar: {checksum_path}")
+    if parts[1] != archive_path.name:
+        _fail(
+            "archive checksum sidecar filename does not match archive: "
+            f"sidecar={parts[1]}, archive={archive_path.name}"
+        )
+    actual_digest = _sha256(archive_path)
+    if not hmac.compare_digest(parts[0].lower(), actual_digest):
+        _fail(f"archive checksum mismatch: {archive_path}")
 
 
 def _runtime_candidates(runtime_root: Path) -> list[Path]:
@@ -80,6 +196,7 @@ def _assert_runtime_executes(runtime_python: Path, expected_version: str | None)
         capture_output=True,
         text=True,
         check=False,
+        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
     if completed.returncode != 0:
         _fail(
@@ -239,11 +356,30 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("bundle_dir", type=Path)
     parser.add_argument("--require-bundled-runtime", action="store_true")
+    parser.add_argument("--require-checksums", action="store_true")
+    parser.add_argument("--expected-package-version")
+    parser.add_argument(
+        "--archive-checksum",
+        action="append",
+        nargs=2,
+        metavar=("ARCHIVE", "CHECKSUM"),
+        default=[],
+    )
     parser.add_argument("--install-log", type=Path)
     args = parser.parse_args(argv)
 
     bundle_dir = args.bundle_dir.resolve()
     manifest = _load_manifest(bundle_dir)
+    if args.expected_package_version:
+        _assert_expected_package_version(
+            bundle_dir,
+            manifest,
+            args.expected_package_version,
+        )
+    if args.require_checksums:
+        _assert_bundle_checksums(bundle_dir)
+    for archive, checksum in args.archive_checksum:
+        _assert_archive_checksum(Path(archive).resolve(), Path(checksum).resolve())
     runtime_root = bundle_dir / "python-runtime"
     bundled = bool(manifest.get("python_runtime_bundled"))
 

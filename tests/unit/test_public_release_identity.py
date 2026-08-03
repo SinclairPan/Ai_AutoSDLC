@@ -4,6 +4,7 @@ from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
     PUBLIC_DOC_PATHS,
     REQUIRED_SURFACES,
+    STABLE_SOURCE_CLONE,
     scan_paths,
     validate_required_surfaces,
 )
@@ -50,7 +51,9 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
 
 def test_required_surfaces_enforce_current_release_identity() -> None:
     files = {
-        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.0",
+        "README.md": (
+            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.1\n{STABLE_SOURCE_CLONE}"
+        ),
     }
 
     findings = validate_required_surfaces(files)
@@ -63,7 +66,7 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
 
 def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:
     files = {
-        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.0",
+        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.1",
         "uv.lock": 'name = "example"\nversion = "3.4.2"',
         "managed/frontend/package-lock.json": '{"version":"3.3.0"}',
         "src/provider.py": 'release_ref = "refs/tags/rust-v0.138.0"',

@@ -253,17 +253,21 @@ RECONCILE_SMOKE_CONTRACT_SURFACES: dict[Path, tuple[str, ...]] = {
 }
 RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     README_REL: (
-        "# AI-SDLC 1.0.0",
+        "# AI-SDLC 1.0.1",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "ai-sdlc-offline-1.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.0-linux-amd64.tar.gz",
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1",
+        "git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "ai-sdlc-offline-1.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
         "ai-sdlc init . --agent-target codex --shell powershell",
         "uv run python scripts/validate_public_release_identity.py .",
     ),
     USER_GUIDE_REL: (
-        "# AI-SDLC 1.0.0 中文用户指南",
+        "# AI-SDLC 1.0.1 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1",
+        "git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
         "Windows",
         "macOS",
         "Linux",
@@ -271,13 +275,19 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "--add-to-path",
         "python -m ai_sdlc",
         "ai-sdlc init . --agent-target codex --shell powershell",
+        "--require-checksums",
+        "--expected-package-version 1.0.1",
+        "--archive-checksum",
     ),
     OFFLINE_README_REL: (
-        "# AI-SDLC 1.0.0 离线打包说明",
+        "# AI-SDLC 1.0.1 离线打包说明",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "ai-sdlc-offline-1.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.0-linux-amd64.tar.gz",
+        "git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "ai-sdlc-offline-1.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
+        "SHA256SUMS",
+        ".sha256",
         "-AddToPath",
         "--add-to-path",
         "verify_offline_bundle.py",
@@ -288,19 +298,21 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "packaging/offline/README.md",
         "docs/pull-request-checklist.zh.md",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "ai-sdlc-offline-1.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.0-linux-amd64.tar.gz",
+        "ai-sdlc-offline-1.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
+        "SHA256SUMS",
+        ".sha256",
     ),
     PR_CHECKLIST_REL: (
         "README.md",
         "USER_GUIDE.zh-CN.md",
         "packaging/offline/README.md",
-        "1.0.0",
+        "1.0.1",
         "python scripts/validate_public_release_identity.py .",
     ),
-    RELEASE_BUILD_WORKFLOW_REL: ("default: v1.0.0",),
-    RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v1.0.0",),
+    RELEASE_BUILD_WORKFLOW_REL: ("default: v1.0.1",),
+    RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v1.0.1",),
     WINDOWS_OFFLINE_SMOKE_WORKFLOW_REL: (
         "build_offline_bundle.sh",
         "install_offline.ps1 -AddToPath",
@@ -309,7 +321,7 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     ),
 }
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
-    "# AI-SDLC 1.0.0 中文用户指南",
+    "# AI-SDLC 1.0.1 中文用户指南",
     "## 2. 安装 AI-SDLC",
     "## 3. 初始化项目：Codex + PowerShell",
     "## 4. 接入已有项目",
@@ -321,9 +333,12 @@ BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "## 10. 离线包构建",
     "## 11. 常见问题",
     "## 12. 验收清单",
-    "ai-sdlc-offline-1.0.0-windows-amd64.zip",
-    "ai-sdlc-offline-1.0.0-macos-arm64.tar.gz",
-    "ai-sdlc-offline-1.0.0-linux-amd64.tar.gz",
+    "ai-sdlc-offline-1.0.1-windows-amd64.zip",
+    "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz",
+    "ai-sdlc-offline-1.0.1-linux-amd64.tar.gz",
+    "Get-FileHash -Algorithm SHA256",
+    "shasum -a 256 -c",
+    "sha256sum -c",
     "-AddToPath",
     "--add-to-path",
     "python -m ai_sdlc",
@@ -4503,7 +4518,7 @@ def _package_init_fallback_version(root: Path) -> str | None:
 
 
 def _release_version_truth_blockers(root: Path) -> list[str]:
-    expected_version = "1.0.0"
+    expected_version = "1.0.1"
     blockers: list[str] = []
     pyproject_version = _pyproject_version(root)
     if pyproject_version and pyproject_version != expected_version:

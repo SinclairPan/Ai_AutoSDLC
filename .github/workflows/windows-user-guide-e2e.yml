@@ -6,7 +6,7 @@ on:
       tag:
         description: Published release tag to verify against the user guide.
         required: true
-        default: v1.0.0
+        default: v1.0.1
   pull_request:
     paths:
       - ".github/workflows/windows-user-guide-e2e.yml"
@@ -37,7 +37,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v1.0.0' }}
+      RELEASE_TAG: ${{ inputs.tag || 'v1.0.1' }}
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
 
@@ -126,14 +126,16 @@ jobs:
           # USER_GUIDE.zh-CN.md Chapter 2, Scenario B: online download from Release.
           Push-Location $projectRoot
           cd ..
-          $BundleName = "ai-sdlc-offline-1.0.0-windows-amd64"
+          $BundleName = "ai-sdlc-offline-1.0.1-windows-amd64"
           $PackageName = "$BundleName.zip"
+          $ChecksumName = "$PackageName.sha256"
           $PackageDir = (Get-Location).Path
           $ExtractRoot = Join-Path $PackageDir ".ai-sdlc-install"
-          if ($env:RELEASE_TAG -ne "v1.0.0") {
-            throw "This guide replay intentionally follows the current USER_GUIDE.zh-CN.md v1.0.0 Windows commands."
+          if ($env:RELEASE_TAG -ne "v1.0.1") {
+            throw "This guide replay intentionally follows the current USER_GUIDE.zh-CN.md v1.0.1 Windows commands."
           }
           $packagePath = Join-Path $PackageDir $PackageName
+          $checksumPath = Join-Path $PackageDir $ChecksumName
           if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
             $localPackage = Get-ChildItem -LiteralPath (Join-Path $env:GITHUB_WORKSPACE "dist-offline") -Filter $PackageName -File |
               Select-Object -First 1
@@ -141,8 +143,22 @@ jobs:
               throw "Pull request guide replay expected local package from dist-offline: $PackageName"
             }
             Copy-Item -LiteralPath $localPackage.FullName -Destination $packagePath -Force
+            $localChecksum = Get-Item -LiteralPath "$($localPackage.FullName).sha256" -ErrorAction SilentlyContinue
+            if (-not $localChecksum) {
+              throw "Pull request guide replay expected local SHA256 sidecar: $ChecksumName"
+            }
+            Copy-Item -LiteralPath $localChecksum.FullName -Destination $checksumPath -Force
           } else {
-            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.0/$PackageName" -OutFile $packagePath
+            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/$PackageName" -OutFile $packagePath
+            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/$ChecksumName" -OutFile $checksumPath
+          }
+          $checksumParts = (Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+', 2
+          if ($checksumParts.Count -ne 2 -or $checksumParts[1] -ne $PackageName) {
+            throw "SHA256 sidecar does not bind to $PackageName"
+          }
+          $actualPackageHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $packagePath).Hash.ToLowerInvariant()
+          if ($actualPackageHash -ne $checksumParts[0].ToLowerInvariant()) {
+            throw "SHA256 verification failed for $PackageName"
           }
           New-Item -ItemType Directory -Path $ExtractRoot -Force | Out-Null
           Write-Host "正在解压安装包；如果已经解压过，会安静覆盖同名文件。"
@@ -288,6 +304,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
+      RELEASE_TAG: ${{ inputs.tag || 'v1.0.1' }}
       PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
 
@@ -329,7 +346,7 @@ jobs:
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
           $installerPath = Join-Path $env:RUNNER_TEMP "install_online.ps1"
           $installVenv = Join-Path $env:RUNNER_TEMP "ai-sdlc-online"
-          $sourceKind = "remote-main"
+          $sourceKind = "remote-release-tag"
           $sourceRepository = "SinclairPan/Ai_AutoSDLC"
           if ($env:GITHUB_EVENT_NAME -eq "pull_request") {
             if (-not $env:PR_HEAD_REPOSITORY -or -not $env:PR_HEAD_SHA) {
@@ -339,9 +356,12 @@ jobs:
             $sourceRepository = $env:PR_HEAD_REPOSITORY
             $remoteSha = $env:PR_HEAD_SHA
           } else {
-            $remoteSha = ((git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git refs/heads/main) -split "`t")[0]
+            $tagLines = @(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}")
+            $peeledTag = $tagLines | Where-Object { $_ -match '\^\{\}$' } | Select-Object -First 1
+            $resolvedTag = if ($peeledTag) { $peeledTag } else { $tagLines | Select-Object -First 1 }
+            $remoteSha = ($resolvedTag -split "`t")[0]
             if ($LASTEXITCODE -ne 0 -or -not $remoteSha) {
-              throw "Unable to resolve the public remote main SHA."
+              throw "Unable to resolve the public release tag $env:RELEASE_TAG."
             }
           }
           $installerUri = "https://raw.githubusercontent.com/$sourceRepository/$remoteSha/packaging/install_online.ps1"
@@ -378,8 +398,8 @@ jobs:
             throw "The newly opened ordinary-user command failed."
           }
           $versionText = Get-Content -LiteralPath (Join-Path $evidenceRoot "ai-sdlc-version.txt") -Raw
-          if ($versionText.Trim() -ne "1.0.0") {
-            throw "Remote online install produced version '$($versionText.Trim())', expected 1.0.0."
+          if ($versionText.Trim() -ne "1.0.1") {
+            throw "Remote online install produced version '$($versionText.Trim())', expected 1.0.1."
           }
 
           $directUrlPath = Get-ChildItem `
