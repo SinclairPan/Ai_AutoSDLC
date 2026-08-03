@@ -1,485 +1,672 @@
 # AI-SDLC 1.0.1 中文用户指南
 
-AI-SDLC 用一套本地命令把项目规则、AI 代理、工程闭环、质量门禁和交付证据连接起来。本指南以 Codex + PowerShell 为默认组合，同时给出 macOS、Linux 和 Windows 的安装方式。
+AI-SDLC 会把项目规则、需求澄清、技术方案、任务执行、质量门禁和交付证据接入你实际使用的 AI 开发工具。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-## 1. 环境要求
+本指南只包含两条完整路径：
 
-- Python 3.11 或更高版本；
-- Git；
-- 源码开发推荐安装 `uv`；
-- Windows 推荐 PowerShell 7，也兼容 Windows PowerShell 5.1；
-- 离线环境使用同平台的 AI-SDLC 离线包。
+- 项目目录还是空的：直接阅读第一章。
+- 项目中已经有代码或文档：直接阅读第二章。
 
-先确认环境：
+每章都能独立完成安装和初始化，不需要来回查找其他章节。命令在终端执行；需求文字在你选择的 AI 工具对话入口输入。
 
-```powershell
-python --version
-git --version
-```
+> 重要：解压后的 AI-SDLC 安装目录是长期运行环境。安装完成后不要移动或删除它，否则手册中的包内直接命令入口会失效。安装目录不是你的业务项目目录。
 
-## 2. 安装 AI-SDLC
+## 第一章：全新用户 + 全新空项目
 
-### 2.1 从 Git 安装
+选择你的操作系统，只执行对应小节。
 
-Windows、macOS 和 Linux 都可以执行：
+### 1.1 Windows
+
+以下命令在 PowerShell 中执行。命令会把示例项目创建到当前用户目录下的 `projects\my-new-project`，把 AI-SDLC 长期安装到当前用户目录下的 `AI-SDLC`。
+
+复制并执行：
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.1"
-ai-sdlc --version
-```
-
-正确版本为：
-
-```text
-1.0.1
-```
-
-如果需要验证尚未发布的开发版，可显式使用 `@main`；开发版会随主线变化，不承诺输出稳定版版本号。
-
-如果命令没有加入 PATH，可改用模块入口：
-
-```powershell
-python -m ai_sdlc --version
-python -m ai_sdlc --help
-```
-
-### 2.2 从源码运行
-
-```powershell
-git clone --branch v1.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
-Set-Location Ai_AutoSDLC
-uv sync
-uv run ai-sdlc --version
-```
-
-在源码目录内，后续命令可把 `ai-sdlc` 替换为 `uv run ai-sdlc`。
-
-### 2.3 使用离线包
-
-离线包名称：
-
-- Windows：`ai-sdlc-offline-1.0.1-windows-amd64.zip`
-- macOS：`ai-sdlc-offline-1.0.1-macos-arm64.tar.gz`
-- Linux：`ai-sdlc-offline-1.0.1-linux-amd64.tar.gz`
-
-#### Windows
-
-```powershell
-$PackageName = "ai-sdlc-offline-1.0.1-windows-amd64.zip"
-$ChecksumName = "$PackageName.sha256"
+$ErrorActionPreference = "Stop"
+$ProjectRoot = Join-Path $HOME "projects\my-new-project"
+$InstallRoot = Join-Path $HOME "AI-SDLC"
+$DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v1.0.1-download"
 $BundleName = "ai-sdlc-offline-1.0.1-windows-amd64"
-$InstallRoot = Join-Path (Get-Location) ".ai-sdlc-install"
+$PackageName = "$BundleName.zip"
+$PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-windows-amd64.zip"
+$ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-windows-amd64.zip.sha256"
 
-$ChecksumParts = (Get-Content -LiteralPath $ChecksumName -Raw).Trim() -split '\s+', 2
-$ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackageName).Hash.ToLowerInvariant()
+New-Item -ItemType Directory -Force -Path $ProjectRoot, $InstallRoot, $DownloadRoot | Out-Null
+$PackagePath = Join-Path $DownloadRoot $PackageName
+$ChecksumPath = "$PackagePath.sha256"
+Invoke-WebRequest -Uri $PackageUrl -OutFile $PackagePath
+Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath
+
+$ChecksumParts = (Get-Content -LiteralPath $ChecksumPath -Raw).Trim() -split '\s+', 2
+$ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackagePath).Hash.ToLowerInvariant()
 if ($ChecksumParts.Count -ne 2 -or $ChecksumParts[1] -ne $PackageName -or $ChecksumParts[0].ToLowerInvariant() -ne $ActualHash) {
   throw "SHA256 verification failed for $PackageName"
 }
-New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null
-Expand-Archive -LiteralPath $PackageName -DestinationPath $InstallRoot -Force
-Set-Location (Join-Path $InstallRoot $BundleName)
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddToPath
-.\.venv\Scripts\ai-sdlc.exe --version
+Write-Host "SHA256 verified: $PackageName"
+
+Expand-Archive -LiteralPath $PackagePath -DestinationPath $InstallRoot -Force
+$BundleRoot = Join-Path $InstallRoot $BundleName
+powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $BundleRoot "install_offline.ps1") -AddToPath
+$DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
+& $DirectCli --version
 ```
 
-安装脚本会在包目录创建独立虚拟环境。重新打开终端后，可直接运行 `ai-sdlc`。
+成功时会看到这些稳定内容：
 
-#### macOS
-
-```bash
-shasum -a 256 -c ai-sdlc-offline-1.0.1-macos-arm64.tar.gz.sha256
-tar xzf ai-sdlc-offline-1.0.1-macos-arm64.tar.gz
-cd ai-sdlc-offline-1.0.1-macos-arm64
-./install_offline.sh --add-to-path
-./.venv/bin/ai-sdlc --version
+```text
+SHA256 verified: ai-sdlc-offline-1.0.1-windows-amd64.zip
+Result
+  Offline installation completed. The installer created the runtime and installed AI-SDLC.
+Next
+Direct shim:
+1.0.1
 ```
 
-#### Linux
+安装器还会显示一条 `Codex + PowerShell project init` 示例。那只是一个专用示例；你不需要因此选择 Codex，继续使用下面的通用交互式命令即可。
 
-```bash
-sha256sum -c ai-sdlc-offline-1.0.1-linux-amd64.tar.gz.sha256
-tar xzf ai-sdlc-offline-1.0.1-linux-amd64.tar.gz
-cd ai-sdlc-offline-1.0.1-linux-amd64
-./install_offline.sh --add-to-path
-./.venv/bin/ai-sdlc --version
-```
-
-## 3. 初始化项目：Codex + PowerShell
-
-进入目标项目目录：
+初始化空项目：
 
 ```powershell
-Set-Location D:\work\my-project
-ai-sdlc init . --agent-target codex --shell powershell
+Set-Location $ProjectRoot
+& $DirectCli init .
 ```
 
-命令会深度扫描项目，准备 `.ai-sdlc/` 目录、checkpoint、项目规则和 `AGENTS.md`，然后自动运行安全预演。
+命令会停下来让你选择 AI 代理入口和 Shell。选择方法见本章 1.4。
 
-初始化完成后，按命令输出中的 `Result / Next` 进入 Codex 对话并提交需求。对新项目而言，安全预演显示开放门禁是正常结果；它表示下一步需要补充需求、设计、任务或测试证据，并不表示初始化失败。
-
-只有在初始化异常或需要重新核对配置时，才运行 `ai-sdlc adapter status --details`、`ai-sdlc status` 或 `ai-sdlc run --dry-run`。
-
-### 3.1 分别选择代理与 Shell
+如果当前 PowerShell 窗口已经关闭，重新打开后执行：
 
 ```powershell
+$ProjectRoot = Join-Path $HOME "projects\my-new-project"
+$DirectCli = Join-Path $HOME "AI-SDLC\ai-sdlc-offline-1.0.1-windows-amd64\.venv\Scripts\ai-sdlc.exe"
+Set-Location $ProjectRoot
+& $DirectCli init .
+```
+
+### 1.2 macOS（Apple Silicon）
+
+以下命令在 Terminal 的 zsh 或 bash 中执行。v1.0.1 的正式 macOS 离线包适用于 Apple Silicon。
+
+复制并执行：
+
+```bash
+set -e
+PROJECT_ROOT="$HOME/projects/my-new-project"
+INSTALL_ROOT="$HOME/Applications/AI-SDLC"
+DOWNLOAD_ROOT="$(mktemp -d)"
+BUNDLE_NAME="ai-sdlc-offline-1.0.1-macos-arm64"
+PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-macos-arm64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-macos-arm64.tar.gz.sha256"
+
+mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME.sha256" "$CHECKSUM_URL"
+(cd "$DOWNLOAD_ROOT" && shasum -a 256 -c "$PACKAGE_NAME.sha256")
+
+tar xzf "$DOWNLOAD_ROOT/$PACKAGE_NAME" -C "$INSTALL_ROOT"
+BUNDLE_ROOT="$INSTALL_ROOT/$BUNDLE_NAME"
+(cd "$BUNDLE_ROOT" && ./install_offline.sh --add-to-path)
+DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
+"$DIRECT_CLI" --version
+```
+
+成功时会看到这些稳定内容：
+
+```text
+ai-sdlc-offline-1.0.1-macos-arm64.tar.gz: OK
+当前结果 / Result
+  离线安装完成。安装脚本已创建运行环境并安装 AI-SDLC。
+  Offline installation completed. The installer created the runtime and installed AI-SDLC.
+下一步 / Next
+1.0.1
+```
+
+初始化空项目：
+
+```bash
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+```
+
+命令会停下来让你选择 AI 代理入口和 Shell。选择方法见本章 1.4。
+
+如果当前 Terminal 已经关闭，重新打开后执行：
+
+```bash
+PROJECT_ROOT="$HOME/projects/my-new-project"
+DIRECT_CLI="$HOME/Applications/AI-SDLC/ai-sdlc-offline-1.0.1-macos-arm64/.venv/bin/ai-sdlc"
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+```
+
+### 1.3 Linux（amd64）
+
+以下命令在 bash 中执行。
+
+复制并执行：
+
+```bash
+set -e
+PROJECT_ROOT="$HOME/projects/my-new-project"
+INSTALL_ROOT="$HOME/.local/share/AI-SDLC"
+DOWNLOAD_ROOT="$(mktemp -d)"
+BUNDLE_NAME="ai-sdlc-offline-1.0.1-linux-amd64"
+PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-linux-amd64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-linux-amd64.tar.gz.sha256"
+
+mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME.sha256" "$CHECKSUM_URL"
+(cd "$DOWNLOAD_ROOT" && sha256sum -c "$PACKAGE_NAME.sha256")
+
+tar xzf "$DOWNLOAD_ROOT/$PACKAGE_NAME" -C "$INSTALL_ROOT"
+BUNDLE_ROOT="$INSTALL_ROOT/$BUNDLE_NAME"
+(cd "$BUNDLE_ROOT" && ./install_offline.sh --add-to-path)
+DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
+"$DIRECT_CLI" --version
+```
+
+成功时会看到这些稳定内容：
+
+```text
+ai-sdlc-offline-1.0.1-linux-amd64.tar.gz: OK
+当前结果 / Result
+  离线安装完成。安装脚本已创建运行环境并安装 AI-SDLC。
+  Offline installation completed. The installer created the runtime and installed AI-SDLC.
+下一步 / Next
+1.0.1
+```
+
+初始化空项目：
+
+```bash
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+```
+
+命令会停下来让你选择 AI 代理入口和 Shell。选择方法见本章 1.4。
+
+如果当前终端已经关闭，重新打开后执行：
+
+```bash
+PROJECT_ROOT="$HOME/projects/my-new-project"
+DIRECT_CLI="$HOME/.local/share/AI-SDLC/ai-sdlc-offline-1.0.1-linux-amd64/.venv/bin/ai-sdlc"
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+```
+
+### 1.4 选择 AI 适配器和 Shell
+
+初始化时会看到：
+
+```text
+请选择当前实际用于聊天开发的 AI 代理入口
+```
+
+选择标准只有一个：你准备把开发需求发给哪个 AI 工具，就选择哪个适配器。
+
+| 选项 | 什么时候选择 |
+| --- | --- |
+| Claude Code | 实际在 Claude Code 中输入需求并让 AI 开发 |
+| Codex | 实际使用 Codex App 或 Codex CLI 开发 |
+| Cursor | 实际使用 Cursor Chat/Agent 开发 |
+| VS Code | 实际使用 VS Code 的 AI/Copilot 对话入口开发 |
+| 其他-通用 | 实际使用的 AI 工具不在以上四项中 |
+
+不要按操作系统、模型名称或终端外面的编辑器窗口来选。例如：
+
+- 在 VS Code 终端运行 Claude Code，应选择 Claude Code，不是 VS Code。
+- 通过 Cursor Agent 提交需求，应选择 Cursor。
+
+Windows 会显示编号菜单：
+
+```text
+1. Claude Code
+2. Codex
+3. Cursor
+4. VS Code
+5. 其他-通用
+```
+
+输入编号并回车；直接回车会接受当前标有“默认”的选项。macOS、Linux 使用上下方向键选择并按回车。默认项会因当前工具和项目文件不同而变化，先核对再确认。
+
+接着选择当前项目默认使用的 Shell：
+
+- Windows 通常选择 PowerShell。
+- macOS Terminal 通常选择 zsh。
+- Linux 通常选择 bash。
+- 已经明确使用 cmd、其他 Shell 或希望自动判断时，选择实际选项。
+
+### 1.5 判断初始化是否成功
+
+成功输出会包含：
+
+```text
+AI 代理入口: 你选择的工具
+Project shell: 你选择的 Shell
+Initialized AI-SDLC project
+当前结果 / Result
+下一步 / Next
+```
+
+新空项目中出现 open gates 是正常的：它表示需求、设计、任务或测试证据还没有补齐，不表示初始化失败。只要命令成功结束，并且 `下一步 / Next` 要求进入 AI 对话，就可以继续。
+
+用刚才选择的 AI 工具打开同一个项目目录：
+
+- Windows：`$HOME\projects\my-new-project`
+- macOS/Linux：`$HOME/projects/my-new-project`
+
+然后把下面文字复制到该 AI 工具的对话入口：
+
+```text
+我准备在当前项目开发一个新功能。
+
+目标：
+使用者：
+需要完成的功能：
+明确不做的内容：
+验收标准：
+
+请先帮我补齐需求和验收标准，再进入技术方案与任务分解。
+如果需求涉及页面、组件或浏览器交互，请先给出默认技术栈建议和高级可选方案，等我确认后再实现。
+```
+
+## 第二章：全新用户 + 已有项目
+
+先在已有项目根目录打开终端，然后选择你的操作系统，只执行对应小节。
+
+`init` 和 `adopt` 会创建或维护 AI-SDLC 的项目文件；`adopt` 不会修改原任务文件。已有业务代码仍应由 Git 或你自己的备份流程保护。
+
+### 2.1 Windows
+
+在已有项目根目录的 PowerShell 中复制并执行：
+
+```powershell
+$ErrorActionPreference = "Stop"
+$ProjectRoot = (Get-Location).Path
+$InstallRoot = Join-Path $HOME "AI-SDLC"
+$DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v1.0.1-download"
+$BundleName = "ai-sdlc-offline-1.0.1-windows-amd64"
+$PackageName = "$BundleName.zip"
+$PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-windows-amd64.zip"
+$ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-windows-amd64.zip.sha256"
+
+git status --short --branch
+if ($LASTEXITCODE -ne 0) {
+  Write-Host "当前目录不是 Git 仓库；确认项目目录后继续安装。"
+}
+New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadRoot | Out-Null
+$PackagePath = Join-Path $DownloadRoot $PackageName
+$ChecksumPath = "$PackagePath.sha256"
+Invoke-WebRequest -Uri $PackageUrl -OutFile $PackagePath
+Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath
+
+$ChecksumParts = (Get-Content -LiteralPath $ChecksumPath -Raw).Trim() -split '\s+', 2
+$ActualHash = (Get-FileHash -Algorithm SHA256 -LiteralPath $PackagePath).Hash.ToLowerInvariant()
+if ($ChecksumParts.Count -ne 2 -or $ChecksumParts[1] -ne $PackageName -or $ChecksumParts[0].ToLowerInvariant() -ne $ActualHash) {
+  throw "SHA256 verification failed for $PackageName"
+}
+Write-Host "SHA256 verified: $PackageName"
+
+Expand-Archive -LiteralPath $PackagePath -DestinationPath $InstallRoot -Force
+$BundleRoot = Join-Path $InstallRoot $BundleName
+powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $BundleRoot "install_offline.ps1") -AddToPath
+$DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
+& $DirectCli --version
+```
+
+如果 `git status` 显示 `not a git repository`，AI-SDLC 仍可初始化；先确认当前目录确实是目标项目根目录。存在未提交改动时可以继续，但建议先确认这些改动属于你当前要保留的工作。
+
+成功安装时会看到：
+
+```text
+SHA256 verified: ai-sdlc-offline-1.0.1-windows-amd64.zip
+Offline installation completed. The installer created the runtime and installed AI-SDLC.
+Direct shim:
+1.0.1
+```
+
+安装器显示的 `Codex + PowerShell project init` 只是专用示例；仍然执行下面的通用命令，在菜单中选择自己的 AI 工具：
+
+```powershell
+Set-Location $ProjectRoot
+& $DirectCli init .
+```
+
+完成适配器和 Shell 选择后，接入已有任务资料：
+
+```powershell
+& $DirectCli adopt .
+```
+
+如果终端已关闭，重新打开后执行：
+
+```powershell
+$ProjectRoot = (Get-Location).Path
+$DirectCli = Join-Path $HOME "AI-SDLC\ai-sdlc-offline-1.0.1-windows-amd64\.venv\Scripts\ai-sdlc.exe"
+Set-Location $ProjectRoot
+& $DirectCli init .
+& $DirectCli adopt .
+```
+
+### 2.2 macOS（Apple Silicon）
+
+在已有项目根目录的 Terminal 中复制并执行：
+
+```bash
+set -e
+PROJECT_ROOT="$PWD"
+INSTALL_ROOT="$HOME/Applications/AI-SDLC"
+DOWNLOAD_ROOT="$(mktemp -d)"
+BUNDLE_NAME="ai-sdlc-offline-1.0.1-macos-arm64"
+PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-macos-arm64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-macos-arm64.tar.gz.sha256"
+
+if ! git status --short --branch; then
+  printf '%s\n' "当前目录不是 Git 仓库；确认项目目录后继续安装。"
+fi
+mkdir -p "$INSTALL_ROOT"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME.sha256" "$CHECKSUM_URL"
+(cd "$DOWNLOAD_ROOT" && shasum -a 256 -c "$PACKAGE_NAME.sha256")
+
+tar xzf "$DOWNLOAD_ROOT/$PACKAGE_NAME" -C "$INSTALL_ROOT"
+BUNDLE_ROOT="$INSTALL_ROOT/$BUNDLE_NAME"
+(cd "$BUNDLE_ROOT" && ./install_offline.sh --add-to-path)
+DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
+"$DIRECT_CLI" --version
+```
+
+如果 `git status` 显示 `not a git repository`，AI-SDLC 仍可初始化；先确认当前目录确实是目标项目根目录。
+
+成功安装时会看到：
+
+```text
+ai-sdlc-offline-1.0.1-macos-arm64.tar.gz: OK
+Offline installation completed. The installer created the runtime and installed AI-SDLC.
+1.0.1
+```
+
+初始化并接入已有项目：
+
+```bash
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+"$DIRECT_CLI" adopt .
+```
+
+`init` 会先停下来等待适配器和 Shell 选择；确认后才会继续执行下一条 `adopt`。
+
+如果 Terminal 已经关闭，重新打开后执行：
+
+```bash
+PROJECT_ROOT="$PWD"
+DIRECT_CLI="$HOME/Applications/AI-SDLC/ai-sdlc-offline-1.0.1-macos-arm64/.venv/bin/ai-sdlc"
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+"$DIRECT_CLI" adopt .
+```
+
+### 2.3 Linux（amd64）
+
+在已有项目根目录的 bash 中复制并执行：
+
+```bash
+set -e
+PROJECT_ROOT="$PWD"
+INSTALL_ROOT="$HOME/.local/share/AI-SDLC"
+DOWNLOAD_ROOT="$(mktemp -d)"
+BUNDLE_NAME="ai-sdlc-offline-1.0.1-linux-amd64"
+PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-linux-amd64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-linux-amd64.tar.gz.sha256"
+
+if ! git status --short --branch; then
+  printf '%s\n' "当前目录不是 Git 仓库；确认项目目录后继续安装。"
+fi
+mkdir -p "$INSTALL_ROOT"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME.sha256" "$CHECKSUM_URL"
+(cd "$DOWNLOAD_ROOT" && sha256sum -c "$PACKAGE_NAME.sha256")
+
+tar xzf "$DOWNLOAD_ROOT/$PACKAGE_NAME" -C "$INSTALL_ROOT"
+BUNDLE_ROOT="$INSTALL_ROOT/$BUNDLE_NAME"
+(cd "$BUNDLE_ROOT" && ./install_offline.sh --add-to-path)
+DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
+"$DIRECT_CLI" --version
+```
+
+如果 `git status` 显示 `not a git repository`，AI-SDLC 仍可初始化；先确认当前目录确实是目标项目根目录。
+
+成功安装时会看到：
+
+```text
+ai-sdlc-offline-1.0.1-linux-amd64.tar.gz: OK
+Offline installation completed. The installer created the runtime and installed AI-SDLC.
+1.0.1
+```
+
+初始化并接入已有项目：
+
+```bash
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+"$DIRECT_CLI" adopt .
+```
+
+`init` 会先停下来等待适配器和 Shell 选择；确认后才会继续执行下一条 `adopt`。
+
+如果终端已经关闭，重新打开后执行：
+
+```bash
+PROJECT_ROOT="$PWD"
+DIRECT_CLI="$HOME/.local/share/AI-SDLC/ai-sdlc-offline-1.0.1-linux-amd64/.venv/bin/ai-sdlc"
+cd "$PROJECT_ROOT"
+"$DIRECT_CLI" init .
+"$DIRECT_CLI" adopt .
+```
+
+### 2.4 选择 AI 适配器和 Shell
+
+`init` 会询问“请选择当前实际用于聊天开发的 AI 代理入口”。选择你实际提交开发需求的入口：
+
+| 选项 | 什么时候选择 |
+| --- | --- |
+| Claude Code | 实际在 Claude Code 中输入需求并让 AI 开发 |
+| Codex | 实际使用 Codex App 或 Codex CLI 开发 |
+| Cursor | 实际使用 Cursor Chat/Agent 开发 |
+| VS Code | 实际使用 VS Code 的 AI/Copilot 对话入口开发 |
+| 其他-通用 | 实际使用的 AI 工具不在以上四项中 |
+
+在 VS Code 终端运行 Claude Code 时选择 Claude Code；通过 Cursor Agent 提交需求时选择 Cursor。适配器不是按操作系统或 Shell 选择。
+
+Windows 输入编号后回车；macOS、Linux 使用上下方向键和回车。自动检测只负责预选，默认项可能不同，确认前先核对。
+
+Shell 选择当前项目实际使用的命令语法：
+
+- Windows 通常选择 PowerShell。
+- macOS Terminal 通常选择 zsh。
+- Linux 通常选择 bash。
+- 项目明确使用 cmd、其他 Shell 或自动判断时，选择对应选项。
+
+### 2.5 判断 `init` 和 `adopt` 是否成功
+
+已有项目初始化会先显示：
+
+```text
+Detected existing project — running deep scan...
+```
+
+成功结束时会包含：
+
+```text
+Initialized AI-SDLC project
+当前结果 / Result
+下一步 / Next
+```
+
+open gates 表示项目还缺少需求、设计、任务或验证证据，不等于初始化失败。按照 `下一步 / Next` 进入所选 AI 工具即可。
+
+`adopt` 成功时会包含：
+
+```text
+接入已有项目：已生成桥接结果
+原任务文件不会被修改。
+接入已有项目
+推荐继续点
+已识别来源
+已识别任务
+```
+
+根据结果选择下一步：
+
+1. 推荐继续点正确：直接把本章 2.6 的需求模板发给所选 AI 工具。
+2. 推荐继续点不正确：按自己的关键词重新执行，例如：
+
+   ```powershell
+   ai-sdlc adopt . --prefer "支付回调"
+   ```
+
+   当前终端找不到裸命令时，Windows 使用 `& $DirectCli adopt . --prefer "支付回调"`，macOS/Linux 使用 `"$DIRECT_CLI" adopt . --prefer "支付回调"`。
+3. `已识别任务` 为 0，或者项目没有任务资料：不需要反复执行 `adopt`；直接在所选 AI 工具中说明当前目标、范围和验收标准。
+
+### 2.6 把增量需求交给所选 AI 工具
+
+使用刚才选择的 AI 工具打开同一个已有项目目录，然后复制：
+
+```text
+请先读取当前项目的代码、文档和 AI-SDLC 规则，再处理下面的增量需求。
+
+本次目标：
+必须保留的现有行为：
+允许修改的范围：
+明确不能修改的范围：
+验收标准：
+
+请先确认你对现状和需求的理解，指出缺失信息，再给出实施方案。
+如果需求涉及页面、组件或浏览器交互，请先给出默认技术栈建议和高级可选方案，等我确认后再实现。
+```
+
+## 异常情况速查
+
+### 下载失败、超时或返回 404
+
+确认下载地址中包含完整版本和资产名：
+
+```text
+https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/
+```
+
+然后重新执行所在平台的两条下载命令。不要把地址改成分支地址。
+
+### 出现 `SHA256 verification failed` 或校验不是 `OK`
+
+不要解压或安装该文件。删除本次下载目录中的压缩包和同名 `.sha256`，重新下载后再次校验。摘要仍不一致时停止使用该文件。
+
+Windows：
+
+```powershell
+Remove-Item -LiteralPath $PackagePath, $ChecksumPath -Force -ErrorAction SilentlyContinue
+Invoke-WebRequest -Uri $PackageUrl -OutFile $PackagePath
+Invoke-WebRequest -Uri $ChecksumUrl -OutFile $ChecksumPath
+```
+
+macOS/Linux：
+
+```bash
+rm -f "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$DOWNLOAD_ROOT/$PACKAGE_NAME.sha256"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
+curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME.sha256" "$CHECKSUM_URL"
+```
+
+重新执行对应平台的校验命令。
+
+### PowerShell 阻止执行安装脚本
+
+使用手册给出的进程级绕过命令，不需要修改整台电脑的永久执行策略：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $BundleRoot "install_offline.ps1") -AddToPath
+```
+
+### 当前终端提示找不到 `ai-sdlc`
+
+安装脚本写入 PATH 后，当前窗口可能还没有刷新。成功路径直接使用包内命令，不依赖 PATH：
+
+Windows：
+
+```powershell
+& $DirectCli --version
+```
+
+macOS/Linux：
+
+```bash
+"$DIRECT_CLI" --version
+```
+
+输出应为 `1.0.1`。
+
+### 出现 `No module named ai_sdlc`
+
+这通常表示执行了系统 Python，而不是离线包自带运行环境。不要另外拼装 pip 命令；回到本章对应小节，重新设置 `$DirectCli` 或 `DIRECT_CLI`，再使用包内命令。
+
+### 移动或删除了安装目录
+
+重新执行对应平台的下载、校验、解压和安装步骤，并恢复到手册中的长期安装位置。仅重新写 PATH 不能恢复已经删除的运行环境。
+
+### 在 `init` 中选错 AI 适配器
+
+进入项目根目录，根据实际工具复制对应命令：
+
+```powershell
+ai-sdlc adapter select --agent-target claude_code
 ai-sdlc adapter select --agent-target codex
-ai-sdlc adapter shell-select --shell powershell
-ai-sdlc adapter status
+ai-sdlc adapter select --agent-target cursor
+ai-sdlc adapter select --agent-target vscode
+ai-sdlc adapter select --agent-target generic
 ```
 
-Codex 会读取项目根目录的 `AGENTS.md`。如果规则更新，重新执行 `adapter select` 可刷新适配文件。
+只执行其中一条。裸命令不可用时，把开头的 `ai-sdlc` 换为本章保存的包内 Direct CLI 调用方式。
 
-## 4. 接入已有项目
+### 在 `init` 中选错 Shell
 
-`adopt` 会读取项目结构、候选任务文件和 Git 事实，不修改业务源文件：
+进入项目根目录，根据实际 Shell 只执行其中一条：
+
+```powershell
+ai-sdlc adapter shell-select --shell powershell
+ai-sdlc adapter shell-select --shell bash
+ai-sdlc adapter shell-select --shell zsh
+ai-sdlc adapter shell-select --shell cmd
+ai-sdlc adapter shell-select --shell auto
+```
+
+### `init` 显示 open gates
+
+先读 `当前结果 / Result` 和 `下一步 / Next`。如果下一步要求切换到 AI 对话、补充需求或证据，这属于正常初始化结果。普通成功路径不需要额外执行 `adapter status` 或 `run --dry-run`。
+
+### 所选 AI 工具没有按项目规则工作
+
+先确认该 AI 工具打开的是刚刚执行 `init` 的同一目录，并确认适配器选择正确。只有 CLI 明确要求进一步诊断时，再在项目根目录执行：
+
+```powershell
+ai-sdlc adapter status --details
+```
+
+### `adopt` 提示尚未初始化
+
+回到项目根目录先执行：
+
+```powershell
+ai-sdlc init .
+```
+
+完成适配器和 Shell 选择后，再执行：
 
 ```powershell
 ai-sdlc adopt .
 ```
-
-需要机器可读结果时：
-
-```powershell
-ai-sdlc adopt . --json
-```
-
-项目较大时可限制扫描预算：
-
-```powershell
-ai-sdlc adopt . --max-candidate-files 60 --max-file-bytes 65536 --max-recent-commits 20
-```
-
-完成接入后运行：
-
-```powershell
-ai-sdlc scan .
-ai-sdlc index .
-ai-sdlc verify constraints
-```
-
-## 5. 日常研发工作流
-
-### 5.1 查看当前状态
-
-```powershell
-ai-sdlc status
-ai-sdlc loop status
-ai-sdlc handoff status
-```
-
-重点关注：当前阶段、开放门禁、checkpoint、当前分支、下一步动作和待补证据。
-
-### 5.2 需求闭环
-
-```powershell
-ai-sdlc loop requirement
-```
-
-需求闭环检查目标、范围、验收标准、风险和未决问题。输入不足时会给出停止原因，不会伪造完成状态。
-
-### 5.3 设计契约闭环
-
-```powershell
-ai-sdlc loop design-contract
-```
-
-设计契约闭环检查接口、数据模型、边界条件、迁移策略和验证计划是否能够支撑实现。
-
-### 5.4 实现闭环
-
-```powershell
-ai-sdlc loop implementation
-```
-
-实现闭环比较任务、代码变更、测试与质量门禁，输出可执行的缺口列表。
-
-### 5.5 Lean Code 有界质量闭环
-
-Lean Code 是 Implementation Loop 的质量 Profile。它用确定性证据限制新功能和 Bug 修复的范围、风险与关闭条件，不会创建新的顶层 Loop，也不会自动修改业务代码。
-
-运行评估：
-
-```powershell
-ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id>
-```
-
-也可以省略 `--loop-id`，使用当前 Implementation pointer。命令支持 `--json`，并始终说明 `Result / Next`、finding 数量、artifact 路径、是否调用模型和是否写应用代码。
-
-评估源支持 `local-unstaged`、`local-staged`、`local-git-range` 和项目内 patch。若 `lean-check` 选择了非默认源，`lean-verify` 以及 `lean-regression` 的 RED/GREEN 阶段必须重复使用同一组 `--diff-source / --base / --head / --patch-file` 参数。CLI 会把完整 source tuple 传入受控执行器；receipt 与评估按精确 diff hash 绑定，不会自动改用其他工作区视图。
-
-判定方式：
-
-- `BLOCKER`：artifact/policy/input 损坏或过期、未批准的 scope drift、验证失败、行为或安全合同破坏、无效例外；不能关闭。
-- `REQUIRED`：文件/函数超出初始预算并伴随复杂度、重复、耦合或范围风险，Bug 修复缺少 RED/GREEN 证据，或新增公共抽象少于 3 个真实调用者；需要定向处理或显式风险决策。
-- `ADVISORY`：只有 400/50 数值超限、历史债务或不影响关闭的可读性机会；可以保留并进入最终报告。
-
-新功能只允许覆盖冻结的 acceptance/tasks。Bug 修复还需要同一目标断言先失败、后通过的结构化证据。用 CLI 执行同一 argv；`--` 后的参数不会交给 shell：
-
-```powershell
-ai-sdlc loop implementation lean-regression --loop-id <implementation-loop-id> `
-  --phase red --test-id <test-id> --test-source tests/test_bug.py `
-  --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
-# 完成最小修复后，使用完全相同的 test-id、test-source、signature 和 argv
-ai-sdlc loop implementation lean-regression --loop-id <implementation-loop-id> `
-  --phase green --test-id <test-id> --test-source tests/test_bug.py `
-  --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
-ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id> `
-  --regression-evidence <GREEN 返回的 evidence_path>
-```
-
-运行时 receipt 会绑定 source snapshot、退出码、stdout/stderr、测试源码、受控 runner adapter、可执行文件字节和依赖锁环境。当前接受 `python <path>`、`python -m pytest <path>::<node>`、`python -m py_compile <path>`、直接 `pytest <path>` 等可解释形态；只把路径放进 `python -c` 的普通参数、ignore/config 参数或输出文本不会通过。
-
-例外通过项目内 JSON artifact 传入：
-
-```powershell
-ai-sdlc loop implementation lean-check `
-  --loop-id <implementation-loop-id> `
-  --exception "evidence/lean-exception.json"
-```
-
-例外必须绑定 rule/finding、path 或 symbol、scope、policy、base/head、diff、有效期、负责人、审批人和证据 digest。有效例外保留原 finding，最终状态为 `risk_accepted`；缺字段、证据不存在、digest 不匹配或已过期时直接 BLOCKER。
-
-第一次评估产生 BLOCKER/REQUIRED 后，Implementation Agent 只能按 fix plan 做定向修改，并真实执行定向验证：
-
-```powershell
-ai-sdlc loop implementation lean-verify --loop-id <implementation-loop-id> `
-  --test-source tests/test_target.py -- python -m pytest tests/test_target.py -q
-ai-sdlc loop implementation record --loop-id <implementation-loop-id> `
-  --task-id <task-id> --status done --evidence <返回的 receipt_path>
-```
-
-然后再运行第二次评估。只填写 `--verification` 文本不算执行证据。Implementation start 时冻结的任务内容不能在评估前或关闭前改写；当前任务的语义摘要必须持续匹配冻结值。最多两轮；在当前 enforcement mode 下，第二轮只要仍有未解决的 BLOCKER/REQUIRED，无论 finding 是否与上一轮相同，都会进入 `needs_user`。如果修复只能破坏行为，或成本明显高于收益，记录结构化 No-Go：
-
-```powershell
-ai-sdlc loop implementation lean-no-go `
-  --loop-id <implementation-loop-id> `
-  --reason "Metric-only change would break behavior." `
-  --owner "implementation-owner" `
-  --repair-cost "behavioral regression" `
-  --expected-benefit "one metric reduction" `
-  --evidence "evidence/no-go-proof.txt"
-```
-
-No-Go 会写入绑定当前 report/diff 的决策 artifact，并将现有 Loop 置为 `needs_user`；它不会新增状态枚举或修改应用代码。
-
-generated/vendored 文件只有带生成头或可核验上游 provenance 时才享受独立分类；目录名、后缀或 `vendor/` 路径本身不是豁免证据。`report` 模式只报告非完整性 REQUIRED，`warning` 要求定向修复，`blocking` 阻断未解决 REQUIRED；完整性、scope drift、验证失败与无效例外始终 fail-closed。close 与 PR 会重新读取 receipt、例外和证据；删除、替换、跨 work item 重绑或过期都会使旧结论失效。
-
-能力边界：当前精确语义 adapter 使用 Python AST。TypeScript、Java、Go 等语言仍计算可重复的 diff、文件分类和行数指标；没有可靠 parser 时语义能力标记为 `unsupported` 并进入 `needs_user`，不把缺失测量写成零风险。Local PR Reviewer 必须与 Implementation Agent 独立，消费 fresh Lean report；report、snapshot、policy、findings、evaluation input、review-pack、final-report 和 attestation 通过 digest 链相互绑定。内置审计证明独立进程和独立输入上下文，不冒充不同人类身份；需要职责分离时应配置不同 reviewer 账号/provider，并在治理系统中保留 actor/session 记录。
-
-这条本地 digest 链检测 stale artifact、单点修改和内部不一致，但不等同于外部签名或不可变账本。若某个主体能够同时改写全部本地 artifact、策略标记和 digest，应将 attestation 保存到受保护 CI、外部审计存储或签名系统，才能把该主体纳入信任边界。
-
-### 5.6 前端证据闭环
-
-```powershell
-ai-sdlc loop frontend-evidence
-```
-
-前端闭环可组合浏览器探针、视觉证据、可访问性结果、页面契约和交付上下文。
-
-### 5.7 安全预演与确认执行
-
-```powershell
-ai-sdlc run --dry-run
-ai-sdlc run --mode confirm
-```
-
-- `--dry-run`：只计算门禁，不执行任务；
-- `--mode confirm`：在需要人工判断的动作前停下确认；
-- 默认 `auto`：只在规则允许时自动推进。
-
-## 6. 恢复与连续工作
-
-```powershell
-ai-sdlc recover
-ai-sdlc recover --reconcile
-```
-
-当 checkpoint 与当前分支或项目工件不一致时，使用 `--reconcile` 重新对齐事实。恢复完成后再次执行：
-
-```powershell
-ai-sdlc status
-ai-sdlc verify constraints
-ai-sdlc run --dry-run
-```
-
-Codex 连续工作可使用 handoff 命令：
-
-```powershell
-ai-sdlc handoff --help
-```
-
-## 7. 质量门禁
-
-### 7.1 约束验证
-
-```powershell
-ai-sdlc verify constraints
-```
-
-该命令只读检查规则文件、checkpoint、任务验收、前端契约与发布面。存在 BLOCKER 时退出码为 1。
-
-### 7.2 Gate 命令
-
-```powershell
-ai-sdlc gate --help
-```
-
-Gate 输出应被当作交付证据，而不是普通提示。任何被标记为 BLOCKER 的问题都必须在关闭前解决。
-
-### 7.3 项目自检
-
-```powershell
-ai-sdlc doctor
-ai-sdlc adapter status --details
-```
-
-`doctor` 检查解释器、命令路径和常见 shim 位置；`adapter status` 检查代理入口与项目规则是否一致。
-
-## 8. 本地对抗 PR 审查
-
-检查审查运行条件：
-
-```powershell
-ai-sdlc pr-review doctor
-```
-
-预览工作区输入：
-
-```powershell
-ai-sdlc pr-review start --diff-source local-unstaged --dry-run
-```
-
-审查分支差异：
-
-```powershell
-ai-sdlc pr-review start --base main --head HEAD --diff-source local-git-range --provider local-agent
-```
-
-处理审查结果：
-
-```powershell
-ai-sdlc pr-review status
-ai-sdlc pr-review fix
-ai-sdlc pr-review rerun
-ai-sdlc pr-review close
-ai-sdlc pr-review attest
-```
-
-在 Enforce 模式下，如果 `attest` 输出
-`.ai-sdlc/attestations/ci-certificate-bundle.json`，必须由用户显式提交并
-推送这个固定证书文件，远端 CI 才能验证同一个候选版本：
-
-```powershell
-git add -- .ai-sdlc/attestations/ci-certificate-bundle.json
-git commit -m "chore: publish AI-SDLC review certificate"
-git push
-```
-
-CLI 不会隐式提交或推送。不要提交 `.ai-sdlc/state/` 下的本地运行状态。
-Shadow 模式不要求证书时，无需执行上述 Git 步骤。
-
-`CI Certificate Gate` 使用受保护 base 分支中的 workflow 与 verifier。待审
-head 只会被检出到独立 Candidate 目录，作为 Git/JSON 数据读取；Gate 不会从
-head 安装依赖、运行测试或执行项目代码。仓库管理员还应在 ruleset 中把该 Gate
-固定为 required check，避免由待审 PR 自己提供同名检查。
-
-默认策略禁止代码外发。只有在组织策略允许且用户明确确认时，才可启用远程模型代码输入。
-
-## 9. AgentOps 接入
-
-AI-SDLC 使用环境变量读取 AgentOps 网关与令牌，不把令牌值写入仓库。
-
-配置完成后检查：
-
-```powershell
-ai-sdlc agentops doctor
-ai-sdlc agentops status
-```
-
-本地 outbox 投递失败时：
-
-```powershell
-ai-sdlc agentops retry
-```
-
-企业配置入口：
-
-```powershell
-ai-sdlc enterprise configure --help
-```
-
-详细字段见 [企业 AgentOps 接入说明](docs/enterprise-agentops-setup.zh-CN.md)。
-
-## 10. 离线包构建
-
-在 AI-SDLC 源码根目录执行：
-
-```powershell
-bash packaging/offline/build_offline_bundle.sh
-```
-
-产物位于 `dist-offline/`。打包脚本读取 `pyproject.toml` 中的 `1.0.1` 版本，并生成 manifest、SHA256 校验和、wheelhouse 与安装脚本。
-
-验证包内容：
-
-```powershell
-$BundleDir = "dist-offline/ai-sdlc-offline-1.0.1-windows-amd64"
-$Archive = "dist-offline/ai-sdlc-offline-1.0.1-windows-amd64.zip"
-python packaging/offline/verify_offline_bundle.py $BundleDir --require-bundled-runtime --require-checksums --expected-package-version 1.0.1 --archive-checksum $Archive "$Archive.sha256"
-```
-
-正式交付前，应在目标操作系统上完成：解压、离线安装、`--version`、`--help`、Codex 初始化、adapter status 和 `run --dry-run`。
-
-## 11. 常见问题
-
-### `ai-sdlc` 命令找不到
-
-```powershell
-python -m ai_sdlc doctor
-python -m ai_sdlc --help
-```
-
-如果模块入口可用，请把 Python Scripts 目录加入 PATH，或继续使用 `python -m ai_sdlc`。
-
-### 初始化后仍有开放门禁
-
-先运行：
-
-```powershell
-ai-sdlc status
-ai-sdlc verify constraints
-ai-sdlc loop status
-```
-
-根据输出补齐需求、设计、任务或测试证据，再执行 `run --dry-run`。
-
-### Codex 没有读取项目规则
-
-```powershell
-ai-sdlc adapter select --agent-target codex
-ai-sdlc adapter status --details
-```
-
-确认项目根目录存在 `AGENTS.md`，并从该项目目录启动 Codex。
-
-### PowerShell 执行策略阻止离线安装
-
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddToPath
-```
-
-### 需要查看机器可读结果
-
-支持 `--json` 的命令可直接输出 JSON；其他命令可通过退出码和保存的 YAML/JSON 工件接入 CI。
-
-## 12. 验收清单
-
-- `ai-sdlc --version` 输出 `1.0.1`；
-- `ai-sdlc adapter status` 显示 Codex 项目规则已准备；
-- 项目 Shell 偏好为 PowerShell；
-- `ai-sdlc status` 能读取 checkpoint；
-- `ai-sdlc run --dry-run` 能展示明确的 Result 与 Next；
-- `ai-sdlc verify constraints` 没有未处理的 BLOCKER；
-- 测试、lint、离线包校验和目标平台 smoke 均通过。
