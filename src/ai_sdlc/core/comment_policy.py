@@ -179,8 +179,10 @@ def _detect_text_language(text: str) -> CommentLanguage | None:
 
 def _is_comment_line(text: str, *, path: str = "") -> bool:
     stripped = text.strip()
-    if Path(path).suffix.lower() in {".md", ".markdown"}:
-        return stripped.startswith("<!--") or stripped.endswith("-->")
+    if Path(path).suffix.lower() in {".md", ".markdown"} and re.match(
+        r"^#{1,6}\s+", stripped
+    ):
+        return False
     return bool(
         _COMMENT_PREFIX_RE.match(stripped) or _BLOCK_COMMENT_SUFFIX_RE.search(stripped)
     )

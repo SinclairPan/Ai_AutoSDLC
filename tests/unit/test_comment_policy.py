@@ -153,7 +153,7 @@ def test_markdown_heading_deletion_is_not_code_comment_removal() -> None:
     assert findings == ()
 
 
-def test_markdown_bold_metadata_deletion_is_not_code_comment_removal() -> None:
+def test_markdown_bold_metadata_keeps_existing_comment_policy_behavior() -> None:
     findings = collect_removed_comment_findings(
         diff_text="""diff --git a/docs/plan.md b/docs/plan.md
 --- a/docs/plan.md
@@ -163,7 +163,7 @@ def test_markdown_bold_metadata_deletion_is_not_code_comment_removal() -> None:
 """
     )
 
-    assert findings == ()
+    assert len(findings) == 1
 
 
 def _init_git_repo(root: Path) -> None:

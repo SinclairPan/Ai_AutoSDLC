@@ -1822,6 +1822,8 @@ def test_windows_release_guidance_uses_repeat_safe_extract_cache() -> None:
     assert guide.count("Push-Location $BundleRoot") >= 2
     assert guide.count('powershell -NoProfile -ExecutionPolicy Bypass -File ".\\install_offline.ps1" -AddToPath') >= 2
     assert guide.count("Pop-Location") >= 2
+    assert "$GitCommand = Get-Command git -ErrorAction SilentlyContinue" in guide
+    assert "if ($GitCommand)" in guide
 
     for path in guidance_paths:
         text = path.read_text(encoding="utf-8")

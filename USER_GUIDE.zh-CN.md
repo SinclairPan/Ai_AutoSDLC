@@ -299,9 +299,14 @@ $PackageName = "$BundleName.zip"
 $PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-windows-amd64.zip"
 $ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.1/ai-sdlc-offline-1.0.1-windows-amd64.zip.sha256"
 
-git status --short --branch
-if ($LASTEXITCODE -ne 0) {
-  Write-Host "当前目录不是 Git 仓库；确认项目目录后继续安装。"
+$GitCommand = Get-Command git -ErrorAction SilentlyContinue
+if ($GitCommand) {
+  git status --short --branch
+  if ($LASTEXITCODE -ne 0) {
+    Write-Host "当前目录不是 Git 仓库；确认项目目录后继续安装。"
+  }
+} else {
+  Write-Host "未检测到 Git；确认当前目录是目标项目根目录后继续安装。"
 }
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadRoot | Out-Null
 $PackagePath = Join-Path $DownloadRoot $PackageName
