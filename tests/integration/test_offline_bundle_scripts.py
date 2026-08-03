@@ -1791,11 +1791,10 @@ def test_windows_install_guidance_is_safe_for_windows_powershell_parser() -> Non
     assert "Write-Host \"  $callOperator '$resolvedVenvPython' -m ai_sdlc --help\"" not in offline_ps1
 
 
-def test_user_guide_documents_git_source_and_offline_install_paths() -> None:
+def test_user_guide_documents_published_assets_and_two_new_user_paths() -> None:
     guide = (_REPO_ROOT / "USER_GUIDE.zh-CN.md").read_text(encoding="utf-8")
-    assert "### 2.1 从 Git 安装" in guide
-    assert "### 2.2 从源码运行" in guide
-    assert "### 2.3 使用离线包" in guide
+    assert "## 第一章：全新用户 + 全新空项目" in guide
+    assert "## 第二章：全新用户 + 已有项目" in guide
     assert "https://github.com/SinclairPan/Ai_AutoSDLC" in guide
     assert "ai-sdlc-offline-1.0.1-windows-amd64.zip" in guide
     assert "ai-sdlc-offline-1.0.1-macos-arm64.tar.gz" in guide
@@ -1803,8 +1802,11 @@ def test_user_guide_documents_git_source_and_offline_install_paths() -> None:
     assert "Get-FileHash -Algorithm SHA256" in guide
     assert "shasum -a 256 -c" in guide
     assert "sha256sum -c" in guide
-    assert "ai-sdlc init . --agent-target codex --shell powershell" in guide
-    assert "Invoke-WebRequest -Uri" not in guide
+    assert "ai-sdlc init ." in guide
+    assert "ai-sdlc adopt ." in guide
+    assert "Invoke-WebRequest -Uri" in guide
+    assert "从源码运行" not in guide
+    assert "老版本升级" not in guide
 
 
 def test_windows_release_guidance_uses_repeat_safe_extract_cache() -> None:
@@ -1815,7 +1817,8 @@ def test_windows_release_guidance_uses_repeat_safe_extract_cache() -> None:
     ]
 
     guide = (_REPO_ROOT / "USER_GUIDE.zh-CN.md").read_text(encoding="utf-8")
-    assert ".ai-sdlc-install" in guide
+    assert '$InstallRoot = Join-Path $HOME "AI-SDLC"' in guide
+    assert "-DestinationPath $InstallRoot -Force" in guide
 
     for path in guidance_paths:
         text = path.read_text(encoding="utf-8")
