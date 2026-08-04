@@ -622,9 +622,13 @@ def _cell_evidence_base(
 
 
 def _junit_key_from_nodeid(nodeid: str) -> tuple[str, str]:
-    parts = _normalize_nodeid(nodeid).split("::")
+    normalized = _normalize_nodeid(nodeid)
+    scope, parameter_marker, parameter_id = normalized.partition("[")
+    parts = scope.split("::")
     module_name = parts[0].removesuffix(".py").replace("/", ".")
-    return ".".join([module_name, *parts[1:-1]]), parts[-1]
+    # 参数 ID 内允许出现 ::，只有参数列表之前的分隔符属于 pytest scope。
+    test_name = parts[-1] + (f"[{parameter_id}" if parameter_marker else "")
+    return ".".join([module_name, *parts[1:-1]]), test_name
 
 
 def _junit_case_lookup(manifest: Mapping[str, object]) -> dict[tuple[str, str], str]:

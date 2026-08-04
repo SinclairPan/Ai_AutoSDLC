@@ -835,6 +835,14 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert '--baseline .github/ci/test-baseline.json' in aggregate_script
 
 
+def test_compatibility_gate_push_uses_pre_push_authority() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "github.event.before" in workflow
+
+
 def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> None:
     workflow_path = _WORKFLOWS_DIR / "release-build.yml"
     workflow_text = workflow_path.read_text(encoding="utf-8")

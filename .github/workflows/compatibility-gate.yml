@@ -61,7 +61,7 @@ jobs:
       - name: Checkout protected base authority
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || 'main' }}
+          ref: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'main' }}
           path: trusted-base
           fetch-depth: 1
 
@@ -72,7 +72,7 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PR_DRAFT: ${{ github.event.pull_request.draft || false }}
           FORCE_FULL: ${{ inputs.force_full || false }}
-          EVENT_BASE_SHA: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || '' }}
+          EVENT_BASE_SHA: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
         run: |
           set -euo pipefail
           candidate_sha="$(git rev-parse HEAD)"

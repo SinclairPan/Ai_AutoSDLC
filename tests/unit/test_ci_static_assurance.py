@@ -463,6 +463,34 @@ def test_cell_evidence_accepts_exact_successful_junit(tmp_path: Path) -> None:
     assert result["duration_seconds"] == 5.0
 
 
+def test_cell_evidence_preserves_separator_inside_parameter_id(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    nodeid = "tests/a.py::test_one[a::b]"
+    manifest = module.build_collection_manifest(
+        [nodeid], ["ubuntu-latest-py3.11"], source_commit="a" * 40
+    )
+    junit = tmp_path / "parameterized.xml"
+    _write_junit(
+        junit,
+        '<testcase classname="tests.a" name="test_one[a::b]"/>',
+        tests=1,
+    )
+
+    result = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert result["status"] == "success"
+    assert result["reason"] == "complete"
+
+
 # 删除四个 supervised pytest 对抗测试，原因是其保护目标无法在候选解释器内成立：
 # 退出钩子伪造 JUnit 与候选直接改测试体具有相同信任边界，不再单独承诺阻断。
 # recorder 枚举/改写与报告 Pipe 内省同属不可封闭的同进程能力，不再测试伪隔离。
