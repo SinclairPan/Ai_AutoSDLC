@@ -572,6 +572,54 @@ def test_supervised_pytest_stream_is_not_rewritable_by_candidate_plugin(
     assert evidence["skipped"] == 1
 
 
+def test_supervised_pytest_captures_failure_before_candidate_report_wrapper(
+    tmp_path: Path,
+) -> None:
+    """候选 makereport wrapper 把失败改成通过时，父进程仍必须保留真实失败。"""
+    module = _load_module()
+    nodeid = "test_failure.py::test_real_failure"
+    (tmp_path / "test_failure.py").write_text(
+        "def test_real_failure():\n    raise AssertionError('real failure')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n\n"
+        "@pytest.hookimpl(hookwrapper=True, tryfirst=True)\n"
+        "def pytest_runtest_makereport(item, call):\n"
+        "    call.excinfo = None\n"
+        "    outcome = yield\n"
+        "    report = outcome.get_result()\n"
+        "    if report.when == 'call' and report.failed:\n"
+        "        report.outcome = 'passed'\n"
+        "        report.longrepr = None\n",
+        encoding="utf-8",
+    )
+    manifest = module.build_collection_manifest(
+        [nodeid], ["ubuntu-latest-py3.11"], source_commit="a" * 40
+    )
+    junit = tmp_path / "protected-failure.xml"
+
+    returncode = module.run_pytest_with_trusted_evidence(
+        tmp_path,
+        manifest,
+        junit,
+        pytest_args=["-q"],
+    )
+    evidence = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert returncode == 0
+    assert evidence["status"] == "failed"
+    assert evidence["reason"] == "non_success_terminal_state"
+    assert evidence["failures"] == 1
+
+
 def test_baseline_digest_validation_rejects_stale_payload() -> None:
     """候选 baseline 内容变化后未重算 digest 时必须 fail closed。"""
     module = _load_module()

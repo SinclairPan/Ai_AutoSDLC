@@ -738,17 +738,39 @@ def _run_pytest_worker(root: Path, pytest_args: Sequence[str], connection) -> No
     emit = connection.send
 
     class ProtectedReportPlugin:
-        @pytest.hookimpl(tryfirst=True)
-        def pytest_runtest_logreport(self, report) -> None:
-            emit(
-                {
-                    "type": "report",
-                    "nodeid": report.nodeid,
-                    "when": report.when,
-                    "outcome": report.outcome,
-                    "duration": float(report.duration),
-                }
+        @pytest.hookimpl(wrapper=True, trylast=True)
+        def pytest_sessionstart(self, session):
+            result = yield
+
+            def before_hook(hook_name, hook_impls, kwargs) -> None:
+                if hook_name != "pytest_runtest_makereport":
+                    return
+                item = kwargs["item"]
+                call = kwargs["call"]
+                raw_outcome = "passed"
+                if call.excinfo is not None:
+                    raw_outcome = (
+                        "skipped"
+                        if call.excinfo.errisinstance(pytest.skip.Exception)
+                        else "failed"
+                    )
+                emit(
+                    {
+                        "type": "report",
+                        "nodeid": item.nodeid,
+                        "when": call.when,
+                        "outcome": raw_outcome,
+                        "duration": float(call.duration),
+                    }
+                )
+
+            def after_hook(outcome, hook_name, hook_impls, kwargs) -> None:
+                return None
+
+            session.config.pluginmanager.add_hookcall_monitoring(
+                before_hook, after_hook
             )
+            return result
 
     plugin = ProtectedReportPlugin()
     original_cwd = Path.cwd()
