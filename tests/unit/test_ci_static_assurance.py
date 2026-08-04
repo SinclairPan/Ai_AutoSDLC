@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
-import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,9 +23,13 @@ def _member_projection(case_ids: tuple[str, ...], cells: tuple[str, ...]):
 
 
 def _load_module():
+    script_directory = str(_SCRIPT_PATH.parent)
+    if script_directory not in sys.path:
+        sys.path.insert(0, script_directory)
     spec = importlib.util.spec_from_file_location("ci_static_assurance", _SCRIPT_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
@@ -460,47 +464,34 @@ def test_cell_evidence_accepts_exact_successful_junit(tmp_path: Path) -> None:
 
 
 def test_supervised_pytest_rebuilds_evidence_after_candidate_exit(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     """候选退出钩子即使先伪造 JUnit，父监督进程也必须在其退出后重建证据。"""
     module = _load_module()
-    manifest = _single_cell_manifest()
     junit = tmp_path / "supervised.xml"
-
-    def fake_run(command, **kwargs):
-        nonce = command[command.index("--nonce") + 1]
-        _write_junit(
-            junit,
-            '<testcase classname="tests.a" name="test_one"/>'
-            '<testcase classname="tests.a" name="test_two"/>',
-        )
-        reports = [
-            {"nodeid": "tests/a.py::test_one", "when": "setup", "outcome": "passed"},
-            {"nodeid": "tests/a.py::test_one", "when": "call", "outcome": "passed"},
-            {
-                "nodeid": "tests/a.py::test_one",
-                "when": "teardown",
-                "outcome": "passed",
-            },
-            {
-                "nodeid": "tests/a.py::test_two",
-                "when": "setup",
-                "outcome": "skipped",
-            },
-        ]
-        return subprocess.CompletedProcess(
-            command,
-            0,
-            stdout=(
-                module._encode_pytest_report_payload(nonce, reports)
-                + "\n"
-                + module._encode_pytest_report_payload(nonce, [], complete=True)
-                + "\n"
-            ),
-            stderr="",
-        )
-
-    monkeypatch.setattr(module.subprocess, "run", fake_run)
+    nodeid = "test_candidate.py::test_skipped"
+    (tmp_path / "test_candidate.py").write_text(
+        "def test_skipped():\n    raise AssertionError('must stay skipped')\n",
+        encoding="utf-8",
+    )
+    forged_xml = (
+        '<testsuite tests="1" failures="0" errors="0" skipped="0">'
+        '<testcase classname="test_candidate" name="test_skipped"/>'
+        "</testsuite>"
+    )
+    (tmp_path / "conftest.py").write_text(
+        "import atexit\n"
+        "from pathlib import Path\n"
+        "import pytest\n\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    for item in items:\n"
+        "        item.add_marker(pytest.mark.skip(reason='candidate skip'))\n\n"
+        f"atexit.register(lambda: Path({str(junit)!r}).write_text({forged_xml!r}, encoding='utf-8'))\n",
+        encoding="utf-8",
+    )
+    manifest = module.build_collection_manifest(
+        [nodeid], ["ubuntu-latest-py3.11"], source_commit="a" * 40
+    )
 
     returncode = module.run_pytest_with_trusted_evidence(
         tmp_path,
@@ -534,7 +525,12 @@ def test_supervised_pytest_stream_is_not_rewritable_by_candidate_plugin(
         encoding="utf-8",
     )
     (tmp_path / "conftest.py").write_text(
-        "import pytest\n\n"
+        "import builtins\n"
+        "import pytest\n"
+        "import sys\n\n"
+        "def pytest_configure(config):\n"
+        "    assert not any('AI_SDLC_PYTEST_REPORT' in value for value in sys.argv)\n"
+        "    builtins.print = lambda *args, **kwargs: None\n\n"
         "def pytest_collection_modifyitems(items):\n"
         "    for item in items:\n"
         "        item.add_marker(pytest.mark.skip(reason='candidate skip'))\n\n"

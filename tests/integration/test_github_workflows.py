@@ -784,6 +784,9 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert "inputs.authority_ref" in workflow
     assert "path: trusted-base" in workflow
     assert "trusted-base/scripts/ci_static_assurance.py" in workflow
+    assert "Checkout protected runtime authority" in workflow
+    assert "path: trusted-runner" in workflow
+    assert "trusted-runner/scripts/ci_static_assurance.py" in workflow
     assert "authority_unavailable" in workflow
     assert "protected_ci_change" in workflow
     assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
@@ -810,6 +813,11 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
         step for step in matrix_steps if step.get("name") == "Run full pytest suite"
     )
     assert '"${assurance_script}" run-pytest' in full_pytest_step["run"]
+    assert "trusted-runner/scripts/ci_static_assurance.py" in full_pytest_step["run"]
+    step_names = [step.get("name") for step in matrix_steps]
+    assert step_names.index("Doctor") < step_names.index(
+        "Checkout protected runtime authority"
+    ) < step_names.index("Run full pytest suite")
     merge_steps = parsed["jobs"]["merge-assurance"]["steps"]
     assert all(
         "uv run python" not in str(step.get("run", "")) for step in merge_steps

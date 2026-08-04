@@ -8,12 +8,10 @@ main 中的脚本和 baseline 才是验证权威；候选 checkout 只作为待�
 from __future__ import annotations
 
 import argparse
-import base64
 import hashlib
 import json
+import multiprocessing
 import os
-import re
-import secrets
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -28,8 +26,6 @@ BASELINE_SCHEMA = "ci-baseline-v1"
 LINEAGE_SCHEMA = "ci-test-lineage-v1"
 CELL_EVIDENCE_SCHEMA = "ci-cell-evidence-v1"
 AGGREGATE_SCHEMA = "ci-assurance-report-v1"
-PYTEST_REPORT_SCHEMA = "ci-pytest-report-v1"
-PYTEST_REPORT_PREFIX = "AI_SDLC_PYTEST_REPORT:"
 DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q --ignore=tests/e2e/stage_review"
 DEFAULT_CELLS = tuple(
     f"{os_name}-py{python_version}"
@@ -644,48 +640,6 @@ def _junit_case_lookup(manifest: Mapping[str, object]) -> dict[tuple[str, str], 
     return lookup
 
 
-def _encode_pytest_report_payload(
-    nonce: str,
-    reports: Sequence[Mapping[str, object]],
-    *,
-    complete: bool = False,
-) -> str:
-    payload = {
-        "schema_version": PYTEST_REPORT_SCHEMA,
-        "reports": [dict(report) for report in reports],
-        "complete": complete,
-    }
-    encoded = base64.b64encode(
-        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-    ).decode("ascii")
-    return f"{PYTEST_REPORT_PREFIX}{nonce}:{encoded}"
-
-
-def _decode_pytest_report_payload(
-    line: str, nonce: str
-) -> tuple[list[dict[str, object]], bool]:
-    prefix = f"{PYTEST_REPORT_PREFIX}{nonce}:"
-    if not line.startswith(prefix):
-        raise AssuranceError("pytest report protocol mismatch")
-    try:
-        payload = json.loads(base64.b64decode(line[len(prefix) :], validate=True))
-    except (ValueError, json.JSONDecodeError) as exc:
-        raise AssuranceError("pytest report protocol corrupt") from exc
-    if not isinstance(payload, Mapping):
-        raise AssuranceError("pytest report contract invalid")
-    reports = payload.get("reports")
-    complete = payload.get("complete")
-    if (
-        payload.get("schema_version") != PYTEST_REPORT_SCHEMA
-        or not isinstance(reports, list)
-        or not isinstance(complete, bool)
-    ):
-        raise AssuranceError("pytest report contract invalid")
-    if any(not isinstance(report, Mapping) for report in reports):
-        raise AssuranceError("pytest report entry invalid")
-    return [dict(report) for report in reports], complete
-
-
 def _write_supervised_junit(
     manifest: Mapping[str, object],
     reports: Sequence[Mapping[str, object]],
@@ -778,21 +732,22 @@ def _write_supervised_junit(
     return complete
 
 
-def _run_pytest_child(root: Path, nonce: str, pytest_args: Sequence[str]) -> int:
+def _run_pytest_worker(root: Path, pytest_args: Sequence[str], connection) -> None:
     import pytest
+
+    emit = connection.send
 
     class ProtectedReportPlugin:
         @pytest.hookimpl(tryfirst=True)
         def pytest_runtest_logreport(self, report) -> None:
-            event = {
-                "nodeid": report.nodeid,
-                "when": report.when,
-                "outcome": report.outcome,
-                "duration": float(report.duration),
-            }
-            print(
-                _encode_pytest_report_payload(nonce, [event]),
-                flush=True,
+            emit(
+                {
+                    "type": "report",
+                    "nodeid": report.nodeid,
+                    "when": report.when,
+                    "outcome": report.outcome,
+                    "duration": float(report.duration),
+                }
             )
 
     plugin = ProtectedReportPlugin()
@@ -802,8 +757,9 @@ def _run_pytest_child(root: Path, nonce: str, pytest_args: Sequence[str]) -> int
         returncode = int(pytest.main(list(pytest_args), plugins=[plugin]))
     finally:
         os.chdir(original_cwd)
-    print(_encode_pytest_report_payload(nonce, [], complete=True), flush=True)
-    return returncode
+    emit({"type": "complete", "returncode": returncode})
+    connection.close()
+    raise SystemExit(returncode)
 
 
 def run_pytest_with_trusted_evidence(
@@ -814,52 +770,40 @@ def run_pytest_with_trusted_evidence(
     pytest_args: Sequence[str],
 ) -> int:
     """在候选 pytest 子进程退出后，由受保护父进程生成不可回写的 JUnit。"""
-    nonce = secrets.token_hex(32)
-    command = [
-        sys.executable,
-        str(Path(__file__).resolve()),
-        "_pytest-child",
-        "--root",
-        str(root),
-        "--nonce",
-        nonce,
-        "--",
-        *pytest_args,
-    ]
-    completed = subprocess.run(
-        command,
-        cwd=root,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
+    context = multiprocessing.get_context("spawn")
+    receive_connection, send_connection = context.Pipe(duplex=False)
+    process = context.Process(
+        target=_run_pytest_worker,
+        args=(root, list(pytest_args), send_connection),
     )
-    prefix = f"{PYTEST_REPORT_PREFIX}{nonce}:"
-    protocol_pattern = re.compile(re.escape(prefix) + r"[A-Za-z0-9+/=]+")
-    protocol_lines = protocol_pattern.findall(completed.stdout)
-    passthrough = protocol_pattern.sub("", completed.stdout)
-    if passthrough:
-        print(passthrough, end="")
-    if completed.stderr:
-        print(completed.stderr, file=sys.stderr, end="")
-    decoded = [
-        _decode_pytest_report_payload(line, nonce) for line in protocol_lines
-    ]
+    process.start()
+    send_connection.close()
+    events: list[dict[str, object]] = []
+    try:
+        while True:
+            event = receive_connection.recv()
+            if not isinstance(event, Mapping):
+                raise AssuranceError("pytest report event invalid")
+            events.append(dict(event))
+    except EOFError:
+        pass
+    finally:
+        receive_connection.close()
+        process.join()
+
     completion_positions = [
-        index for index, (_, complete) in enumerate(decoded) if complete
+        index for index, event in enumerate(events) if event.get("type") == "complete"
     ]
-    if completion_positions != [len(decoded) - 1] or any(
-        complete and event_reports for event_reports, complete in decoded
-    ):
+    if completion_positions != [len(events) - 1]:
         raise AssuranceError("pytest report completion invalid")
-    reports = [
-        report
-        for event_reports, complete in decoded
-        if not complete
-        for report in event_reports
-    ]
+    completion_code = events[-1].get("returncode")
+    if not isinstance(completion_code, int) or completion_code != process.exitcode:
+        raise AssuranceError("pytest process exit mismatch")
+    reports = [event for event in events[:-1] if event.get("type") == "report"]
+    if len(reports) != len(events) - 1:
+        raise AssuranceError("pytest report event invalid")
     complete = _write_supervised_junit(manifest, reports, junit_path)
-    return completed.returncode if complete else 1
+    return completion_code if complete else 1
 
 
 def build_cell_evidence(
@@ -1244,11 +1188,6 @@ def _build_parser() -> argparse.ArgumentParser:
     run_pytest.add_argument("--junit", type=Path, required=True)
     run_pytest.add_argument("pytest_args", nargs=argparse.REMAINDER)
 
-    pytest_child = subparsers.add_parser("_pytest-child", help=argparse.SUPPRESS)
-    pytest_child.add_argument("--root", type=Path, required=True)
-    pytest_child.add_argument("--nonce", required=True)
-    pytest_child.add_argument("pytest_args", nargs=argparse.REMAINDER)
-
     cell_evidence = subparsers.add_parser("cell-evidence")
     cell_evidence.add_argument("--manifest", type=Path, required=True)
     cell_evidence.add_argument("--baseline", type=Path, required=True)
@@ -1274,12 +1213,6 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        if args.command == "_pytest-child":
-            pytest_args = list(args.pytest_args)
-            if pytest_args[:1] == ["--"]:
-                pytest_args = pytest_args[1:]
-            return _run_pytest_child(args.root.resolve(), args.nonce, pytest_args)
-
         if args.command == "run-pytest":
             pytest_args = list(args.pytest_args)
             if pytest_args[:1] == ["--"]:
