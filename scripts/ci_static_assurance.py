@@ -8,9 +8,11 @@ main 中的脚本和 baseline 才是验证权威；候选 checkout 只作为待�
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import json
 import os
+import secrets
 import subprocess
 import sys
 import xml.etree.ElementTree as ET
@@ -25,6 +27,8 @@ BASELINE_SCHEMA = "ci-baseline-v1"
 LINEAGE_SCHEMA = "ci-test-lineage-v1"
 CELL_EVIDENCE_SCHEMA = "ci-cell-evidence-v1"
 AGGREGATE_SCHEMA = "ci-assurance-report-v1"
+PYTEST_REPORT_SCHEMA = "ci-pytest-report-v1"
+PYTEST_REPORT_PREFIX = "AI_SDLC_PYTEST_REPORT:"
 DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q --ignore=tests/e2e/stage_review"
 DEFAULT_CELLS = tuple(
     f"{os_name}-py{python_version}"
@@ -50,6 +54,17 @@ def _canonical_digest(payload: Mapping[str, object], digest_field: str) -> str:
         separators=(",", ":"),
     )
     return _sha256(encoded)
+
+
+def _validated_baseline_digest(
+    baseline: Mapping[str, object], expected_digest: str | None = None
+) -> str:
+    actual_digest = _canonical_digest(baseline, "baseline_digest")
+    if baseline.get("baseline_digest") != actual_digest:
+        raise AssuranceError("baseline digest mismatch")
+    if expected_digest is not None and expected_digest != actual_digest:
+        raise AssuranceError("baseline digest argument mismatch")
+    return actual_digest
 
 
 def _normalize_nodeid(raw: str) -> str:
@@ -323,6 +338,11 @@ def verify_baseline_transition(
     protected_lineage: Mapping[str, object],
 ) -> dict[str, object]:
     """验证候选集合仅正向增长或使用受保护的一对一 rename。"""
+    try:
+        _validated_baseline_digest(trusted)
+        _validated_baseline_digest(candidate)
+    except AssuranceError:
+        return _transition_failure("baseline_digest_mismatch")
     if trusted.get("namespace") != candidate.get("namespace"):
         return _transition_failure("namespace_mismatch")
     trusted_cells = list(trusted.get("cells", []))
@@ -604,20 +624,223 @@ def _cell_evidence_base(
     }
 
 
+def _junit_key_from_nodeid(nodeid: str) -> tuple[str, str]:
+    parts = _normalize_nodeid(nodeid).split("::")
+    module_name = parts[0].removesuffix(".py").replace("/", ".")
+    return ".".join([module_name, *parts[1:-1]]), parts[-1]
+
+
 def _junit_case_lookup(manifest: Mapping[str, object]) -> dict[tuple[str, str], str]:
     lookup: dict[tuple[str, str], str] = {}
     raw_nodeids = manifest.get("case_nodeids")
     if not isinstance(raw_nodeids, Mapping):
         raise AssuranceError("manifest case nodeids are missing")
     for raw_case_id, raw_nodeid in raw_nodeids.items():
-        parts = _normalize_nodeid(str(raw_nodeid)).split("::")
-        module_name = parts[0].removesuffix(".py").replace("/", ".")
-        classname = ".".join([module_name, *parts[1:-1]])
-        key = (classname, parts[-1])
+        key = _junit_key_from_nodeid(str(raw_nodeid))
         if key in lookup:
             raise AssuranceError("ambiguous JUnit case identity")
         lookup[key] = str(raw_case_id)
     return lookup
+
+
+def _encode_pytest_report_payload(
+    nonce: str, reports: Sequence[Mapping[str, object]]
+) -> str:
+    payload = {
+        "schema_version": PYTEST_REPORT_SCHEMA,
+        "reports": [dict(report) for report in reports],
+    }
+    encoded = base64.b64encode(
+        json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii")
+    return f"{PYTEST_REPORT_PREFIX}{nonce}:{encoded}"
+
+
+def _decode_pytest_report_payload(
+    line: str, nonce: str
+) -> list[dict[str, object]]:
+    prefix = f"{PYTEST_REPORT_PREFIX}{nonce}:"
+    if not line.startswith(prefix):
+        raise AssuranceError("pytest report protocol mismatch")
+    try:
+        payload = json.loads(base64.b64decode(line[len(prefix) :], validate=True))
+    except (ValueError, json.JSONDecodeError) as exc:
+        raise AssuranceError("pytest report protocol corrupt") from exc
+    if not isinstance(payload, Mapping):
+        raise AssuranceError("pytest report contract invalid")
+    reports = payload.get("reports")
+    if payload.get("schema_version") != PYTEST_REPORT_SCHEMA or not isinstance(reports, list):
+        raise AssuranceError("pytest report contract invalid")
+    if any(not isinstance(report, Mapping) for report in reports):
+        raise AssuranceError("pytest report entry invalid")
+    return [dict(report) for report in reports]
+
+
+def _write_supervised_junit(
+    manifest: Mapping[str, object],
+    reports: Sequence[Mapping[str, object]],
+    junit_path: Path,
+) -> bool:
+    raw_nodeids = manifest.get("case_nodeids")
+    if not isinstance(raw_nodeids, Mapping):
+        raise AssuranceError("manifest case nodeids are missing")
+    expected_nodeids = {_normalize_nodeid(str(value)) for value in raw_nodeids.values()}
+    reports_by_nodeid: dict[str, list[dict[str, object]]] = {
+        nodeid: [] for nodeid in expected_nodeids
+    }
+    for raw_report in reports:
+        nodeid = _normalize_nodeid(str(raw_report.get("nodeid", "")))
+        when = str(raw_report.get("when", ""))
+        outcome = str(raw_report.get("outcome", ""))
+        if (
+            nodeid not in reports_by_nodeid
+            or when not in {"setup", "call", "teardown"}
+            or outcome not in {"passed", "failed", "skipped"}
+        ):
+            raise AssuranceError("pytest report identity invalid")
+        reports_by_nodeid[nodeid].append(
+            {
+                "when": when,
+                "outcome": outcome,
+                "duration": float(raw_report.get("duration", 0.0) or 0.0),
+            }
+        )
+
+    suite = ET.Element("testsuite")
+    failures = errors = skipped = 0
+    complete = True
+    for nodeid in sorted(expected_nodeids):
+        classname, name = _junit_key_from_nodeid(nodeid)
+        node_reports = reports_by_nodeid[nodeid]
+        stages = [str(report["when"]) for report in node_reports]
+        testcase = ET.SubElement(
+            suite,
+            "testcase",
+            {
+                "classname": classname,
+                "name": name,
+                "time": f"{sum(float(report['duration']) for report in node_reports):.6f}",
+            },
+        )
+        if len(stages) != len(set(stages)):
+            errors += 1
+            complete = False
+            ET.SubElement(testcase, "error", {"message": "duplicate stage report"})
+            continue
+        failed = next(
+            (report for report in node_reports if report["outcome"] == "failed"),
+            None,
+        )
+        if failed is not None:
+            if failed["when"] == "call":
+                failures += 1
+                ET.SubElement(testcase, "failure", {"message": "pytest call failed"})
+            else:
+                errors += 1
+                ET.SubElement(
+                    testcase,
+                    "error",
+                    {"message": f"pytest {failed['when']} failed"},
+                )
+            continue
+        if any(report["outcome"] == "skipped" for report in node_reports):
+            skipped += 1
+            ET.SubElement(testcase, "skipped")
+            continue
+        if not any(
+            report["when"] == "call" and report["outcome"] == "passed"
+            for report in node_reports
+        ):
+            errors += 1
+            complete = False
+            ET.SubElement(testcase, "error", {"message": "missing call report"})
+
+    suite.attrib.update(
+        {
+            "tests": str(len(expected_nodeids)),
+            "failures": str(failures),
+            "errors": str(errors),
+            "skipped": str(skipped),
+        }
+    )
+    junit_path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(suite).write(junit_path, encoding="utf-8", xml_declaration=True)
+    return complete
+
+
+def _run_pytest_child(root: Path, nonce: str, pytest_args: Sequence[str]) -> int:
+    import pytest
+
+    class ProtectedReportPlugin:
+        def __init__(self) -> None:
+            self.reports: list[dict[str, object]] = []
+
+        @pytest.hookimpl(trylast=True)
+        def pytest_runtest_logreport(self, report) -> None:
+            self.reports.append(
+                {
+                    "nodeid": report.nodeid,
+                    "when": report.when,
+                    "outcome": report.outcome,
+                    "duration": float(report.duration),
+                }
+            )
+
+    plugin = ProtectedReportPlugin()
+    original_cwd = Path.cwd()
+    try:
+        os.chdir(root)
+        returncode = int(pytest.main(list(pytest_args), plugins=[plugin]))
+    finally:
+        os.chdir(original_cwd)
+    print(_encode_pytest_report_payload(nonce, plugin.reports), flush=True)
+    return returncode
+
+
+def run_pytest_with_trusted_evidence(
+    root: Path,
+    manifest: Mapping[str, object],
+    junit_path: Path,
+    *,
+    pytest_args: Sequence[str],
+) -> int:
+    """在候选 pytest 子进程退出后，由受保护父进程生成不可回写的 JUnit。"""
+    nonce = secrets.token_hex(32)
+    command = [
+        sys.executable,
+        str(Path(__file__).resolve()),
+        "_pytest-child",
+        "--root",
+        str(root),
+        "--nonce",
+        nonce,
+        "--",
+        *pytest_args,
+    ]
+    completed = subprocess.run(
+        command,
+        cwd=root,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    prefix = f"{PYTEST_REPORT_PREFIX}{nonce}:"
+    protocol_lines = [
+        line for line in completed.stdout.splitlines() if line.startswith(prefix)
+    ]
+    passthrough = [
+        line for line in completed.stdout.splitlines() if not line.startswith(prefix)
+    ]
+    if passthrough:
+        print("\n".join(passthrough))
+    if completed.stderr:
+        print(completed.stderr, file=sys.stderr, end="")
+    if len(protocol_lines) != 1:
+        raise AssuranceError("pytest report protocol cardinality invalid")
+    reports = _decode_pytest_report_payload(protocol_lines[0], nonce)
+    complete = _write_supervised_junit(manifest, reports, junit_path)
+    return completed.returncode if complete else 1
 
 
 def build_cell_evidence(
@@ -996,6 +1219,17 @@ def _build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--output", type=Path)
     mode.add_argument("--github-output", type=Path)
 
+    run_pytest = subparsers.add_parser("run-pytest")
+    run_pytest.add_argument("--root", type=Path, default=Path.cwd())
+    run_pytest.add_argument("--manifest", type=Path, required=True)
+    run_pytest.add_argument("--junit", type=Path, required=True)
+    run_pytest.add_argument("pytest_args", nargs=argparse.REMAINDER)
+
+    pytest_child = subparsers.add_parser("_pytest-child", help=argparse.SUPPRESS)
+    pytest_child.add_argument("--root", type=Path, required=True)
+    pytest_child.add_argument("--nonce", required=True)
+    pytest_child.add_argument("pytest_args", nargs=argparse.REMAINDER)
+
     cell_evidence = subparsers.add_parser("cell-evidence")
     cell_evidence.add_argument("--manifest", type=Path, required=True)
     cell_evidence.add_argument("--baseline", type=Path, required=True)
@@ -1021,6 +1255,23 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
+        if args.command == "_pytest-child":
+            pytest_args = list(args.pytest_args)
+            if pytest_args[:1] == ["--"]:
+                pytest_args = pytest_args[1:]
+            return _run_pytest_child(args.root.resolve(), args.nonce, pytest_args)
+
+        if args.command == "run-pytest":
+            pytest_args = list(args.pytest_args)
+            if pytest_args[:1] == ["--"]:
+                pytest_args = pytest_args[1:]
+            return run_pytest_with_trusted_evidence(
+                args.root.resolve(),
+                _read_json(args.manifest),
+                args.junit,
+                pytest_args=pytest_args,
+            )
+
         if args.command in {"collect", "baseline"}:
             root = args.root.resolve()
             source_commit = args.source_commit or os.environ.get("GITHUB_SHA")
@@ -1108,6 +1359,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             ]
             baseline = _read_json(args.candidate_baseline)
+            baseline_digest = _validated_baseline_digest(
+                baseline, args.baseline_digest
+            )
             baseline_cell_cases = _baseline_cell_cases(baseline)
             allowed_skips = (
                 _allowed_skip_contract(baseline, baseline_cell_cases)
@@ -1127,7 +1381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     args.expected_cell,
                     evidence,
                     candidate_commit=args.candidate_commit,
-                    baseline_digest=args.baseline_digest,
+                    baseline_digest=baseline_digest,
                     fast_gate_status=args.fast_gate_status,
                     allowed_skip_case_ids_by_cell={
                         cell: sorted(case_ids)

@@ -226,8 +226,15 @@ jobs:
       - name: Run full pytest suite
         shell: bash
         run: |
-          uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
-            --junitxml=ci-evidence/${CELL}/compatibility-results.xml
+          assurance_script="scripts/ci_static_assurance.py"
+          if [[ "${{ needs.authority-check.outputs.authority-available }}" == "true" ]]; then
+            assurance_script="trusted-base/scripts/ci_static_assurance.py"
+          fi
+          uv run python "${assurance_script}" run-pytest \
+            --root . \
+            --manifest "ci-evidence/${CELL}/collection-manifest.json" \
+            --junit "ci-evidence/${CELL}/compatibility-results.xml" \
+            -- -q --ignore=tests/e2e/stage_review --durations=50
 
       - name: Record raw cell completion
         if: always()

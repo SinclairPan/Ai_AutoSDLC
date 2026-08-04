@@ -794,7 +794,8 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert '--lineage "${assurance_lineage}"' in workflow
     assert "verify-transition" in workflow
     assert "--ignore=tests/e2e/stage_review" in workflow
-    assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
+    assert '"${assurance_script}" run-pytest' in workflow
+    assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" not in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
@@ -805,6 +806,10 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert all(
         "cell-evidence" not in str(step.get("run", "")) for step in matrix_steps
     )
+    full_pytest_step = next(
+        step for step in matrix_steps if step.get("name") == "Run full pytest suite"
+    )
+    assert '"${assurance_script}" run-pytest' in full_pytest_step["run"]
     merge_steps = parsed["jobs"]["merge-assurance"]["steps"]
     assert all(
         "uv run python" not in str(step.get("run", "")) for step in merge_steps

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib.util
+import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -28,10 +30,21 @@ def _load_module():
     return module
 
 
+def _refresh_baseline_digest(baseline: dict[str, object]) -> dict[str, object]:
+    canonical = {key: value for key, value in baseline.items() if key != "baseline_digest"}
+    encoded = json.dumps(
+        canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    )
+    baseline["baseline_digest"] = (
+        f"sha256:{hashlib.sha256(encoded.encode('utf-8')).hexdigest()}"
+    )
+    return baseline
+
+
 def _baseline(*case_ids: str) -> dict[str, object]:
     cells = ("ubuntu-latest-py3.11",)
     member_count, member_digest = _member_projection(case_ids, cells)
-    return {
+    return _refresh_baseline_digest({
         "schema_version": "ci-baseline-v1",
         "namespace": "pytest-nodeid-v1",
         "source_commit": "a" * 40,
@@ -43,18 +56,19 @@ def _baseline(*case_ids: str) -> dict[str, object]:
         "execution_member_count": member_count,
         "execution_member_digest": member_digest,
         "allowed_skip_case_ids_by_cell": {cells[0]: []},
-        "baseline_digest": "sha256:trusted",
-    }
+    })
 
 
-def _candidate(*case_ids: str) -> dict[str, object]:
+def _candidate(
+    *case_ids: str, previous_baseline_digest: str
+) -> dict[str, object]:
     cells = ("ubuntu-latest-py3.11",)
     member_count, member_digest = _member_projection(case_ids, cells)
-    return {
+    return _refresh_baseline_digest({
         "schema_version": "ci-baseline-v1",
         "namespace": "pytest-nodeid-v1",
         "source_commit": "b" * 40,
-        "previous_baseline_digest": "sha256:trusted",
+        "previous_baseline_digest": previous_baseline_digest,
         "cells": list(cells),
         "case_ids": list(case_ids),
         "cell_case_omissions_by_cell": {cells[0]: []},
@@ -62,8 +76,18 @@ def _candidate(*case_ids: str) -> dict[str, object]:
         "execution_member_count": member_count,
         "execution_member_digest": member_digest,
         "allowed_skip_case_ids_by_cell": {cells[0]: []},
-        "baseline_digest": "sha256:candidate",
-    }
+    })
+
+
+def _transition_baselines(
+    trusted_case_ids: tuple[str, ...], candidate_case_ids: tuple[str, ...]
+) -> tuple[dict[str, object], dict[str, object]]:
+    trusted = _baseline(*trusted_case_ids)
+    candidate = _candidate(
+        *candidate_case_ids,
+        previous_baseline_digest=str(trusted["baseline_digest"]),
+    )
+    return trusted, candidate
 
 
 def test_case_id_survives_commit_change_while_execution_member_binds_cell() -> None:
@@ -220,9 +244,12 @@ def test_baseline_transition_allows_only_monotonic_addition() -> None:
     """防止新增测试因 baseline 保守策略被误判，同时保持旧成员。"""
     module = _load_module()
 
+    trusted, candidate = _transition_baselines(
+        ("case:a", "case:b"), ("case:a", "case:b", "case:c")
+    )
     result = module.verify_baseline_transition(
-        _baseline("case:a", "case:b"),
-        _candidate("case:a", "case:b", "case:c"),
+        trusted,
+        candidate,
         {"schema_version": "ci-test-lineage-v1", "mappings": []},
     )
 
@@ -239,9 +266,10 @@ def test_baseline_transition_rejects_real_deletion() -> None:
     """防止候选通过缩小 baseline 静默删除完整质量成员。"""
     module = _load_module()
 
+    trusted, candidate = _transition_baselines(("case:a", "case:b"), ("case:a",))
     result = module.verify_baseline_transition(
-        _baseline("case:a", "case:b"),
-        _candidate("case:a"),
+        trusted,
+        candidate,
         {"schema_version": "ci-test-lineage-v1", "mappings": []},
     )
 
@@ -250,13 +278,30 @@ def test_baseline_transition_rejects_real_deletion() -> None:
     assert result["removed_case_ids"] == ["case:b"]
 
 
+def test_baseline_transition_rejects_stale_candidate_digest() -> None:
+    """候选 baseline 被修改但未重算 digest 时不能进入后续链路。"""
+    module = _load_module()
+    trusted, candidate = _transition_baselines(("case:a",), ("case:a", "case:b"))
+    candidate["source_commit"] = "c" * 40
+
+    result = module.verify_baseline_transition(
+        trusted,
+        candidate,
+        {"schema_version": "ci-test-lineage-v1", "mappings": []},
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "baseline_digest_mismatch"
+
+
 def test_protected_one_to_one_lineage_allows_member_conserving_rename() -> None:
     """防止合法 rename 被当成删除；映射必须来自受保护 base。"""
     module = _load_module()
 
+    trusted, candidate = _transition_baselines(("case:old",), ("case:new",))
     result = module.verify_baseline_transition(
-        _baseline("case:old"),
-        _candidate("case:new"),
+        trusted,
+        candidate,
         {
             "schema_version": "ci-test-lineage-v1",
             "mappings": [{"from_case_id": "case:old", "to_case_id": "case:new"}],
@@ -295,9 +340,10 @@ def test_merge_or_unapproved_rename_fails_closed(
     """防止多对一合并或候选未获批 rename 冒充成员守恒。"""
     module = _load_module()
 
+    trusted, candidate = _transition_baselines(("case:a", "case:b"), ("case:new",))
     result = module.verify_baseline_transition(
-        _baseline("case:a", "case:b"),
-        _candidate("case:new"),
+        trusted,
+        candidate,
         lineage,
     )
 
@@ -308,11 +354,12 @@ def test_merge_or_unapproved_rename_fails_closed(
 def test_cell_contract_change_fails_closed() -> None:
     """防止候选通过删掉 OS/Python cell 缩小完整执行集合。"""
     module = _load_module()
-    candidate = _candidate("case:a")
+    trusted, candidate = _transition_baselines(("case:a",), ("case:a",))
     candidate["cells"] = ["windows-latest-py3.14"]
+    _refresh_baseline_digest(candidate)
 
     result = module.verify_baseline_transition(
-        _baseline("case:a"),
+        trusted,
         candidate,
         {"schema_version": "ci-test-lineage-v1", "mappings": []},
     )
@@ -324,11 +371,13 @@ def test_cell_contract_change_fails_closed() -> None:
 def test_baseline_transition_rejects_new_allowed_skip() -> None:
     """防止候选把新 skip 写入 baseline 后自行降低完整质量地板。"""
     module = _load_module()
-    trusted = _baseline("case:a", "case:b")
-    candidate = _candidate("case:a", "case:b")
+    trusted, candidate = _transition_baselines(
+        ("case:a", "case:b"), ("case:a", "case:b")
+    )
     candidate["allowed_skip_case_ids_by_cell"] = {
         "ubuntu-latest-py3.11": ["case:b"]
     }
+    _refresh_baseline_digest(candidate)
 
     result = module.verify_baseline_transition(
         trusted,
@@ -343,8 +392,9 @@ def test_baseline_transition_rejects_new_allowed_skip() -> None:
 def test_baseline_transition_rejects_platform_specific_protected_loss() -> None:
     """防止候选只在某个 OS 的 compact delta 中删除受保护测试。"""
     module = _load_module()
-    trusted = _baseline("case:a", "case:b")
-    candidate = _candidate("case:a", "case:b")
+    trusted, candidate = _transition_baselines(
+        ("case:a", "case:b"), ("case:a", "case:b")
+    )
     candidate["cell_case_omissions_by_cell"] = {
         "ubuntu-latest-py3.11": ["case:b"]
     }
@@ -353,6 +403,7 @@ def test_baseline_transition_rejects_platform_specific_protected_loss() -> None:
     )
     candidate["execution_member_count"] = count
     candidate["execution_member_digest"] = digest
+    _refresh_baseline_digest(candidate)
 
     result = module.verify_baseline_transition(
         trusted,
@@ -406,6 +457,75 @@ def test_cell_evidence_accepts_exact_successful_junit(tmp_path: Path) -> None:
     assert result["collected_count"] == 2
     assert result["executed_count"] == 2
     assert result["duration_seconds"] == 5.0
+
+
+def test_supervised_pytest_rebuilds_evidence_after_candidate_exit(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """候选退出钩子即使先伪造 JUnit，父监督进程也必须在其退出后重建证据。"""
+    module = _load_module()
+    manifest = _single_cell_manifest()
+    junit = tmp_path / "supervised.xml"
+
+    def fake_run(command, **kwargs):
+        nonce = command[command.index("--nonce") + 1]
+        _write_junit(
+            junit,
+            '<testcase classname="tests.a" name="test_one"/>'
+            '<testcase classname="tests.a" name="test_two"/>',
+        )
+        reports = [
+            {"nodeid": "tests/a.py::test_one", "when": "setup", "outcome": "passed"},
+            {"nodeid": "tests/a.py::test_one", "when": "call", "outcome": "passed"},
+            {
+                "nodeid": "tests/a.py::test_one",
+                "when": "teardown",
+                "outcome": "passed",
+            },
+            {
+                "nodeid": "tests/a.py::test_two",
+                "when": "setup",
+                "outcome": "skipped",
+            },
+        ]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=module._encode_pytest_report_payload(nonce, reports) + "\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    returncode = module.run_pytest_with_trusted_evidence(
+        tmp_path,
+        manifest,
+        junit,
+        pytest_args=["-q"],
+    )
+    evidence = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert returncode == 0
+    assert evidence["status"] == "failed"
+    assert evidence["reason"] == "non_success_terminal_state"
+    assert evidence["skipped"] == 1
+
+
+def test_baseline_digest_validation_rejects_stale_payload() -> None:
+    """候选 baseline 内容变化后未重算 digest 时必须 fail closed。"""
+    module = _load_module()
+    baseline = _two_cell_baseline()
+    baseline["source_commit"] = "c" * 40
+
+    with pytest.raises(module.AssuranceError, match="baseline digest mismatch"):
+        module._validated_baseline_digest(baseline)
 
 
 def test_cell_evidence_accepts_only_protected_skip_identity(tmp_path: Path) -> None:
