@@ -208,7 +208,6 @@ jobs:
           assurance_baseline=".github/ci/test-baseline.json"
           if [[ "${{ needs.authority-check.outputs.authority-available }}" == "true" ]]; then
             assurance_script="trusted-base/scripts/ci_static_assurance.py"
-            assurance_baseline="trusted-base/.github/ci/test-baseline.json"
           fi
           echo "ASSURANCE_SCRIPT=${assurance_script}" >> "${GITHUB_ENV}"
           echo "ASSURANCE_BASELINE=${assurance_baseline}" >> "${GITHUB_ENV}"
@@ -307,6 +306,11 @@ jobs:
             echo "Static authority resolution did not succeed." >&2
             exit 1
           fi
+          if [[ "${{ needs.authority-check.outputs.full-assurance-required }}" == "true" \
+             && "${{ needs.cross-platform-validation.result }}" != "success" ]]; then
+            echo "Cross-platform validation did not succeed." >&2
+            exit 1
+          fi
 
       - name: Checkout candidate
         if: needs.authority-check.outputs.full-assurance-required == 'true'
@@ -344,7 +348,7 @@ jobs:
             assurance_script="trusted-base/scripts/ci_static_assurance.py"
             assurance_lineage="trusted-base/.github/ci/test-lineage.json"
             if ! cmp -s trusted-base/.github/ci/test-baseline.json .github/ci/test-baseline.json; then
-              uv run python "${assurance_script}" verify-transition \
+              python "${assurance_script}" verify-transition \
                 --trusted trusted-base/.github/ci/test-baseline.json \
                 --candidate .github/ci/test-baseline.json \
                 --lineage trusted-base/.github/ci/test-lineage.json \
@@ -365,7 +369,7 @@ jobs:
               cell_args+=(--expected-cell "${os_name}-py${python_version}")
             done
           done
-          uv run python "${assurance_script}" aggregate \
+          python "${assurance_script}" aggregate \
             --evidence-root downloaded-evidence \
             --candidate-baseline .github/ci/test-baseline.json \
             --lineage "${assurance_lineage}" \
