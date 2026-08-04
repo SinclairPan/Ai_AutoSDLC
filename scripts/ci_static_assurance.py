@@ -448,7 +448,7 @@ def verify_collection_coverage(
     expected_source_commit: str | None = None,
     protected_lineage: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """证明每个 cell 都覆盖受保护成员，同时允许候选正向新增。"""
+    """证明每个 cell 与已晋升的候选 baseline 精确一致。"""
     baseline_cells = list(candidate_baseline.get("cells", []))
     baseline_cell_cases = _baseline_cell_cases(candidate_baseline)
     baseline_member_count = candidate_baseline.get("execution_member_count")
@@ -476,8 +476,7 @@ def verify_collection_coverage(
         "schema_version": LINEAGE_SCHEMA,
         "mappings": [],
     }
-    lineage_by_source = _protected_lineage_mapping(lineage)
-    if lineage_by_source is None:
+    if _protected_lineage_mapping(lineage) is None:
         return _coverage_failure("lineage_contract_invalid")
 
     manifest_cells: list[str] = []
@@ -515,10 +514,10 @@ def verify_collection_coverage(
             return _coverage_failure("runtime_case_identity_invalid")
         protected_cases = baseline_cell_cases[cell]
         missing = protected_cases - runtime_cases
-        for source in missing:
-            target = lineage_by_source.get(source)
-            if not target or target not in runtime_cases - protected_cases:
-                return _coverage_failure("protected_case_missing")
+        if missing:
+            return _coverage_failure("protected_case_missing")
+        if runtime_cases - protected_cases:
+            return _coverage_failure("unprotected_runtime_addition")
 
         raw_members = list(manifest.get("execution_member_ids", []))
         members = {str(value) for value in raw_members}

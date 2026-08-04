@@ -752,8 +752,8 @@ def test_collection_coverage_matches_protected_members_in_every_cell() -> None:
     }
 
 
-def test_collection_coverage_accepts_positive_runtime_addition() -> None:
-    """新增测试无需先自引用写入 baseline，也能被当前候选完整执行。"""
+def test_collection_coverage_rejects_unpromoted_runtime_addition() -> None:
+    """新增测试必须先进入 candidate baseline，避免后续删除时失去保护。"""
     module = _load_module()
     manifests = [
         _single_manifest(
@@ -770,8 +770,8 @@ def test_collection_coverage_accepts_positive_runtime_addition() -> None:
 
     result = module.verify_collection_coverage(_two_cell_baseline(), manifests)
 
-    assert result["status"] == "success"
-    assert result["execution_member_count"] == 4
+    assert result["status"] == "failed"
+    assert result["reason"] == "unprotected_runtime_addition"
 
 
 def test_collection_coverage_honors_compact_platform_delta() -> None:
@@ -814,8 +814,8 @@ def test_collection_coverage_honors_compact_platform_delta() -> None:
     assert result["status"] == "success"
 
 
-def test_collection_coverage_accepts_protected_one_to_one_rename() -> None:
-    """受保护 lineage 可证明 rename 成员守恒，不误判为删除。"""
+def test_collection_coverage_rejects_unpromoted_runtime_rename() -> None:
+    """lineage 证明 baseline 迁移，不能替代 candidate baseline 本身更新。"""
     module = _load_module()
     old_case = module._stable_case_id("tests/a.py::test_one")
     new_case = module._stable_case_id("tests/a.py::test_renamed")
@@ -833,7 +833,8 @@ def test_collection_coverage_accepts_protected_one_to_one_rename() -> None:
         },
     )
 
-    assert result["status"] == "success"
+    assert result["status"] == "failed"
+    assert result["reason"] == "protected_case_missing"
 
 
 def test_collection_coverage_uses_runtime_candidate_binding_not_baseline_origin() -> None:
