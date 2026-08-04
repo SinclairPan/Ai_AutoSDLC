@@ -779,9 +779,13 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert "authority_unavailable" in workflow
     assert "protected_ci_change" in workflow
     assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
+    assert 'assurance_lineage=".github/ci/test-lineage.json"' in workflow
+    assert 'assurance_lineage="trusted-base/.github/ci/test-lineage.json"' in workflow
     assert '"${assurance_script}" collect' in workflow
     assert '"${ASSURANCE_SCRIPT}" cell-evidence' in workflow
+    assert '--baseline "${ASSURANCE_BASELINE}"' in workflow
     assert '"${assurance_script}" aggregate' in workflow
+    assert '--lineage "${assurance_lineage}"' in workflow
     assert "verify-transition" in workflow
     assert "--ignore=tests/e2e/stage_review" in workflow
     assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow

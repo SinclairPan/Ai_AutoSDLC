@@ -38,8 +38,11 @@ def _baseline(*case_ids: str) -> dict[str, object]:
         "previous_baseline_digest": None,
         "cells": list(cells),
         "case_ids": list(case_ids),
+        "cell_case_omissions_by_cell": {cells[0]: []},
+        "cell_case_additions_by_cell": {cells[0]: []},
         "execution_member_count": member_count,
         "execution_member_digest": member_digest,
+        "allowed_skip_case_ids_by_cell": {cells[0]: []},
         "baseline_digest": "sha256:trusted",
     }
 
@@ -54,8 +57,11 @@ def _candidate(*case_ids: str) -> dict[str, object]:
         "previous_baseline_digest": "sha256:trusted",
         "cells": list(cells),
         "case_ids": list(case_ids),
+        "cell_case_omissions_by_cell": {cells[0]: []},
+        "cell_case_additions_by_cell": {cells[0]: []},
         "execution_member_count": member_count,
         "execution_member_digest": member_digest,
+        "allowed_skip_case_ids_by_cell": {cells[0]: []},
         "baseline_digest": "sha256:candidate",
     }
 
@@ -141,6 +147,73 @@ def test_baseline_keeps_member_projection_compact() -> None:
     assert "case_nodeids" not in baseline
     assert baseline["execution_member_count"] == 4
     assert str(baseline["execution_member_digest"]).startswith("sha256:")
+
+
+def test_baseline_compacts_platform_specific_collection_as_cell_deltas() -> None:
+    """平台差异只保存相对 reference 的小增量，不复制十二份完整集合。"""
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        ["tests/a.py::test_common", "tests/a.py::test_posix"],
+        ["ubuntu-latest-py3.11", "windows-latest-py3.11"],
+        source_commit="a" * 40,
+    )
+    common, posix = manifest["case_ids"]
+    windows_only = module._stable_case_id("tests/a.py::test_windows")
+
+    baseline = module.build_baseline(
+        manifest,
+        cell_case_omissions_by_cell={"windows-latest-py3.11": [posix]},
+        cell_case_additions_by_cell={"windows-latest-py3.11": [windows_only]},
+    )
+
+    expected_count, expected_digest = module._execution_member_projection_by_cell(
+        {
+            "ubuntu-latest-py3.11": {common, posix},
+            "windows-latest-py3.11": {common, windows_only},
+        }
+    )
+    assert baseline["cell_case_omissions_by_cell"] == {
+        "ubuntu-latest-py3.11": [],
+        "windows-latest-py3.11": [posix],
+    }
+    assert baseline["cell_case_additions_by_cell"] == {
+        "ubuntu-latest-py3.11": [],
+        "windows-latest-py3.11": [windows_only],
+    }
+    assert baseline["execution_member_count"] == expected_count
+    assert baseline["execution_member_digest"] == expected_digest
+
+
+@pytest.mark.parametrize(
+    ("omissions", "additions"),
+    [
+        ({"windows-latest-py3.11": ["case:unknown"]}, {}),
+        ({}, {"windows-latest-py3.11": ["case:reference"]}),
+        ({}, {"unknown-cell": ["case:new"]}),
+    ],
+)
+def test_baseline_rejects_invalid_platform_delta_contract(
+    omissions: dict[str, list[str]], additions: dict[str, list[str]]
+) -> None:
+    """防止未知成员、reference 重复成员或未知 cell 污染受保护投影。"""
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        ["tests/a.py::test_reference"],
+        ["windows-latest-py3.11"],
+        source_commit="a" * 40,
+    )
+    reference = manifest["case_ids"][0]
+    additions = {
+        cell: [reference if value == "case:reference" else value for value in values]
+        for cell, values in additions.items()
+    }
+
+    with pytest.raises(module.AssuranceError, match="invalid cell case delta"):
+        module.build_baseline(
+            manifest,
+            cell_case_omissions_by_cell=omissions,
+            cell_case_additions_by_cell=additions,
+        )
 
 
 def test_baseline_transition_allows_only_monotonic_addition() -> None:
@@ -248,6 +321,50 @@ def test_cell_contract_change_fails_closed() -> None:
     assert result["reason"] == "cell_contract_changed"
 
 
+def test_baseline_transition_rejects_new_allowed_skip() -> None:
+    """防止候选把新 skip 写入 baseline 后自行降低完整质量地板。"""
+    module = _load_module()
+    trusted = _baseline("case:a", "case:b")
+    candidate = _candidate("case:a", "case:b")
+    candidate["allowed_skip_case_ids_by_cell"] = {
+        "ubuntu-latest-py3.11": ["case:b"]
+    }
+
+    result = module.verify_baseline_transition(
+        trusted,
+        candidate,
+        {"schema_version": "ci-test-lineage-v1", "mappings": []},
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "allowed_skip_expanded"
+
+
+def test_baseline_transition_rejects_platform_specific_protected_loss() -> None:
+    """防止候选只在某个 OS 的 compact delta 中删除受保护测试。"""
+    module = _load_module()
+    trusted = _baseline("case:a", "case:b")
+    candidate = _candidate("case:a", "case:b")
+    candidate["cell_case_omissions_by_cell"] = {
+        "ubuntu-latest-py3.11": ["case:b"]
+    }
+    count, digest = module._execution_member_projection_by_cell(
+        {"ubuntu-latest-py3.11": {"case:a"}}
+    )
+    candidate["execution_member_count"] = count
+    candidate["execution_member_digest"] = digest
+
+    result = module.verify_baseline_transition(
+        trusted,
+        candidate,
+        {"schema_version": "ci-test-lineage-v1", "mappings": []},
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "unauthorized_negative_delta"
+    assert result["removed_case_ids"] == ["case:b"]
+
+
 def _single_cell_manifest(source_commit: str = "a" * 40) -> dict[str, object]:
     module = _load_module()
     return module.build_collection_manifest(
@@ -289,6 +406,73 @@ def test_cell_evidence_accepts_exact_successful_junit(tmp_path: Path) -> None:
     assert result["collected_count"] == 2
     assert result["executed_count"] == 2
     assert result["duration_seconds"] == 5.0
+
+
+def test_cell_evidence_accepts_only_protected_skip_identity(tmp_path: Path) -> None:
+    """允许受保护基线已有的平台 skip，但拒绝同数量的新 skip 替换。"""
+    module = _load_module()
+    manifest = _single_cell_manifest()
+    case_by_nodeid = {
+        nodeid: case_id for case_id, nodeid in manifest["case_nodeids"].items()
+    }
+    allowed = case_by_nodeid["tests/a.py::test_one"]
+    junit = tmp_path / "allowed.xml"
+    _write_junit(
+        junit,
+        '<testcase classname="tests.a" name="test_one"><skipped/></testcase>'
+        '<testcase classname="tests.a" name="test_two"/>',
+    )
+
+    allowed_result = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+        allowed_skip_case_ids=[allowed],
+    )
+    substituted = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+        allowed_skip_case_ids=[case_by_nodeid["tests/a.py::test_two"]],
+    )
+
+    assert allowed_result["status"] == "success"
+    assert allowed_result["skipped_case_ids"] == [allowed]
+    assert substituted["status"] == "failed"
+    assert substituted["reason"] == "unexpected_skip_identity"
+
+
+def test_cell_evidence_normalizes_escaped_parameter_identity(tmp_path: Path) -> None:
+    """确保 collection 与 JUnit 对 Windows 路径参数使用同一稳定身份。"""
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        [r"tests/a.py::test_one[dir\leaf]"],
+        ["ubuntu-latest-py3.11"],
+        source_commit="a" * 40,
+    )
+    junit = tmp_path / "escaped.xml"
+    _write_junit(
+        junit,
+        r'<testcase classname="tests.a" name="test_one[dir\leaf]"/>',
+        tests=1,
+    )
+
+    result = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert result["status"] == "success"
 
 
 @pytest.mark.parametrize(
@@ -517,8 +701,8 @@ def _single_manifest(cell: str, *nodeids: str) -> dict[str, object]:
     )
 
 
-def test_collection_coverage_matches_exact_baseline_union() -> None:
-    """防止单 cell 正确但跨 cell union 缺成员。"""
+def test_collection_coverage_matches_protected_members_in_every_cell() -> None:
+    """防止单 cell 正确但跨 cell 缺少受保护成员。"""
     module = _load_module()
     manifests = [
         _single_manifest("ubuntu-latest-py3.11"),
@@ -529,11 +713,95 @@ def test_collection_coverage_matches_exact_baseline_union() -> None:
 
     assert result == {
         "status": "success",
-        "reason": "exact_collection_coverage",
+        "reason": "protected_collection_coverage",
         "cells": ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
-        "case_count": 1,
+        "protected_case_count": 1,
         "execution_member_count": 2,
     }
+
+
+def test_collection_coverage_accepts_positive_runtime_addition() -> None:
+    """新增测试无需先自引用写入 baseline，也能被当前候选完整执行。"""
+    module = _load_module()
+    manifests = [
+        _single_manifest(
+            "ubuntu-latest-py3.11",
+            "tests/a.py::test_one",
+            "tests/a.py::test_new",
+        ),
+        _single_manifest(
+            "windows-latest-py3.14",
+            "tests/a.py::test_one",
+            "tests/a.py::test_windows_new",
+        ),
+    ]
+
+    result = module.verify_collection_coverage(_two_cell_baseline(), manifests)
+
+    assert result["status"] == "success"
+    assert result["execution_member_count"] == 4
+
+
+def test_collection_coverage_honors_compact_platform_delta() -> None:
+    """Windows 与 POSIX 的真实 collection 差异由 cell delta 精确约束。"""
+    module = _load_module()
+    reference_manifest = module.build_collection_manifest(
+        ["tests/a.py::test_common", "tests/a.py::test_posix"],
+        ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
+        source_commit="a" * 40,
+    )
+    by_nodeid = {
+        nodeid: case_id
+        for case_id, nodeid in reference_manifest["case_nodeids"].items()
+    }
+    windows_only = module._stable_case_id("tests/a.py::test_windows")
+    baseline = module.build_baseline(
+        reference_manifest,
+        cell_case_omissions_by_cell={
+            "windows-latest-py3.14": [by_nodeid["tests/a.py::test_posix"]]
+        },
+        cell_case_additions_by_cell={
+            "windows-latest-py3.14": [windows_only]
+        },
+    )
+    manifests = [
+        _single_manifest(
+            "ubuntu-latest-py3.11",
+            "tests/a.py::test_common",
+            "tests/a.py::test_posix",
+        ),
+        _single_manifest(
+            "windows-latest-py3.14",
+            "tests/a.py::test_common",
+            "tests/a.py::test_windows",
+        ),
+    ]
+
+    result = module.verify_collection_coverage(baseline, manifests)
+
+    assert result["status"] == "success"
+
+
+def test_collection_coverage_accepts_protected_one_to_one_rename() -> None:
+    """受保护 lineage 可证明 rename 成员守恒，不误判为删除。"""
+    module = _load_module()
+    old_case = module._stable_case_id("tests/a.py::test_one")
+    new_case = module._stable_case_id("tests/a.py::test_renamed")
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11", "tests/a.py::test_renamed"),
+        _single_manifest("windows-latest-py3.14", "tests/a.py::test_renamed"),
+    ]
+
+    result = module.verify_collection_coverage(
+        _two_cell_baseline(),
+        manifests,
+        protected_lineage={
+            "schema_version": "ci-test-lineage-v1",
+            "mappings": [{"from_case_id": old_case, "to_case_id": new_case}],
+        },
+    )
+
+    assert result["status"] == "success"
 
 
 def test_collection_coverage_uses_runtime_candidate_binding_not_baseline_origin() -> None:
@@ -590,18 +858,14 @@ def test_collection_coverage_binds_runtime_manifests_to_expected_commit() -> Non
         (
             lambda manifests: [
                 manifests[0],
-                _single_manifest(
-                    "windows-latest-py3.14",
-                    "tests/a.py::test_one",
-                    "tests/a.py::test_extra",
-                ),
+                _single_manifest("windows-latest-py3.14", "tests/a.py::test_other"),
             ],
-            "case_set_mismatch",
+            "protected_case_missing",
         ),
     ],
 )
 def test_collection_coverage_faults_fail_closed(mutator, reason: str) -> None:
-    """防止缺 cell、重复 cell 或 cell 间集合漂移通过聚合。"""
+    """防止缺 cell、重复 cell 或受保护成员缺失通过聚合。"""
     module = _load_module()
     manifests = [
         _single_manifest("ubuntu-latest-py3.11"),

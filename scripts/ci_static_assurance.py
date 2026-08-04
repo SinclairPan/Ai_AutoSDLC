@@ -70,9 +70,17 @@ def _stable_execution_member_id(case_id: str, cell: str) -> str:
 def _execution_member_projection(
     case_ids: Sequence[str], cells: Sequence[str]
 ) -> tuple[int, str]:
+    return _execution_member_projection_by_cell(
+        {cell: set(case_ids) for cell in cells}
+    )
+
+
+def _execution_member_projection_by_cell(
+    case_ids_by_cell: Mapping[str, set[str]],
+) -> tuple[int, str]:
     members = sorted(
         _stable_execution_member_id(case_id, cell)
-        for cell in cells
+        for cell, case_ids in case_ids_by_cell.items()
         for case_id in case_ids
     )
     return len(members), _sha256("\n".join(members))
@@ -129,11 +137,69 @@ def build_baseline(
     *,
     previous_baseline_digest: str | None = None,
     genesis_base_commit: str | None = None,
+    allowed_skip_case_ids_by_cell: Mapping[str, Sequence[str]] | None = None,
+    cell_case_omissions_by_cell: Mapping[str, Sequence[str]] | None = None,
+    cell_case_additions_by_cell: Mapping[str, Sequence[str]] | None = None,
 ) -> dict[str, object]:
     """把实际 collection 投影为受保护 baseline 候选。"""
-    case_ids = list(manifest.get("case_ids", []))
-    cells = list(manifest.get("cells", []))
-    member_count, member_digest = _execution_member_projection(case_ids, cells)
+    case_ids = _unique(
+        [str(value) for value in manifest.get("case_ids", [])],
+        label="baseline case identity",
+    )
+    cells = _unique(
+        [str(value) for value in manifest.get("cells", [])],
+        label="baseline execution cell",
+    )
+    omission_input = cell_case_omissions_by_cell or {}
+    addition_input = cell_case_additions_by_cell or {}
+    if not set(omission_input).issubset(cells) or not set(addition_input).issubset(
+        cells
+    ):
+        raise AssuranceError("invalid cell case delta contract")
+    omissions = {
+        cell: sorted(
+            str(case_id)
+            for case_id in omission_input.get(cell, [])
+        )
+        for cell in cells
+    }
+    additions = {
+        cell: sorted(
+            str(case_id)
+            for case_id in addition_input.get(cell, [])
+        )
+        for cell in cells
+    }
+    base_cases = set(case_ids)
+    if any(
+        len(omissions[cell]) != len(set(omissions[cell]))
+        or len(additions[cell]) != len(set(additions[cell]))
+        or not set(omissions[cell]).issubset(base_cases)
+        or bool(set(additions[cell]) & base_cases)
+        for cell in cells
+    ):
+        raise AssuranceError("invalid cell case delta contract")
+    cell_cases = {
+        cell: (base_cases - set(omissions[cell])) | set(additions[cell])
+        for cell in cells
+    }
+    member_count, member_digest = _execution_member_projection_by_cell(cell_cases)
+    allowed_input = allowed_skip_case_ids_by_cell or {}
+    if not set(allowed_input).issubset(cells):
+        raise AssuranceError("invalid allowed skip contract")
+    allowed_skips = {
+        cell: sorted(
+            str(case_id)
+            for case_id in allowed_input.get(cell, [])
+        )
+        for cell in cells
+    }
+    if any(
+        len(case_ids_for_cell) != len(set(case_ids_for_cell))
+        or not set(case_ids_for_cell).issubset(cell_cases[cell])
+        for cell, case_ids_for_cell in allowed_skips.items()
+    ):
+        raise AssuranceError("invalid allowed skip contract")
     baseline: dict[str, object] = {
         "schema_version": BASELINE_SCHEMA,
         "namespace": manifest.get("namespace"),
@@ -143,8 +209,11 @@ def build_baseline(
         "collection_command": manifest.get("collection_command"),
         "cells": cells,
         "case_ids": case_ids,
+        "cell_case_omissions_by_cell": omissions,
+        "cell_case_additions_by_cell": additions,
         "execution_member_count": member_count,
         "execution_member_digest": member_digest,
+        "allowed_skip_case_ids_by_cell": allowed_skips,
     }
     baseline["baseline_digest"] = _canonical_digest(baseline, "baseline_digest")
     return baseline
@@ -162,6 +231,92 @@ def _transition_failure(
     }
 
 
+def _allowed_skip_contract(
+    baseline: Mapping[str, object],
+    case_ids_by_cell: Mapping[str, set[str]],
+) -> dict[str, set[str]] | None:
+    raw = baseline.get("allowed_skip_case_ids_by_cell")
+    cells = set(case_ids_by_cell)
+    if not isinstance(raw, Mapping) or set(raw) != cells:
+        return None
+    normalized: dict[str, set[str]] = {}
+    for cell in cells:
+        values = raw.get(cell)
+        if not isinstance(values, list):
+            return None
+        skip_ids = {str(value) for value in values}
+        if len(skip_ids) != len(values) or not skip_ids.issubset(
+            case_ids_by_cell[cell]
+        ):
+            return None
+        normalized[cell] = skip_ids
+    return normalized
+
+
+def _baseline_cell_cases(
+    baseline: Mapping[str, object],
+) -> dict[str, set[str]] | None:
+    cells = list(baseline.get("cells", []))
+    base_cases = list(baseline.get("case_ids", []))
+    if (
+        not cells
+        or len(cells) != len(set(cells))
+        or not base_cases
+        or len(base_cases) != len(set(base_cases))
+    ):
+        return None
+    raw_omissions = baseline.get("cell_case_omissions_by_cell")
+    raw_additions = baseline.get("cell_case_additions_by_cell")
+    if (
+        not isinstance(raw_omissions, Mapping)
+        or not isinstance(raw_additions, Mapping)
+        or set(raw_omissions) != set(cells)
+        or set(raw_additions) != set(cells)
+    ):
+        return None
+    base_set = set(str(value) for value in base_cases)
+    if any(not value for value in base_set):
+        return None
+    result: dict[str, set[str]] = {}
+    for cell in cells:
+        omissions = list(raw_omissions.get(cell, []))
+        additions = list(raw_additions.get(cell, []))
+        omission_set = {str(value) for value in omissions}
+        addition_set = {str(value) for value in additions}
+        if (
+            len(omission_set) != len(omissions)
+            or len(addition_set) != len(additions)
+            or any(not value for value in omission_set | addition_set)
+            or not omission_set.issubset(base_set)
+            or bool(addition_set & base_set)
+        ):
+            return None
+        result[cell] = (base_set - omission_set) | addition_set
+    return result
+
+
+def _protected_lineage_mapping(
+    protected_lineage: Mapping[str, object],
+) -> dict[str, str] | None:
+    if protected_lineage.get("schema_version") != LINEAGE_SCHEMA:
+        return None
+    mappings = protected_lineage.get("mappings")
+    if not isinstance(mappings, list) or any(
+        not isinstance(item, Mapping) for item in mappings
+    ):
+        return None
+    from_ids = [str(item.get("from_case_id", "")) for item in mappings]
+    to_ids = [str(item.get("to_case_id", "")) for item in mappings]
+    if (
+        any(not value for value in from_ids + to_ids)
+        or any(source == target for source, target in zip(from_ids, to_ids, strict=True))
+        or len(from_ids) != len(set(from_ids))
+        or len(to_ids) != len(set(to_ids))
+    ):
+        return None
+    return dict(zip(from_ids, to_ids, strict=True))
+
+
 def verify_baseline_transition(
     trusted: Mapping[str, object],
     candidate: Mapping[str, object],
@@ -177,14 +332,12 @@ def verify_baseline_transition(
     if candidate.get("previous_baseline_digest") != trusted.get("baseline_digest"):
         return _transition_failure("previous_baseline_digest_mismatch")
 
-    trusted_cases = list(trusted.get("case_ids", []))
-    candidate_cases = list(candidate.get("case_ids", []))
-    if len(trusted_cases) != len(set(trusted_cases)) or len(candidate_cases) != len(
-        set(candidate_cases)
-    ):
-        return _transition_failure("duplicate_case_identity")
-    trusted_projection = _execution_member_projection(trusted_cases, trusted_cells)
-    candidate_projection = _execution_member_projection(candidate_cases, candidate_cells)
+    trusted_cell_cases = _baseline_cell_cases(trusted)
+    candidate_cell_cases = _baseline_cell_cases(candidate)
+    if trusted_cell_cases is None or candidate_cell_cases is None:
+        return _transition_failure("cell_case_contract_invalid")
+    trusted_projection = _execution_member_projection_by_cell(trusted_cell_cases)
+    candidate_projection = _execution_member_projection_by_cell(candidate_cell_cases)
     if trusted_projection != (
         trusted.get("execution_member_count"),
         trusted.get("execution_member_digest"),
@@ -193,40 +346,57 @@ def verify_baseline_transition(
         candidate.get("execution_member_digest"),
     ):
         return _transition_failure("execution_member_set_invalid")
+    trusted_skips = _allowed_skip_contract(trusted, trusted_cell_cases)
+    candidate_skips = _allowed_skip_contract(candidate, candidate_cell_cases)
+    if trusted_skips is None or candidate_skips is None:
+        return _transition_failure("allowed_skip_contract_invalid")
+    if any(
+        not candidate_skips[cell].issubset(trusted_skips[cell])
+        for cell in trusted_cells
+    ):
+        return _transition_failure("allowed_skip_expanded")
 
     if protected_lineage.get("schema_version") != LINEAGE_SCHEMA:
         return _transition_failure("lineage_schema_invalid")
-    mappings = list(protected_lineage.get("mappings", []))
-    from_ids = [str(item.get("from_case_id", "")) for item in mappings]
-    to_ids = [str(item.get("to_case_id", "")) for item in mappings]
-    if (
-        any(not value for value in from_ids + to_ids)
-        or len(from_ids) != len(set(from_ids))
-        or len(to_ids) != len(set(to_ids))
-    ):
+    lineage_by_source = _protected_lineage_mapping(protected_lineage)
+    if lineage_by_source is None:
         return _transition_failure("lineage_not_one_to_one")
+    # 单份 lineage 可覆盖多个 cell，但每个 cell 都必须独立证明成员守恒。
+    all_missing = set().union(
+        *(
+            trusted_cell_cases[cell] - candidate_cell_cases[cell]
+            for cell in trusted_cells
+        )
+    )
+    all_added = set().union(
+        *(
+            candidate_cell_cases[cell] - trusted_cell_cases[cell]
+            for cell in trusted_cells
+        )
+    )
+    accepted_pairs: set[tuple[str, str]] = set()
+    for cell in trusted_cells:
+        trusted_set = trusted_cell_cases[cell]
+        candidate_set = candidate_cell_cases[cell]
+        missing = trusted_set - candidate_set
+        added = candidate_set - trusted_set
+        for source in sorted(missing):
+            target = lineage_by_source.get(source)
+            if not target or target not in added:
+                return _transition_failure(
+                    "unauthorized_negative_delta", removed_case_ids=all_missing
+                )
+            accepted_pairs.add((source, target))
 
-    trusted_set = set(trusted_cases)
-    candidate_set = set(candidate_cases)
-    missing = trusted_set - candidate_set
-    added = candidate_set - trusted_set
-    lineage_by_source = {
-        str(item["from_case_id"]): str(item["to_case_id"]) for item in mappings
-    }
-    accepted_renames: list[dict[str, str]] = []
-    for source in sorted(missing):
-        target = lineage_by_source.get(source)
-        if not target or target not in added:
-            return _transition_failure(
-                "unauthorized_negative_delta", removed_case_ids=missing
-            )
-        accepted_renames.append({"from_case_id": source, "to_case_id": target})
-
-    renamed_targets = {item["to_case_id"] for item in accepted_renames}
+    accepted_renames = [
+        {"from_case_id": source, "to_case_id": target}
+        for source, target in sorted(accepted_pairs)
+    ]
+    renamed_targets = {target for _, target in accepted_pairs}
     return {
         "status": "success",
         "reason": "monotonic_transition",
-        "added_case_ids": sorted(added - renamed_targets),
+        "added_case_ids": sorted(all_added - renamed_targets),
         "renamed_case_ids": accepted_renames,
         "removed_case_ids": [],
     }
@@ -276,22 +446,39 @@ def verify_collection_coverage(
     manifests: Sequence[Mapping[str, object]],
     *,
     expected_source_commit: str | None = None,
+    protected_lineage: Mapping[str, object] | None = None,
 ) -> dict[str, object]:
-    """证明所有 cell 的实际 collection union 等于候选 baseline。"""
+    """证明每个 cell 都覆盖受保护成员，同时允许候选正向新增。"""
     baseline_cells = list(candidate_baseline.get("cells", []))
-    baseline_cases = set(candidate_baseline.get("case_ids", []))
+    baseline_cell_cases = _baseline_cell_cases(candidate_baseline)
     baseline_member_count = candidate_baseline.get("execution_member_count")
     baseline_member_digest = candidate_baseline.get("execution_member_digest")
-    expected_projection = _execution_member_projection(
-        sorted(baseline_cases), baseline_cells
+    expected_projection = (
+        _execution_member_projection_by_cell(baseline_cell_cases)
+        if baseline_cell_cases is not None
+        else None
+    )
+    allowed_skips = (
+        _allowed_skip_contract(candidate_baseline, baseline_cell_cases)
+        if baseline_cell_cases is not None
+        else None
     )
     if (
         not baseline_cells
         or len(baseline_cells) != len(set(baseline_cells))
-        or not baseline_cases
+        or baseline_cell_cases is None
         or expected_projection != (baseline_member_count, baseline_member_digest)
+        or allowed_skips is None
     ):
         return _coverage_failure("candidate_baseline_invalid")
+
+    lineage = protected_lineage or {
+        "schema_version": LINEAGE_SCHEMA,
+        "mappings": [],
+    }
+    lineage_by_source = _protected_lineage_mapping(lineage)
+    if lineage_by_source is None:
+        return _coverage_failure("lineage_contract_invalid")
 
     manifest_cells: list[str] = []
     for manifest in manifests:
@@ -321,21 +508,59 @@ def verify_collection_coverage(
     for manifest in manifests:
         if manifest.get("namespace") != candidate_baseline.get("namespace"):
             return _coverage_failure("namespace_mismatch")
-        if set(manifest.get("case_ids", [])) != baseline_cases:
-            return _coverage_failure("case_set_mismatch")
-        members = set(manifest.get("execution_member_ids", []))
+        cell = str(list(manifest.get("cells", []))[0])
+        raw_cases = list(manifest.get("case_ids", []))
+        runtime_cases = {str(value) for value in raw_cases}
+        if not runtime_cases or len(runtime_cases) != len(raw_cases):
+            return _coverage_failure("runtime_case_identity_invalid")
+        protected_cases = baseline_cell_cases[cell]
+        missing = protected_cases - runtime_cases
+        for source in missing:
+            target = lineage_by_source.get(source)
+            if not target or target not in runtime_cases - protected_cases:
+                return _coverage_failure("protected_case_missing")
+
+        raw_members = list(manifest.get("execution_member_ids", []))
+        members = {str(value) for value in raw_members}
+        if len(members) != len(raw_members):
+            return _coverage_failure("duplicate_execution_member")
         if seen_members & members:
             return _coverage_failure("execution_member_overlap")
+        expected_members = {
+            _stable_execution_member_id(case_id, cell)
+            for case_id in runtime_cases
+        }
+        if members != expected_members:
+            return _coverage_failure("execution_member_set_invalid")
+
+        raw_nodeids = manifest.get("case_nodeids")
+        if not isinstance(raw_nodeids, Mapping) or set(raw_nodeids) != runtime_cases:
+            return _coverage_failure("runtime_case_identity_invalid")
+        try:
+            normalized_nodeids = {
+                str(case_id): _normalize_nodeid(str(nodeid))
+                for case_id, nodeid in raw_nodeids.items()
+            }
+        except AssuranceError:
+            return _coverage_failure("runtime_case_identity_invalid")
+        if any(
+            _stable_case_id(nodeid) != case_id
+            for case_id, nodeid in normalized_nodeids.items()
+        ):
+            return _coverage_failure("runtime_case_identity_invalid")
+        if manifest.get("manifest_digest") != _canonical_digest(
+            manifest, "manifest_digest"
+        ):
+            return _coverage_failure("manifest_digest_invalid")
         seen_members.update(members)
-    actual_projection = (len(seen_members), _sha256("\n".join(sorted(seen_members))))
-    if actual_projection != expected_projection:
-        return _coverage_failure("execution_member_set_mismatch")
 
     return {
         "status": "success",
-        "reason": "exact_collection_coverage",
+        "reason": "protected_collection_coverage",
         "cells": sorted(manifest_cells),
-        "case_count": len(baseline_cases),
+        "protected_case_count": len(
+            set().union(*baseline_cell_cases.values())
+        ),
         "execution_member_count": len(seen_members),
     }
 
@@ -370,6 +595,7 @@ def _cell_evidence_base(
         "failures": 0,
         "errors": 0,
         "skipped": 0,
+        "skipped_case_ids": [],
         "duplicate_testcases": [],
         "status": "failed",
         "reason": "unknown",
@@ -377,6 +603,22 @@ def _cell_evidence_base(
         "finished_at": finished_at,
         "duration_seconds": _duration_seconds(started_at, finished_at),
     }
+
+
+def _junit_case_lookup(manifest: Mapping[str, object]) -> dict[tuple[str, str], str]:
+    lookup: dict[tuple[str, str], str] = {}
+    raw_nodeids = manifest.get("case_nodeids")
+    if not isinstance(raw_nodeids, Mapping):
+        raise AssuranceError("manifest case nodeids are missing")
+    for raw_case_id, raw_nodeid in raw_nodeids.items():
+        parts = _normalize_nodeid(str(raw_nodeid)).split("::")
+        module_name = parts[0].removesuffix(".py").replace("/", ".")
+        classname = ".".join([module_name, *parts[1:-1]])
+        key = (classname, parts[-1])
+        if key in lookup:
+            raise AssuranceError("ambiguous JUnit case identity")
+        lookup[key] = str(raw_case_id)
+    return lookup
 
 
 def build_cell_evidence(
@@ -387,6 +629,7 @@ def build_cell_evidence(
     source_commit: str,
     started_at: str,
     finished_at: str,
+    allowed_skip_case_ids: Sequence[str] = (),
 ) -> dict[str, object]:
     """把一个 cell 的 collection 与 JUnit 收敛为严格终态证据。"""
     try:
@@ -431,9 +674,8 @@ def build_cell_evidence(
     testcases = list(root.iter("testcase"))
     testcase_keys = [
         (
-            testcase.get("file", ""),
             testcase.get("classname", ""),
-            testcase.get("name", ""),
+            testcase.get("name", "").replace("\\", "/"),
         )
         for testcase in testcases
     ]
@@ -463,7 +705,7 @@ def build_cell_evidence(
     if duplicates:
         evidence["reason"] = "duplicate_testcase"
         return evidence
-    if any((evidence["failures"], evidence["errors"], evidence["skipped"])):
+    if any((evidence["failures"], evidence["errors"])):
         evidence["reason"] = "non_success_terminal_state"
         return evidence
     if evidence["executed_count"] != evidence["collected_count"]:
@@ -471,6 +713,36 @@ def build_cell_evidence(
         return evidence
     if declared_tests != evidence["executed_count"]:
         evidence["reason"] = "junit_declared_count_mismatch"
+        return evidence
+
+    manifest_case_ids = set(str(value) for value in manifest.get("case_ids", []))
+    allowed_skip_ids = {str(value) for value in allowed_skip_case_ids}
+    if len(allowed_skip_ids) != len(allowed_skip_case_ids) or not allowed_skip_ids.issubset(
+        manifest_case_ids
+    ):
+        evidence["reason"] = "allowed_skip_contract_invalid"
+        return evidence
+    if evidence["skipped"] and not allowed_skip_ids:
+        evidence["reason"] = "non_success_terminal_state"
+        return evidence
+    try:
+        lookup = _junit_case_lookup(manifest)
+        executed_case_ids = [lookup[key] for key in testcase_keys]
+    except (AssuranceError, KeyError):
+        evidence["reason"] = "junit_case_identity_mismatch"
+        return evidence
+    if set(executed_case_ids) != manifest_case_ids:
+        evidence["reason"] = "junit_case_set_mismatch"
+        return evidence
+
+    skipped_case_ids = sorted(
+        lookup[key]
+        for key, testcase in zip(testcase_keys, testcases, strict=True)
+        if testcase.find("skipped") is not None
+    )
+    evidence["skipped_case_ids"] = skipped_case_ids
+    if not set(skipped_case_ids).issubset(allowed_skip_ids):
+        evidence["reason"] = "unexpected_skip_identity"
         return evidence
 
     evidence["status"] = "success"
@@ -649,6 +921,9 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--source-commit")
     baseline.add_argument("--previous-baseline-digest")
     baseline.add_argument("--genesis-base-commit")
+    baseline.add_argument("--allowed-skips", type=Path)
+    baseline.add_argument("--cell-case-omissions", type=Path)
+    baseline.add_argument("--cell-case-additions", type=Path)
     baseline.add_argument("--pytest-arg", action="append", default=[])
     baseline.add_argument("--output", type=Path, required=True)
 
@@ -669,6 +944,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     cell_evidence = subparsers.add_parser("cell-evidence")
     cell_evidence.add_argument("--manifest", type=Path, required=True)
+    cell_evidence.add_argument("--baseline", type=Path, required=True)
     cell_evidence.add_argument("--junit", type=Path, required=True)
     cell_evidence.add_argument("--cell", required=True)
     cell_evidence.add_argument("--source-commit", required=True)
@@ -679,6 +955,7 @@ def _build_parser() -> argparse.ArgumentParser:
     aggregate = subparsers.add_parser("aggregate")
     aggregate.add_argument("--evidence-root", type=Path, required=True)
     aggregate.add_argument("--candidate-baseline", type=Path, required=True)
+    aggregate.add_argument("--lineage", type=Path, required=True)
     aggregate.add_argument("--expected-cell", action="append", required=True)
     aggregate.add_argument("--candidate-commit", required=True)
     aggregate.add_argument("--baseline-digest", required=True)
@@ -704,6 +981,19 @@ def main(argv: Sequence[str] | None = None) -> int:
                     manifest,
                     previous_baseline_digest=args.previous_baseline_digest,
                     genesis_base_commit=args.genesis_base_commit,
+                    allowed_skip_case_ids_by_cell=(
+                        _read_json(args.allowed_skips) if args.allowed_skips else None
+                    ),
+                    cell_case_omissions_by_cell=(
+                        _read_json(args.cell_case_omissions)
+                        if args.cell_case_omissions
+                        else None
+                    ),
+                    cell_case_additions_by_cell=(
+                        _read_json(args.cell_case_additions)
+                        if args.cell_case_additions
+                        else None
+                    ),
                 )
             )
             _write_json(args.output, payload)
@@ -739,6 +1029,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0 if result["status"] == "success" else 1
 
         if args.command == "cell-evidence":
+            baseline = _read_json(args.baseline)
+            allowed_by_cell = baseline.get("allowed_skip_case_ids_by_cell", {})
+            if not isinstance(allowed_by_cell, Mapping):
+                raise AssuranceError("baseline allowed skip contract is invalid")
             result = build_cell_evidence(
                 _read_json(args.manifest),
                 args.junit,
@@ -746,6 +1040,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 source_commit=args.source_commit,
                 started_at=args.started_at,
                 finished_at=args.finished_at,
+                allowed_skip_case_ids=list(allowed_by_cell.get(args.cell, [])),
             )
         else:
             evidence = [
@@ -763,6 +1058,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 baseline,
                 manifests,
                 expected_source_commit=args.candidate_commit,
+                protected_lineage=_read_json(args.lineage),
             )
             result = (
                 coverage

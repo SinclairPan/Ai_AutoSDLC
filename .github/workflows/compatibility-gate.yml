@@ -205,10 +205,13 @@ jobs:
           set -euo pipefail
           mkdir -p "ci-evidence/${CELL}"
           assurance_script="scripts/ci_static_assurance.py"
+          assurance_baseline=".github/ci/test-baseline.json"
           if [[ "${{ needs.authority-check.outputs.authority-available }}" == "true" ]]; then
             assurance_script="trusted-base/scripts/ci_static_assurance.py"
+            assurance_baseline="trusted-base/.github/ci/test-baseline.json"
           fi
           echo "ASSURANCE_SCRIPT=${assurance_script}" >> "${GITHUB_ENV}"
+          echo "ASSURANCE_BASELINE=${assurance_baseline}" >> "${GITHUB_ENV}"
           uv run python "${assurance_script}" collect \
             --root . \
             --source-commit "${CANDIDATE_SHA}" \
@@ -233,6 +236,7 @@ jobs:
           finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           uv run python "${ASSURANCE_SCRIPT}" cell-evidence \
             --manifest "ci-evidence/${CELL}/collection-manifest.json" \
+            --baseline "${ASSURANCE_BASELINE}" \
             --junit "ci-evidence/${CELL}/compatibility-results.xml" \
             --cell "${CELL}" \
             --source-commit "${CANDIDATE_SHA}" \
@@ -335,8 +339,10 @@ jobs:
         run: |
           set -euo pipefail
           assurance_script="scripts/ci_static_assurance.py"
+          assurance_lineage=".github/ci/test-lineage.json"
           if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]; then
             assurance_script="trusted-base/scripts/ci_static_assurance.py"
+            assurance_lineage="trusted-base/.github/ci/test-lineage.json"
             if ! cmp -s trusted-base/.github/ci/test-baseline.json .github/ci/test-baseline.json; then
               uv run python "${assurance_script}" verify-transition \
                 --trusted trusted-base/.github/ci/test-baseline.json \
@@ -362,6 +368,7 @@ jobs:
           uv run python "${assurance_script}" aggregate \
             --evidence-root downloaded-evidence \
             --candidate-baseline .github/ci/test-baseline.json \
+            --lineage "${assurance_lineage}" \
             "${cell_args[@]}" \
             --candidate-commit "${CANDIDATE_SHA}" \
             --baseline-digest "${baseline_digest}" \
