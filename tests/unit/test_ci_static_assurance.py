@@ -620,6 +620,51 @@ def test_supervised_pytest_captures_failure_before_candidate_report_wrapper(
     assert evidence["failures"] == 1
 
 
+def test_supervised_pytest_rejects_candidate_outcome_hook(tmp_path: Path) -> None:
+    """候选 runtest wrapper 能吞掉断言时，监督器必须在执行前 fail closed。"""
+    module = _load_module()
+    nested = tmp_path / "nested"
+    nested.mkdir()
+    nodeid = "nested/test_suppressed.py::test_must_fail"
+    (nested / "test_suppressed.py").write_text(
+        "def test_must_fail():\n    raise AssertionError('must not be swallowed')\n",
+        encoding="utf-8",
+    )
+    (nested / "conftest.py").write_text(
+        "import pytest\n\n"
+        "@pytest.hookimpl(wrapper=True, tryfirst=True)\n"
+        "def pytest_runtest_call(item):\n"
+        "    try:\n"
+        "        return (yield)\n"
+        "    except AssertionError:\n"
+        "        return None\n",
+        encoding="utf-8",
+    )
+    manifest = module.build_collection_manifest(
+        [nodeid], ["ubuntu-latest-py3.11"], source_commit="a" * 40
+    )
+    junit = tmp_path / "rejected-hook.xml"
+
+    returncode = module.run_pytest_with_trusted_evidence(
+        tmp_path,
+        manifest,
+        junit,
+        pytest_args=["-q"],
+    )
+    evidence = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert returncode != 0
+    assert evidence["status"] == "failed"
+    assert evidence["reason"] == "non_success_terminal_state"
+
+
 def test_baseline_digest_validation_rejects_stale_payload() -> None:
     """候选 baseline 内容变化后未重算 digest 时必须 fail closed。"""
     module = _load_module()

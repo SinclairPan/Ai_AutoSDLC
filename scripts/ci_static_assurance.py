@@ -27,6 +27,14 @@ LINEAGE_SCHEMA = "ci-test-lineage-v1"
 CELL_EVIDENCE_SCHEMA = "ci-cell-evidence-v1"
 AGGREGATE_SCHEMA = "ci-assurance-report-v1"
 DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q --ignore=tests/e2e/stage_review"
+CANDIDATE_OUTCOME_HOOKS = (
+    "pytest_fixture_setup",
+    "pytest_pyfunc_call",
+    "pytest_runtest_call",
+    "pytest_runtest_protocol",
+    "pytest_runtest_setup",
+    "pytest_runtest_teardown",
+)
 DEFAULT_CELLS = tuple(
     f"{os_name}-py{python_version}"
     for os_name in ("ubuntu-latest", "macos-latest", "windows-latest")
@@ -742,7 +750,37 @@ def _run_pytest_worker(root: Path, pytest_args: Sequence[str], connection) -> No
         def pytest_sessionstart(self, session):
             result = yield
 
+            def candidate_hook_sources(hook_name, implementations) -> list[str]:
+                prohibited: list[str] = []
+                for implementation in implementations:
+                    function = implementation.function
+                    code = getattr(function, "__code__", None)
+                    if code is None:
+                        continue
+                    source = Path(code.co_filename)
+                    if not source.is_absolute():
+                        source = root / source
+                    try:
+                        relative = source.resolve().relative_to(root)
+                    except ValueError:
+                        continue
+                    if relative.parts[:1] in {
+                        (".venv",),
+                        ("trusted-base",),
+                        ("trusted-runner",),
+                    }:
+                        continue
+                    prohibited.append(f"{hook_name}:{relative.as_posix()}")
+                return sorted(set(prohibited))
+
             def before_hook(hook_name, hook_impls, kwargs) -> None:
+                if hook_name in CANDIDATE_OUTCOME_HOOKS:
+                    prohibited = candidate_hook_sources(hook_name, hook_impls)
+                    if prohibited:
+                        raise pytest.UsageError(
+                            "candidate outcome hooks are prohibited: "
+                            + ", ".join(prohibited)
+                        )
                 if hook_name != "pytest_runtest_makereport":
                     return
                 item = kwargs["item"]
