@@ -16,7 +16,75 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-assurance-policy:
+    name: Resolve Release Assurance Policy
+    runs-on: ubuntu-latest
+    outputs:
+      assurance_required: ${{ steps.policy.outputs.assurance_required }}
+      authority_ref: ${{ steps.policy.outputs.authority_ref }}
+    steps:
+      - name: Checkout exact release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.tag }}
+          fetch-depth: 0
+
+      - name: Resolve static assurance availability
+        id: policy
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          LEGACY_RELEASE_TAGS: "v1.0.1 v1.0.2"
+        run: |
+          set -euo pipefail
+          required_assets=(
+            .github/ci/fast-gate-tests.txt
+            .github/ci/test-baseline.json
+            .github/ci/test-lineage.json
+            scripts/ci_static_assurance.py
+          )
+          missing_assets=()
+          for asset in "${required_assets[@]}"; do
+            if [[ ! -f "${asset}" ]]; then
+              missing_assets+=("${asset}")
+            fi
+          done
+
+          if [[ "${#missing_assets[@]}" -eq 0 ]]; then
+            authority_ref="$(git rev-parse "HEAD^1")"
+            echo "assurance_required=true" >> "${GITHUB_OUTPUT}"
+            echo "authority_ref=${authority_ref}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          if [[ " ${LEGACY_RELEASE_TAGS} " == *" ${RELEASE_TAG} "* ]]; then
+            echo "assurance_required=false" >> "${GITHUB_OUTPUT}"
+            echo "${RELEASE_TAG} predates static assurance; preserving its original rebuild path."
+            exit 0
+          fi
+
+          echo "Release tag ${RELEASE_TAG} is missing required static assurance assets:" >&2
+          printf ' - %s\n' "${missing_assets[@]}" >&2
+          exit 1
+
+  release-assurance:
+    needs: release-assurance-policy
+    if: needs.release-assurance-policy.outputs.assurance_required == 'true'
+    uses: ./.github/workflows/compatibility-gate.yml
+    with:
+      candidate_ref: ${{ inputs.tag }}
+      authority_ref: ${{ needs.release-assurance-policy.outputs.authority_ref }}
+      force_full: true
+
   build-smoke-candidate:
+    needs: [release-assurance-policy, release-assurance]
+    if: >-
+      always() &&
+      needs.release-assurance-policy.result == 'success' &&
+      (
+        needs.release-assurance-policy.outputs.assurance_required == 'false' ||
+        needs.release-assurance.result == 'success'
+      )
     name: ${{ matrix.asset_os }} ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40

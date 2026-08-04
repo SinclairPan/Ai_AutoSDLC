@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import yaml
@@ -730,27 +731,203 @@ def test_reviewer_isolation_workflow_requires_real_mode_specific_evidence() -> N
     assert "pytest.mark.xfail" not in workflow
 
 
-def test_compatibility_gate_delegates_real_isolation_e2e_to_dedicated_gate() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
+def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
+    workflow_path = _WORKFLOWS_DIR / "compatibility-gate.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    triggers = workflow[True]
 
+    assert {
+        "pull_request",
+        "push",
+        "merge_group",
+        "workflow_dispatch",
+        "workflow_call",
+        "schedule",
+    } <= set(triggers)
+    assert triggers["pull_request"]["types"] == [
+        "opened",
+        "synchronize",
+        "reopened",
+        "ready_for_review",
+        "converted_to_draft",
+    ]
+    assert triggers["workflow_call"]["inputs"]["authority_ref"] == {
+        "description": "Historical authority ref for release assurance.",
+        "required": False,
+        "type": "string",
+        "default": "",
+    }
+    jobs = workflow["jobs"]
+    assert jobs["fast-gate"]["runs-on"] == "ubuntu-latest"
+    assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
+        "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
+        "python-version": ["3.11", "3.12", "3.13", "3.14"],
+    }
     assert (
-        "timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 120 }}"
-        in workflow
+        jobs["cross-platform-validation"]["if"]
+        == "needs.authority-check.outputs.full-assurance-required == 'true'"
     )
-    assert "uv run pytest -q --ignore=tests/e2e/stage_review" in workflow
-    assert "--durations=50" in workflow
-    assert "--junitxml=compatibility-results.xml" in workflow
-    assert "if: always()" in workflow
     assert (
-        "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6"
-        in workflow
+        jobs["windows-shell-smoke"]["if"]
+        == "needs.authority-check.outputs.full-assurance-required == 'true'"
     )
-    assert "name: compatibility-${{ matrix.os }}-py${{ matrix.python-version }}" in workflow
-    assert "path: compatibility-results.xml" in workflow
+    assert jobs["merge-assurance"]["if"] == "always()"
+    assert jobs["compatibility-gate-result"]["name"] == "Compatibility Gate Result"
+
+
+def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Checkout protected base authority" in workflow
+    assert "inputs.authority_ref" in workflow
+    assert "path: trusted-base" in workflow
+    assert "trusted-base/scripts/ci_static_assurance.py" in workflow
+    assert "Checkout protected runtime authority" not in workflow
+    assert "trusted-runner" not in workflow
+    assert "authority_unavailable" in workflow
+    assert "protected_ci_change" in workflow
+    assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
+    assert 'assurance_lineage=".github/ci/test-lineage.json"' in workflow
+    assert 'assurance_lineage="trusted-base/.github/ci/test-lineage.json"' in workflow
+    assert '"${assurance_script}" collect' in workflow
+    assert 'python "${assurance_script}" aggregate' in workflow
+    assert '--lineage "${assurance_lineage}"' in workflow
+    assert "verify-transition" in workflow
+    assert "--ignore=tests/e2e/stage_review" in workflow
+    assert '"${assurance_script}" run-pytest' not in workflow
+    assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
+    assert "actions/upload-artifact@v7" in workflow
     assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
     assert "continue-on-error" not in workflow
-    assert "uses: ./.github/workflows/reviewer-isolation.yml" not in workflow
+
+    parsed = yaml.safe_load(workflow)
+    matrix_steps = parsed["jobs"]["cross-platform-validation"]["steps"]
+    assert all(
+        "cell-evidence" not in str(step.get("run", "")) for step in matrix_steps
+    )
+    full_pytest_step = next(
+        step for step in matrix_steps if step.get("name") == "Run full pytest suite"
+    )
+    assert "uv run pytest" in full_pytest_step["run"]
+    assert (
+        "--junitxml=ci-evidence/${CELL}/compatibility-results.xml"
+        in full_pytest_step["run"]
+    )
+    step_names = [step.get("name") for step in matrix_steps]
+    assert step_names.index("Doctor") < step_names.index("Run full pytest suite")
+    merge_steps = parsed["jobs"]["merge-assurance"]["steps"]
+    assert all(
+        "uv run python" not in str(step.get("run", "")) for step in merge_steps
+    )
+    gate_script = merge_steps[0]["run"]
+    assert "needs.cross-platform-validation.result" in gate_script
+    aggregate_script = next(
+        step["run"]
+        for step in merge_steps
+        if step.get("name") == "Rebuild, verify, and aggregate full evidence"
+    )
+    candidate_lineage_validation = (
+        'python "${assurance_script}" validate-lineage \\\n'
+        "  --lineage .github/ci/test-lineage.json"
+    )
+    assert candidate_lineage_validation in aggregate_script
+    authority_branches = [
+        index
+        for index in range(len(aggregate_script))
+        if aggregate_script.startswith(
+            'if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]', index
+        )
+    ]
+    assert len(authority_branches) == 2
+    validation_index = aggregate_script.index(candidate_lineage_validation)
+    assert authority_branches[0] < validation_index < authority_branches[1]
+    assert aggregate_script.index('assurance_script="trusted-base/') < validation_index
+    assert 'python "${assurance_script}" cell-evidence' in aggregate_script
+    assert "started-at.txt" in aggregate_script
+    assert "finished-at.txt" in aggregate_script
+    assert '--baseline .github/ci/test-baseline.json' in aggregate_script
+
+
+def test_compatibility_gate_push_uses_pre_push_authority() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "github.event.before" in workflow
+
+
+def test_compatibility_gate_pull_request_executes_merge_commit() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    merge_candidate_ref = "inputs.candidate_ref || github.sha"
+    assert workflow.count(merge_candidate_ref) == 5
+    assert "github.event.pull_request.head.sha" not in workflow
+
+
+def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> None:
+    workflow_path = _WORKFLOWS_DIR / "release-build.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert "v1.0.1 v1.0.2" in workflow_text
+    assert jobs["release-assurance-policy"]["outputs"] == {
+        "assurance_required": "${{ steps.policy.outputs.assurance_required }}",
+        "authority_ref": "${{ steps.policy.outputs.authority_ref }}",
+    }
+    assert jobs["release-assurance"] == {
+        "needs": "release-assurance-policy",
+        "if": "needs.release-assurance-policy.outputs.assurance_required == 'true'",
+        "uses": "./.github/workflows/compatibility-gate.yml",
+        "with": {
+            "candidate_ref": "${{ inputs.tag }}",
+            "authority_ref": "${{ needs.release-assurance-policy.outputs.authority_ref }}",
+            "force_full": True,
+        },
+    }
+    assert 'git rev-parse "HEAD^1"' in workflow_text
+    build_job = jobs["build-smoke-candidate"]
+    assert build_job["needs"] == [
+        "release-assurance-policy",
+        "release-assurance",
+    ]
+    assert "always()" in build_job["if"]
+    assert "needs.release-assurance-policy.result == 'success'" in build_job["if"]
+    assert "needs.release-assurance.result == 'success'" in build_job["if"]
+
+
+def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "scripts/ci_static_assurance.py" not in pyproject
+    assert (_REPO_ROOT / ".github" / "ci" / "fast-gate-tests.txt").is_file()
+    assert (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").is_file()
+
+
+def test_portable_self_update_cases_are_not_skip_authorized() -> None:
+    baseline = json.loads(
+        (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    windows_path_case = (
+        "sha256:20b2547fdb2751fb8666e08640e7c5f7218bd320523d866ab3e691f0428247ee"
+    )
+    posix_path_case = (
+        "sha256:4a3dce9eda68c1ab59b2e00ad7d8cb111a36dc64aed7df1017f923b293a9ec88"
+    )
+
+    assert {windows_path_case, posix_path_case} <= set(baseline["case_ids"])
+    for cell, allowed_skips in baseline["allowed_skip_case_ids_by_cell"].items():
+        if cell.startswith(("macos-", "ubuntu-")):
+            assert windows_path_case not in allowed_skips
+        if cell.startswith("windows-"):
+            assert posix_path_case not in allowed_skips
 
 
 def test_activation_evidence_workflow_owns_its_trust_root_and_real_inputs() -> None:

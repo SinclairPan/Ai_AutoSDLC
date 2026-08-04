@@ -2,12 +2,32 @@ name: Compatibility Gate
 
 on:
   pull_request:
-    branches:
-      - main
+    branches: [main]
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
   push:
-    branches:
-      - main
+    branches: [main]
+  merge_group:
+    types: [checks_requested]
   workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_call:
+    inputs:
+      candidate_ref:
+        description: Candidate ref for release assurance.
+        required: false
+        type: string
+        default: ""
+      authority_ref:
+        description: Historical authority ref for release assurance.
+        required: false
+        type: string
+        default: ""
+      force_full:
+        description: Force the complete OS and Python assurance matrix.
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -18,31 +38,159 @@ env:
   PYTHONIOENCODING: utf-8
 
 concurrency:
-  group: compatibility-gate-${{ github.event.pull_request.number || github.ref }}
+  group: compatibility-gate-${{ github.event.pull_request.number || inputs.candidate_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
+  authority-check:
+    name: Resolve Static Assurance Authority
+    runs-on: ubuntu-latest
+    outputs:
+      authority-available: ${{ steps.decision.outputs.authority_available }}
+      base-sha: ${{ steps.decision.outputs.base_sha }}
+      candidate-sha: ${{ steps.decision.outputs.candidate_sha }}
+      full-assurance-required: ${{ steps.decision.outputs.full_assurance_required }}
+      reason: ${{ steps.decision.outputs.reason }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+          fetch-depth: 0
+
+      - name: Checkout protected base authority
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'main' }}
+          path: trusted-base
+          fetch-depth: 1
+
+      - name: Resolve static assurance mode
+        id: decision
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_DRAFT: ${{ github.event.pull_request.draft || false }}
+          FORCE_FULL: ${{ inputs.force_full || false }}
+          EVENT_BASE_SHA: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || '' }}
+        run: |
+          set -euo pipefail
+          candidate_sha="$(git rev-parse HEAD)"
+          base_sha="${EVENT_BASE_SHA}"
+          if [[ -z "${base_sha}" ]]; then
+            base_sha="$(git -C trusted-base rev-parse HEAD)"
+          fi
+
+          authority_available=false
+          if [[ -f trusted-base/scripts/ci_static_assurance.py \
+             && -f trusted-base/.github/ci/test-baseline.json \
+             && -f trusted-base/.github/ci/test-lineage.json ]]; then
+            authority_available=true
+          fi
+
+          protected_paths_changed=false
+          if ! git diff --quiet "${base_sha}" "${candidate_sha}" -- \
+            .github/workflows/compatibility-gate.yml \
+            .github/workflows/release-build.yml \
+            .github/ci \
+            scripts/ci_static_assurance.py; then
+            protected_paths_changed=true
+            echo "Protected CI change detected; reason=protected_ci_change"
+          fi
+
+          echo "authority_available=${authority_available}" >> "${GITHUB_OUTPUT}"
+          echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
+          echo "candidate_sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
+
+          if [[ "${authority_available}" != "true" ]]; then
+            echo "full_assurance_required=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=authority_unavailable" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+
+          python trusted-base/scripts/ci_static_assurance.py decide-mode \
+            --event-name "${EVENT_NAME}" \
+            --pull-request-draft "${PR_DRAFT}" \
+            --authority-available true \
+            --protected-paths-changed "${protected_paths_changed}" \
+            --force-full "${FORCE_FULL}" \
+            --github-output "${GITHUB_OUTPUT}"
+
+  fast-gate:
+    name: Fast Gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Validate public identity and lint
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run python scripts/validate_public_release_identity.py .
+          uv run ruff check .
+
+      - name: Run fixed fast suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t fast_tests < <(grep -Ev '^\s*(#|$)' .github/ci/fast-gate-tests.txt)
+          if [[ "${#fast_tests[@]}" -eq 0 ]]; then
+            echo "Static fast suite is empty." >&2
+            exit 1
+          fi
+          uv run pytest -q "${fast_tests[@]}" --junitxml=fast-gate-results.xml
+
+      - name: Upload fast gate evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: fast-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          path: fast-gate-results.xml
+          if-no-files-found: error
+
   cross-platform-validation:
     name: Cross Platform Validation (${{ matrix.os }}, Python ${{ matrix.python-version }})
+    needs: authority-check
+    if: needs.authority-check.outputs.full-assurance-required == 'true'
     runs-on: ${{ matrix.os }}
     timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 120 }}
-
     strategy:
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
-        python-version:
-          - "3.11"
-          - "3.12"
-          - "3.13"
-          - "3.14"
-
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
+    env:
+      CELL: ${{ matrix.os }}-py${{ matrix.python-version }}
+      CANDIDATE_SHA: ${{ needs.authority-check.outputs.candidate-sha }}
     steps:
-      - name: Checkout
+      - name: Checkout candidate
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+
+      - name: Checkout protected base authority
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.authority-check.outputs.base-sha }}
+          path: trusted-base
+          persist-credentials: false
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -50,40 +198,70 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        run: python -m pip install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
 
       - name: Sync dependencies
         run: uv sync --locked
 
+      - name: Select protected verifier and collect exact members
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "ci-evidence/${CELL}"
+          assurance_script="scripts/ci_static_assurance.py"
+          if [[ "${{ needs.authority-check.outputs.authority-available }}" == "true" ]]; then
+            assurance_script="trusted-base/scripts/ci_static_assurance.py"
+          fi
+          uv run python "${assurance_script}" collect \
+            --root . \
+            --source-commit "${CANDIDATE_SHA}" \
+            --cell "${CELL}" \
+            --output "ci-evidence/${CELL}/collection-manifest.json"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "ci-evidence/${CELL}/started-at.txt"
+
       - name: Doctor
         run: uv run ai-sdlc doctor
 
-      - name: Pytest
-        run: uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 --junitxml=compatibility-results.xml
+      - name: Run full pytest suite
+        shell: bash
+        run: |
+          # 006 validates member identity and result completeness; candidate
+          # test bodies remain inside the repository code-review trust boundary.
+          uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
+            --junitxml=ci-evidence/${CELL}/compatibility-results.xml
 
-      - name: Upload compatibility test evidence
+      - name: Record raw cell completion
         if: always()
-        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
+        shell: bash
+        run: |
+          set -euo pipefail
+          date -u +%Y-%m-%dT%H:%M:%SZ > "ci-evidence/${CELL}/finished-at.txt"
+
+      - name: Upload compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
           name: compatibility-${{ matrix.os }}-py${{ matrix.python-version }}
-          path: compatibility-results.xml
+          path: ci-evidence/${{ env.CELL }}
           if-no-files-found: error
 
   windows-shell-smoke:
     name: Windows Shell Smoke (${{ matrix.shell }})
+    needs: authority-check
+    if: needs.authority-check.outputs.full-assurance-required == 'true'
     runs-on: windows-latest
     timeout-minutes: 30
-
     strategy:
       fail-fast: false
       matrix:
-        shell:
-          - pwsh
-          - cmd
-
+        shell: [pwsh, cmd]
     steps:
-      - name: Checkout
+      - name: Checkout candidate
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -106,28 +284,148 @@ jobs:
           uv sync --locked || exit /b 1
           uv run ai-sdlc doctor || exit /b 1
 
+  merge-assurance:
+    name: Merge Assurance
+    runs-on: ubuntu-latest
+    needs: [authority-check, fast-gate, cross-platform-validation, windows-shell-smoke]
+    if: always()
+    steps:
+      - name: Require fast gate and static authority decision
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${{ needs.fast-gate.result }}" != "success" ]]; then
+            echo "Fast Gate did not succeed." >&2
+            exit 1
+          fi
+          if [[ "${{ needs.authority-check.result }}" != "success" ]]; then
+            echo "Static authority resolution did not succeed." >&2
+            exit 1
+          fi
+          if [[ "${{ needs.authority-check.outputs.full-assurance-required }}" == "true" \
+             && "${{ needs.cross-platform-validation.result }}" != "success" ]]; then
+            echo "Cross-platform validation did not succeed." >&2
+            exit 1
+          fi
+
+      - name: Checkout candidate
+        if: needs.authority-check.outputs.full-assurance-required == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+
+      - name: Checkout protected base authority
+        if: needs.authority-check.outputs.full-assurance-required == 'true'
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.authority-check.outputs.base-sha }}
+          path: trusted-base
+
+      - name: Download full assurance evidence
+        if: needs.authority-check.outputs.full-assurance-required == 'true'
+        uses: actions/download-artifact@v7
+        with:
+          pattern: compatibility-*
+          path: downloaded-evidence
+          merge-multiple: false
+
+      - name: Rebuild, verify, and aggregate full evidence
+        if: needs.authority-check.outputs.full-assurance-required == 'true'
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authority-check.outputs.candidate-sha }}
+          BASE_SHA: ${{ needs.authority-check.outputs.base-sha }}
+          AUTHORITY_AVAILABLE: ${{ needs.authority-check.outputs.authority-available }}
+        run: |
+          set -euo pipefail
+          assurance_script="scripts/ci_static_assurance.py"
+          assurance_lineage=".github/ci/test-lineage.json"
+          if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]; then
+            assurance_script="trusted-base/scripts/ci_static_assurance.py"
+            assurance_lineage="trusted-base/.github/ci/test-lineage.json"
+          fi
+
+          python "${assurance_script}" validate-lineage \
+            --lineage .github/ci/test-lineage.json
+
+          if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]; then
+            if ! cmp -s trusted-base/.github/ci/test-baseline.json .github/ci/test-baseline.json; then
+              python "${assurance_script}" verify-transition \
+                --trusted trusted-base/.github/ci/test-baseline.json \
+                --candidate .github/ci/test-baseline.json \
+                --lineage trusted-base/.github/ci/test-lineage.json \
+                --output transition-report.json
+            fi
+          else
+            genesis_base="$(python -c 'import json; print(json.load(open(".github/ci/test-baseline.json", encoding="utf-8")).get("genesis_base_commit", ""))')"
+            if [[ "${genesis_base}" != "${BASE_SHA}" ]]; then
+              echo "Genesis baseline is not bound to the protected base." >&2
+              exit 1
+            fi
+          fi
+
+          baseline_digest="$(python -c 'import json; print(json.load(open(".github/ci/test-baseline.json", encoding="utf-8"))["baseline_digest"])')"
+          cell_args=()
+          for os_name in ubuntu-latest macos-latest windows-latest; do
+            for python_version in 3.11 3.12 3.13 3.14; do
+              cell="${os_name}-py${python_version}"
+              evidence_dir="downloaded-evidence/compatibility-${cell}"
+              started_at="$(tr -d '\r\n' < "${evidence_dir}/started-at.txt")"
+              finished_at="$(tr -d '\r\n' < "${evidence_dir}/finished-at.txt")"
+              python "${assurance_script}" cell-evidence \
+                --manifest "${evidence_dir}/collection-manifest.json" \
+                --baseline .github/ci/test-baseline.json \
+                --junit "${evidence_dir}/compatibility-results.xml" \
+                --cell "${cell}" \
+                --source-commit "${CANDIDATE_SHA}" \
+                --started-at "${started_at}" \
+                --finished-at "${finished_at}" \
+                --output "${evidence_dir}/cell-evidence.json"
+              cell_args+=(--expected-cell "${cell}")
+            done
+          done
+          python "${assurance_script}" aggregate \
+            --evidence-root downloaded-evidence \
+            --candidate-baseline .github/ci/test-baseline.json \
+            --lineage "${assurance_lineage}" \
+            "${cell_args[@]}" \
+            --candidate-commit "${CANDIDATE_SHA}" \
+            --baseline-digest "${baseline_digest}" \
+            --fast-gate-status success \
+            --output assurance-report.json
+
+      - name: Report selected static layer
+        shell: bash
+        run: |
+          {
+            echo "## Static CI Layer"
+            echo "- reason: ${{ needs.authority-check.outputs.reason }}"
+            echo "- full_assurance_required: ${{ needs.authority-check.outputs.full-assurance-required }}"
+            echo "- candidate_commit: ${{ needs.authority-check.outputs.candidate-sha }}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Require Windows shell assurance
+        if: always() && needs.authority-check.outputs.full-assurance-required == 'true'
+        shell: bash
+        run: |
+          if [[ "${{ needs.windows-shell-smoke.result }}" != "success" ]]; then
+            echo "Windows shell assurance did not succeed." >&2
+            exit 1
+          fi
+
   compatibility-gate-result:
     name: Compatibility Gate Result
     runs-on: ubuntu-latest
-    needs:
-      - cross-platform-validation
-      - windows-shell-smoke
+    needs: [fast-gate, merge-assurance]
     if: always()
-
     steps:
-      - name: Check compatibility gate inputs
+      - name: Check compatibility gate result
+        shell: bash
         run: |
-          echo "cross-platform-validation: ${{ needs.cross-platform-validation.result }}"
-          echo "windows-shell-smoke: ${{ needs.windows-shell-smoke.result }}"
-
-          if [ "${{ needs.cross-platform-validation.result }}" != "success" ]; then
-            echo "cross-platform-validation did not succeed."
+          set -euo pipefail
+          if [[ "${{ needs.fast-gate.result }}" != "success" \
+             || "${{ needs.merge-assurance.result }}" != "success" ]]; then
+            echo "Compatibility gate inputs did not succeed." >&2
             exit 1
           fi
-
-          if [ "${{ needs.windows-shell-smoke.result }}" != "success" ]; then
-            echo "windows-shell-smoke did not succeed."
-            exit 1
-          fi
-
           echo "Compatibility gate inputs succeeded."

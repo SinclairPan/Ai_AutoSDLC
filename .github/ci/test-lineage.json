@@ -1,0 +1,9 @@
+{
+  "mappings": [
+    {
+      "from_case_id": "sha256:71a415130de1f02634c66fc4a1ab16de0a58d72b639455098b96a18ac12a441c",
+      "to_case_id": "sha256:3df7e3acdb672f10f739392c1ff2b9398278e3447bf868126b9d59dbcb021142"
+    }
+  ],
+  "schema_version": "ci-test-lineage-v1"
+}
