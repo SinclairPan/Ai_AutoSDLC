@@ -829,6 +829,22 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
         for step in merge_steps
         if step.get("name") == "Rebuild, verify, and aggregate full evidence"
     )
+    candidate_lineage_validation = (
+        'python "${assurance_script}" validate-lineage \\\n'
+        "  --lineage .github/ci/test-lineage.json"
+    )
+    assert candidate_lineage_validation in aggregate_script
+    authority_branches = [
+        index
+        for index in range(len(aggregate_script))
+        if aggregate_script.startswith(
+            'if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]', index
+        )
+    ]
+    assert len(authority_branches) == 2
+    validation_index = aggregate_script.index(candidate_lineage_validation)
+    assert authority_branches[0] < validation_index < authority_branches[1]
+    assert aggregate_script.index('assurance_script="trusted-base/') < validation_index
     assert 'python "${assurance_script}" cell-evidence' in aggregate_script
     assert "started-at.txt" in aggregate_script
     assert "finished-at.txt" in aggregate_script

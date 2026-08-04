@@ -343,6 +343,12 @@ jobs:
           if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]; then
             assurance_script="trusted-base/scripts/ci_static_assurance.py"
             assurance_lineage="trusted-base/.github/ci/test-lineage.json"
+          fi
+
+          python "${assurance_script}" validate-lineage \
+            --lineage .github/ci/test-lineage.json
+
+          if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]; then
             if ! cmp -s trusted-base/.github/ci/test-baseline.json .github/ci/test-baseline.json; then
               python "${assurance_script}" verify-transition \
                 --trusted trusted-base/.github/ci/test-baseline.json \

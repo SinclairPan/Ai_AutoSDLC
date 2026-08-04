@@ -332,6 +332,12 @@ def _protected_lineage_mapping(
     return dict(zip(from_ids, to_ids, strict=True))
 
 
+def validate_lineage_contract(lineage: Mapping[str, object]) -> dict[str, object]:
+    if _protected_lineage_mapping(lineage) is None:
+        return {"status": "failed", "reason": "lineage_contract_invalid"}
+    return {"status": "success", "reason": "lineage_contract_valid"}
+
+
 def verify_baseline_transition(
     trusted: Mapping[str, object],
     candidate: Mapping[str, object],
@@ -1010,6 +1016,9 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--pytest-arg", action="append", default=[])
     baseline.add_argument("--output", type=Path, required=True)
 
+    lineage = subparsers.add_parser("validate-lineage")
+    lineage.add_argument("--lineage", type=Path, required=True)
+
     transition = subparsers.add_parser("verify-transition")
     transition.add_argument("--trusted", type=Path, required=True)
     transition.add_argument("--candidate", type=Path, required=True)
@@ -1099,6 +1108,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output.write(f"reason={result['reason']}\n")
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
+
+        if args.command == "validate-lineage":
+            result = validate_lineage_contract(_read_json(args.lineage))
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0 if result["status"] == "success" else 1
 
         if args.command == "verify-transition":
             result = verify_baseline_transition(

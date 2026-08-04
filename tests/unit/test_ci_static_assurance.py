@@ -319,6 +319,29 @@ def test_protected_one_to_one_lineage_allows_member_conserving_rename() -> None:
     assert result["removed_case_ids"] == []
 
 
+def test_candidate_lineage_contract_rejects_malformed_mapping() -> None:
+    module = _load_module()
+
+    valid = module.validate_lineage_contract(
+        {
+            "schema_version": "ci-test-lineage-v1",
+            "mappings": [{"from_case_id": "case:old", "to_case_id": "case:new"}],
+        }
+    )
+    malformed = module.validate_lineage_contract(
+        {
+            "schema_version": "ci-test-lineage-v1",
+            "mappings": [
+                {"from_case_id": "case:a", "to_case_id": "case:new"},
+                {"from_case_id": "case:b", "to_case_id": "case:new"},
+            ],
+        }
+    )
+
+    assert valid == {"status": "success", "reason": "lineage_contract_valid"}
+    assert malformed == {"status": "failed", "reason": "lineage_contract_invalid"}
+
+
 @pytest.mark.parametrize(
     ("lineage", "reason"),
     [
