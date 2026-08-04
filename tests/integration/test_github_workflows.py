@@ -283,8 +283,8 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     assert "adapter status" in workflow
     assert "run --dry-run" in workflow
     assert "actions/upload-artifact@v7" in workflow
-    assert "gh release upload" in workflow
-    assert '"${asset}.sha256"' in workflow
+    assert "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert ".${{ matrix.archive }}.sha256" in workflow
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in workflow
     assert (
         "-NoProfile -ExecutionPolicy Bypass -File .\\install_offline.ps1 -AddToPath"
@@ -309,6 +309,19 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     posix_verify = workflow.index("--require-checksums", posix_extract)
     posix_install = workflow.index("./install_offline.sh --add-to-path", posix_extract)
     assert posix_hash < posix_extract < posix_verify < posix_install
+
+
+def test_release_build_emergency_freeze_removes_release_write_authority() -> None:
+    workflow = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+
+    assert "permissions:\n  contents: read" in workflow
+    assert "upload_to_release:" not in workflow
+    assert "GH_TOKEN:" not in workflow
+    assert "gh release " not in workflow
+    assert "--clobber" not in workflow
+    assert "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert "publish_blocked" in workflow
+    assert "writer_isolation_unavailable" in workflow
 
 
 def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
