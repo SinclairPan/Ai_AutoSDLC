@@ -4,27 +4,19 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag that will receive the platform assets.
+        description: Release tag used to build the platform candidates.
         required: true
         default: v1.0.2
-      upload_to_release:
-        description: Upload smoke-passed assets to the existing GitHub Release.
-        required: true
-        default: "true"
-        type: choice
-        options:
-          - "true"
-          - "false"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-build-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  build-smoke-upload:
+  build-smoke-candidate:
     name: ${{ matrix.asset_os }} ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
@@ -47,7 +39,6 @@ jobs:
 
     env:
       RELEASE_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
 
@@ -322,25 +313,29 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: release-build-${{ matrix.asset_os }}-${{ matrix.archive }}-evidence
+          name: release-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.archive }}-evidence
           path: ${{ runner.temp }}/ai-sdlc-release-build-evidence
           if-no-files-found: error
 
-      - name: Upload smoke-passed asset to release
-        if: inputs.upload_to_release == 'true'
+      - name: Upload smoke-passed candidate asset
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.asset_machine }}
+          path: |
+            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}
+            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}.sha256
+          if-no-files-found: error
+
+      - name: Report emergency publish freeze
+        if: always()
         shell: bash
         run: |
-          set -euo pipefail
-          release_version="${RELEASE_TAG#v}"
-          asset_base="dist-offline/ai-sdlc-offline-${release_version}-${AI_SDLC_RELEASE_ASSET_OS}-${AI_SDLC_RELEASE_ASSET_MACHINE}"
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            asset="${asset_base}.zip"
-          else
-            asset="${asset_base}.tar.gz"
-          fi
-          if [[ ! -f "${asset}" || ! -f "${asset}.sha256" ]]; then
-            echo "Release asset or SHA256 sidecar is missing: ${asset}" >&2
-            exit 1
-          fi
-          gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null
-          gh release upload "${RELEASE_TAG}" "${asset}" "${asset}.sha256" --clobber --repo "${GITHUB_REPOSITORY}"
+          {
+            echo "## Emergency Publish Freeze"
+            echo "- result: publish_blocked"
+            echo "- reason: writer_isolation_unavailable"
+            echo "- candidate_status: ${{ job.status }}"
+            echo "- candidate_source_tag: ${RELEASE_TAG}"
+            echo "- candidate_artifact: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.asset_machine }}"
+            echo "- next: keep the GitHub Release in Draft until the permanent Release Truth path authorizes publication"
+          } >> "${GITHUB_STEP_SUMMARY}"
