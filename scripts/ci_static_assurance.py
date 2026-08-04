@@ -376,11 +376,6 @@ def verify_baseline_transition(
     candidate_skips = _allowed_skip_contract(candidate, candidate_cell_cases)
     if trusted_skips is None or candidate_skips is None:
         return _transition_failure("allowed_skip_contract_invalid")
-    if any(
-        not candidate_skips[cell].issubset(trusted_skips[cell])
-        for cell in trusted_cells
-    ):
-        return _transition_failure("allowed_skip_expanded")
 
     if protected_lineage.get("schema_version") != LINEAGE_SCHEMA:
         return _transition_failure("lineage_schema_invalid")
@@ -401,11 +396,13 @@ def verify_baseline_transition(
         )
     )
     accepted_pairs: set[tuple[str, str]] = set()
+    accepted_pairs_by_cell: dict[str, dict[str, str]] = {}
     for cell in trusted_cells:
         trusted_set = trusted_cell_cases[cell]
         candidate_set = candidate_cell_cases[cell]
         missing = trusted_set - candidate_set
         added = candidate_set - trusted_set
+        cell_pairs: dict[str, str] = {}
         for source in sorted(missing):
             target = lineage_by_source.get(source)
             if not target or target not in added:
@@ -413,6 +410,16 @@ def verify_baseline_transition(
                     "unauthorized_negative_delta", removed_case_ids=all_missing
                 )
             accepted_pairs.add((source, target))
+            cell_pairs[source] = target
+        accepted_pairs_by_cell[cell] = cell_pairs
+
+    for cell in trusted_cells:
+        permitted_skips = {
+            accepted_pairs_by_cell[cell].get(case_id, case_id)
+            for case_id in trusted_skips[cell]
+        }
+        if not candidate_skips[cell].issubset(permitted_skips):
+            return _transition_failure("allowed_skip_expanded")
 
     accepted_renames = [
         {"from_case_id": source, "to_case_id": target}

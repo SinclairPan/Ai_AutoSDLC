@@ -319,6 +319,35 @@ def test_protected_one_to_one_lineage_allows_member_conserving_rename() -> None:
     assert result["removed_case_ids"] == []
 
 
+def test_protected_rename_carries_existing_skip_allowance_to_target() -> None:
+    """合法 rename 只迁移既有 skip 身份，不应被误判为新增 allowance。"""
+    module = _load_module()
+    trusted, candidate = _transition_baselines(("case:old",), ("case:new",))
+    trusted["allowed_skip_case_ids_by_cell"] = {
+        "ubuntu-latest-py3.11": ["case:old"]
+    }
+    candidate["allowed_skip_case_ids_by_cell"] = {
+        "ubuntu-latest-py3.11": ["case:new"]
+    }
+    _refresh_baseline_digest(trusted)
+    candidate["previous_baseline_digest"] = trusted["baseline_digest"]
+    _refresh_baseline_digest(candidate)
+
+    result = module.verify_baseline_transition(
+        trusted,
+        candidate,
+        {
+            "schema_version": "ci-test-lineage-v1",
+            "mappings": [{"from_case_id": "case:old", "to_case_id": "case:new"}],
+        },
+    )
+
+    assert result["status"] == "success"
+    assert result["renamed_case_ids"] == [
+        {"from_case_id": "case:old", "to_case_id": "case:new"}
+    ]
+
+
 def test_candidate_lineage_contract_rejects_malformed_mapping() -> None:
     module = _load_module()
 
