@@ -65,10 +65,13 @@ def _validated_baseline_digest(
 
 
 def _normalize_nodeid(raw: str) -> str:
-    nodeid = raw.strip().replace("\\", "/")
-    if not nodeid or "::" not in nodeid:
+    nodeid = raw.strip()
+    path, separator, scope = nodeid.partition("::")
+    if not path or not separator or not scope:
         raise AssuranceError(f"invalid pytest nodeid: {raw!r}")
-    return nodeid
+    # 仅路径使用跨平台分隔符；scope 和参数 ID 必须保持 pytest 原始身份。
+    normalized_path = path.replace("\\", "/")
+    return f"{normalized_path}::{scope}"
 
 
 def _stable_case_id(nodeid: str, namespace: str = CASE_NAMESPACE) -> str:
@@ -700,7 +703,7 @@ def build_cell_evidence(
     testcase_keys = [
         (
             testcase.get("classname", ""),
-            testcase.get("name", "").replace("\\", "/"),
+            testcase.get("name", ""),
         )
         for testcase in testcases
     ]

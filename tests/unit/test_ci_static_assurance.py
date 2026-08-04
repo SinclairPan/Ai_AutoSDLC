@@ -491,6 +491,38 @@ def test_cell_evidence_preserves_separator_inside_parameter_id(
     assert result["reason"] == "complete"
 
 
+def test_cell_evidence_preserves_backslashes_inside_parameter_id(
+    tmp_path: Path,
+) -> None:
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        [
+            r"tests\a.py::test_one[dir\leaf]",
+            r"tests\a.py::test_one[dir/leaf]",
+        ],
+        ["windows-latest-py3.11"],
+        source_commit="a" * 40,
+    )
+    junit = tmp_path / "parameterized-backslash.xml"
+    _write_junit(
+        junit,
+        r'<testcase classname="tests.a" name="test_one[dir\leaf]"/>'
+        r'<testcase classname="tests.a" name="test_one[dir/leaf]"/>',
+    )
+
+    result = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="windows-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert result["status"] == "success"
+    assert result["reason"] == "complete"
+
+
 # 删除四个 supervised pytest 对抗测试，原因是其保护目标无法在候选解释器内成立：
 # 退出钩子伪造 JUnit 与候选直接改测试体具有相同信任边界，不再单独承诺阻断。
 # recorder 枚举/改写与报告 Pipe 内省同属不可封闭的同进程能力，不再测试伪隔离。

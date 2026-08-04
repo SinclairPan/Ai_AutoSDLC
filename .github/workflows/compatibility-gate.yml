@@ -55,7 +55,7 @@ jobs:
       - name: Checkout candidate
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.candidate_ref || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.candidate_ref || github.sha }}
           fetch-depth: 0
 
       - name: Checkout protected base authority
@@ -124,7 +124,7 @@ jobs:
       - name: Checkout candidate
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.candidate_ref || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -183,7 +183,7 @@ jobs:
       - name: Checkout candidate
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.candidate_ref || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Checkout protected base authority
         uses: actions/checkout@v6
@@ -261,7 +261,7 @@ jobs:
       - name: Checkout candidate
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.candidate_ref || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -312,7 +312,7 @@ jobs:
         if: needs.authority-check.outputs.full-assurance-required == 'true'
         uses: actions/checkout@v6
         with:
-          ref: ${{ inputs.candidate_ref || github.event.pull_request.head.sha || github.sha }}
+          ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Checkout protected base authority
         if: needs.authority-check.outputs.full-assurance-required == 'true'

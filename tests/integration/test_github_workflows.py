@@ -843,6 +843,16 @@ def test_compatibility_gate_push_uses_pre_push_authority() -> None:
     assert "github.event.before" in workflow
 
 
+def test_compatibility_gate_pull_request_executes_merge_commit() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    merge_candidate_ref = "inputs.candidate_ref || github.sha"
+    assert workflow.count(merge_candidate_ref) == 5
+    assert "github.event.pull_request.head.sha" not in workflow
+
+
 def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> None:
     workflow_path = _WORKFLOWS_DIR / "release-build.yml"
     workflow_text = workflow_path.read_text(encoding="utf-8")
