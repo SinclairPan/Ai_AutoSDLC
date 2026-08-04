@@ -805,16 +805,30 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert "needs.cross-platform-validation.result" in gate_script
 
 
-def test_release_build_requires_reusable_full_release_assurance() -> None:
-    workflow = yaml.safe_load(
-        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
-    )
+def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> None:
+    workflow_path = _WORKFLOWS_DIR / "release-build.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
 
-    assert workflow["jobs"]["release-assurance"] == {
+    assert "v1.0.1 v1.0.2" in workflow_text
+    assert jobs["release-assurance-policy"]["outputs"] == {
+        "assurance_required": "${{ steps.policy.outputs.assurance_required }}"
+    }
+    assert jobs["release-assurance"] == {
+        "needs": "release-assurance-policy",
+        "if": "needs.release-assurance-policy.outputs.assurance_required == 'true'",
         "uses": "./.github/workflows/compatibility-gate.yml",
         "with": {"candidate_ref": "${{ inputs.tag }}", "force_full": True},
     }
-    assert workflow["jobs"]["build-smoke-candidate"]["needs"] == "release-assurance"
+    build_job = jobs["build-smoke-candidate"]
+    assert build_job["needs"] == [
+        "release-assurance-policy",
+        "release-assurance",
+    ]
+    assert "always()" in build_job["if"]
+    assert "needs.release-assurance-policy.result == 'success'" in build_job["if"]
+    assert "needs.release-assurance.result == 'success'" in build_job["if"]
 
 
 def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:
