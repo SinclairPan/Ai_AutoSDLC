@@ -789,11 +789,7 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
     assert 'assurance_lineage=".github/ci/test-lineage.json"' in workflow
     assert 'assurance_lineage="trusted-base/.github/ci/test-lineage.json"' in workflow
-    assert 'assurance_baseline=".github/ci/test-baseline.json"' in workflow
-    assert 'assurance_baseline="trusted-base/.github/ci/test-baseline.json"' not in workflow
     assert '"${assurance_script}" collect' in workflow
-    assert '"${ASSURANCE_SCRIPT}" cell-evidence' in workflow
-    assert '--baseline "${ASSURANCE_BASELINE}"' in workflow
     assert 'python "${assurance_script}" aggregate' in workflow
     assert '--lineage "${assurance_lineage}"' in workflow
     assert "verify-transition" in workflow
@@ -805,12 +801,25 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert "continue-on-error" not in workflow
 
     parsed = yaml.safe_load(workflow)
+    matrix_steps = parsed["jobs"]["cross-platform-validation"]["steps"]
+    assert all(
+        "cell-evidence" not in str(step.get("run", "")) for step in matrix_steps
+    )
     merge_steps = parsed["jobs"]["merge-assurance"]["steps"]
     assert all(
         "uv run python" not in str(step.get("run", "")) for step in merge_steps
     )
     gate_script = merge_steps[0]["run"]
     assert "needs.cross-platform-validation.result" in gate_script
+    aggregate_script = next(
+        step["run"]
+        for step in merge_steps
+        if step.get("name") == "Rebuild, verify, and aggregate full evidence"
+    )
+    assert 'python "${assurance_script}" cell-evidence' in aggregate_script
+    assert "started-at.txt" in aggregate_script
+    assert "finished-at.txt" in aggregate_script
+    assert '--baseline .github/ci/test-baseline.json' in aggregate_script
 
 
 def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> None:

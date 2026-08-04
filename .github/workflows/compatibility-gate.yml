@@ -210,18 +210,15 @@ jobs:
           set -euo pipefail
           mkdir -p "ci-evidence/${CELL}"
           assurance_script="scripts/ci_static_assurance.py"
-          assurance_baseline=".github/ci/test-baseline.json"
           if [[ "${{ needs.authority-check.outputs.authority-available }}" == "true" ]]; then
             assurance_script="trusted-base/scripts/ci_static_assurance.py"
           fi
-          echo "ASSURANCE_SCRIPT=${assurance_script}" >> "${GITHUB_ENV}"
-          echo "ASSURANCE_BASELINE=${assurance_baseline}" >> "${GITHUB_ENV}"
           uv run python "${assurance_script}" collect \
             --root . \
             --source-commit "${CANDIDATE_SHA}" \
             --cell "${CELL}" \
             --output "ci-evidence/${CELL}/collection-manifest.json"
-          echo "TEST_STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "${GITHUB_ENV}"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "ci-evidence/${CELL}/started-at.txt"
 
       - name: Doctor
         run: uv run ai-sdlc doctor
@@ -232,21 +229,12 @@ jobs:
           uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
             --junitxml=ci-evidence/${CELL}/compatibility-results.xml
 
-      - name: Build strict cell evidence
+      - name: Record raw cell completion
         if: always()
         shell: bash
         run: |
           set -euo pipefail
-          finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          uv run python "${ASSURANCE_SCRIPT}" cell-evidence \
-            --manifest "ci-evidence/${CELL}/collection-manifest.json" \
-            --baseline "${ASSURANCE_BASELINE}" \
-            --junit "ci-evidence/${CELL}/compatibility-results.xml" \
-            --cell "${CELL}" \
-            --source-commit "${CANDIDATE_SHA}" \
-            --started-at "${TEST_STARTED_AT}" \
-            --finished-at "${finished_at}" \
-            --output "ci-evidence/${CELL}/cell-evidence.json"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "ci-evidence/${CELL}/finished-at.txt"
 
       - name: Upload compatibility evidence
         if: always()
@@ -338,7 +326,7 @@ jobs:
           path: downloaded-evidence
           merge-multiple: false
 
-      - name: Verify transition and aggregate full evidence
+      - name: Rebuild, verify, and aggregate full evidence
         if: needs.authority-check.outputs.full-assurance-required == 'true'
         shell: bash
         env:
@@ -371,7 +359,20 @@ jobs:
           cell_args=()
           for os_name in ubuntu-latest macos-latest windows-latest; do
             for python_version in 3.11 3.12 3.13 3.14; do
-              cell_args+=(--expected-cell "${os_name}-py${python_version}")
+              cell="${os_name}-py${python_version}"
+              evidence_dir="downloaded-evidence/compatibility-${cell}"
+              started_at="$(tr -d '\r\n' < "${evidence_dir}/started-at.txt")"
+              finished_at="$(tr -d '\r\n' < "${evidence_dir}/finished-at.txt")"
+              python "${assurance_script}" cell-evidence \
+                --manifest "${evidence_dir}/collection-manifest.json" \
+                --baseline .github/ci/test-baseline.json \
+                --junit "${evidence_dir}/compatibility-results.xml" \
+                --cell "${cell}" \
+                --source-commit "${CANDIDATE_SHA}" \
+                --started-at "${started_at}" \
+                --finished-at "${finished_at}" \
+                --output "${evidence_dir}/cell-evidence.json"
+              cell_args+=(--expected-cell "${cell}")
             done
           done
           python "${assurance_script}" aggregate \
