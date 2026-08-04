@@ -12,6 +12,7 @@ import base64
 import hashlib
 import json
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -644,11 +645,15 @@ def _junit_case_lookup(manifest: Mapping[str, object]) -> dict[tuple[str, str], 
 
 
 def _encode_pytest_report_payload(
-    nonce: str, reports: Sequence[Mapping[str, object]]
+    nonce: str,
+    reports: Sequence[Mapping[str, object]],
+    *,
+    complete: bool = False,
 ) -> str:
     payload = {
         "schema_version": PYTEST_REPORT_SCHEMA,
         "reports": [dict(report) for report in reports],
+        "complete": complete,
     }
     encoded = base64.b64encode(
         json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
@@ -658,7 +663,7 @@ def _encode_pytest_report_payload(
 
 def _decode_pytest_report_payload(
     line: str, nonce: str
-) -> list[dict[str, object]]:
+) -> tuple[list[dict[str, object]], bool]:
     prefix = f"{PYTEST_REPORT_PREFIX}{nonce}:"
     if not line.startswith(prefix):
         raise AssuranceError("pytest report protocol mismatch")
@@ -669,11 +674,16 @@ def _decode_pytest_report_payload(
     if not isinstance(payload, Mapping):
         raise AssuranceError("pytest report contract invalid")
     reports = payload.get("reports")
-    if payload.get("schema_version") != PYTEST_REPORT_SCHEMA or not isinstance(reports, list):
+    complete = payload.get("complete")
+    if (
+        payload.get("schema_version") != PYTEST_REPORT_SCHEMA
+        or not isinstance(reports, list)
+        or not isinstance(complete, bool)
+    ):
         raise AssuranceError("pytest report contract invalid")
     if any(not isinstance(report, Mapping) for report in reports):
         raise AssuranceError("pytest report entry invalid")
-    return [dict(report) for report in reports]
+    return [dict(report) for report in reports], complete
 
 
 def _write_supervised_junit(
@@ -772,18 +782,17 @@ def _run_pytest_child(root: Path, nonce: str, pytest_args: Sequence[str]) -> int
     import pytest
 
     class ProtectedReportPlugin:
-        def __init__(self) -> None:
-            self.reports: list[dict[str, object]] = []
-
-        @pytest.hookimpl(trylast=True)
+        @pytest.hookimpl(tryfirst=True)
         def pytest_runtest_logreport(self, report) -> None:
-            self.reports.append(
-                {
-                    "nodeid": report.nodeid,
-                    "when": report.when,
-                    "outcome": report.outcome,
-                    "duration": float(report.duration),
-                }
+            event = {
+                "nodeid": report.nodeid,
+                "when": report.when,
+                "outcome": report.outcome,
+                "duration": float(report.duration),
+            }
+            print(
+                _encode_pytest_report_payload(nonce, [event]),
+                flush=True,
             )
 
     plugin = ProtectedReportPlugin()
@@ -793,7 +802,7 @@ def _run_pytest_child(root: Path, nonce: str, pytest_args: Sequence[str]) -> int
         returncode = int(pytest.main(list(pytest_args), plugins=[plugin]))
     finally:
         os.chdir(original_cwd)
-    print(_encode_pytest_report_payload(nonce, plugin.reports), flush=True)
+    print(_encode_pytest_report_payload(nonce, [], complete=True), flush=True)
     return returncode
 
 
@@ -826,19 +835,29 @@ def run_pytest_with_trusted_evidence(
         encoding="utf-8",
     )
     prefix = f"{PYTEST_REPORT_PREFIX}{nonce}:"
-    protocol_lines = [
-        line for line in completed.stdout.splitlines() if line.startswith(prefix)
-    ]
-    passthrough = [
-        line for line in completed.stdout.splitlines() if not line.startswith(prefix)
-    ]
+    protocol_pattern = re.compile(re.escape(prefix) + r"[A-Za-z0-9+/=]+")
+    protocol_lines = protocol_pattern.findall(completed.stdout)
+    passthrough = protocol_pattern.sub("", completed.stdout)
     if passthrough:
-        print("\n".join(passthrough))
+        print(passthrough, end="")
     if completed.stderr:
         print(completed.stderr, file=sys.stderr, end="")
-    if len(protocol_lines) != 1:
-        raise AssuranceError("pytest report protocol cardinality invalid")
-    reports = _decode_pytest_report_payload(protocol_lines[0], nonce)
+    decoded = [
+        _decode_pytest_report_payload(line, nonce) for line in protocol_lines
+    ]
+    completion_positions = [
+        index for index, (_, complete) in enumerate(decoded) if complete
+    ]
+    if completion_positions != [len(decoded) - 1] or any(
+        complete and event_reports for event_reports, complete in decoded
+    ):
+        raise AssuranceError("pytest report completion invalid")
+    reports = [
+        report
+        for event_reports, complete in decoded
+        if not complete
+        for report in event_reports
+    ]
     complete = _write_supervised_junit(manifest, reports, junit_path)
     return completed.returncode if complete else 1
 

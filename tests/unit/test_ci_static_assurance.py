@@ -491,11 +491,69 @@ def test_supervised_pytest_rebuilds_evidence_after_candidate_exit(
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=module._encode_pytest_report_payload(nonce, reports) + "\n",
+            stdout=(
+                module._encode_pytest_report_payload(nonce, reports)
+                + "\n"
+                + module._encode_pytest_report_payload(nonce, [], complete=True)
+                + "\n"
+            ),
             stderr="",
         )
 
     monkeypatch.setattr(module.subprocess, "run", fake_run)
+
+    returncode = module.run_pytest_with_trusted_evidence(
+        tmp_path,
+        manifest,
+        junit,
+        pytest_args=["-q"],
+    )
+    evidence = module.build_cell_evidence(
+        manifest,
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert returncode == 0
+    assert evidence["status"] == "failed"
+    assert evidence["reason"] == "non_success_terminal_state"
+    assert evidence["skipped"] == 1
+
+
+def test_supervised_pytest_stream_is_not_rewritable_by_candidate_plugin(
+    tmp_path: Path,
+) -> None:
+    """候选插件能枚举 recorder，也不能在 unconfigure 抹掉已流出的 skip。"""
+    module = _load_module()
+    nodeid = "test_sample.py::test_never_runs"
+    (tmp_path / "test_sample.py").write_text(
+        "def test_never_runs():\n    raise AssertionError('must stay skipped')\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "conftest.py").write_text(
+        "import pytest\n\n"
+        "def pytest_collection_modifyitems(items):\n"
+        "    for item in items:\n"
+        "        item.add_marker(pytest.mark.skip(reason='candidate skip'))\n\n"
+        "def pytest_unconfigure(config):\n"
+        "    for plugin in config.pluginmanager.get_plugins():\n"
+        "        reports = getattr(plugin, 'reports', None)\n"
+        "        if isinstance(reports, list):\n"
+        "            reports[:] = [{\n"
+        f"                'nodeid': '{nodeid}',\n"
+        "                'when': 'call',\n"
+        "                'outcome': 'passed',\n"
+        "                'duration': 0.0,\n"
+        "            }]\n",
+        encoding="utf-8",
+    )
+    manifest = module.build_collection_manifest(
+        [nodeid], ["ubuntu-latest-py3.11"], source_commit="a" * 40
+    )
+    junit = tmp_path / "streamed.xml"
 
     returncode = module.run_pytest_with_trusted_evidence(
         tmp_path,
