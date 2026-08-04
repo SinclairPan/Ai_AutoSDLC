@@ -16,7 +16,14 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  release-assurance:
+    uses: ./.github/workflows/compatibility-gate.yml
+    with:
+      candidate_ref: ${{ inputs.tag }}
+      force_full: true
+
   build-smoke-candidate:
+    needs: release-assurance
     name: ${{ matrix.asset_os }} ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40

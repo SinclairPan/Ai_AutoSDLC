@@ -67,6 +67,17 @@ def _stable_execution_member_id(case_id: str, cell: str) -> str:
     return _sha256(f"{case_id}\0{cell}")
 
 
+def _execution_member_projection(
+    case_ids: Sequence[str], cells: Sequence[str]
+) -> tuple[int, str]:
+    members = sorted(
+        _stable_execution_member_id(case_id, cell)
+        for cell in cells
+        for case_id in case_ids
+    )
+    return len(members), _sha256("\n".join(members))
+
+
 def _unique(values: Sequence[str], *, label: str) -> list[str]:
     normalized = [str(value).strip() for value in values]
     if any(not value for value in normalized):
@@ -117,18 +128,23 @@ def build_baseline(
     manifest: Mapping[str, object],
     *,
     previous_baseline_digest: str | None = None,
+    genesis_base_commit: str | None = None,
 ) -> dict[str, object]:
     """把实际 collection 投影为受保护 baseline 候选。"""
+    case_ids = list(manifest.get("case_ids", []))
+    cells = list(manifest.get("cells", []))
+    member_count, member_digest = _execution_member_projection(case_ids, cells)
     baseline: dict[str, object] = {
         "schema_version": BASELINE_SCHEMA,
         "namespace": manifest.get("namespace"),
         "source_commit": manifest.get("source_commit"),
+        "genesis_base_commit": genesis_base_commit,
         "previous_baseline_digest": previous_baseline_digest,
         "collection_command": manifest.get("collection_command"),
-        "cells": list(manifest.get("cells", [])),
-        "case_ids": list(manifest.get("case_ids", [])),
-        "case_nodeids": dict(manifest.get("case_nodeids", {})),
-        "execution_member_ids": list(manifest.get("execution_member_ids", [])),
+        "cells": cells,
+        "case_ids": case_ids,
+        "execution_member_count": member_count,
+        "execution_member_digest": member_digest,
     }
     baseline["baseline_digest"] = _canonical_digest(baseline, "baseline_digest")
     return baseline
@@ -167,13 +183,14 @@ def verify_baseline_transition(
         set(candidate_cases)
     ):
         return _transition_failure("duplicate_case_identity")
-    trusted_members = list(trusted.get("execution_member_ids", []))
-    candidate_members = list(candidate.get("execution_member_ids", []))
-    if (
-        len(trusted_members) != len(set(trusted_members))
-        or len(candidate_members) != len(set(candidate_members))
-        or len(trusted_members) != len(trusted_cases) * len(trusted_cells)
-        or len(candidate_members) != len(candidate_cases) * len(candidate_cells)
+    trusted_projection = _execution_member_projection(trusted_cases, trusted_cells)
+    candidate_projection = _execution_member_projection(candidate_cases, candidate_cells)
+    if trusted_projection != (
+        trusted.get("execution_member_count"),
+        trusted.get("execution_member_digest"),
+    ) or candidate_projection != (
+        candidate.get("execution_member_count"),
+        candidate.get("execution_member_digest"),
     ):
         return _transition_failure("execution_member_set_invalid")
 
@@ -212,6 +229,114 @@ def verify_baseline_transition(
         "added_case_ids": sorted(added - renamed_targets),
         "renamed_case_ids": accepted_renames,
         "removed_case_ids": [],
+    }
+
+
+def decide_assurance_mode(
+    *,
+    event_name: str,
+    pull_request_draft: bool,
+    authority_available: bool,
+    protected_paths_changed: bool,
+    force_full: bool,
+) -> dict[str, object]:
+    """静态决定是否运行完整层；任何未知或权威缺失都 fail-safe。"""
+    if force_full:
+        return {"full_assurance_required": True, "reason": "force_full"}
+    if not authority_available:
+        return {"full_assurance_required": True, "reason": "authority_unavailable"}
+    if protected_paths_changed:
+        return {"full_assurance_required": True, "reason": "protected_ci_change"}
+    if event_name == "pull_request":
+        if pull_request_draft:
+            return {
+                "full_assurance_required": False,
+                "reason": "ordinary_draft_fast_gate",
+            }
+        return {"full_assurance_required": True, "reason": "ready_pull_request"}
+    reasons = {
+        "merge_group": "merge_candidate",
+        "push": "protected_main_or_candidate",
+        "workflow_dispatch": "protected_main_or_candidate",
+        "schedule": "protected_main_or_candidate",
+        "workflow_call": "release_candidate",
+    }
+    return {
+        "full_assurance_required": True,
+        "reason": reasons.get(event_name, "unknown_event_fail_closed"),
+    }
+
+
+def _coverage_failure(reason: str) -> dict[str, object]:
+    return {"status": "failed", "reason": reason}
+
+
+def verify_collection_coverage(
+    candidate_baseline: Mapping[str, object],
+    manifests: Sequence[Mapping[str, object]],
+    *,
+    expected_source_commit: str | None = None,
+) -> dict[str, object]:
+    """证明所有 cell 的实际 collection union 等于候选 baseline。"""
+    baseline_cells = list(candidate_baseline.get("cells", []))
+    baseline_cases = set(candidate_baseline.get("case_ids", []))
+    baseline_member_count = candidate_baseline.get("execution_member_count")
+    baseline_member_digest = candidate_baseline.get("execution_member_digest")
+    expected_projection = _execution_member_projection(
+        sorted(baseline_cases), baseline_cells
+    )
+    if (
+        not baseline_cells
+        or len(baseline_cells) != len(set(baseline_cells))
+        or not baseline_cases
+        or expected_projection != (baseline_member_count, baseline_member_digest)
+    ):
+        return _coverage_failure("candidate_baseline_invalid")
+
+    manifest_cells: list[str] = []
+    for manifest in manifests:
+        cells = list(manifest.get("cells", []))
+        if len(cells) != 1:
+            return _coverage_failure("manifest_cell_cardinality_invalid")
+        manifest_cells.append(str(cells[0]))
+    if len(manifest_cells) != len(set(manifest_cells)):
+        return _coverage_failure("duplicate_cell_manifest")
+    if set(manifest_cells) != set(baseline_cells):
+        return _coverage_failure("cell_set_mismatch")
+
+    runtime_commits = {
+        str(manifest.get("source_commit", "")) for manifest in manifests
+    }
+    if (
+        "" in runtime_commits
+        or len(runtime_commits) != 1
+        or (
+            expected_source_commit is not None
+            and runtime_commits != {expected_source_commit}
+        )
+    ):
+        return _coverage_failure("candidate_commit_mismatch")
+
+    seen_members: set[str] = set()
+    for manifest in manifests:
+        if manifest.get("namespace") != candidate_baseline.get("namespace"):
+            return _coverage_failure("namespace_mismatch")
+        if set(manifest.get("case_ids", [])) != baseline_cases:
+            return _coverage_failure("case_set_mismatch")
+        members = set(manifest.get("execution_member_ids", []))
+        if seen_members & members:
+            return _coverage_failure("execution_member_overlap")
+        seen_members.update(members)
+    actual_projection = (len(seen_members), _sha256("\n".join(sorted(seen_members))))
+    if actual_projection != expected_projection:
+        return _coverage_failure("execution_member_set_mismatch")
+
+    return {
+        "status": "success",
+        "reason": "exact_collection_coverage",
+        "cells": sorted(manifest_cells),
+        "case_count": len(baseline_cases),
+        "execution_member_count": len(seen_members),
     }
 
 
@@ -523,6 +648,7 @@ def _build_parser() -> argparse.ArgumentParser:
     baseline.add_argument("--root", type=Path, default=Path.cwd())
     baseline.add_argument("--source-commit")
     baseline.add_argument("--previous-baseline-digest")
+    baseline.add_argument("--genesis-base-commit")
     baseline.add_argument("--pytest-arg", action="append", default=[])
     baseline.add_argument("--output", type=Path, required=True)
 
@@ -531,6 +657,15 @@ def _build_parser() -> argparse.ArgumentParser:
     transition.add_argument("--candidate", type=Path, required=True)
     transition.add_argument("--lineage", type=Path, required=True)
     transition.add_argument("--output", type=Path)
+
+    mode = subparsers.add_parser("decide-mode")
+    mode.add_argument("--event-name", required=True)
+    mode.add_argument("--pull-request-draft", default="false")
+    mode.add_argument("--authority-available", default="false")
+    mode.add_argument("--protected-paths-changed", default="false")
+    mode.add_argument("--force-full", default="false")
+    mode.add_argument("--output", type=Path)
+    mode.add_argument("--github-output", type=Path)
 
     cell_evidence = subparsers.add_parser("cell-evidence")
     cell_evidence.add_argument("--manifest", type=Path, required=True)
@@ -543,6 +678,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     aggregate = subparsers.add_parser("aggregate")
     aggregate.add_argument("--evidence-root", type=Path, required=True)
+    aggregate.add_argument("--candidate-baseline", type=Path, required=True)
     aggregate.add_argument("--expected-cell", action="append", required=True)
     aggregate.add_argument("--candidate-commit", required=True)
     aggregate.add_argument("--baseline-digest", required=True)
@@ -567,9 +703,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else build_baseline(
                     manifest,
                     previous_baseline_digest=args.previous_baseline_digest,
+                    genesis_base_commit=args.genesis_base_commit,
                 )
             )
             _write_json(args.output, payload)
+            return 0
+
+        if args.command == "decide-mode":
+            result = decide_assurance_mode(
+                event_name=args.event_name,
+                pull_request_draft=_parse_bool(args.pull_request_draft),
+                authority_available=_parse_bool(args.authority_available),
+                protected_paths_changed=_parse_bool(args.protected_paths_changed),
+                force_full=_parse_bool(args.force_full),
+            )
+            if args.output:
+                _write_json(args.output, result)
+            if args.github_output:
+                full = str(result["full_assurance_required"]).lower()
+                with args.github_output.open("a", encoding="utf-8") as output:
+                    output.write(f"full_assurance_required={full}\n")
+                    output.write(f"reason={result['reason']}\n")
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0
 
         if args.command == "verify-transition":
@@ -597,12 +752,28 @@ def main(argv: Sequence[str] | None = None) -> int:
                 _read_json(path)
                 for path in sorted(args.evidence_root.rglob("cell-evidence.json"))
             ]
-            result = aggregate_assurance(
-                args.expected_cell,
-                evidence,
-                candidate_commit=args.candidate_commit,
-                baseline_digest=args.baseline_digest,
-                fast_gate_status=args.fast_gate_status,
+            manifests = [
+                _read_json(path)
+                for path in sorted(
+                    args.evidence_root.rglob("collection-manifest.json")
+                )
+            ]
+            baseline = _read_json(args.candidate_baseline)
+            coverage = verify_collection_coverage(
+                baseline,
+                manifests,
+                expected_source_commit=args.candidate_commit,
+            )
+            result = (
+                coverage
+                if coverage["status"] != "success"
+                else aggregate_assurance(
+                    args.expected_cell,
+                    evidence,
+                    candidate_commit=args.candidate_commit,
+                    baseline_digest=args.baseline_digest,
+                    fast_gate_status=args.fast_gate_status,
+                )
             )
         _write_json(args.output, result)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
@@ -610,6 +781,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     except AssuranceError as exc:
         print(f"ci static assurance failed: {exc}", file=sys.stderr)
         return 1
+
+
+def _parse_bool(raw: str) -> bool:
+    normalized = raw.strip().lower()
+    if normalized in {"1", "true", "yes"}:
+        return True
+    if normalized in {"0", "false", "no", ""}:
+        return False
+    raise AssuranceError(f"invalid boolean value: {raw}")
 
 
 if __name__ == "__main__":

@@ -730,27 +730,85 @@ def test_reviewer_isolation_workflow_requires_real_mode_specific_evidence() -> N
     assert "pytest.mark.xfail" not in workflow
 
 
-def test_compatibility_gate_delegates_real_isolation_e2e_to_dedicated_gate() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
+def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
+    workflow_path = _WORKFLOWS_DIR / "compatibility-gate.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+    triggers = workflow[True]
 
+    assert {
+        "pull_request",
+        "push",
+        "merge_group",
+        "workflow_dispatch",
+        "workflow_call",
+        "schedule",
+    } <= set(triggers)
+    assert triggers["pull_request"]["types"] == [
+        "opened",
+        "synchronize",
+        "reopened",
+        "ready_for_review",
+        "converted_to_draft",
+    ]
+    jobs = workflow["jobs"]
+    assert jobs["fast-gate"]["runs-on"] == "ubuntu-latest"
+    assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
+        "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
+        "python-version": ["3.11", "3.12", "3.13", "3.14"],
+    }
     assert (
-        "timeout-minutes: ${{ matrix.os == 'windows-latest' && 180 || 120 }}"
-        in workflow
+        jobs["cross-platform-validation"]["if"]
+        == "needs.authority-check.outputs.full-assurance-required == 'true'"
     )
-    assert "uv run pytest -q --ignore=tests/e2e/stage_review" in workflow
-    assert "--durations=50" in workflow
-    assert "--junitxml=compatibility-results.xml" in workflow
-    assert "if: always()" in workflow
     assert (
-        "actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6"
-        in workflow
+        jobs["windows-shell-smoke"]["if"]
+        == "needs.authority-check.outputs.full-assurance-required == 'true'"
     )
-    assert "name: compatibility-${{ matrix.os }}-py${{ matrix.python-version }}" in workflow
-    assert "path: compatibility-results.xml" in workflow
+    assert jobs["merge-assurance"]["if"] == "always()"
+    assert jobs["compatibility-gate-result"]["name"] == "Compatibility Gate Result"
+
+
+def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Checkout protected base authority" in workflow
+    assert "path: trusted-base" in workflow
+    assert "trusted-base/scripts/ci_static_assurance.py" in workflow
+    assert "authority_unavailable" in workflow
+    assert "protected_ci_change" in workflow
+    assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
+    assert '"${assurance_script}" collect' in workflow
+    assert '"${ASSURANCE_SCRIPT}" cell-evidence' in workflow
+    assert '"${assurance_script}" aggregate' in workflow
+    assert "verify-transition" in workflow
+    assert "--ignore=tests/e2e/stage_review" in workflow
+    assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
+    assert "actions/upload-artifact@v7" in workflow
     assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
     assert "continue-on-error" not in workflow
-    assert "uses: ./.github/workflows/reviewer-isolation.yml" not in workflow
+
+
+def test_release_build_requires_reusable_full_release_assurance() -> None:
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    )
+
+    assert workflow["jobs"]["release-assurance"] == {
+        "uses": "./.github/workflows/compatibility-gate.yml",
+        "with": {"candidate_ref": "${{ inputs.tag }}", "force_full": True},
+    }
+    assert workflow["jobs"]["build-smoke-candidate"]["needs"] == "release-assurance"
+
+
+def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert "scripts/ci_static_assurance.py" not in pyproject
+    assert (_REPO_ROOT / ".github" / "ci" / "fast-gate-tests.txt").is_file()
+    assert (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").is_file()
 
 
 def test_activation_evidence_workflow_owns_its_trust_root_and_real_inputs() -> None:

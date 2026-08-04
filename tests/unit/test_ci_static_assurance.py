@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 from pathlib import Path
 
@@ -9,6 +10,14 @@ import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _SCRIPT_PATH = _REPO_ROOT / "scripts" / "ci_static_assurance.py"
+
+
+def _member_projection(case_ids: tuple[str, ...], cells: tuple[str, ...]):
+    def digest(value: str) -> str:
+        return f"sha256:{hashlib.sha256(value.encode('utf-8')).hexdigest()}"
+
+    members = sorted(digest(f"{case_id}\0{cell}") for cell in cells for case_id in case_ids)
+    return len(members), digest("\n".join(members))
 
 
 def _load_module():
@@ -20,27 +29,33 @@ def _load_module():
 
 
 def _baseline(*case_ids: str) -> dict[str, object]:
+    cells = ("ubuntu-latest-py3.11",)
+    member_count, member_digest = _member_projection(case_ids, cells)
     return {
         "schema_version": "ci-baseline-v1",
         "namespace": "pytest-nodeid-v1",
         "source_commit": "a" * 40,
         "previous_baseline_digest": None,
-        "cells": ["ubuntu-latest-py3.11"],
+        "cells": list(cells),
         "case_ids": list(case_ids),
-        "execution_member_ids": [f"member:{case_id}" for case_id in case_ids],
+        "execution_member_count": member_count,
+        "execution_member_digest": member_digest,
         "baseline_digest": "sha256:trusted",
     }
 
 
 def _candidate(*case_ids: str) -> dict[str, object]:
+    cells = ("ubuntu-latest-py3.11",)
+    member_count, member_digest = _member_projection(case_ids, cells)
     return {
         "schema_version": "ci-baseline-v1",
         "namespace": "pytest-nodeid-v1",
         "source_commit": "b" * 40,
         "previous_baseline_digest": "sha256:trusted",
-        "cells": ["ubuntu-latest-py3.11"],
+        "cells": list(cells),
         "case_ids": list(case_ids),
-        "execution_member_ids": [f"member:{case_id}" for case_id in case_ids],
+        "execution_member_count": member_count,
+        "execution_member_digest": member_digest,
         "baseline_digest": "sha256:candidate",
     }
 
@@ -89,6 +104,43 @@ def test_duplicate_collected_nodeid_fails_closed() -> None:
             ["ubuntu-latest-py3.11"],
             source_commit="a" * 40,
         )
+
+
+def test_genesis_baseline_binds_protected_base_commit() -> None:
+    """防止首次 baseline 只绑定候选而丢失受保护 main 的 genesis 来源。"""
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        ["tests/a.py::test_ok"],
+        ["ubuntu-latest-py3.11"],
+        source_commit="b" * 40,
+    )
+
+    baseline = module.build_baseline(
+        manifest,
+        genesis_base_commit="a" * 40,
+    )
+
+    assert baseline["source_commit"] == "b" * 40
+    assert baseline["genesis_base_commit"] == "a" * 40
+    assert baseline["previous_baseline_digest"] is None
+    assert baseline["baseline_digest"].startswith("sha256:")
+
+
+def test_baseline_keeps_member_projection_compact() -> None:
+    """防止 12 个 cell 的派生成员全部写入仓库，造成 baseline 体积膨胀。"""
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        ["tests/a.py::test_ok", "tests/b.py::test_ok"],
+        ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
+        source_commit="b" * 40,
+    )
+
+    baseline = module.build_baseline(manifest)
+
+    assert "execution_member_ids" not in baseline
+    assert "case_nodeids" not in baseline
+    assert baseline["execution_member_count"] == 4
+    assert str(baseline["execution_member_digest"]).startswith("sha256:")
 
 
 def test_baseline_transition_allows_only_monotonic_addition() -> None:
@@ -409,3 +461,173 @@ def test_aggregate_marks_late_red_and_rejects_duplicate_or_failed_cell() -> None
     assert late_red["late_red"] is True
     assert duplicate["status"] == "failed"
     assert duplicate["reason"] == "duplicate_cell_evidence"
+
+
+@pytest.mark.parametrize(
+    ("event_name", "draft", "authority", "protected_changed", "full", "reason"),
+    [
+        ("pull_request", True, True, False, False, "ordinary_draft_fast_gate"),
+        ("pull_request", False, True, False, True, "ready_pull_request"),
+        ("pull_request", True, False, False, True, "authority_unavailable"),
+        ("pull_request", True, True, True, True, "protected_ci_change"),
+        ("merge_group", False, True, False, True, "merge_candidate"),
+        ("push", False, True, False, True, "protected_main_or_candidate"),
+        ("workflow_call", False, True, False, True, "release_candidate"),
+        ("unknown", True, True, False, True, "unknown_event_fail_closed"),
+    ],
+)
+def test_assurance_mode_only_keeps_ordinary_draft_change_fast(
+    event_name: str,
+    draft: bool,
+    authority: bool,
+    protected_changed: bool,
+    full: bool,
+    reason: str,
+) -> None:
+    """防止普通 Draft 再跑全量，也防止 ready/RC/未知事件绕过完整层。"""
+    module = _load_module()
+
+    result = module.decide_assurance_mode(
+        event_name=event_name,
+        pull_request_draft=draft,
+        authority_available=authority,
+        protected_paths_changed=protected_changed,
+        force_full=False,
+    )
+
+    assert result == {"full_assurance_required": full, "reason": reason}
+
+
+def _two_cell_baseline() -> dict[str, object]:
+    module = _load_module()
+    manifest = module.build_collection_manifest(
+        ["tests/a.py::test_one"],
+        ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
+        source_commit="a" * 40,
+    )
+    return module.build_baseline(manifest)
+
+
+def _single_manifest(cell: str, *nodeids: str) -> dict[str, object]:
+    module = _load_module()
+    return module.build_collection_manifest(
+        list(nodeids) or ["tests/a.py::test_one"],
+        [cell],
+        source_commit="a" * 40,
+    )
+
+
+def test_collection_coverage_matches_exact_baseline_union() -> None:
+    """防止单 cell 正确但跨 cell union 缺成员。"""
+    module = _load_module()
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11"),
+        _single_manifest("windows-latest-py3.14"),
+    ]
+
+    result = module.verify_collection_coverage(_two_cell_baseline(), manifests)
+
+    assert result == {
+        "status": "success",
+        "reason": "exact_collection_coverage",
+        "cells": ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
+        "case_count": 1,
+        "execution_member_count": 2,
+    }
+
+
+def test_collection_coverage_uses_runtime_candidate_binding_not_baseline_origin() -> None:
+    """防止 tracked baseline 需要自引用尚未产生的候选 commit。"""
+    module = _load_module()
+    baseline = _two_cell_baseline()
+    baseline["source_commit"] = "b" * 40
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11"),
+        _single_manifest("windows-latest-py3.14"),
+    ]
+
+    result = module.verify_collection_coverage(baseline, manifests)
+
+    assert result["status"] == "success"
+
+
+def test_collection_coverage_rejects_mixed_runtime_candidate_commits() -> None:
+    """防止不同候选提交的 collection manifest 被拼成一次完整证明。"""
+    module = _load_module()
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11"),
+        _single_manifest("windows-latest-py3.14"),
+    ]
+    manifests[1]["source_commit"] = "c" * 40
+
+    result = module.verify_collection_coverage(_two_cell_baseline(), manifests)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "candidate_commit_mismatch"
+
+
+def test_collection_coverage_binds_runtime_manifests_to_expected_commit() -> None:
+    """防止同一旧提交的完整 collection 被用于证明当前候选。"""
+    module = _load_module()
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11"),
+        _single_manifest("windows-latest-py3.14"),
+    ]
+
+    result = module.verify_collection_coverage(
+        _two_cell_baseline(), manifests, expected_source_commit="d" * 40
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "candidate_commit_mismatch"
+
+
+@pytest.mark.parametrize(
+    ("mutator", "reason"),
+    [
+        (lambda manifests: manifests[:1], "cell_set_mismatch"),
+        (lambda manifests: [manifests[0], manifests[0]], "duplicate_cell_manifest"),
+        (
+            lambda manifests: [
+                manifests[0],
+                _single_manifest(
+                    "windows-latest-py3.14",
+                    "tests/a.py::test_one",
+                    "tests/a.py::test_extra",
+                ),
+            ],
+            "case_set_mismatch",
+        ),
+    ],
+)
+def test_collection_coverage_faults_fail_closed(mutator, reason: str) -> None:
+    """防止缺 cell、重复 cell 或 cell 间集合漂移通过聚合。"""
+    module = _load_module()
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11"),
+        _single_manifest("windows-latest-py3.14"),
+    ]
+
+    result = module.verify_collection_coverage(
+        _two_cell_baseline(), mutator(manifests)
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == reason
+
+
+def test_collection_coverage_rejects_overlapping_execution_members() -> None:
+    """防止 shard/cell 通过重复 execution member 充数。"""
+    module = _load_module()
+    manifests = [
+        _single_manifest("ubuntu-latest-py3.11"),
+        _single_manifest("windows-latest-py3.14"),
+    ]
+    manifests[1]["execution_member_ids"] = list(
+        manifests[0]["execution_member_ids"]
+    )
+
+    result = module.verify_collection_coverage(_two_cell_baseline(), manifests)
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "execution_member_overlap"
