@@ -319,6 +319,10 @@ def test_release_build_emergency_freeze_removes_release_write_authority() -> Non
     assert "GH_TOKEN:" not in workflow
     assert "gh release " not in workflow
     assert "--clobber" not in workflow
+    assert (
+        "name: release-build-${{ github.run_id }}-${{ github.run_attempt }}-"
+        "${{ matrix.asset_os }}-${{ matrix.archive }}-evidence"
+    ) in workflow
     assert "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
     assert "publish_blocked" in workflow
     assert "writer_isolation_unavailable" in workflow

@@ -313,7 +313,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: release-build-${{ matrix.asset_os }}-${{ matrix.archive }}-evidence
+          name: release-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.archive }}-evidence
           path: ${{ runner.temp }}/ai-sdlc-release-build-evidence
           if-no-files-found: error
 
