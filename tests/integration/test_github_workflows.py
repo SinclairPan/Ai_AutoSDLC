@@ -784,9 +784,8 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert "inputs.authority_ref" in workflow
     assert "path: trusted-base" in workflow
     assert "trusted-base/scripts/ci_static_assurance.py" in workflow
-    assert "Checkout protected runtime authority" in workflow
-    assert "path: trusted-runner" in workflow
-    assert "trusted-runner/scripts/ci_static_assurance.py" in workflow
+    assert "Checkout protected runtime authority" not in workflow
+    assert "trusted-runner" not in workflow
     assert "authority_unavailable" in workflow
     assert "protected_ci_change" in workflow
     assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
@@ -797,8 +796,8 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert '--lineage "${assurance_lineage}"' in workflow
     assert "verify-transition" in workflow
     assert "--ignore=tests/e2e/stage_review" in workflow
-    assert '"${assurance_script}" run-pytest' in workflow
-    assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" not in workflow
+    assert '"${assurance_script}" run-pytest' not in workflow
+    assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
     assert "actions/upload-artifact@v7" in workflow
     assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
@@ -812,12 +811,13 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     full_pytest_step = next(
         step for step in matrix_steps if step.get("name") == "Run full pytest suite"
     )
-    assert '"${assurance_script}" run-pytest' in full_pytest_step["run"]
-    assert "trusted-runner/scripts/ci_static_assurance.py" in full_pytest_step["run"]
+    assert "uv run pytest" in full_pytest_step["run"]
+    assert (
+        "--junitxml=ci-evidence/${CELL}/compatibility-results.xml"
+        in full_pytest_step["run"]
+    )
     step_names = [step.get("name") for step in matrix_steps]
-    assert step_names.index("Doctor") < step_names.index(
-        "Checkout protected runtime authority"
-    ) < step_names.index("Run full pytest suite")
+    assert step_names.index("Doctor") < step_names.index("Run full pytest suite")
     merge_steps = parsed["jobs"]["merge-assurance"]["steps"]
     assert all(
         "uv run python" not in str(step.get("run", "")) for step in merge_steps

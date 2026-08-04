@@ -2,7 +2,8 @@
 """框架仓库内部 CI 的静态集合、身份与完整性验证器。
 
 该脚本只服务 Ai_AutoSDLC 自身 GitHub Actions，不属于发布包公开 CLI。受保护
-main 中的脚本和 baseline 才是验证权威；候选 checkout 只作为待验证数据。
+main 中的脚本和 baseline 才是集合、合同与聚合验证权威。候选测试体和被测代码
+仍属于代码评审信任边界；本脚本不把同一 Python 解释器伪装成恶意代码沙箱。
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import multiprocessing
 import os
 import subprocess
 import sys
@@ -27,14 +27,6 @@ LINEAGE_SCHEMA = "ci-test-lineage-v1"
 CELL_EVIDENCE_SCHEMA = "ci-cell-evidence-v1"
 AGGREGATE_SCHEMA = "ci-assurance-report-v1"
 DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q --ignore=tests/e2e/stage_review"
-CANDIDATE_OUTCOME_HOOKS = (
-    "pytest_fixture_setup",
-    "pytest_pyfunc_call",
-    "pytest_runtest_call",
-    "pytest_runtest_protocol",
-    "pytest_runtest_setup",
-    "pytest_runtest_teardown",
-)
 DEFAULT_CELLS = tuple(
     f"{os_name}-py{python_version}"
     for os_name in ("ubuntu-latest", "macos-latest", "windows-latest")
@@ -648,224 +640,8 @@ def _junit_case_lookup(manifest: Mapping[str, object]) -> dict[tuple[str, str], 
     return lookup
 
 
-def _write_supervised_junit(
-    manifest: Mapping[str, object],
-    reports: Sequence[Mapping[str, object]],
-    junit_path: Path,
-) -> bool:
-    raw_nodeids = manifest.get("case_nodeids")
-    if not isinstance(raw_nodeids, Mapping):
-        raise AssuranceError("manifest case nodeids are missing")
-    expected_nodeids = {_normalize_nodeid(str(value)) for value in raw_nodeids.values()}
-    reports_by_nodeid: dict[str, list[dict[str, object]]] = {
-        nodeid: [] for nodeid in expected_nodeids
-    }
-    for raw_report in reports:
-        nodeid = _normalize_nodeid(str(raw_report.get("nodeid", "")))
-        when = str(raw_report.get("when", ""))
-        outcome = str(raw_report.get("outcome", ""))
-        if (
-            nodeid not in reports_by_nodeid
-            or when not in {"setup", "call", "teardown"}
-            or outcome not in {"passed", "failed", "skipped"}
-        ):
-            raise AssuranceError("pytest report identity invalid")
-        reports_by_nodeid[nodeid].append(
-            {
-                "when": when,
-                "outcome": outcome,
-                "duration": float(raw_report.get("duration", 0.0) or 0.0),
-            }
-        )
-
-    suite = ET.Element("testsuite")
-    failures = errors = skipped = 0
-    complete = True
-    for nodeid in sorted(expected_nodeids):
-        classname, name = _junit_key_from_nodeid(nodeid)
-        node_reports = reports_by_nodeid[nodeid]
-        stages = [str(report["when"]) for report in node_reports]
-        testcase = ET.SubElement(
-            suite,
-            "testcase",
-            {
-                "classname": classname,
-                "name": name,
-                "time": f"{sum(float(report['duration']) for report in node_reports):.6f}",
-            },
-        )
-        if len(stages) != len(set(stages)):
-            errors += 1
-            complete = False
-            ET.SubElement(testcase, "error", {"message": "duplicate stage report"})
-            continue
-        failed = next(
-            (report for report in node_reports if report["outcome"] == "failed"),
-            None,
-        )
-        if failed is not None:
-            if failed["when"] == "call":
-                failures += 1
-                ET.SubElement(testcase, "failure", {"message": "pytest call failed"})
-            else:
-                errors += 1
-                ET.SubElement(
-                    testcase,
-                    "error",
-                    {"message": f"pytest {failed['when']} failed"},
-                )
-            continue
-        if any(report["outcome"] == "skipped" for report in node_reports):
-            skipped += 1
-            ET.SubElement(testcase, "skipped")
-            continue
-        if not any(
-            report["when"] == "call" and report["outcome"] == "passed"
-            for report in node_reports
-        ):
-            errors += 1
-            complete = False
-            ET.SubElement(testcase, "error", {"message": "missing call report"})
-
-    suite.attrib.update(
-        {
-            "tests": str(len(expected_nodeids)),
-            "failures": str(failures),
-            "errors": str(errors),
-            "skipped": str(skipped),
-        }
-    )
-    junit_path.parent.mkdir(parents=True, exist_ok=True)
-    ET.ElementTree(suite).write(junit_path, encoding="utf-8", xml_declaration=True)
-    return complete
-
-
-def _run_pytest_worker(root: Path, pytest_args: Sequence[str], connection) -> None:
-    import pytest
-
-    emit = connection.send
-
-    class ProtectedReportPlugin:
-        @pytest.hookimpl(wrapper=True, trylast=True)
-        def pytest_sessionstart(self, session):
-            result = yield
-
-            def candidate_hook_sources(hook_name, implementations) -> list[str]:
-                prohibited: list[str] = []
-                for implementation in implementations:
-                    function = implementation.function
-                    code = getattr(function, "__code__", None)
-                    if code is None:
-                        continue
-                    source = Path(code.co_filename)
-                    if not source.is_absolute():
-                        source = root / source
-                    try:
-                        relative = source.resolve().relative_to(root)
-                    except ValueError:
-                        continue
-                    if relative.parts[:1] in {
-                        (".venv",),
-                        ("trusted-base",),
-                        ("trusted-runner",),
-                    }:
-                        continue
-                    prohibited.append(f"{hook_name}:{relative.as_posix()}")
-                return sorted(set(prohibited))
-
-            def before_hook(hook_name, hook_impls, kwargs) -> None:
-                if hook_name in CANDIDATE_OUTCOME_HOOKS:
-                    prohibited = candidate_hook_sources(hook_name, hook_impls)
-                    if prohibited:
-                        raise pytest.UsageError(
-                            "candidate outcome hooks are prohibited: "
-                            + ", ".join(prohibited)
-                        )
-                if hook_name != "pytest_runtest_makereport":
-                    return
-                item = kwargs["item"]
-                call = kwargs["call"]
-                raw_outcome = "passed"
-                if call.excinfo is not None:
-                    raw_outcome = (
-                        "skipped"
-                        if call.excinfo.errisinstance(pytest.skip.Exception)
-                        else "failed"
-                    )
-                emit(
-                    {
-                        "type": "report",
-                        "nodeid": item.nodeid,
-                        "when": call.when,
-                        "outcome": raw_outcome,
-                        "duration": float(call.duration),
-                    }
-                )
-
-            def after_hook(outcome, hook_name, hook_impls, kwargs) -> None:
-                return None
-
-            session.config.pluginmanager.add_hookcall_monitoring(
-                before_hook, after_hook
-            )
-            return result
-
-    plugin = ProtectedReportPlugin()
-    original_cwd = Path.cwd()
-    try:
-        os.chdir(root)
-        returncode = int(pytest.main(list(pytest_args), plugins=[plugin]))
-    finally:
-        os.chdir(original_cwd)
-    emit({"type": "complete", "returncode": returncode})
-    connection.close()
-    raise SystemExit(returncode)
-
-
-def run_pytest_with_trusted_evidence(
-    root: Path,
-    manifest: Mapping[str, object],
-    junit_path: Path,
-    *,
-    pytest_args: Sequence[str],
-) -> int:
-    """在候选 pytest 子进程退出后，由受保护父进程生成不可回写的 JUnit。"""
-    context = multiprocessing.get_context("spawn")
-    receive_connection, send_connection = context.Pipe(duplex=False)
-    process = context.Process(
-        target=_run_pytest_worker,
-        args=(root, list(pytest_args), send_connection),
-    )
-    process.start()
-    send_connection.close()
-    events: list[dict[str, object]] = []
-    try:
-        while True:
-            event = receive_connection.recv()
-            if not isinstance(event, Mapping):
-                raise AssuranceError("pytest report event invalid")
-            events.append(dict(event))
-    except EOFError:
-        pass
-    finally:
-        receive_connection.close()
-        process.join()
-
-    completion_positions = [
-        index for index, event in enumerate(events) if event.get("type") == "complete"
-    ]
-    if completion_positions != [len(events) - 1]:
-        raise AssuranceError("pytest report completion invalid")
-    completion_code = events[-1].get("returncode")
-    if not isinstance(completion_code, int) or completion_code != process.exitcode:
-        raise AssuranceError("pytest process exit mismatch")
-    reports = [event for event in events[:-1] if event.get("type") == "report"]
-    if len(reports) != len(events) - 1:
-        raise AssuranceError("pytest report event invalid")
-    complete = _write_supervised_junit(manifest, reports, junit_path)
-    return completion_code if complete else 1
-
-
+# 删除 pytest 子进程监督器：候选可直接修改测试体，同一解释器内的报告认证不能形成安全边界。
+# 006 只保留集合、skip 合同、JUnit 终态与聚合完整性验证，不宣称提供恶意 Python 沙箱。
 def build_cell_evidence(
     manifest: Mapping[str, object],
     junit_path: Path,
@@ -1242,12 +1018,6 @@ def _build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--output", type=Path)
     mode.add_argument("--github-output", type=Path)
 
-    run_pytest = subparsers.add_parser("run-pytest")
-    run_pytest.add_argument("--root", type=Path, default=Path.cwd())
-    run_pytest.add_argument("--manifest", type=Path, required=True)
-    run_pytest.add_argument("--junit", type=Path, required=True)
-    run_pytest.add_argument("pytest_args", nargs=argparse.REMAINDER)
-
     cell_evidence = subparsers.add_parser("cell-evidence")
     cell_evidence.add_argument("--manifest", type=Path, required=True)
     cell_evidence.add_argument("--baseline", type=Path, required=True)
@@ -1273,17 +1043,6 @@ def _build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
     try:
-        if args.command == "run-pytest":
-            pytest_args = list(args.pytest_args)
-            if pytest_args[:1] == ["--"]:
-                pytest_args = pytest_args[1:]
-            return run_pytest_with_trusted_evidence(
-                args.root.resolve(),
-                _read_json(args.manifest),
-                args.junit,
-                pytest_args=pytest_args,
-            )
-
         if args.command in {"collect", "baseline"}:
             root = args.root.resolve()
             source_commit = args.source_commit or os.environ.get("GITHUB_SHA")

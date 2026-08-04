@@ -224,26 +224,13 @@ jobs:
       - name: Doctor
         run: uv run ai-sdlc doctor
 
-      - name: Checkout protected runtime authority
-        if: needs.authority-check.outputs.authority-available == 'true'
-        uses: actions/checkout@v6
-        with:
-          ref: ${{ needs.authority-check.outputs.base-sha }}
-          path: trusted-runner
-          persist-credentials: false
-
       - name: Run full pytest suite
         shell: bash
         run: |
-          assurance_script="scripts/ci_static_assurance.py"
-          if [[ "${{ needs.authority-check.outputs.authority-available }}" == "true" ]]; then
-            assurance_script="trusted-runner/scripts/ci_static_assurance.py"
-          fi
-          uv run python "${assurance_script}" run-pytest \
-            --root . \
-            --manifest "ci-evidence/${CELL}/collection-manifest.json" \
-            --junit "ci-evidence/${CELL}/compatibility-results.xml" \
-            -- -q --ignore=tests/e2e/stage_review --durations=50
+          # 006 validates member identity and result completeness; candidate
+          # test bodies remain inside the repository code-review trust boundary.
+          uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
+            --junitxml=ci-evidence/${CELL}/compatibility-results.xml
 
       - name: Record raw cell completion
         if: always()
