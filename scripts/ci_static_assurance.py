@@ -13,7 +13,9 @@ import json
 import os
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from collections.abc import Mapping, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +23,8 @@ CASE_NAMESPACE = "pytest-nodeid-v1"
 MANIFEST_SCHEMA = "ci-test-manifest-v1"
 BASELINE_SCHEMA = "ci-baseline-v1"
 LINEAGE_SCHEMA = "ci-test-lineage-v1"
+CELL_EVIDENCE_SCHEMA = "ci-cell-evidence-v1"
+AGGREGATE_SCHEMA = "ci-assurance-report-v1"
 DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q --ignore=tests/e2e/stage_review"
 DEFAULT_CELLS = tuple(
     f"{os_name}-py{python_version}"
@@ -211,6 +215,239 @@ def verify_baseline_transition(
     }
 
 
+def _duration_seconds(started_at: str, finished_at: str) -> float:
+    try:
+        started = datetime.fromisoformat(started_at.replace("Z", "+00:00"))
+        finished = datetime.fromisoformat(finished_at.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise AssuranceError("invalid evidence timestamp") from exc
+    duration = (finished - started).total_seconds()
+    if duration < 0:
+        raise AssuranceError("evidence finish precedes start")
+    return duration
+
+
+def _cell_evidence_base(
+    manifest: Mapping[str, object],
+    *,
+    cell: str,
+    source_commit: str,
+    started_at: str,
+    finished_at: str,
+) -> dict[str, object]:
+    return {
+        "schema_version": CELL_EVIDENCE_SCHEMA,
+        "cell": cell,
+        "source_commit": source_commit,
+        "collection_manifest_digest": str(manifest.get("manifest_digest", "")),
+        "collected_count": len(list(manifest.get("case_ids", []))),
+        "executed_count": 0,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "duplicate_testcases": [],
+        "status": "failed",
+        "reason": "unknown",
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "duration_seconds": _duration_seconds(started_at, finished_at),
+    }
+
+
+def build_cell_evidence(
+    manifest: Mapping[str, object],
+    junit_path: Path,
+    *,
+    cell: str,
+    source_commit: str,
+    started_at: str,
+    finished_at: str,
+) -> dict[str, object]:
+    """把一个 cell 的 collection 与 JUnit 收敛为严格终态证据。"""
+    try:
+        evidence = _cell_evidence_base(
+            manifest,
+            cell=cell,
+            source_commit=source_commit,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+    except AssuranceError:
+        return {
+            "schema_version": CELL_EVIDENCE_SCHEMA,
+            "cell": cell,
+            "source_commit": source_commit,
+            "status": "failed",
+            "reason": "timestamp_invalid",
+            "duration_seconds": 0.0,
+        }
+
+    if source_commit != manifest.get("source_commit"):
+        evidence["reason"] = "candidate_commit_mismatch"
+        return evidence
+    if cell not in list(manifest.get("cells", [])):
+        evidence["reason"] = "cell_not_collected"
+        return evidence
+    if not junit_path.is_file():
+        evidence["reason"] = "junit_missing"
+        return evidence
+    if junit_path.stat().st_size == 0:
+        evidence["reason"] = "junit_empty"
+        return evidence
+    try:
+        root = ET.parse(junit_path).getroot()
+    except (ET.ParseError, OSError):
+        evidence["reason"] = "junit_corrupt"
+        return evidence
+    if root.tag not in {"testsuite", "testsuites"}:
+        evidence["reason"] = "junit_root_invalid"
+        return evidence
+
+    testcases = list(root.iter("testcase"))
+    testcase_keys = [
+        (
+            testcase.get("file", ""),
+            testcase.get("classname", ""),
+            testcase.get("name", ""),
+        )
+        for testcase in testcases
+    ]
+    duplicates = sorted(
+        "::".join(key)
+        for key in set(testcase_keys)
+        if testcase_keys.count(key) > 1
+    )
+    failures = sum(1 for testcase in testcases if testcase.find("failure") is not None)
+    errors = sum(1 for testcase in testcases if testcase.find("error") is not None)
+    skipped = sum(1 for testcase in testcases if testcase.find("skipped") is not None)
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    declared_failures = sum(int(suite.get("failures", "0") or 0) for suite in suites)
+    declared_errors = sum(int(suite.get("errors", "0") or 0) for suite in suites)
+    declared_skipped = sum(int(suite.get("skipped", "0") or 0) for suite in suites)
+    declared_tests = sum(int(suite.get("tests", "0") or 0) for suite in suites)
+
+    evidence.update(
+        {
+            "executed_count": len(testcases),
+            "failures": max(failures, declared_failures),
+            "errors": max(errors, declared_errors),
+            "skipped": max(skipped, declared_skipped),
+            "duplicate_testcases": duplicates,
+        }
+    )
+    if duplicates:
+        evidence["reason"] = "duplicate_testcase"
+        return evidence
+    if any((evidence["failures"], evidence["errors"], evidence["skipped"])):
+        evidence["reason"] = "non_success_terminal_state"
+        return evidence
+    if evidence["executed_count"] != evidence["collected_count"]:
+        evidence["reason"] = "execution_count_mismatch"
+        return evidence
+    if declared_tests != evidence["executed_count"]:
+        evidence["reason"] = "junit_declared_count_mismatch"
+        return evidence
+
+    evidence["status"] = "success"
+    evidence["reason"] = "complete"
+    return evidence
+
+
+def _aggregate_failure(
+    reason: str,
+    *,
+    candidate_commit: str,
+    baseline_digest: str,
+    runner_seconds: float,
+    late_red: bool,
+) -> dict[str, object]:
+    return {
+        "schema_version": AGGREGATE_SCHEMA,
+        "status": "failed",
+        "reason": reason,
+        "candidate_commit": candidate_commit,
+        "baseline_digest": baseline_digest,
+        "runner_seconds": runner_seconds,
+        "late_red": late_red,
+    }
+
+
+def aggregate_assurance(
+    expected_cells: Sequence[str],
+    evidence: Sequence[Mapping[str, object]],
+    *,
+    candidate_commit: str,
+    baseline_digest: str,
+    fast_gate_status: str,
+) -> dict[str, object]:
+    """验证 cell evidence 精确覆盖合同，并输出只读成本观察值。"""
+    expected = list(expected_cells)
+    if len(expected) != len(set(expected)) or any(not cell for cell in expected):
+        return _aggregate_failure(
+            "expected_cell_contract_invalid",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=0.0,
+            late_red=False,
+        )
+    cells = [str(item.get("cell", "")) for item in evidence]
+    runner_seconds = sum(float(item.get("duration_seconds", 0.0)) for item in evidence)
+    any_failed = any(item.get("status") != "success" for item in evidence)
+    late_red = fast_gate_status == "success" and any_failed
+    if len(cells) != len(set(cells)):
+        return _aggregate_failure(
+            "duplicate_cell_evidence",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=runner_seconds,
+            late_red=late_red,
+        )
+    if set(cells) != set(expected):
+        return _aggregate_failure(
+            "cell_set_mismatch",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=runner_seconds,
+            late_red=late_red,
+        )
+    if any(item.get("schema_version") != CELL_EVIDENCE_SCHEMA for item in evidence):
+        return _aggregate_failure(
+            "evidence_schema_invalid",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=runner_seconds,
+            late_red=late_red,
+        )
+    if any(item.get("source_commit") != candidate_commit for item in evidence):
+        return _aggregate_failure(
+            "candidate_commit_mismatch",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=runner_seconds,
+            late_red=late_red,
+        )
+    if any_failed:
+        return _aggregate_failure(
+            "non_success_cell",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=runner_seconds,
+            late_red=late_red,
+        )
+    report: dict[str, object] = {
+        "schema_version": AGGREGATE_SCHEMA,
+        "status": "success",
+        "reason": "complete",
+        "candidate_commit": candidate_commit,
+        "baseline_digest": baseline_digest,
+        "cells": sorted(cells),
+        "runner_seconds": runner_seconds,
+        "late_red": False,
+    }
+    report["report_digest"] = _canonical_digest(report, "report_digest")
+    return report
+
+
 def _collect_nodeids(root: Path, pytest_args: Sequence[str]) -> list[str]:
     command = [
         sys.executable,
@@ -294,6 +531,23 @@ def _build_parser() -> argparse.ArgumentParser:
     transition.add_argument("--candidate", type=Path, required=True)
     transition.add_argument("--lineage", type=Path, required=True)
     transition.add_argument("--output", type=Path)
+
+    cell_evidence = subparsers.add_parser("cell-evidence")
+    cell_evidence.add_argument("--manifest", type=Path, required=True)
+    cell_evidence.add_argument("--junit", type=Path, required=True)
+    cell_evidence.add_argument("--cell", required=True)
+    cell_evidence.add_argument("--source-commit", required=True)
+    cell_evidence.add_argument("--started-at", required=True)
+    cell_evidence.add_argument("--finished-at", required=True)
+    cell_evidence.add_argument("--output", type=Path, required=True)
+
+    aggregate = subparsers.add_parser("aggregate")
+    aggregate.add_argument("--evidence-root", type=Path, required=True)
+    aggregate.add_argument("--expected-cell", action="append", required=True)
+    aggregate.add_argument("--candidate-commit", required=True)
+    aggregate.add_argument("--baseline-digest", required=True)
+    aggregate.add_argument("--fast-gate-status", default="unknown")
+    aggregate.add_argument("--output", type=Path, required=True)
     return parser
 
 
@@ -318,13 +572,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             _write_json(args.output, payload)
             return 0
 
-        result = verify_baseline_transition(
-            _read_json(args.trusted),
-            _read_json(args.candidate),
-            _read_json(args.lineage),
-        )
-        if args.output:
-            _write_json(args.output, result)
+        if args.command == "verify-transition":
+            result = verify_baseline_transition(
+                _read_json(args.trusted),
+                _read_json(args.candidate),
+                _read_json(args.lineage),
+            )
+            if args.output:
+                _write_json(args.output, result)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0 if result["status"] == "success" else 1
+
+        if args.command == "cell-evidence":
+            result = build_cell_evidence(
+                _read_json(args.manifest),
+                args.junit,
+                cell=args.cell,
+                source_commit=args.source_commit,
+                started_at=args.started_at,
+                finished_at=args.finished_at,
+            )
+        else:
+            evidence = [
+                _read_json(path)
+                for path in sorted(args.evidence_root.rglob("cell-evidence.json"))
+            ]
+            result = aggregate_assurance(
+                args.expected_cell,
+                evidence,
+                candidate_commit=args.candidate_commit,
+                baseline_digest=args.baseline_digest,
+                fast_gate_status=args.fast_gate_status,
+            )
+        _write_json(args.output, result)
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0 if result["status"] == "success" else 1
     except AssuranceError as exc:
@@ -334,4 +614,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

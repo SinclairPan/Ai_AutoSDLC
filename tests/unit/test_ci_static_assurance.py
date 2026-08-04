@@ -195,3 +195,217 @@ def test_cell_contract_change_fails_closed() -> None:
     assert result["status"] == "failed"
     assert result["reason"] == "cell_contract_changed"
 
+
+def _single_cell_manifest(source_commit: str = "a" * 40) -> dict[str, object]:
+    module = _load_module()
+    return module.build_collection_manifest(
+        ["tests/a.py::test_one", "tests/a.py::test_two"],
+        ["ubuntu-latest-py3.11"],
+        source_commit=source_commit,
+    )
+
+
+def _write_junit(path: Path, body: str, *, tests: int = 2) -> None:
+    path.write_text(
+        f'<testsuite tests="{tests}" failures="0" errors="0" skipped="0">'
+        f"{body}</testsuite>",
+        encoding="utf-8",
+    )
+
+
+def test_cell_evidence_accepts_exact_successful_junit(tmp_path: Path) -> None:
+    """防止成功 cell 因 XML 包装差异被误判，同时验证真实计数与耗时。"""
+    module = _load_module()
+    junit = tmp_path / "junit.xml"
+    _write_junit(
+        junit,
+        '<testcase classname="tests.a" name="test_one"/>'
+        '<testcase classname="tests.a" name="test_two"/>',
+    )
+
+    result = module.build_cell_evidence(
+        _single_cell_manifest(),
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert result["status"] == "success"
+    assert result["reason"] == "complete"
+    assert result["collected_count"] == 2
+    assert result["executed_count"] == 2
+    assert result["duration_seconds"] == 5.0
+
+
+@pytest.mark.parametrize(
+    ("filename", "xml", "reason"),
+    [
+        ("missing.xml", None, "junit_missing"),
+        ("empty.xml", "", "junit_empty"),
+        ("broken.xml", "<testsuite>", "junit_corrupt"),
+        (
+            "skipped.xml",
+            '<testsuite tests="2" skipped="1">'
+            '<testcase classname="a" name="one"><skipped/></testcase>'
+            '<testcase classname="a" name="two"/>'
+            "</testsuite>",
+            "non_success_terminal_state",
+        ),
+        (
+            "failed.xml",
+            '<testsuite tests="2" failures="1">'
+            '<testcase classname="a" name="one"><failure/></testcase>'
+            '<testcase classname="a" name="two"/>'
+            "</testsuite>",
+            "non_success_terminal_state",
+        ),
+        (
+            "partial.xml",
+            '<testsuite tests="1"><testcase classname="a" name="one"/></testsuite>',
+            "execution_count_mismatch",
+        ),
+        (
+            "duplicate.xml",
+            '<testsuite tests="2">'
+            '<testcase classname="a" name="same"/>'
+            '<testcase classname="a" name="same"/>'
+            "</testsuite>",
+            "duplicate_testcase",
+        ),
+    ],
+)
+def test_cell_evidence_faults_fail_closed(
+    tmp_path: Path, filename: str, xml: str | None, reason: str
+) -> None:
+    """防止缺失、损坏、skip、失败、部分或重复 JUnit 产生绿色终态。"""
+    module = _load_module()
+    junit = tmp_path / filename
+    if xml is not None:
+        junit.write_text(xml, encoding="utf-8")
+
+    result = module.build_cell_evidence(
+        _single_cell_manifest(),
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:05+00:00",
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == reason
+
+
+def test_cell_evidence_rejects_wrong_candidate_or_cell(tmp_path: Path) -> None:
+    """防止旧候选证据或其他 cell 的证据被当前 Assurance 复用。"""
+    module = _load_module()
+    junit = tmp_path / "junit.xml"
+    _write_junit(
+        junit,
+        '<testcase classname="a" name="one"/>'
+        '<testcase classname="a" name="two"/>',
+    )
+
+    wrong_commit = module.build_cell_evidence(
+        _single_cell_manifest(),
+        junit,
+        cell="ubuntu-latest-py3.11",
+        source_commit="b" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:01+00:00",
+    )
+    wrong_cell = module.build_cell_evidence(
+        _single_cell_manifest(),
+        junit,
+        cell="windows-latest-py3.14",
+        source_commit="a" * 40,
+        started_at="2026-08-04T10:00:00+00:00",
+        finished_at="2026-08-04T10:00:01+00:00",
+    )
+
+    assert wrong_commit["reason"] == "candidate_commit_mismatch"
+    assert wrong_cell["reason"] == "cell_not_collected"
+
+
+def _successful_evidence(cell: str, *, duration: float = 3.0) -> dict[str, object]:
+    return {
+        "schema_version": "ci-cell-evidence-v1",
+        "cell": cell,
+        "source_commit": "a" * 40,
+        "collection_manifest_digest": "sha256:manifest",
+        "collected_count": 2,
+        "executed_count": 2,
+        "failures": 0,
+        "errors": 0,
+        "skipped": 0,
+        "duplicate_testcases": [],
+        "status": "success",
+        "reason": "complete",
+        "started_at": "2026-08-04T10:00:00+00:00",
+        "finished_at": "2026-08-04T10:00:03+00:00",
+        "duration_seconds": duration,
+    }
+
+
+def test_aggregate_requires_exact_cells_and_sums_runner_seconds() -> None:
+    """防止部分矩阵被聚合为成功，并保留成本观察值。"""
+    module = _load_module()
+    evidence = [
+        _successful_evidence("ubuntu-latest-py3.11", duration=2.5),
+        _successful_evidence("windows-latest-py3.14", duration=4.5),
+    ]
+
+    success = module.aggregate_assurance(
+        ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
+        evidence,
+        candidate_commit="a" * 40,
+        baseline_digest="sha256:baseline",
+        fast_gate_status="success",
+    )
+    missing = module.aggregate_assurance(
+        ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
+        evidence[:1],
+        candidate_commit="a" * 40,
+        baseline_digest="sha256:baseline",
+        fast_gate_status="success",
+    )
+
+    assert success["status"] == "success"
+    assert success["runner_seconds"] == 7.0
+    assert success["late_red"] is False
+    assert missing["status"] == "failed"
+    assert missing["reason"] == "cell_set_mismatch"
+
+
+def test_aggregate_marks_late_red_and_rejects_duplicate_or_failed_cell() -> None:
+    """防止 Fast 绿后完整层红被吞掉，也防止重复 shard/cell 充数。"""
+    module = _load_module()
+    failed = _successful_evidence("ubuntu-latest-py3.11")
+    failed["status"] = "failed"
+    failed["reason"] = "non_success_terminal_state"
+
+    late_red = module.aggregate_assurance(
+        ["ubuntu-latest-py3.11"],
+        [failed],
+        candidate_commit="a" * 40,
+        baseline_digest="sha256:baseline",
+        fast_gate_status="success",
+    )
+    duplicate = module.aggregate_assurance(
+        ["ubuntu-latest-py3.11"],
+        [
+            _successful_evidence("ubuntu-latest-py3.11"),
+            _successful_evidence("ubuntu-latest-py3.11"),
+        ],
+        candidate_commit="a" * 40,
+        baseline_digest="sha256:baseline",
+        fast_gate_status="success",
+    )
+
+    assert late_red["status"] == "failed"
+    assert late_red["reason"] == "non_success_cell"
+    assert late_red["late_red"] is True
+    assert duplicate["status"] == "failed"
+    assert duplicate["reason"] == "duplicate_cell_evidence"
