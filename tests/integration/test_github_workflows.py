@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 
 import yaml
@@ -750,6 +751,12 @@ def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
         "ready_for_review",
         "converted_to_draft",
     ]
+    assert triggers["workflow_call"]["inputs"]["authority_ref"] == {
+        "description": "Historical authority ref for release assurance.",
+        "required": False,
+        "type": "string",
+        "default": "",
+    }
     jobs = workflow["jobs"]
     assert jobs["fast-gate"]["runs-on"] == "ubuntu-latest"
     assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
@@ -774,6 +781,7 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     )
 
     assert "Checkout protected base authority" in workflow
+    assert "inputs.authority_ref" in workflow
     assert "path: trusted-base" in workflow
     assert "trusted-base/scripts/ci_static_assurance.py" in workflow
     assert "authority_unavailable" in workflow
@@ -813,14 +821,20 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
 
     assert "v1.0.1 v1.0.2" in workflow_text
     assert jobs["release-assurance-policy"]["outputs"] == {
-        "assurance_required": "${{ steps.policy.outputs.assurance_required }}"
+        "assurance_required": "${{ steps.policy.outputs.assurance_required }}",
+        "authority_ref": "${{ steps.policy.outputs.authority_ref }}",
     }
     assert jobs["release-assurance"] == {
         "needs": "release-assurance-policy",
         "if": "needs.release-assurance-policy.outputs.assurance_required == 'true'",
         "uses": "./.github/workflows/compatibility-gate.yml",
-        "with": {"candidate_ref": "${{ inputs.tag }}", "force_full": True},
+        "with": {
+            "candidate_ref": "${{ inputs.tag }}",
+            "authority_ref": "${{ needs.release-assurance-policy.outputs.authority_ref }}",
+            "force_full": True,
+        },
     }
+    assert 'git rev-parse "HEAD^1"' in workflow_text
     build_job = jobs["build-smoke-candidate"]
     assert build_job["needs"] == [
         "release-assurance-policy",
@@ -837,6 +851,27 @@ def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:
     assert "scripts/ci_static_assurance.py" not in pyproject
     assert (_REPO_ROOT / ".github" / "ci" / "fast-gate-tests.txt").is_file()
     assert (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").is_file()
+
+
+def test_portable_self_update_cases_are_not_skip_authorized() -> None:
+    baseline = json.loads(
+        (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    windows_path_case = (
+        "sha256:20b2547fdb2751fb8666e08640e7c5f7218bd320523d866ab3e691f0428247ee"
+    )
+    posix_path_case = (
+        "sha256:4a3dce9eda68c1ab59b2e00ad7d8cb111a36dc64aed7df1017f923b293a9ec88"
+    )
+
+    assert {windows_path_case, posix_path_case} <= set(baseline["case_ids"])
+    for cell, allowed_skips in baseline["allowed_skip_case_ids_by_cell"].items():
+        if cell.startswith(("macos-", "ubuntu-")):
+            assert windows_path_case not in allowed_skips
+        if cell.startswith("windows-"):
+            assert posix_path_case not in allowed_skips
 
 
 def test_activation_evidence_workflow_owns_its_trust_root_and_real_inputs() -> None:

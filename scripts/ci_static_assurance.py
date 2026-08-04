@@ -776,6 +776,7 @@ def aggregate_assurance(
     candidate_commit: str,
     baseline_digest: str,
     fast_gate_status: str,
+    allowed_skip_case_ids_by_cell: Mapping[str, Sequence[str]],
 ) -> dict[str, object]:
     """验证 cell evidence 精确覆盖合同，并输出只读成本观察值。"""
     expected = list(expected_cells)
@@ -807,6 +808,26 @@ def aggregate_assurance(
             runner_seconds=runner_seconds,
             late_red=late_red,
         )
+    if set(allowed_skip_case_ids_by_cell) != set(expected):
+        return _aggregate_failure(
+            "allowed_skip_contract_invalid",
+            candidate_commit=candidate_commit,
+            baseline_digest=baseline_digest,
+            runner_seconds=runner_seconds,
+            late_red=late_red,
+        )
+    allowed_skips: dict[str, set[str]] = {}
+    for cell, raw_values in allowed_skip_case_ids_by_cell.items():
+        values = [str(value) for value in raw_values]
+        if len(values) != len(set(values)) or any(not value for value in values):
+            return _aggregate_failure(
+                "allowed_skip_contract_invalid",
+                candidate_commit=candidate_commit,
+                baseline_digest=baseline_digest,
+                runner_seconds=runner_seconds,
+                late_red=late_red,
+            )
+        allowed_skips[cell] = set(values)
     if any(item.get("schema_version") != CELL_EVIDENCE_SCHEMA for item in evidence):
         return _aggregate_failure(
             "evidence_schema_invalid",
@@ -823,6 +844,40 @@ def aggregate_assurance(
             runner_seconds=runner_seconds,
             late_red=late_red,
         )
+    for item in evidence:
+        cell = str(item.get("cell", ""))
+        raw_skip_ids = item.get("skipped_case_ids")
+        skipped_count = item.get("skipped")
+        if (
+            not isinstance(raw_skip_ids, list)
+            or not isinstance(skipped_count, int)
+            or isinstance(skipped_count, bool)
+            or skipped_count < 0
+        ):
+            return _aggregate_failure(
+                "skip_evidence_invalid",
+                candidate_commit=candidate_commit,
+                baseline_digest=baseline_digest,
+                runner_seconds=runner_seconds,
+                late_red=late_red,
+            )
+        skip_ids = [str(value) for value in raw_skip_ids]
+        if len(skip_ids) != len(set(skip_ids)) or skipped_count != len(skip_ids):
+            return _aggregate_failure(
+                "skip_evidence_invalid",
+                candidate_commit=candidate_commit,
+                baseline_digest=baseline_digest,
+                runner_seconds=runner_seconds,
+                late_red=late_red,
+            )
+        if not set(skip_ids).issubset(allowed_skips[cell]):
+            return _aggregate_failure(
+                "unexpected_skip_identity",
+                candidate_commit=candidate_commit,
+                baseline_digest=baseline_digest,
+                runner_seconds=runner_seconds,
+                late_red=late_red,
+            )
     if any_failed:
         return _aggregate_failure(
             "non_success_cell",
@@ -1054,6 +1109,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             ]
             baseline = _read_json(args.candidate_baseline)
+            baseline_cell_cases = _baseline_cell_cases(baseline)
+            allowed_skips = (
+                _allowed_skip_contract(baseline, baseline_cell_cases)
+                if baseline_cell_cases is not None
+                else None
+            )
             coverage = verify_collection_coverage(
                 baseline,
                 manifests,
@@ -1069,6 +1130,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                     candidate_commit=args.candidate_commit,
                     baseline_digest=args.baseline_digest,
                     fast_gate_status=args.fast_gate_status,
+                    allowed_skip_case_ids_by_cell={
+                        cell: sorted(case_ids)
+                        for cell, case_ids in (allowed_skips or {}).items()
+                    },
                 )
             )
         _write_json(args.output, result)

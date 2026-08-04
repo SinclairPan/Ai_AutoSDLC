@@ -576,6 +576,7 @@ def _successful_evidence(cell: str, *, duration: float = 3.0) -> dict[str, objec
         "failures": 0,
         "errors": 0,
         "skipped": 0,
+        "skipped_case_ids": [],
         "duplicate_testcases": [],
         "status": "success",
         "reason": "complete",
@@ -599,6 +600,10 @@ def test_aggregate_requires_exact_cells_and_sums_runner_seconds() -> None:
         candidate_commit="a" * 40,
         baseline_digest="sha256:baseline",
         fast_gate_status="success",
+        allowed_skip_case_ids_by_cell={
+            "ubuntu-latest-py3.11": [],
+            "windows-latest-py3.14": [],
+        },
     )
     missing = module.aggregate_assurance(
         ["ubuntu-latest-py3.11", "windows-latest-py3.14"],
@@ -606,6 +611,10 @@ def test_aggregate_requires_exact_cells_and_sums_runner_seconds() -> None:
         candidate_commit="a" * 40,
         baseline_digest="sha256:baseline",
         fast_gate_status="success",
+        allowed_skip_case_ids_by_cell={
+            "ubuntu-latest-py3.11": [],
+            "windows-latest-py3.14": [],
+        },
     )
 
     assert success["status"] == "success"
@@ -628,6 +637,7 @@ def test_aggregate_marks_late_red_and_rejects_duplicate_or_failed_cell() -> None
         candidate_commit="a" * 40,
         baseline_digest="sha256:baseline",
         fast_gate_status="success",
+        allowed_skip_case_ids_by_cell={"ubuntu-latest-py3.11": []},
     )
     duplicate = module.aggregate_assurance(
         ["ubuntu-latest-py3.11"],
@@ -638,6 +648,7 @@ def test_aggregate_marks_late_red_and_rejects_duplicate_or_failed_cell() -> None
         candidate_commit="a" * 40,
         baseline_digest="sha256:baseline",
         fast_gate_status="success",
+        allowed_skip_case_ids_by_cell={"ubuntu-latest-py3.11": []},
     )
 
     assert late_red["status"] == "failed"
@@ -645,6 +656,27 @@ def test_aggregate_marks_late_red_and_rejects_duplicate_or_failed_cell() -> None
     assert late_red["late_red"] is True
     assert duplicate["status"] == "failed"
     assert duplicate["reason"] == "duplicate_cell_evidence"
+
+
+def test_aggregate_rechecks_skips_against_pristine_contract() -> None:
+    """候选测试即使改写本地 baseline，也不能授权新的 skip。"""
+    module = _load_module()
+    cell = "ubuntu-latest-py3.11"
+    evidence = _successful_evidence(cell)
+    evidence["skipped"] = 1
+    evidence["skipped_case_ids"] = ["sha256:candidate-authorized-skip"]
+
+    result = module.aggregate_assurance(
+        [cell],
+        [evidence],
+        candidate_commit="a" * 40,
+        baseline_digest="sha256:baseline",
+        fast_gate_status="success",
+        allowed_skip_case_ids_by_cell={cell: []},
+    )
+
+    assert result["status"] == "failed"
+    assert result["reason"] == "unexpected_skip_identity"
 
 
 @pytest.mark.parametrize(

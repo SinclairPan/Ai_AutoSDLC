@@ -21,11 +21,13 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       assurance_required: ${{ steps.policy.outputs.assurance_required }}
+      authority_ref: ${{ steps.policy.outputs.authority_ref }}
     steps:
       - name: Checkout exact release tag
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.tag }}
+          fetch-depth: 0
 
       - name: Resolve static assurance availability
         id: policy
@@ -49,7 +51,9 @@ jobs:
           done
 
           if [[ "${#missing_assets[@]}" -eq 0 ]]; then
+            authority_ref="$(git rev-parse "HEAD^1")"
             echo "assurance_required=true" >> "${GITHUB_OUTPUT}"
+            echo "authority_ref=${authority_ref}" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
@@ -69,6 +73,7 @@ jobs:
     uses: ./.github/workflows/compatibility-gate.yml
     with:
       candidate_ref: ${{ inputs.tag }}
+      authority_ref: ${{ needs.release-assurance-policy.outputs.authority_ref }}
       force_full: true
 
   build-smoke-candidate:
