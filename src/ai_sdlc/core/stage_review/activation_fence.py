@@ -390,12 +390,15 @@ def _clear_stale_owner(path: Path) -> bool:
     lease_token = str(payload.get("lease_token", ""))
     if re.fullmatch(r"[0-9a-f]{64}", lease_token):
         if pid == os.getpid():
+            # 本进程 token 是 live 权威；临界区结束后的 Windows unlock 延迟
+            # 不能把旧 marker 再伪装成活动 writer/reader。
             with _ACTIVE_LEASE_TOKENS_LOCK:
                 locally_active = lease_token in _ACTIVE_LEASE_TOKENS
+            if locally_active:
+                return False
         else:
-            locally_active = False
-        if locally_active or _lease_owner_lock_is_active(path, lease_token):
-            return False
+            if _lease_owner_lock_is_active(path, lease_token):
+                return False
         try:
             removed = _unlink_owned_marker(path, lease_token)
         except OSError:

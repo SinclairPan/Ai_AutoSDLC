@@ -64,6 +64,46 @@ def test_stale_owner_second_read_sharing_violation_is_deferred(
     assert marker.exists() is False
 
 
+def test_inactive_local_writer_marker_ignores_delayed_windows_owner_unlock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本进程 token 已失活时，延迟的 OS unlock 不能伪装成 live owner。"""
+
+    project_id = "project.activation-fence-delayed-owner-unlock"
+    fence_root = activation_fence._fence_root(tmp_path, project_id)
+    marker = fence_root / "writer-intent.lock"
+    lease_token = "b" * 64
+    marker.parent.mkdir(parents=True, exist_ok=True)
+    marker.write_text(
+        json.dumps(
+            {
+                "pid": os.getpid(),
+                "thread_id": 123,
+                "lease_token": lease_token,
+            }
+        ),
+        encoding="utf-8",
+    )
+    activation_fence._set_lease_token_active(lease_token, active=False)
+    owner_probe_calls = 0
+
+    def delayed_owner_unlock(*_args: object) -> bool:
+        nonlocal owner_probe_calls
+        owner_probe_calls += 1
+        return True
+
+    monkeypatch.setattr(
+        activation_fence,
+        "_lease_owner_lock_is_active",
+        delayed_owner_unlock,
+    )
+
+    assert activation_fence._clear_stale_owner(marker) is True
+    assert marker.exists() is False
+    assert owner_probe_calls == 0
+
+
 def _complete_lease_while_process_stays_alive(
     root: str,
     project_id: str,
