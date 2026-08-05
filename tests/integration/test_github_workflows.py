@@ -759,6 +759,12 @@ def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
     }
     jobs = workflow["jobs"]
     assert jobs["fast-gate"]["runs-on"] == "ubuntu-latest"
+    assert jobs["baseline-preflight"]["name"] == "Baseline Preflight"
+    assert jobs["baseline-preflight"]["needs"] == "authority-check"
+    assert (
+        jobs["baseline-preflight"]["if"]
+        == "needs.authority-check.outputs.baseline-preflight-authority-available == 'true'"
+    )
     assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
         "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
         "python-version": ["3.11", "3.12", "3.13", "3.14"],
@@ -772,7 +778,85 @@ def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
         == "needs.authority-check.outputs.full-assurance-required == 'true'"
     )
     assert jobs["merge-assurance"]["if"] == "always()"
+    assert "baseline-preflight" in jobs["merge-assurance"]["needs"]
     assert jobs["compatibility-gate-result"]["name"] == "Compatibility Gate Result"
+
+
+def test_compatibility_gate_preflights_draft_baseline_with_protected_authority() -> None:
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+    parsed = yaml.safe_load(workflow)
+    preflight = parsed["jobs"]["baseline-preflight"]
+    step_names = [step.get("name") for step in preflight["steps"]]
+    script = "\n".join(
+        str(step.get("run", "")) for step in preflight["steps"] if "run" in step
+    )
+
+    assert step_names[:2] == [
+        "Checkout candidate",
+        "Checkout protected base authority",
+    ]
+    assert "Require protected baseline authority" in step_names
+    assert "Collect bootstrap cell" in step_names
+    assert "Verify candidate baseline preflight" in step_names
+    assert "trusted-base/scripts/ci_static_assurance.py" in script
+    assert "baseline-preflight" in script
+    assert "python scripts/ci_static_assurance.py baseline-preflight" not in script
+    assert "bootstrap_candidate_verifier" not in script
+    assert (
+        "python trusted-base/scripts/ci_static_assurance.py baseline-preflight"
+        in script
+    )
+    assert "--trusted trusted-base/.github/ci/test-baseline.json" in script
+    assert "--candidate .github/ci/test-baseline.json" in script
+    assert "--protected-lineage trusted-base/.github/ci/test-lineage.json" in script
+    assert "--candidate-lineage .github/ci/test-lineage.json" in script
+    assert "--cell ubuntu-latest-py3.11" in script
+
+    merge_gate = parsed["jobs"]["merge-assurance"]["steps"][0]["run"]
+    assert "needs.baseline-preflight.result" in merge_gate
+    assert (
+        "needs.authority-check.outputs.baseline-preflight-authority-available"
+        in merge_gate
+    )
+    assert "needs.authority-check.outputs.reason" in merge_gate
+    assert "ordinary_draft_fast_gate" in merge_gate
+
+
+def test_draft_short_circuits_before_legacy_protected_authority_decision() -> None:
+    """旧 main 会把受保护变更判为全量；Draft 必须在调用它之前退出。"""
+    parsed = yaml.safe_load(
+        (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
+    )
+    decision = next(
+        step
+        for step in parsed["jobs"]["authority-check"]["steps"]
+        if step.get("id") == "decision"
+    )["run"]
+
+    draft_guard = 'if [[ "${EVENT_NAME}" == "pull_request"'
+    authority_fallback = 'if [[ "${authority_available}" != "true" ]]'
+    preflight_capability_probe = (
+        "python trusted-base/scripts/ci_static_assurance.py baseline-preflight --help"
+    )
+    legacy_authority_call = (
+        "python trusted-base/scripts/ci_static_assurance.py decide-mode"
+    )
+
+    assert decision.index(preflight_capability_probe) < decision.index(draft_guard)
+    assert decision.index(draft_guard) < decision.index(authority_fallback)
+    draft_block = decision[
+        decision.index(draft_guard) : decision.index(authority_fallback)
+    ]
+    assert '"${FORCE_FULL}" != "true"' in draft_block
+    assert 'reason=protected_ci_draft_preflight' in draft_block
+    assert 'reason=ordinary_draft_fast_gate' in draft_block
+    assert 'reason=baseline_preflight_authority_unavailable' in draft_block
+    assert 'full_assurance_required=true' in draft_block
+    assert "baseline_preflight_authority_available" in draft_block
+    assert "exit 0" in draft_block
+    assert decision.index(authority_fallback) < decision.index(legacy_authority_call)
 
 
 def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() -> None:
@@ -865,7 +949,7 @@ def test_compatibility_gate_pull_request_executes_merge_commit() -> None:
     )
 
     merge_candidate_ref = "inputs.candidate_ref || github.sha"
-    assert workflow.count(merge_candidate_ref) == 5
+    assert workflow.count(merge_candidate_ref) == 6
     assert "github.event.pull_request.head.sha" not in workflow
 
 

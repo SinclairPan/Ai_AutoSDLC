@@ -443,19 +443,21 @@ def decide_assurance_mode(
     protected_paths_changed: bool,
     force_full: bool,
 ) -> dict[str, object]:
-    """静态决定是否运行完整层；任何未知或权威缺失都 fail-safe。"""
+    """静态决定是否运行完整层；Draft 只允许短预检，最终候选才运行矩阵。"""
     if force_full:
         return {"full_assurance_required": True, "reason": "force_full"}
+    if event_name == "pull_request" and pull_request_draft:
+        return {
+            "full_assurance_required": False,
+            "reason": (
+                "protected_ci_draft_preflight"
+                if protected_paths_changed
+                else "ordinary_draft_fast_gate"
+            ),
+        }
     if not authority_available:
         return {"full_assurance_required": True, "reason": "authority_unavailable"}
-    if protected_paths_changed:
-        return {"full_assurance_required": True, "reason": "protected_ci_change"}
     if event_name == "pull_request":
-        if pull_request_draft:
-            return {
-                "full_assurance_required": False,
-                "reason": "ordinary_draft_fast_gate",
-            }
         return {"full_assurance_required": True, "reason": "ready_pull_request"}
     reasons = {
         "merge_group": "merge_candidate",
@@ -467,6 +469,102 @@ def decide_assurance_mode(
     return {
         "full_assurance_required": True,
         "reason": reasons.get(event_name, "unknown_event_fail_closed"),
+    }
+
+
+def _preflight_failure(reason: str) -> dict[str, object]:
+    return {"status": "failed", "reason": reason}
+
+
+def verify_baseline_preflight(
+    trusted_baseline: Mapping[str, object],
+    candidate_baseline: Mapping[str, object],
+    candidate_manifest: Mapping[str, object],
+    *,
+    protected_lineage: Mapping[str, object],
+    candidate_lineage: Mapping[str, object],
+    expected_cell: str,
+    expected_source_commit: str,
+) -> dict[str, object]:
+    """用受保护权威提前验证候选 baseline 与固定 bootstrap cell collection。"""
+    if validate_lineage_contract(candidate_lineage)["status"] != "success":
+        return _preflight_failure("candidate_lineage_invalid")
+
+    try:
+        trusted_digest = _validated_baseline_digest(trusted_baseline)
+        candidate_digest = _validated_baseline_digest(candidate_baseline)
+    except AssuranceError:
+        return _preflight_failure("baseline_digest_mismatch")
+
+    if candidate_digest == trusted_digest:
+        transition = {
+            "status": "success",
+            "added_case_ids": [],
+            "renamed_case_ids": [],
+        }
+    else:
+        transition = verify_baseline_transition(
+            trusted_baseline,
+            candidate_baseline,
+            protected_lineage,
+        )
+        if transition["status"] != "success":
+            return _preflight_failure(str(transition["reason"]))
+
+    baseline_cases = _baseline_cell_cases(candidate_baseline)
+    if baseline_cases is None or expected_cell not in baseline_cases:
+        return _preflight_failure("candidate_baseline_invalid")
+    if candidate_manifest.get("cells") != [expected_cell]:
+        return _preflight_failure("manifest_cell_mismatch")
+    if candidate_manifest.get("source_commit") != expected_source_commit:
+        return _preflight_failure("candidate_commit_mismatch")
+    if candidate_manifest.get("manifest_digest") != _canonical_digest(
+        candidate_manifest, "manifest_digest"
+    ):
+        return _preflight_failure("manifest_digest_invalid")
+
+    runtime_case_ids = candidate_manifest.get("case_ids")
+    runtime_member_ids = candidate_manifest.get("execution_member_ids")
+    case_nodeids = candidate_manifest.get("case_nodeids")
+    if (
+        not isinstance(runtime_case_ids, list)
+        or len(runtime_case_ids) != len(set(runtime_case_ids))
+        or not isinstance(runtime_member_ids, list)
+        or len(runtime_member_ids) != len(set(runtime_member_ids))
+        or not isinstance(case_nodeids, Mapping)
+        or set(case_nodeids) != set(runtime_case_ids)
+    ):
+        return _preflight_failure("runtime_case_identity_invalid")
+    try:
+        normalized_nodeids = {
+            str(case_id): _normalize_nodeid(str(nodeid))
+            for case_id, nodeid in case_nodeids.items()
+        }
+    except AssuranceError:
+        return _preflight_failure("runtime_case_identity_invalid")
+    if any(
+        _stable_case_id(nodeid) != case_id
+        for case_id, nodeid in normalized_nodeids.items()
+    ):
+        return _preflight_failure("runtime_case_identity_invalid")
+
+    runtime_cases = {str(case_id) for case_id in runtime_case_ids}
+    expected_members = {
+        _stable_execution_member_id(case_id, expected_cell)
+        for case_id in runtime_cases
+    }
+    if {str(member_id) for member_id in runtime_member_ids} != expected_members:
+        return _preflight_failure("execution_member_set_invalid")
+    if runtime_cases != baseline_cases[expected_cell]:
+        return _preflight_failure("candidate_collection_mismatch")
+
+    return {
+        "status": "success",
+        "reason": "baseline_preflight_complete",
+        "cell": expected_cell,
+        "case_count": len(runtime_cases),
+        "added_case_count": len(transition.get("added_case_ids", [])),
+        "renamed_case_count": len(transition.get("renamed_case_ids", [])),
     }
 
 
@@ -1032,6 +1130,16 @@ def _build_parser() -> argparse.ArgumentParser:
     transition.add_argument("--lineage", type=Path, required=True)
     transition.add_argument("--output", type=Path)
 
+    preflight = subparsers.add_parser("baseline-preflight")
+    preflight.add_argument("--trusted", type=Path, required=True)
+    preflight.add_argument("--candidate", type=Path, required=True)
+    preflight.add_argument("--manifest", type=Path, required=True)
+    preflight.add_argument("--protected-lineage", type=Path, required=True)
+    preflight.add_argument("--candidate-lineage", type=Path, required=True)
+    preflight.add_argument("--cell", required=True)
+    preflight.add_argument("--candidate-commit", required=True)
+    preflight.add_argument("--output", type=Path, required=True)
+
     mode = subparsers.add_parser("decide-mode")
     mode.add_argument("--event-name", required=True)
     mode.add_argument("--pull-request-draft", default="false")
@@ -1129,6 +1237,20 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             if args.output:
                 _write_json(args.output, result)
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
+            return 0 if result["status"] == "success" else 1
+
+        if args.command == "baseline-preflight":
+            result = verify_baseline_preflight(
+                _read_json(args.trusted),
+                _read_json(args.candidate),
+                _read_json(args.manifest),
+                protected_lineage=_read_json(args.protected_lineage),
+                candidate_lineage=_read_json(args.candidate_lineage),
+                expected_cell=args.cell,
+                expected_source_commit=args.candidate_commit,
+            )
+            _write_json(args.output, result)
             print(json.dumps(result, ensure_ascii=False, sort_keys=True))
             return 0 if result["status"] == "success" else 1
 

@@ -47,6 +47,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       authority-available: ${{ steps.decision.outputs.authority_available }}
+      baseline-preflight-authority-available: ${{ steps.decision.outputs.baseline_preflight_authority_available }}
       base-sha: ${{ steps.decision.outputs.base_sha }}
       candidate-sha: ${{ steps.decision.outputs.candidate_sha }}
       full-assurance-required: ${{ steps.decision.outputs.full_assurance_required }}
@@ -88,6 +89,12 @@ jobs:
             authority_available=true
           fi
 
+          baseline_preflight_authority_available=false
+          if [[ "${authority_available}" == "true" ]] \
+             && python trusted-base/scripts/ci_static_assurance.py baseline-preflight --help >/dev/null 2>&1; then
+            baseline_preflight_authority_available=true
+          fi
+
           protected_paths_changed=false
           if ! git diff --quiet "${base_sha}" "${candidate_sha}" -- \
             .github/workflows/compatibility-gate.yml \
@@ -99,8 +106,28 @@ jobs:
           fi
 
           echo "authority_available=${authority_available}" >> "${GITHUB_OUTPUT}"
+          echo "baseline_preflight_authority_available=${baseline_preflight_authority_available}" >> "${GITHUB_OUTPUT}"
           echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
           echo "candidate_sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
+
+          # 受保护 main 上的旧 verifier 会把受保护路径变更强制升级为全量。
+          # Draft 调度必须先退出；Baseline Preflight 仍由独立 job 强制执行。
+          if [[ "${EVENT_NAME}" == "pull_request" \
+             && "${PR_DRAFT}" == "true" \
+             && "${FORCE_FULL}" != "true" ]]; then
+            if [[ "${protected_paths_changed}" == "true" \
+               && "${baseline_preflight_authority_available}" != "true" ]]; then
+              echo "full_assurance_required=true" >> "${GITHUB_OUTPUT}"
+              echo "reason=baseline_preflight_authority_unavailable" >> "${GITHUB_OUTPUT}"
+            elif [[ "${protected_paths_changed}" == "true" ]]; then
+              echo "full_assurance_required=false" >> "${GITHUB_OUTPUT}"
+              echo "reason=protected_ci_draft_preflight" >> "${GITHUB_OUTPUT}"
+            else
+              echo "full_assurance_required=false" >> "${GITHUB_OUTPUT}"
+              echo "reason=ordinary_draft_fast_gate" >> "${GITHUB_OUTPUT}"
+            fi
+            exit 0
+          fi
 
           if [[ "${authority_available}" != "true" ]]; then
             echo "full_assurance_required=true" >> "${GITHUB_OUTPUT}"
@@ -164,6 +191,77 @@ jobs:
           name: fast-gate-${{ github.run_id }}-${{ github.run_attempt }}
           path: fast-gate-results.xml
           if-no-files-found: error
+
+  baseline-preflight:
+    name: Baseline Preflight
+    needs: authority-check
+    if: needs.authority-check.outputs.baseline-preflight-authority-available == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.candidate_ref || github.sha }}
+
+      - name: Checkout protected base authority
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ needs.authority-check.outputs.base-sha }}
+          path: trusted-base
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Sync dependencies
+        run: uv sync --locked
+
+      - name: Require protected baseline authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f trusted-base/scripts/ci_static_assurance.py
+          test -f trusted-base/.github/ci/test-baseline.json
+          test -f trusted-base/.github/ci/test-lineage.json
+          test -f .github/ci/test-baseline.json
+          test -f .github/ci/test-lineage.json
+
+      - name: Collect bootstrap cell
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authority-check.outputs.candidate-sha }}
+        run: |
+          set -euo pipefail
+          uv run python trusted-base/scripts/ci_static_assurance.py collect \
+            --root . \
+            --source-commit "${CANDIDATE_SHA}" \
+            --cell ubuntu-latest-py3.11 \
+            --output baseline-preflight-manifest.json
+
+      - name: Verify candidate baseline preflight
+        shell: bash
+        env:
+          CANDIDATE_SHA: ${{ needs.authority-check.outputs.candidate-sha }}
+        run: |
+          set -euo pipefail
+          echo "preflight_authority=protected_base_verifier" >> "${GITHUB_STEP_SUMMARY}"
+          python trusted-base/scripts/ci_static_assurance.py baseline-preflight \
+            --trusted trusted-base/.github/ci/test-baseline.json \
+            --candidate .github/ci/test-baseline.json \
+            --manifest baseline-preflight-manifest.json \
+            --protected-lineage trusted-base/.github/ci/test-lineage.json \
+            --candidate-lineage .github/ci/test-lineage.json \
+            --cell ubuntu-latest-py3.11 \
+            --candidate-commit "${CANDIDATE_SHA}" \
+            --output baseline-preflight-report.json
 
   cross-platform-validation:
     name: Cross Platform Validation (${{ matrix.os }}, Python ${{ matrix.python-version }})
@@ -287,7 +385,7 @@ jobs:
   merge-assurance:
     name: Merge Assurance
     runs-on: ubuntu-latest
-    needs: [authority-check, fast-gate, cross-platform-validation, windows-shell-smoke]
+    needs: [authority-check, fast-gate, baseline-preflight, cross-platform-validation, windows-shell-smoke]
     if: always()
     steps:
       - name: Require fast gate and static authority decision
@@ -300,6 +398,17 @@ jobs:
           fi
           if [[ "${{ needs.authority-check.result }}" != "success" ]]; then
             echo "Static authority resolution did not succeed." >&2
+            exit 1
+          fi
+          if [[ "${{ needs.authority-check.outputs.baseline-preflight-authority-available }}" == "true" \
+             && "${{ needs.baseline-preflight.result }}" != "success" ]]; then
+            echo "Baseline Preflight did not succeed." >&2
+            exit 1
+          fi
+          if [[ "${{ needs.authority-check.outputs.baseline-preflight-authority-available }}" != "true" \
+             && "${{ needs.authority-check.outputs.full-assurance-required }}" != "true" \
+             && "${{ needs.authority-check.outputs.reason }}" != "ordinary_draft_fast_gate" ]]; then
+            echo "Draft Baseline Preflight cannot run without protected verifier authority." >&2
             exit 1
           fi
           if [[ "${{ needs.authority-check.outputs.full-assurance-required }}" == "true" \
