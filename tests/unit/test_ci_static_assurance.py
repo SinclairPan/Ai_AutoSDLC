@@ -860,6 +860,116 @@ def test_aggregate_rechecks_skips_against_pristine_contract() -> None:
     assert result["reason"] == "unexpected_skip_identity"
 
 
+def _preflight_inputs(
+    trusted_nodeids: tuple[str, ...],
+    candidate_nodeids: tuple[str, ...],
+) -> tuple[dict[str, object], dict[str, object], dict[str, object]]:
+    module = _load_module()
+    cell = "ubuntu-latest-py3.11"
+    trusted_manifest = module.build_collection_manifest(
+        trusted_nodeids,
+        [cell],
+        source_commit="a" * 40,
+    )
+    trusted = module.build_baseline(trusted_manifest)
+    candidate_manifest = module.build_collection_manifest(
+        candidate_nodeids,
+        [cell],
+        source_commit="b" * 40,
+    )
+    candidate = module.build_baseline(
+        candidate_manifest,
+        previous_baseline_digest=trusted["baseline_digest"],
+    )
+    return trusted, candidate, candidate_manifest
+
+
+def test_baseline_preflight_accepts_exact_positive_delta() -> None:
+    """候选实时 collection 与合法正增量 baseline 一致时允许进入 Ready。"""
+    module = _load_module()
+    trusted, candidate, manifest = _preflight_inputs(
+        ("tests/a.py::test_one",),
+        ("tests/a.py::test_one", "tests/a.py::test_two"),
+    )
+    lineage = {"schema_version": "ci-test-lineage-v1", "mappings": []}
+
+    result = module.verify_baseline_preflight(
+        trusted,
+        candidate,
+        manifest,
+        protected_lineage=lineage,
+        candidate_lineage=lineage,
+        expected_cell="ubuntu-latest-py3.11",
+        expected_source_commit="b" * 40,
+    )
+
+    assert result == {
+        "status": "success",
+        "reason": "baseline_preflight_complete",
+        "cell": "ubuntu-latest-py3.11",
+        "case_count": 2,
+        "added_case_count": 1,
+        "renamed_case_count": 0,
+    }
+
+
+def test_baseline_preflight_rejects_unpromoted_collection_change() -> None:
+    """新增测试未同步 candidate baseline 时必须在 Draft 分钟级失败。"""
+    module = _load_module()
+    trusted, candidate, _ = _preflight_inputs(
+        ("tests/a.py::test_one",),
+        ("tests/a.py::test_one",),
+    )
+    manifest = module.build_collection_manifest(
+        ["tests/a.py::test_one", "tests/a.py::test_two"],
+        ["ubuntu-latest-py3.11"],
+        source_commit="b" * 40,
+    )
+    lineage = {"schema_version": "ci-test-lineage-v1", "mappings": []}
+
+    result = module.verify_baseline_preflight(
+        trusted,
+        candidate,
+        manifest,
+        protected_lineage=lineage,
+        candidate_lineage=lineage,
+        expected_cell="ubuntu-latest-py3.11",
+        expected_source_commit="b" * 40,
+    )
+
+    assert result == {
+        "status": "failed",
+        "reason": "candidate_collection_mismatch",
+    }
+
+
+def test_baseline_preflight_rejects_malformed_candidate_lineage() -> None:
+    """候选 lineage 即使尚未参与 rename，也不能把畸形合同带入 main。"""
+    module = _load_module()
+    trusted, candidate, manifest = _preflight_inputs(
+        ("tests/a.py::test_one",),
+        ("tests/a.py::test_one",),
+    )
+
+    result = module.verify_baseline_preflight(
+        trusted,
+        candidate,
+        manifest,
+        protected_lineage={"schema_version": "ci-test-lineage-v1", "mappings": []},
+        candidate_lineage={
+            "schema_version": "ci-test-lineage-v1",
+            "mappings": [
+                {"from_case_id": "case:a", "to_case_id": "case:new"},
+                {"from_case_id": "case:b", "to_case_id": "case:new"},
+            ],
+        },
+        expected_cell="ubuntu-latest-py3.11",
+        expected_source_commit="b" * 40,
+    )
+
+    assert result == {"status": "failed", "reason": "candidate_lineage_invalid"}
+
+
 @pytest.mark.parametrize(
     ("event_name", "draft", "authority", "protected_changed", "full", "reason"),
     [
@@ -892,7 +1002,20 @@ def test_assurance_mode_only_keeps_ordinary_draft_change_fast(
         force_full=False,
     )
 
-    assert result == {"full_assurance_required": full, "reason": reason}
+    # 既有参数值保持不变，避免仅因期望值变化重建 pytest 参数实例身份。
+    expected = {"full_assurance_required": full, "reason": reason}
+    if event_name == "pull_request" and draft and not authority:
+        expected = {
+            "full_assurance_required": False,
+            "reason": "ordinary_draft_fast_gate",
+        }
+    elif event_name == "pull_request" and draft and protected_changed:
+        expected = {
+            "full_assurance_required": False,
+            "reason": "protected_ci_draft_preflight",
+        }
+
+    assert result == expected
 
 
 def _two_cell_baseline() -> dict[str, object]:
