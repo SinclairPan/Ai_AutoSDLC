@@ -763,7 +763,7 @@ def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
     assert jobs["baseline-preflight"]["needs"] == "authority-check"
     assert (
         jobs["baseline-preflight"]["if"]
-        == "needs.authority-check.outputs.authority-available == 'true'"
+        == "needs.authority-check.outputs.baseline-preflight-authority-available == 'true'"
     )
     assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
         "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
@@ -802,10 +802,12 @@ def test_compatibility_gate_preflights_draft_baseline_with_protected_authority()
     assert "Verify candidate baseline preflight" in step_names
     assert "trusted-base/scripts/ci_static_assurance.py" in script
     assert "baseline-preflight" in script
-    assert 'preflight_script="trusted-base/scripts/ci_static_assurance.py"' in script
-    assert 'preflight_script="scripts/ci_static_assurance.py"' in script
-    assert 'python "${preflight_script}" baseline-preflight' in script
-    assert "bootstrap_candidate_verifier" in script
+    assert "python scripts/ci_static_assurance.py baseline-preflight" not in script
+    assert "bootstrap_candidate_verifier" not in script
+    assert (
+        "python trusted-base/scripts/ci_static_assurance.py baseline-preflight"
+        in script
+    )
     assert "--trusted trusted-base/.github/ci/test-baseline.json" in script
     assert "--candidate .github/ci/test-baseline.json" in script
     assert "--protected-lineage trusted-base/.github/ci/test-lineage.json" in script
@@ -814,7 +816,10 @@ def test_compatibility_gate_preflights_draft_baseline_with_protected_authority()
 
     merge_gate = parsed["jobs"]["merge-assurance"]["steps"][0]["run"]
     assert "needs.baseline-preflight.result" in merge_gate
-    assert "needs.authority-check.outputs.authority-available" in merge_gate
+    assert (
+        "needs.authority-check.outputs.baseline-preflight-authority-available"
+        in merge_gate
+    )
 
 
 def test_draft_short_circuits_before_legacy_protected_authority_decision() -> None:
@@ -830,10 +835,14 @@ def test_draft_short_circuits_before_legacy_protected_authority_decision() -> No
 
     draft_guard = 'if [[ "${EVENT_NAME}" == "pull_request"'
     authority_fallback = 'if [[ "${authority_available}" != "true" ]]'
+    preflight_capability_probe = (
+        "python trusted-base/scripts/ci_static_assurance.py baseline-preflight --help"
+    )
     legacy_authority_call = (
         "python trusted-base/scripts/ci_static_assurance.py decide-mode"
     )
 
+    assert decision.index(preflight_capability_probe) < decision.index(draft_guard)
     assert decision.index(draft_guard) < decision.index(authority_fallback)
     draft_block = decision[
         decision.index(draft_guard) : decision.index(authority_fallback)
@@ -841,6 +850,9 @@ def test_draft_short_circuits_before_legacy_protected_authority_decision() -> No
     assert '"${FORCE_FULL}" != "true"' in draft_block
     assert 'reason=protected_ci_draft_preflight' in draft_block
     assert 'reason=ordinary_draft_fast_gate' in draft_block
+    assert 'reason=baseline_preflight_authority_unavailable' in draft_block
+    assert 'full_assurance_required=true' in draft_block
+    assert "baseline_preflight_authority_available" in draft_block
     assert "exit 0" in draft_block
     assert decision.index(authority_fallback) < decision.index(legacy_authority_call)
 
