@@ -817,6 +817,34 @@ def test_compatibility_gate_preflights_draft_baseline_with_protected_authority()
     assert "needs.authority-check.outputs.authority-available" in merge_gate
 
 
+def test_draft_short_circuits_before_legacy_protected_authority_decision() -> None:
+    """旧 main 会把受保护变更判为全量；Draft 必须在调用它之前退出。"""
+    parsed = yaml.safe_load(
+        (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
+    )
+    decision = next(
+        step
+        for step in parsed["jobs"]["authority-check"]["steps"]
+        if step.get("id") == "decision"
+    )["run"]
+
+    draft_guard = 'if [[ "${EVENT_NAME}" == "pull_request"'
+    authority_fallback = 'if [[ "${authority_available}" != "true" ]]'
+    legacy_authority_call = (
+        "python trusted-base/scripts/ci_static_assurance.py decide-mode"
+    )
+
+    assert decision.index(draft_guard) < decision.index(authority_fallback)
+    draft_block = decision[
+        decision.index(draft_guard) : decision.index(authority_fallback)
+    ]
+    assert '"${FORCE_FULL}" != "true"' in draft_block
+    assert 'reason=protected_ci_draft_preflight' in draft_block
+    assert 'reason=ordinary_draft_fast_gate' in draft_block
+    assert "exit 0" in draft_block
+    assert decision.index(authority_fallback) < decision.index(legacy_authority_call)
+
+
 def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() -> None:
     workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
         encoding="utf-8"

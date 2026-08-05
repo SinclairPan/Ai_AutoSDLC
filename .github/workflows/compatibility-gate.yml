@@ -102,16 +102,23 @@ jobs:
           echo "base_sha=${base_sha}" >> "${GITHUB_OUTPUT}"
           echo "candidate_sha=${candidate_sha}" >> "${GITHUB_OUTPUT}"
 
-          if [[ "${authority_available}" != "true" ]]; then
-            if [[ "${EVENT_NAME}" == "pull_request" \
-               && "${PR_DRAFT}" == "true" \
-               && "${FORCE_FULL}" != "true" ]]; then
-              echo "full_assurance_required=false" >> "${GITHUB_OUTPUT}"
-              echo "reason=draft_baseline_authority_unavailable" >> "${GITHUB_OUTPUT}"
+          # 受保护 main 上的旧 verifier 会把受保护路径变更强制升级为全量。
+          # Draft 调度必须先退出；Baseline Preflight 仍由独立 job 强制执行。
+          if [[ "${EVENT_NAME}" == "pull_request" \
+             && "${PR_DRAFT}" == "true" \
+             && "${FORCE_FULL}" != "true" ]]; then
+            echo "full_assurance_required=false" >> "${GITHUB_OUTPUT}"
+            if [[ "${protected_paths_changed}" == "true" ]]; then
+              echo "reason=protected_ci_draft_preflight" >> "${GITHUB_OUTPUT}"
             else
-              echo "full_assurance_required=true" >> "${GITHUB_OUTPUT}"
-              echo "reason=authority_unavailable" >> "${GITHUB_OUTPUT}"
+              echo "reason=ordinary_draft_fast_gate" >> "${GITHUB_OUTPUT}"
             fi
+            exit 0
+          fi
+
+          if [[ "${authority_available}" != "true" ]]; then
+            echo "full_assurance_required=true" >> "${GITHUB_OUTPUT}"
+            echo "reason=authority_unavailable" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
 
