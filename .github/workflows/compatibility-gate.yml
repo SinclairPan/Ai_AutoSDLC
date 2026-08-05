@@ -406,7 +406,8 @@ jobs:
             exit 1
           fi
           if [[ "${{ needs.authority-check.outputs.baseline-preflight-authority-available }}" != "true" \
-             && "${{ needs.authority-check.outputs.full-assurance-required }}" != "true" ]]; then
+             && "${{ needs.authority-check.outputs.full-assurance-required }}" != "true" \
+             && "${{ needs.authority-check.outputs.reason }}" != "ordinary_draft_fast_gate" ]]; then
             echo "Draft Baseline Preflight cannot run without protected verifier authority." >&2
             exit 1
           fi

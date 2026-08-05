@@ -820,6 +820,8 @@ def test_compatibility_gate_preflights_draft_baseline_with_protected_authority()
         "needs.authority-check.outputs.baseline-preflight-authority-available"
         in merge_gate
     )
+    assert "needs.authority-check.outputs.reason" in merge_gate
+    assert "ordinary_draft_fast_gate" in merge_gate
 
 
 def test_draft_short_circuits_before_legacy_protected_authority_decision() -> None:
