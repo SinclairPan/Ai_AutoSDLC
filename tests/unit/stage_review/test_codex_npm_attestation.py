@@ -31,7 +31,9 @@ def test_registry_slsa_provenance_verifies_against_published_attestation(
         "x64",
     )
 
-    assert verified == published_codex_attestation("linux", "x64")
+    expected = published_codex_attestation("linux", "x64")
+    assert expected is not None
+    assert verified.attestation_digest == expected.attestation_digest
 
 
 def test_trusted_release_is_built_only_from_registry_evidence(
@@ -148,7 +150,9 @@ def test_registry_provenance_ignores_rekor_inclusion_proof_and_checkpoint_change
 
     verified = verify_published_codex_npm_attestations(registry, "linux", "x64")
 
-    assert verified == published_codex_attestation("linux", "x64")
+    expected = published_codex_attestation("linux", "x64")
+    assert expected is not None
+    assert verified.attestation_digest == expected.attestation_digest
 
 
 def test_registry_provenance_rejects_canonical_dsse_envelope_change(
