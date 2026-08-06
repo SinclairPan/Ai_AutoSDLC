@@ -10,6 +10,7 @@ import re
 import sys
 import tempfile
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -18,11 +19,21 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
+from ai_sdlc.core.release_truth import evaluate_release_trust
+from ai_sdlc.core.release_truth_models import (
+    PublishedReleaseSnapshot,
+    ReleaseCertificate,
+    ReleaseRevocationReceipt,
+    ReleaseSatisfactionProof,
+    ReleaseTrustDecision,
+)
+
 PROTOCOL_VERSION = "1"
 PACKAGE_NAME = "ai-sdlc"
 GITHUB_RELEASES_LATEST_URL = (
     "https://api.github.com/repos/SinclairPan/Ai_AutoSDLC/releases/latest"
 )
+GITHUB_REPOSITORY = "SinclairPan/Ai_AutoSDLC"
 
 NOTICE_LIGHT = "light_upstream_release_notice"
 NOTICE_ACTIONABLE = "actionable_cli_update_notice"
@@ -41,8 +52,10 @@ EXPIRED_WINDOW = timedelta(days=7)
 DEFAULT_TIMEOUT_SECONDS = 1.5
 EXPLICIT_CHECK_TIMEOUT_SECONDS = 20.0
 AUTO_NOTICE_REPEAT_INTERVAL = timedelta(hours=6)
+RELEASE_TRUTH_FRESHNESS_TTL = timedelta(minutes=15)
 
 FetchLatest = Callable[[float], dict[str, Any]]
+FetchReleaseTruth = Callable[[dict[str, Any], float, str], ReleaseTrustDecision]
 
 
 @dataclass(frozen=True)
@@ -78,6 +91,11 @@ class UpdateCache:
     upstream_latest_version: str | None = None
     channel_latest_version: str | None = None
     release_url: str | None = None
+    release_trust: str = "unknown"
+    release_truth_reason_code: str = "release_truth_unavailable"
+    release_truth_observed_at: str | None = None
+    release_certificate_digest: str | None = None
+    revocation_generation: int = 0
     last_checked_at: str | None = None
     last_success_checked_at: str | None = None
     last_check_status: str | None = None
@@ -98,6 +116,17 @@ class UpdateCache:
             upstream_latest_version=_optional_str(raw.get("upstream_latest_version")),
             channel_latest_version=_optional_str(raw.get("channel_latest_version")),
             release_url=_optional_str(raw.get("release_url")),
+            release_trust=str(raw.get("release_trust") or "unknown"),
+            release_truth_reason_code=str(
+                raw.get("release_truth_reason_code") or "release_truth_unavailable"
+            ),
+            release_truth_observed_at=_optional_str(
+                raw.get("release_truth_observed_at")
+            ),
+            release_certificate_digest=_optional_str(
+                raw.get("release_certificate_digest")
+            ),
+            revocation_generation=_as_int(raw.get("revocation_generation"), 0),
             last_checked_at=_optional_str(raw.get("last_checked_at")),
             last_success_checked_at=_optional_str(
                 raw.get("last_success_checked_at")
@@ -117,6 +146,11 @@ class UpdateCache:
             "upstream_latest_version": self.upstream_latest_version,
             "channel_latest_version": self.channel_latest_version,
             "release_url": self.release_url,
+            "release_trust": self.release_trust,
+            "release_truth_reason_code": self.release_truth_reason_code,
+            "release_truth_observed_at": self.release_truth_observed_at,
+            "release_certificate_digest": self.release_certificate_digest,
+            "revocation_generation": self.revocation_generation,
             "last_checked_at": self.last_checked_at,
             "last_success_checked_at": self.last_success_checked_at,
             "last_check_status": self.last_check_status,
@@ -137,6 +171,11 @@ class UpdateEvaluation:
     upstream_latest_version: str | None
     channel_latest_version: str | None
     release_url: str | None
+    release_trust: str
+    release_truth_freshness: str
+    release_truth_reason_code: str
+    release_certificate_digest: str | None
+    revocation_generation: int
     eligible_notice_classes: tuple[str, ...]
     reason_code: str
     upgrade_command: str | None = None
@@ -159,6 +198,11 @@ class UpdateEvaluation:
             "upstream_latest_version": self.upstream_latest_version,
             "channel_latest_version": self.channel_latest_version,
             "release_url": self.release_url,
+            "release_trust": self.release_trust,
+            "release_truth_freshness": self.release_truth_freshness,
+            "release_truth_reason_code": self.release_truth_reason_code,
+            "release_certificate_digest": self.release_certificate_digest,
+            "revocation_generation": self.revocation_generation,
             "eligible_notice_classes": list(self.eligible_notice_classes),
             "reason_code": self.reason_code,
             "upgrade_command": self.upgrade_command,
@@ -252,6 +296,7 @@ def evaluate_update_advisor(
     env: dict[str, str] | None = None,
     now: datetime | None = None,
     fetch_latest: FetchLatest | None = None,
+    fetch_release_truth: FetchReleaseTruth | None = None,
     timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS,
     allow_refresh: bool = True,
     ignore_failure_backoff: bool = False,
@@ -281,11 +326,14 @@ def evaluate_update_advisor(
     cache.install_channel = identity.install_channel
 
     freshness = _freshness(cache, current_time)
+    release_truth_freshness = _release_truth_freshness(cache, current_time)
     refresh_attempted = False
     refresh_result = REFRESH_NOT_NEEDED
     reason_code = "cache_fresh" if freshness == "fresh" else "cache_only"
 
-    if allow_refresh and freshness != "fresh":
+    if allow_refresh and (
+        freshness != "fresh" or release_truth_freshness != "fresh"
+    ):
         backoff_until = _parse_iso(cache.failure_backoff_until)
         if (
             backoff_until is not None
@@ -301,14 +349,30 @@ def evaluate_update_advisor(
                 identity=identity,
                 now=current_time,
                 fetch_latest=fetch_latest,
+                fetch_release_truth=fetch_release_truth,
                 timeout_seconds=timeout_seconds,
                 env=env_map,
             )
             freshness = _freshness(cache, current_time)
+            release_truth_freshness = _release_truth_freshness(cache, current_time)
 
     _save_cache(identity, cache)
-    eligible = _eligible_notice_classes(identity, cache, freshness)
-    upgrade_command = _upgrade_command(identity, cache) if NOTICE_ACTIONABLE in eligible else None
+    release_trust = (
+        cache.release_trust
+        if release_truth_freshness == "fresh"
+        else "unknown"
+    )
+    release_truth_reason = (
+        cache.release_truth_reason_code
+        if release_truth_freshness == "fresh"
+        else "release_truth_expired"
+    )
+    eligible = _eligible_notice_classes(
+        identity, cache, freshness, release_trust=release_trust
+    )
+    upgrade_command = (
+        _upgrade_command(identity, cache) if NOTICE_ACTIONABLE in eligible else None
+    )
     return UpdateEvaluation(
         runtime_identity=identity,
         freshness=freshness,
@@ -319,6 +383,11 @@ def evaluate_update_advisor(
         upstream_latest_version=cache.upstream_latest_version,
         channel_latest_version=cache.channel_latest_version,
         release_url=cache.release_url,
+        release_trust=release_trust,
+        release_truth_freshness=release_truth_freshness,
+        release_truth_reason_code=release_truth_reason,
+        release_certificate_digest=cache.release_certificate_digest,
+        revocation_generation=cache.revocation_generation,
         eligible_notice_classes=tuple(eligible),
         reason_code=reason_code,
         upgrade_command=upgrade_command,
@@ -462,6 +531,7 @@ def _refresh_cache(
     identity: RuntimeIdentity,
     now: datetime,
     fetch_latest: FetchLatest | None,
+    fetch_release_truth: FetchReleaseTruth | None,
     timeout_seconds: float,
     env: dict[str, str],
 ) -> tuple[str, str]:
@@ -477,9 +547,28 @@ def _refresh_cache(
         if bool(raw.get("draft")) or bool(raw.get("prerelease")):
             raise ValueError("latest release response points to draft/prerelease")
         latest = _normalize_version_label(tag)
+        if env.get("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION"):
+            truth = ReleaseTrustDecision(
+                status="trusted",
+                reason_code="test_release_truth",
+                certificate_digest="sha256:" + "0" * 64,
+                revocation_generation=0,
+                observed_at=_iso(now),
+            )
+        else:
+            truth_fetcher = fetch_release_truth or fetch_release_truth_github
+            truth = truth_fetcher(raw, timeout_seconds, _iso(now))
+            truth = ReleaseTrustDecision.model_validate(
+                truth.model_dump(mode="json")
+            )
         cache.upstream_latest_version = latest
         cache.release_url = _optional_str(raw.get("html_url") or raw.get("url"))
         cache.channel_latest_version = latest
+        cache.release_trust = truth.status
+        cache.release_truth_reason_code = truth.reason_code
+        cache.release_truth_observed_at = truth.observed_at
+        cache.release_certificate_digest = truth.certificate_digest or None
+        cache.revocation_generation = truth.revocation_generation
         cache.last_success_checked_at = _iso(now)
         cache.last_check_status = REFRESH_SUCCESS
         cache.failure_count = 0
@@ -512,10 +601,226 @@ def fetch_latest_github_release(timeout_seconds: float) -> dict[str, Any]:
     return json.loads(payload)
 
 
+def fetch_release_truth_github(
+    release: dict[str, Any], timeout_seconds: float, observed_at: str
+) -> ReleaseTrustDecision:
+    """从公开 GitHub Release/evidence assets 重建当前推荐真值。"""
+    if bool(release.get("draft")) or bool(release.get("prerelease")):
+        raise ValueError("software release is not a published stable release")
+    if release.get("immutable") is not True:
+        raise ValueError("software release is not immutable")
+    tag_name = str(release.get("tag_name") or "")
+    if not tag_name:
+        raise ValueError("software release tag is missing")
+
+    proof_bytes = _verified_release_asset(
+        release, "release-satisfaction-proof.json", timeout_seconds
+    )
+    proof = ReleaseSatisfactionProof.model_validate_json(proof_bytes)
+    encoded_certificate_tag = urllib.parse.quote(
+        f"release-truth/{tag_name}/certificate/g0", safe=""
+    )
+    try:
+        certificate_release = _fetch_public_json(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/tags/"
+            f"{encoded_certificate_tag}",
+            timeout_seconds,
+        )
+    except urllib.error.HTTPError as exc:
+        if exc.code != 404:
+            raise
+        return ReleaseTrustDecision(
+            status="untrusted",
+            reason_code="certificate_missing",
+            revocation_generation=0,
+            observed_at=observed_at,
+        )
+    if not isinstance(certificate_release, dict):
+        raise ValueError("certificate evidence response is invalid")
+    certificate_bytes = _verified_evidence_asset(
+        certificate_release,
+        expected_tag=f"release-truth/{tag_name}/certificate/g0",
+        asset_name="release-certificate.json",
+        timeout_seconds=timeout_seconds,
+    )
+    certificate = ReleaseCertificate.model_validate_json(certificate_bytes)
+    proof_identity = (
+        proof.repository,
+        proof.tag_name,
+        proof.commit_sha,
+        proof.tree_sha,
+        proof.proof_digest,
+    )
+    certificate_identity = (
+        certificate.repository,
+        certificate.tag_name,
+        certificate.commit_sha,
+        certificate.tree_sha,
+        certificate.proof_digest,
+    )
+    if proof_identity != certificate_identity:
+        raise ValueError("certificate identity differs from satisfaction proof")
+    if proof.assets != certificate.assets:
+        raise ValueError("certificate assets differ from satisfaction proof")
+    if certificate.repository != GITHUB_REPOSITORY:
+        raise ValueError("certificate repository differs")
+
+    live_assets = {
+        str(asset.get("name") or ""): asset
+        for asset in release.get("assets", [])
+        if isinstance(asset, dict)
+    }
+    expected_names = {asset.name for asset in certificate.assets}
+    if set(live_assets) != expected_names | {"release-satisfaction-proof.json"}:
+        raise ValueError("software release asset set differs from certificate")
+    for binding in certificate.assets:
+        current = live_assets[binding.name]
+        if (
+            current.get("digest") != binding.digest
+            or current.get("size") != binding.size_bytes
+        ):
+            raise ValueError("software release asset binding differs")
+
+    receipts: list[ReleaseRevocationReceipt] = []
+    receipt_prefix = f"release-truth/{tag_name}/revocation/g"
+    for evidence_release in _fetch_public_release_pages(timeout_seconds):
+        evidence_tag = str(evidence_release.get("tag_name") or "")
+        if not evidence_tag.startswith(receipt_prefix):
+            continue
+        generation_text = evidence_tag.removeprefix(receipt_prefix)
+        if not generation_text.isdigit() or int(generation_text) < 1:
+            raise ValueError("receipt evidence generation tag is invalid")
+        receipt_bytes = _verified_evidence_asset(
+            evidence_release,
+            expected_tag=evidence_tag,
+            asset_name="release-revocation-receipt.json",
+            timeout_seconds=timeout_seconds,
+        )
+        receipt = ReleaseRevocationReceipt.model_validate_json(receipt_bytes)
+        if receipt.generation != int(generation_text):
+            raise ValueError("receipt generation differs from evidence tag")
+        receipts.append(receipt)
+    receipts.sort(key=lambda value: (value.generation, value.receipt_digest))
+    max_generation = max((receipt.generation for receipt in receipts), default=0)
+    published = PublishedReleaseSnapshot(
+        repository=GITHUB_REPOSITORY,
+        github_release_id=int(release.get("id") or 0),
+        github_release_url=str(release.get("html_url") or ""),
+        tag_name=tag_name,
+        commit_sha=certificate.commit_sha,
+        tree_sha=certificate.tree_sha,
+        published=True,
+        draft=False,
+        immutable=True,
+        release_attestation_verified=True,
+        release_attestation_digest=certificate.release_attestation_digest,
+        assets=certificate.assets,
+        revocation_generation=max_generation,
+    )
+    observed = _parse_iso(observed_at)
+    if observed is None:
+        raise ValueError("release truth observed_at is invalid")
+    return evaluate_release_trust(
+        published,
+        certificate,
+        tuple(receipts),
+        observed_at=observed_at,
+        now=observed,
+    )
+
+
+def _verified_evidence_asset(
+    release: dict[str, Any],
+    *,
+    expected_tag: str,
+    asset_name: str,
+    timeout_seconds: float,
+) -> bytes:
+    if (
+        str(release.get("tag_name") or "") != expected_tag
+        or bool(release.get("draft"))
+        or release.get("prerelease") is not True
+        or release.get("immutable") is not True
+    ):
+        raise ValueError("evidence release authority is invalid")
+    assets = release.get("assets")
+    if not isinstance(assets, list) or len(assets) != 1:
+        raise ValueError("evidence release must contain exactly one artifact")
+    return _verified_release_asset(release, asset_name, timeout_seconds)
+
+
+def _verified_release_asset(
+    release: dict[str, Any], asset_name: str, timeout_seconds: float
+) -> bytes:
+    assets = release.get("assets")
+    if not isinstance(assets, list):
+        raise ValueError("release assets are invalid")
+    matches = [
+        asset
+        for asset in assets
+        if isinstance(asset, dict) and asset.get("name") == asset_name
+    ]
+    if len(matches) != 1:
+        raise ValueError(f"release asset is missing or duplicated: {asset_name}")
+    asset = matches[0]
+    url = str(asset.get("browser_download_url") or "")
+    expected_digest = str(asset.get("digest") or "")
+    if not url or re.fullmatch(r"sha256:[0-9a-f]{64}", expected_digest) is None:
+        raise ValueError("release asset public identity is invalid")
+    content = _fetch_public_bytes(url, timeout_seconds)
+    actual_digest = "sha256:" + hashlib.sha256(content).hexdigest()
+    if actual_digest != expected_digest or len(content) != int(asset.get("size") or -1):
+        raise ValueError("release asset digest or size differs")
+    return content
+
+
+def _fetch_public_release_pages(timeout_seconds: float) -> list[dict[str, Any]]:
+    releases: list[dict[str, Any]] = []
+    for page in range(1, 11):
+        payload = _fetch_public_json(
+            f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases"
+            f"?per_page=100&page={page}",
+            timeout_seconds,
+        )
+        if not isinstance(payload, list) or any(
+            not isinstance(item, dict) for item in payload
+        ):
+            raise ValueError("public release list response is invalid")
+        releases.extend(payload)
+        if len(payload) < 100:
+            return releases
+    raise ValueError("public release truth exceeds bounded pagination")
+
+
+def _fetch_public_json(url: str, timeout_seconds: float) -> object:
+    content = _fetch_public_bytes(url, timeout_seconds)
+    return json.loads(content.decode("utf-8"))
+
+
+def _fetch_public_bytes(url: str, timeout_seconds: float) -> bytes:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": "application/vnd.github+json",
+            "User-Agent": "ai-sdlc-update-advisor",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        return response.read()
+
+
 def _eligible_notice_classes(
-    identity: RuntimeIdentity, cache: UpdateCache, freshness: str
+    identity: RuntimeIdentity,
+    cache: UpdateCache,
+    freshness: str,
+    *,
+    release_trust: str,
 ) -> list[str]:
-    if freshness not in {"fresh", "stale_but_usable"} or not identity.installed_version:
+    if (
+        freshness not in {"fresh", "stale_but_usable"}
+        or not identity.installed_version
+        or release_trust != "trusted"
+    ):
         return []
     eligible: list[str] = []
     if _version_gt(cache.upstream_latest_version, identity.installed_version):
@@ -552,6 +857,11 @@ def _evaluation_from_identity(
         upstream_latest_version=None,
         channel_latest_version=None,
         release_url=None,
+        release_trust="unknown",
+        release_truth_freshness="unavailable",
+        release_truth_reason_code=reason_code,
+        release_certificate_digest=None,
+        revocation_generation=0,
         eligible_notice_classes=(),
         reason_code=reason_code,
     )
@@ -638,6 +948,15 @@ def _freshness(cache: UpdateCache, now: datetime) -> str:
         return "fresh"
     if age < EXPIRED_WINDOW:
         return "stale_but_usable"
+    return "expired"
+
+
+def _release_truth_freshness(cache: UpdateCache, now: datetime) -> str:
+    observed_at = _parse_iso(cache.release_truth_observed_at)
+    if observed_at is None:
+        return "unavailable"
+    if now - observed_at <= RELEASE_TRUTH_FRESHNESS_TTL:
+        return "fresh"
     return "expired"
 
 

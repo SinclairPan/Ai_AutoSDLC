@@ -253,6 +253,56 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
     assert posix_hash < posix_extract < posix_verify < posix_install
 
 
+def test_release_artifact_smoke_records_receipt_before_incident_projection() -> None:
+    """捕获后验失败先投影事故、后写 Receipt 或出现第二条撤销状态。"""
+    workflow_path = _WORKFLOWS_DIR / "release-artifact-smoke.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert workflow["permissions"] == {"contents": "read"}
+    writer_jobs = [
+        job_id
+        for job_id, job in jobs.items()
+        if job.get("permissions", {}).get("contents") == "write"
+    ]
+    assert writer_jobs == ["record-revocation"]
+    assert "startsWith(github.event.release.tag_name || inputs.tag, 'v')" in jobs[
+        "windows-zip"
+    ]["if"]
+    assert "startsWith(github.event.release.tag_name || inputs.tag, 'v')" in jobs[
+        "posix-tar"
+    ]["if"]
+    writer = jobs["record-revocation"]
+    assert writer["needs"] == ["windows-zip", "posix-tar"]
+    assert writer["environment"] == "release-publish"
+    assert writer["permissions"] == {"contents": "write"}
+    assert writer["concurrency"] == {
+        "group": "release-revocation-${{ github.event.release.tag_name || inputs.tag }}",
+        "cancel-in-progress": False,
+    }
+    assert "needs.windows-zip.result != 'success'" in writer["if"]
+    assert "needs.posix-tar.result != 'success'" in writer["if"]
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow_text
+    assert "path: trusted-writer" in workflow_text
+    assert "persist-credentials: false" in workflow_text
+    assert "build_revocation_receipt" in workflow_text
+    assert "release-revocation-receipt.json" in workflow_text
+    assert "release-truth/${RELEASE_TAG}/revocation/g${next_generation}" in workflow_text
+    assert "gh release create \"${receipt_tag}\"" in workflow_text
+    assert "--prerelease" in workflow_text
+    assert "--latest=false" in workflow_text
+    assert "immutable" in workflow_text
+    assert "--clobber" not in workflow_text
+    assert jobs["record-revocation"]["steps"][-1]["if"] == (
+        "steps.receipt.outputs.idempotent == 'true' || "
+        "steps.append.outcome == 'success'"
+    )
+    receipt_index = workflow_text.index('gh release create "${receipt_tag}"')
+    projection_index = workflow_text.index("Project stop recommendation and incident")
+    assert receipt_index < projection_index
+
+
 def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> None:
     workflow_path = _WORKFLOWS_DIR / "release-build.yml"
 

@@ -16,10 +16,11 @@ permissions:
 
 concurrency:
   group: release-artifact-smoke-${{ github.event.release.tag_name || inputs.tag }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   windows-zip:
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
     runs-on: windows-latest
     timeout-minutes: 30
     env:
@@ -163,6 +164,7 @@ jobs:
           if-no-files-found: error
 
   posix-tar:
+    if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
     name: ${{ matrix.asset_os }} tar.gz
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
@@ -296,3 +298,343 @@ jobs:
           name: release-${{ matrix.asset_os }}-tar-smoke-evidence
           path: ${{ runner.temp }}/ai-sdlc-release-tar-evidence
           if-no-files-found: error
+
+  record-revocation:
+    name: Record Receipt before incident projection
+    needs: [windows-zip, posix-tar]
+    if: >-
+      always() &&
+      startsWith(github.event.release.tag_name || inputs.tag, 'v') &&
+      (
+        needs.windows-zip.result != 'success' ||
+        needs.posix-tar.result != 'success'
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-publish
+    permissions:
+      contents: write
+    concurrency:
+      group: release-revocation-${{ github.event.release.tag_name || inputs.tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+      RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      WINDOWS_SMOKE_RESULT: ${{ needs.windows-zip.result }}
+      POSIX_SMOKE_RESULT: ${{ needs.posix-tar.result }}
+    steps:
+      - name: Checkout protected default-branch revocation writer
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted-writer
+
+      - name: Set up protected writer Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install protected writer runtime
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Resolve Certificate and current Receipt generation
+        id: receipt
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_WORKFLOW_REF}" != "${GITHUB_REPOSITORY}/.github/workflows/release-artifact-smoke.yml@refs/heads/main" ]]; then
+            echo "Revocation writer authority must come from protected main." >&2
+            exit 1
+          fi
+          certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
+          mkdir -p release-truth-input/certificate release-truth-input/receipts
+          certificate_ready=false
+          for attempt in $(seq 1 20); do
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > release-truth-input/certificate-release.json 2>/dev/null \
+              && [[ "$(jq -r '.immutable // false' release-truth-input/certificate-release.json)" == "true" ]] \
+              && gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
+              gh release download "${certificate_tag}" \
+                --pattern release-certificate.json \
+                --dir release-truth-input/certificate
+              certificate_ready=true
+              break
+            fi
+            sleep 15
+          done
+          if [[ "${certificate_ready}" != "true" ]]; then
+            echo "Certificate evidence was not observable within five minutes." >&2
+            exit 1
+          fi
+
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            > release-truth-input/release-pages.json
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          pages = json.loads(
+              Path("release-truth-input/release-pages.json").read_text(encoding="utf-8")
+          )
+          releases = [release for page in pages for release in page]
+          prefix = f"release-truth/{os.environ['RELEASE_TAG']}/revocation/g"
+          receipts = []
+          for release in releases:
+              tag = str(release.get("tag_name") or "")
+              if not tag.startswith(prefix):
+                  continue
+              generation = tag.removeprefix(prefix)
+              if (
+                  not generation.isdigit()
+                  or int(generation) < 1
+                  or release.get("draft")
+                  or release.get("prerelease") is not True
+                  or release.get("immutable") is not True
+              ):
+                  raise SystemExit("Receipt evidence release authority is invalid")
+              assets = release.get("assets")
+              if (
+                  not isinstance(assets, list)
+                  or len(assets) != 1
+                  or assets[0].get("name") != "release-revocation-receipt.json"
+              ):
+                  raise SystemExit("Receipt evidence release asset set is invalid")
+              receipts.append({"generation": int(generation), "tag": tag})
+          receipts.sort(key=lambda value: value["generation"])
+          if [item["generation"] for item in receipts] != list(
+              range(1, len(receipts) + 1)
+          ):
+              raise SystemExit("Receipt evidence generation gap or fork detected")
+          Path("release-truth-input/receipt-tags.json").write_text(
+              json.dumps(receipts, sort_keys=True), encoding="utf-8"
+          )
+          PY
+
+          while IFS= read -r item; do
+            generation="$(jq -r '.generation' <<<"${item}")"
+            tag="$(jq -r '.tag' <<<"${item}")"
+            target="release-truth-input/receipts/g${generation}"
+            mkdir -p "${target}"
+            gh release verify "${tag}" --format json >/dev/null
+            gh release download "${tag}" \
+              --pattern release-revocation-receipt.json \
+              --dir "${target}"
+          done < <(jq -c '.[]' release-truth-input/receipt-tags.json)
+          gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > release-truth-input/workflow-run.json
+
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          from ai_sdlc.core.release_truth import build_revocation_receipt
+          from ai_sdlc.core.release_truth_models import (
+              ReleaseCertificate,
+              ReleaseRevocationReceipt,
+              RevocationSignal,
+          )
+
+          def canonical_digest(value: object) -> str:
+              encoded = json.dumps(
+                  value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+              ).encode()
+              return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+          certificate_path = Path(
+              "release-truth-input/certificate/release-certificate.json"
+          )
+          certificate_bytes = certificate_path.read_bytes()
+          certificate_release = json.loads(
+              Path("release-truth-input/certificate-release.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          certificate_asset = certificate_release["assets"][0]
+          if (
+              len(certificate_release["assets"]) != 1
+              or certificate_asset["name"] != "release-certificate.json"
+              or certificate_asset.get("digest")
+              != "sha256:" + hashlib.sha256(certificate_bytes).hexdigest()
+              or certificate_asset["size"] != len(certificate_bytes)
+          ):
+              raise SystemExit("Certificate evidence asset digest differs")
+          certificate = ReleaseCertificate.model_validate_json(certificate_bytes)
+          run = json.loads(
+              Path("release-truth-input/workflow-run.json").read_text(encoding="utf-8")
+          )
+          signal_evidence = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "release_tag": os.environ["RELEASE_TAG"],
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "windows_smoke_result": os.environ["WINDOWS_SMOKE_RESULT"],
+              "posix_smoke_result": os.environ["POSIX_SMOKE_RESULT"],
+          }
+          signal = RevocationSignal(
+              reason_code="post_publish_smoke_failed",
+              evidence_digest=canonical_digest(signal_evidence),
+              work_item_id=(
+                  f"release-smoke-{os.environ['GITHUB_RUN_ID']}"
+              ),
+              observed_at=run["created_at"],
+          )
+
+          bindings = json.loads(
+              Path("release-truth-input/receipt-tags.json").read_text(encoding="utf-8")
+          )
+          receipts = []
+          predecessor = ""
+          for expected_generation, binding in enumerate(bindings, start=1):
+              path = (
+                  Path("release-truth-input/receipts")
+                  / f"g{expected_generation}"
+                  / "release-revocation-receipt.json"
+              )
+              content = path.read_bytes()
+              pages = json.loads(
+                  Path("release-truth-input/release-pages.json").read_text(
+                      encoding="utf-8"
+                  )
+              )
+              release = next(
+                  item
+                  for page in pages
+                  for item in page
+                  if item.get("tag_name") == binding["tag"]
+              )
+              asset = release["assets"][0]
+              if (
+                  asset.get("digest")
+                  != "sha256:" + hashlib.sha256(content).hexdigest()
+                  or asset["size"] != len(content)
+              ):
+                  raise SystemExit("Receipt evidence asset digest differs")
+              receipt = ReleaseRevocationReceipt.model_validate_json(content)
+              if (
+                  receipt.generation != expected_generation
+                  or receipt.repository != certificate.repository
+                  or receipt.tag_name != certificate.tag_name
+                  or receipt.certificate_digest != certificate.certificate_digest
+                  or receipt.predecessor_receipt_digest != predecessor
+              ):
+                  raise SystemExit("Receipt chain identity differs")
+              receipts.append(receipt)
+              predecessor = receipt.receipt_digest
+
+          replay = next(
+              (
+                  receipt
+                  for receipt in receipts
+                  if receipt.reason_code == signal.reason_code
+                  and receipt.evidence_digest == signal.evidence_digest
+                  and receipt.work_item_id == signal.work_item_id
+              ),
+              None,
+          )
+          if replay is None:
+              receipt = build_revocation_receipt(
+                  certificate,
+                  receipts[-1] if receipts else None,
+                  signal,
+                  expected_generation=len(receipts) + 1,
+              )
+              idempotent = False
+          else:
+              receipt = replay
+              idempotent = True
+          Path("release-revocation-receipt.json").write_text(
+              json.dumps(receipt.model_dump(mode="json"), ensure_ascii=False, sort_keys=True),
+              encoding="utf-8",
+          )
+          Path("receipt-metadata.json").write_text(
+              json.dumps(
+                  {
+                      "generation": receipt.generation,
+                      "idempotent": idempotent,
+                      "receipt_digest": receipt.receipt_digest,
+                      "target_commit": certificate.commit_sha,
+                  },
+                  sort_keys=True,
+              ),
+              encoding="utf-8",
+          )
+          PY
+          next_generation="$(jq -r '.generation' receipt-metadata.json)"
+          receipt_tag="release-truth/${RELEASE_TAG}/revocation/g${next_generation}"
+          echo "next_generation=${next_generation}" >> "${GITHUB_OUTPUT}"
+          echo "receipt_tag=${receipt_tag}" >> "${GITHUB_OUTPUT}"
+          echo "receipt_digest=$(jq -r '.receipt_digest' receipt-metadata.json)" >> "${GITHUB_OUTPUT}"
+          echo "target_commit=$(jq -r '.target_commit' receipt-metadata.json)" >> "${GITHUB_OUTPUT}"
+          echo "idempotent=$(jq -r '.idempotent' receipt-metadata.json)" >> "${GITHUB_OUTPUT}"
+
+      - name: Append immutable Receipt generation
+        id: append
+        if: steps.receipt.outputs.idempotent != 'true'
+        shell: bash
+        env:
+          RECEIPT_TAG: ${{ steps.receipt.outputs.receipt_tag }}
+          TARGET_COMMIT: ${{ steps.receipt.outputs.target_commit }}
+        run: |
+          set -euo pipefail
+          receipt_tag="${RECEIPT_TAG}"
+          expected_digest="sha256:$(sha256sum release-revocation-receipt.json | awk '{print $1}')"
+          set +e
+          gh release create "${receipt_tag}" \
+            release-revocation-receipt.json#release-revocation-receipt.json \
+            --target "${TARGET_COMMIT}" \
+            --title "Release Truth ${RELEASE_TAG} Revocation g${{ steps.receipt.outputs.next_generation }}" \
+            --notes "Append-only revocation receipt for failed post-publish smoke." \
+            --prerelease \
+            --latest=false
+          create_exit=$?
+          set -e
+
+          receipt_ready=false
+          for attempt in $(seq 1 20); do
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
+              actual_digest="$(jq -r '.assets[] | select(.name == "release-revocation-receipt.json") | .digest' receipt-release.json)"
+              immutable="$(jq -r '.immutable // false' receipt-release.json)"
+              if [[ "${actual_digest}" != "${expected_digest}" ]]; then
+                echo "Receipt generation fork detected after create exit ${create_exit}." >&2
+                exit 1
+              fi
+              if [[ "${immutable}" == "true" ]] \
+                && gh release verify "${receipt_tag}" --format json >/dev/null 2>&1; then
+                receipt_ready=true
+                break
+              fi
+            fi
+            sleep 15
+          done
+          if [[ "${receipt_ready}" != "true" ]]; then
+            echo "Receipt evidence release did not become immutable within five minutes." >&2
+            exit 1
+          fi
+
+      - name: Project stop recommendation and incident
+        if: >-
+          steps.receipt.outputs.idempotent == 'true' ||
+          steps.append.outcome == 'success'
+        shell: bash
+        run: |
+          {
+            echo "## Release Truth revocation"
+            echo "- release_tag: ${RELEASE_TAG}"
+            echo "- release_trust: untrusted"
+            echo "- reason_code: post_publish_smoke_failed"
+            echo "- receipt_tag: ${{ steps.receipt.outputs.receipt_tag }}"
+            echo "- receipt_digest: ${{ steps.receipt.outputs.receipt_digest }}"
+            echo "- work_item: release-smoke-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+            echo "- next: stop actionable recommendation and investigate the immutable Receipt evidence"
+          } >> "${GITHUB_STEP_SUMMARY}"
