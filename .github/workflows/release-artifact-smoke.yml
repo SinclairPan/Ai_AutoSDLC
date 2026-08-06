@@ -310,7 +310,7 @@ jobs:
         needs.posix-tar.result != 'success'
       )
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     environment: release-publish
     permissions:
       contents: write
@@ -354,7 +354,7 @@ jobs:
           certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
           mkdir -p release-truth-input/certificate release-truth-input/receipts
           certificate_ready=false
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 48); do
             if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > release-truth-input/certificate-release.json 2>/dev/null \
               && [[ "$(jq -r '.immutable // false' release-truth-input/certificate-release.json)" == "true" ]] \
               && gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
@@ -367,7 +367,7 @@ jobs:
             sleep 15
           done
           if [[ "${certificate_ready}" != "true" ]]; then
-            echo "Certificate evidence was not observable within five minutes." >&2
+            echo "Certificate evidence was not observable within twelve minutes." >&2
             exit 1
           fi
 
@@ -387,16 +387,24 @@ jobs:
           releases = [release for page in pages for release in page]
           prefix = f"release-truth/{os.environ['RELEASE_TAG']}/revocation/g"
           receipts = []
+          drafts = []
           for release in releases:
               tag = str(release.get("tag_name") or "")
               if not tag.startswith(prefix):
                   continue
               generation = tag.removeprefix(prefix)
+              if not generation.isdigit() or int(generation) < 1:
+                  raise SystemExit("Receipt evidence release authority is invalid")
+              if release.get("draft") is True:
+                  if (
+                      release.get("prerelease") is not True
+                      or release.get("immutable") is True
+                  ):
+                      raise SystemExit("Receipt draft authority is invalid")
+                  drafts.append({"generation": int(generation), "tag": tag})
+                  continue
               if (
-                  not generation.isdigit()
-                  or int(generation) < 1
-                  or release.get("draft")
-                  or release.get("prerelease") is not True
+                  release.get("prerelease") is not True
                   or release.get("immutable") is not True
               ):
                   raise SystemExit("Receipt evidence release authority is invalid")
@@ -413,6 +421,10 @@ jobs:
               range(1, len(receipts) + 1)
           ):
               raise SystemExit("Receipt evidence generation gap or fork detected")
+          if len(drafts) > 1 or (
+              drafts and drafts[0]["generation"] != len(receipts) + 1
+          ):
+              raise SystemExit("Receipt draft generation is not recoverable")
           Path("release-truth-input/receipt-tags.json").write_text(
               json.dumps(receipts, sort_keys=True), encoding="utf-8"
           )
@@ -588,29 +600,111 @@ jobs:
         run: |
           set -euo pipefail
           receipt_tag="${RECEIPT_TAG}"
-          expected_digest="sha256:$(sha256sum release-revocation-receipt.json | awk '{print $1}')"
-          set +e
-          gh release create "${receipt_tag}" \
-            release-revocation-receipt.json#release-revocation-receipt.json \
-            --target "${TARGET_COMMIT}" \
-            --title "Release Truth ${RELEASE_TAG} Revocation g${{ steps.receipt.outputs.next_generation }}" \
-            --notes "Append-only revocation receipt for failed post-publish smoke." \
-            --prerelease \
-            --latest=false
-          create_exit=$?
-          set -e
+          EXPECTED_DIGEST="sha256:$(sha256sum release-revocation-receipt.json | awk '{print $1}')"
+          EXPECTED_TITLE="Release Truth ${RELEASE_TAG} Revocation g${{ steps.receipt.outputs.next_generation }}"
+          EXPECTED_BODY="Append-only revocation receipt for failed post-publish smoke."
+          export EXPECTED_DIGEST EXPECTED_TITLE EXPECTED_BODY
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
+            if ! gh release create "${receipt_tag}" \
+              release-revocation-receipt.json#release-revocation-receipt.json \
+              --target "${TARGET_COMMIT}" \
+              --title "${EXPECTED_TITLE}" \
+              --notes "${EXPECTED_BODY}" \
+              --draft \
+              --prerelease \
+              --latest=false; then
+              echo "Receipt draft create returned non-zero; resolving GitHub authority."
+            fi
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
+            echo "Receipt draft was not recoverable after create." >&2
+            exit 1
+          fi
+
+          receipt_release_id="$(jq -r '.id' receipt-release.json)"
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          release = json.loads(Path("receipt-release.json").read_text(encoding="utf-8"))
+          assets = release.get("assets")
+          draft = release.get("draft")
+          if (
+              release.get("tag_name") != os.environ["RECEIPT_TAG"]
+              or not isinstance(draft, bool)
+              or release.get("prerelease") is not True
+              or (draft and release.get("immutable") is True)
+              or release.get("target_commitish") != os.environ["TARGET_COMMIT"]
+              or release.get("name") != os.environ["EXPECTED_TITLE"]
+              or release.get("body") != os.environ["EXPECTED_BODY"]
+              or not isinstance(assets, list)
+              or len(assets) > 1
+              or (not draft and len(assets) != 1)
+              or (
+                  assets
+                  and (
+                      assets[0].get("name") != "release-revocation-receipt.json"
+                      or assets[0].get("digest") != os.environ["EXPECTED_DIGEST"]
+                  )
+              )
+          ):
+              raise SystemExit("Receipt release differs from expected recovery identity")
+          PY
+          draft="$(jq -r '.draft' receipt-release.json)"
+          if [[ "${draft}" == "true" ]]; then
+            if [[ "$(jq '.assets | length' receipt-release.json)" == "0" ]]; then
+              gh release upload "${receipt_tag}" \
+                release-revocation-receipt.json#release-revocation-receipt.json
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json
+            fi
+            actual_digest="$(jq -r '.assets[] | select(.name == "release-revocation-receipt.json") | .digest' receipt-release.json)"
+            if [[ "${actual_digest}" != "${EXPECTED_DIGEST}" ]] \
+              || [[ "$(jq '.assets | length' receipt-release.json)" != "1" ]]; then
+              echo "Receipt draft asset differs from expected recovery identity." >&2
+              exit 1
+            fi
+            jq -n \
+              --arg target_commitish "${TARGET_COMMIT}" \
+              --arg name "${EXPECTED_TITLE}" \
+              --arg body "${EXPECTED_BODY}" \
+              '{target_commitish:$target_commitish,name:$name,body:$body,draft:false,prerelease:true,make_latest:"false"}' \
+              > receipt-publish-request.json
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${receipt_release_id}" \
+              --input receipt-publish-request.json \
+              > receipt-publish-response.json
+            if [[ "$(jq -r '.id' receipt-publish-response.json)" != "${receipt_release_id}" ]] \
+              || [[ "$(jq -r '.draft' receipt-publish-response.json)" != "false" ]] \
+              || [[ "$(jq -r '.prerelease' receipt-publish-response.json)" != "true" ]]; then
+              echo "Receipt publish response differs from expected recovery identity." >&2
+              exit 1
+            fi
+          fi
 
           receipt_ready=false
           for attempt in $(seq 1 20); do
             if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
               actual_digest="$(jq -r '.assets[] | select(.name == "release-revocation-receipt.json") | .digest' receipt-release.json)"
               immutable="$(jq -r '.immutable // false' receipt-release.json)"
-              if [[ "${actual_digest}" != "${expected_digest}" ]]; then
-                echo "Receipt generation fork detected after create exit ${create_exit}." >&2
+              if [[ "${actual_digest}" != "${EXPECTED_DIGEST}" ]]; then
+                echo "Receipt generation fork detected." >&2
                 exit 1
               fi
               if [[ "${immutable}" == "true" ]] \
                 && gh release verify "${receipt_tag}" --format json >/dev/null 2>&1; then
+                if [[ "$(jq -r '.tag_name' receipt-release.json)" != "${RECEIPT_TAG}" ]] \
+                  || [[ "$(jq -r '.draft' receipt-release.json)" != "false" ]] \
+                  || [[ "$(jq -r '.prerelease' receipt-release.json)" != "true" ]] \
+                  || [[ "$(jq -r '.target_commitish' receipt-release.json)" != "${TARGET_COMMIT}" ]] \
+                  || [[ "$(jq -r '.name' receipt-release.json)" != "${EXPECTED_TITLE}" ]] \
+                  || [[ "$(jq -r '.body' receipt-release.json)" != "${EXPECTED_BODY}" ]] \
+                  || [[ "$(jq '.assets | length' receipt-release.json)" != "1" ]]; then
+                  echo "Receipt published release differs from expected recovery identity." >&2
+                  exit 1
+                fi
                 receipt_ready=true
                 break
               fi

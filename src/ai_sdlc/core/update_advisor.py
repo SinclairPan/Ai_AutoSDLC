@@ -667,6 +667,7 @@ def fetch_release_truth_github(
         raise ValueError("certificate assets differ from satisfaction proof")
     if certificate.repository != GITHUB_REPOSITORY:
         raise ValueError("certificate repository differs")
+    _verify_public_workflow_authority(proof, timeout_seconds)
 
     live_assets = {
         str(asset.get("name") or ""): asset
@@ -733,6 +734,94 @@ def fetch_release_truth_github(
         observed_at=observed_at,
         now=observed,
     )
+
+
+def _verify_public_workflow_authority(
+    proof: ReleaseSatisfactionProof,
+    timeout_seconds: float,
+) -> None:
+    """从公开 Actions run 重建 Proof 的受保护 publisher 与 required gates 权威。"""
+
+    cached_runs: dict[tuple[int, int], dict[str, Any]] = {}
+
+    def verified_run(
+        *,
+        workflow_run_id: int,
+        workflow_run_attempt: int,
+        workflow_ref: str,
+        head_sha: str,
+        conclusion: str,
+        publisher: bool,
+    ) -> None:
+        key = (workflow_run_id, workflow_run_attempt)
+        run = cached_runs.get(key)
+        if run is None:
+            payload = _fetch_public_json(
+                f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/"
+                f"{workflow_run_id}/attempts/{workflow_run_attempt}",
+                timeout_seconds,
+            )
+            if not isinstance(payload, dict):
+                raise ValueError("release workflow authority response is invalid")
+            run = payload
+            cached_runs[key] = run
+        expected_path = _protected_workflow_path(workflow_ref)
+        head_repository = run.get("head_repository")
+        if (
+            run.get("id") != workflow_run_id
+            or run.get("run_attempt") != workflow_run_attempt
+            or run.get("status") != "completed"
+            or run.get("conclusion") != conclusion
+            or run.get("head_sha") != head_sha
+            or run.get("path") != expected_path
+            or not isinstance(head_repository, dict)
+            or head_repository.get("full_name") != GITHUB_REPOSITORY
+        ):
+            raise ValueError("release workflow authority differs from proof")
+        if publisher and (
+            run.get("event") != "workflow_dispatch"
+            or run.get("head_branch") != "main"
+        ):
+            raise ValueError("release publisher workflow authority is invalid")
+
+    verified_run(
+        workflow_run_id=proof.workflow_run_id,
+        workflow_run_attempt=proof.workflow_run_attempt,
+        workflow_ref=proof.publish_workflow_ref,
+        head_sha=proof.commit_sha,
+        conclusion="success",
+        publisher=True,
+    )
+    if not proof.required_gates:
+        raise ValueError("release proof has no required workflow authority")
+    for gate in proof.required_gates:
+        if (
+            not gate.required
+            or not gate.protected
+            or gate.conclusion != "success"
+            or gate.authority_repository != GITHUB_REPOSITORY
+            or gate.head_sha != proof.commit_sha
+        ):
+            raise ValueError("required workflow authority is invalid")
+        verified_run(
+            workflow_run_id=gate.workflow_run_id,
+            workflow_run_attempt=gate.workflow_run_attempt,
+            workflow_ref=gate.workflow_ref,
+            head_sha=gate.head_sha,
+            conclusion=gate.conclusion,
+            publisher=False,
+        )
+
+
+def _protected_workflow_path(workflow_ref: str) -> str:
+    prefix = f"{GITHUB_REPOSITORY}/"
+    suffix = "@refs/heads/main"
+    if not workflow_ref.startswith(prefix) or not workflow_ref.endswith(suffix):
+        raise ValueError("release workflow authority is not protected main")
+    path = workflow_ref[len(prefix) : -len(suffix)]
+    if not path.startswith(".github/workflows/") or not path.endswith((".yml", ".yaml")):
+        raise ValueError("release workflow authority path is invalid")
+    return path
 
 
 def _verified_evidence_asset(

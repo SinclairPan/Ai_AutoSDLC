@@ -8,6 +8,8 @@ import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from ai_sdlc.core.release_truth import build_release_satisfaction_proof
 from ai_sdlc.core.release_truth_models import (
     ReleaseAssetBinding,
@@ -205,7 +207,30 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
         )
         bytes_by_url[receipt_url] = receipt_bytes
     release_pages.append({"id": software_release["id"], "tag_name": tag})
-    return software_release, certificate_release, release_pages, bytes_by_url
+    workflow_run = {
+        "id": candidate.workflow_run_id,
+        "run_attempt": candidate.workflow_run_attempt,
+        "status": "completed",
+        "conclusion": "success",
+        "event": "workflow_dispatch",
+        "head_sha": commit,
+        "head_branch": "main",
+        "path": ".github/workflows/release-build.yml",
+        "head_repository": {"full_name": repository},
+    }
+    workflow_runs = {
+        (
+            f"https://api.github.com/repos/{repository}/actions/runs/"
+            f"{candidate.workflow_run_id}/attempts/{candidate.workflow_run_attempt}"
+        ): workflow_run
+    }
+    return (
+        software_release,
+        certificate_release,
+        release_pages,
+        bytes_by_url,
+        workflow_runs,
+    )
 
 
 def test_source_runtime_fails_closed(monkeypatch, tmp_path) -> None:
@@ -504,26 +529,35 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
     monkeypatch,
 ) -> None:
     """捕获公开 loader 不核验 GitHub asset digest，或漏代 Receipt 仍 trusted。"""
-    software, certificate, pages, content = _public_truth_fixture()
-    gap_software, gap_certificate, gap_pages, gap_content = _public_truth_fixture(
-        receipt_generation=2
-    )
+    software, certificate, pages, content, workflow_runs = _public_truth_fixture()
+    (
+        gap_software,
+        gap_certificate,
+        gap_pages,
+        gap_content,
+        gap_workflow_runs,
+    ) = _public_truth_fixture(receipt_generation=2)
 
-    def install_fixture(cert, releases, blobs) -> None:
+    def install_fixture(cert, releases, blobs, runs) -> None:
+        def fetch_json(url: str, timeout: float):
+            if "/actions/runs/" in url:
+                return runs[url]
+            return releases if "?per_page=" in url else cert
+
         monkeypatch.setattr(
             "ai_sdlc.core.update_advisor._fetch_public_json",
-            lambda url, timeout: releases if "?per_page=" in url else cert,
+            fetch_json,
         )
         monkeypatch.setattr(
             "ai_sdlc.core.update_advisor._fetch_public_bytes",
             lambda url, timeout: blobs[url],
         )
 
-    install_fixture(certificate, pages, content)
+    install_fixture(certificate, pages, content, workflow_runs)
     trusted = fetch_release_truth_github(
         software, 1.0, "2026-05-01T12:02:00Z"
     )
-    install_fixture(gap_certificate, gap_pages, gap_content)
+    install_fixture(gap_certificate, gap_pages, gap_content, gap_workflow_runs)
     gap = fetch_release_truth_github(
         gap_software, 1.0, "2026-05-01T12:02:00Z"
     )
@@ -532,6 +566,32 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
     assert trusted.revocation_generation == 0
     assert gap.status == "unknown"
     assert gap.reason_code == "receipt_chain_invalid"
+
+
+def test_public_truth_loader_rejects_unverified_publish_workflow_authority(
+    monkeypatch,
+) -> None:
+    """捕获公开 loader 仅复制 Certificate attestation 摘要并自证 trusted。"""
+    software, certificate, pages, content, workflow_runs = _public_truth_fixture()
+    run_url, run = next(iter(workflow_runs.items()))
+    workflow_runs[run_url] = {**run, "conclusion": "failure"}
+
+    def fetch_json(url: str, timeout: float):
+        if "/actions/runs/" in url:
+            return workflow_runs[url]
+        return pages if "?per_page=" in url else certificate
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_json,
+    )
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_bytes",
+        lambda url, timeout: content[url],
+    )
+
+    with pytest.raises(ValueError, match="workflow authority"):
+        fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
 
 
 def test_public_release_pages_continue_past_ten_pages_and_stop_at_software_release(
@@ -571,7 +631,7 @@ def test_public_release_pages_continue_past_ten_pages_and_stop_at_software_relea
 
 def test_public_truth_loader_marks_missing_certificate_untrusted(monkeypatch) -> None:
     """捕获公开 Certificate 404 被误当作可回退 tag 或永久网络故障。"""
-    software, _, _, content = _public_truth_fixture()
+    software, _, _, content, _ = _public_truth_fixture()
     monkeypatch.setattr(
         "ai_sdlc.core.update_advisor._fetch_public_bytes",
         lambda url, timeout: content[url],

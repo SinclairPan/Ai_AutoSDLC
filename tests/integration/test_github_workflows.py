@@ -274,6 +274,7 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
         "posix-tar"
     ]["if"]
     writer = jobs["record-revocation"]
+    assert writer["timeout-minutes"] >= 30
     assert writer["needs"] == ["windows-zip", "posix-tar"]
     assert writer["environment"] == "release-publish"
     assert writer["permissions"] == {"contents": "write"}
@@ -290,6 +291,19 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert "release-revocation-receipt.json" in workflow_text
     assert "release-truth/${RELEASE_TAG}/revocation/g${next_generation}" in workflow_text
     assert "gh release create \"${receipt_tag}\"" in workflow_text
+    assert "--draft" in workflow_text
+    assert "gh release upload \"${receipt_tag}\"" in workflow_text
+    assert "receipt-publish-request.json" in workflow_text
+    assert "receipt-publish-response.json" in workflow_text
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/releases/${receipt_release_id}"'
+        in workflow_text
+    )
+    assert "Receipt release differs from expected recovery identity" in workflow_text
+    assert "Receipt published release differs from expected recovery identity" in workflow_text
+    assert "create_exit" not in workflow_text
+    assert "for attempt in $(seq 1 48)" in workflow_text
+    assert "within twelve minutes" in workflow_text
     assert "--prerelease" in workflow_text
     assert "--latest=false" in workflow_text
     assert "immutable" in workflow_text
