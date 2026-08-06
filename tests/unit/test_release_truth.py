@@ -1,0 +1,546 @@
+"""Permanent Release Truth 的 canonical 工件与 fail-closed 决策测试。"""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime, timedelta
+
+import pytest
+
+
+def _api():
+    from ai_sdlc.core import release_truth
+    from ai_sdlc.core.release_truth_models import (
+        ReleaseAssetBinding,
+        ReleaseCandidateSnapshot,
+        RequiredGateBinding,
+    )
+
+    return release_truth, ReleaseAssetBinding, ReleaseCandidateSnapshot, RequiredGateBinding
+
+
+def _candidate(**changes: object):
+    _, asset_type, candidate_type, gate_type = _api()
+    assets = (
+        asset_type(
+            name="ai_sdlc-1.0.3-py3-none-any.whl",
+            digest="sha256:" + "a" * 64,
+            size_bytes=101,
+            platform="python",
+        ),
+        asset_type(
+            name="ai_sdlc-1.0.3.tar.gz",
+            digest="sha256:" + "b" * 64,
+            size_bytes=202,
+            platform="source",
+        ),
+    )
+    gates = (
+        gate_type(
+            name="Compatibility Gate Result",
+            conclusion="success",
+            required=True,
+            protected=True,
+            authority_repository="SinclairPan/Ai_AutoSDLC",
+            workflow_ref="SinclairPan/Ai_AutoSDLC/.github/workflows/compatibility-gate.yml@refs/heads/main",
+            workflow_run_id=9001,
+            workflow_run_attempt=2,
+            head_sha="1" * 40,
+            completed_at="2026-08-05T20:00:00Z",
+            valid_until="2026-08-05T21:00:00Z",
+            evidence_digest="sha256:" + "c" * 64,
+        ),
+        gate_type(
+            name="Fast Gate",
+            conclusion="success",
+            required=True,
+            protected=True,
+            authority_repository="SinclairPan/Ai_AutoSDLC",
+            workflow_ref="SinclairPan/Ai_AutoSDLC/.github/workflows/fast-gate.yml@refs/heads/main",
+            workflow_run_id=9001,
+            workflow_run_attempt=2,
+            head_sha="1" * 40,
+            completed_at="2026-08-05T20:01:00Z",
+            valid_until="2026-08-05T21:00:00Z",
+            evidence_digest="sha256:" + "d" * 64,
+        ),
+    )
+    values: dict[str, object] = {
+        "repository": "SinclairPan/Ai_AutoSDLC",
+        "draft_release_id": 1234,
+        "draft_release_updated_at": "2026-08-05T20:02:00Z",
+        "draft": True,
+        "tag_name": "v1.0.3",
+        "tag_object_sha": "2" * 40,
+        "commit_sha": "1" * 40,
+        "tree_sha": "3" * 40,
+        "required_policy_digest": "sha256:" + "e" * 64,
+        "required_gate_names": ("Compatibility Gate Result", "Fast Gate"),
+        "required_gates": gates,
+        "workflow_run_id": 9001,
+        "workflow_run_attempt": 2,
+        "expected_assets": assets,
+        "assets": assets,
+        "release_settings_digest": "sha256:" + "f" * 64,
+        "publish_workflow_ref": "SinclairPan/Ai_AutoSDLC/.github/workflows/release-build.yml@refs/heads/main",
+        "evidence_cutoff_at": "2026-08-05T20:05:00Z",
+    }
+    values.update(changes)
+    return candidate_type(**values)
+
+
+def test_proof_replay_is_deterministic() -> None:
+    """捕获把运行时钟或非确定顺序写入 Proof 导致同输入 digest 漂移。"""
+    release_truth, *_ = _api()
+    candidate = _candidate()
+
+    first = release_truth.build_release_satisfaction_proof(candidate)
+    second = release_truth.build_release_satisfaction_proof(candidate)
+
+    assert first == second
+    assert first.proof_digest.startswith("sha256:")
+    assert len(first.proof_digest) == 71
+
+
+@pytest.mark.parametrize(
+    ("gate_change", "message"),
+    [
+        ({"conclusion": "failure"}, "successful"),
+        ({"required": False}, "required"),
+        ({"protected": False}, "protected"),
+        ({"authority_repository": "attacker/fork"}, "authority"),
+        (
+            {
+                "workflow_ref": "SinclairPan/Ai_AutoSDLC/.github/workflows/fast-gate.yml@refs/pull/11/merge"
+            },
+            "protected mainline",
+        ),
+        ({"head_sha": "9" * 40}, "head SHA"),
+        ({"workflow_run_attempt": 3}, "run attempt"),
+        ({"valid_until": "2026-08-05T20:04:59Z"}, "stale"),
+    ],
+)
+def test_proof_rejects_untrusted_required_gate(
+    gate_change: dict[str, object], message: str
+) -> None:
+    """捕获失败、非 required、自签、错候选、错 attempt 与过期 Gate 被纳入 Proof。"""
+    release_truth, *_ = _api()
+    candidate = _candidate()
+    gates = list(candidate.required_gates)
+    gates[0] = gates[0].model_copy(update=gate_change)
+
+    with pytest.raises(release_truth.ReleaseTruthError, match=message):
+        release_truth.build_release_satisfaction_proof(
+            candidate.model_copy(update={"required_gates": tuple(gates)})
+        )
+
+
+def test_proof_rejects_missing_or_drifted_assets() -> None:
+    """捕获缺失资产或同名摘要漂移仍产生 Proof。"""
+    release_truth, *_ = _api()
+    candidate = _candidate()
+    missing = candidate.model_copy(update={"assets": candidate.assets[:1]})
+    drifted_asset = candidate.assets[0].model_copy(
+        update={"digest": "sha256:" + "0" * 64}
+    )
+    drifted = candidate.model_copy(
+        update={"assets": (drifted_asset, candidate.assets[1])}
+    )
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="asset"):
+        release_truth.build_release_satisfaction_proof(missing)
+    with pytest.raises(release_truth.ReleaseTruthError, match="asset"):
+        release_truth.build_release_satisfaction_proof(drifted)
+
+
+def test_proof_rejects_noncanonical_gate_or_asset_collection() -> None:
+    """捕获重复或非排序集合形成第二种内容身份。"""
+    release_truth, *_ = _api()
+    candidate = _candidate()
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="canonical"):
+        release_truth.build_release_satisfaction_proof(
+            candidate.model_copy(update={"required_gates": tuple(reversed(candidate.required_gates))})
+        )
+    with pytest.raises(release_truth.ReleaseTruthError, match="canonical"):
+        release_truth.build_release_satisfaction_proof(
+            candidate.model_copy(update={"assets": (candidate.assets[0], candidate.assets[0])})
+        )
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"draft_release_id": 4321}, "proof identity"),
+        ({"draft_release_updated_at": "2026-08-05T20:03:00Z"}, "proof identity"),
+        ({"draft": False}, "draft"),
+        ({"tag_name": "v1.0.4"}, "proof identity"),
+        ({"tree_sha": "8" * 40}, "proof identity"),
+        ({"workflow_run_attempt": 3}, "run attempt"),
+        ({"release_settings_digest": "sha256:" + "0" * 64}, "proof identity"),
+    ],
+)
+def test_publish_claim_rejects_candidate_drift(
+    change: dict[str, object], message: str
+) -> None:
+    """捕获 Draft 重建、tag/tree、attempt 或不可变设置变化后消费旧 Proof。"""
+    release_truth, *_ = _api()
+    candidate = _candidate()
+    proof = release_truth.build_release_satisfaction_proof(candidate)
+
+    with pytest.raises(release_truth.ReleaseTruthError, match=message):
+        release_truth.validate_publish_claim(
+            proof,
+            candidate.model_copy(update=change),
+            caller_workflow_ref=candidate.publish_workflow_ref,
+            caller_run_id=candidate.workflow_run_id,
+            caller_run_attempt=candidate.workflow_run_attempt,
+        )
+
+
+def test_publish_claim_rejects_unbound_caller() -> None:
+    """捕获非唯一 protected writer 或替换 run attempt 消费 Proof。"""
+    release_truth, *_ = _api()
+    candidate = _candidate()
+    proof = release_truth.build_release_satisfaction_proof(candidate)
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="caller"):
+        release_truth.validate_publish_claim(
+            proof,
+            candidate,
+            caller_workflow_ref="attacker/fork/.github/workflows/release.yml@main",
+            caller_run_id=candidate.workflow_run_id,
+            caller_run_attempt=candidate.workflow_run_attempt,
+        )
+
+
+def test_proof_digest_fork_is_rejected_on_load() -> None:
+    """捕获篡改 Proof 任一绑定后仍沿用原 digest。"""
+    _, _, _, _ = _api()
+    from ai_sdlc.core.release_truth_models import ReleaseSatisfactionProof
+
+    proof = _api()[0].build_release_satisfaction_proof(_candidate())
+    payload = proof.model_dump(mode="json")
+    payload["tree_sha"] = "7" * 40
+
+    with pytest.raises(ValueError, match="proof_digest"):
+        ReleaseSatisfactionProof.model_validate(payload)
+
+
+def _post_publish_api():
+    from ai_sdlc.core import release_truth
+    from ai_sdlc.core.release_truth_models import (
+        PublishedReleaseSnapshot,
+        ReleaseCertificate,
+        ReleaseRevocationReceipt,
+        RevocationSignal,
+    )
+
+    return (
+        release_truth,
+        PublishedReleaseSnapshot,
+        ReleaseCertificate,
+        ReleaseRevocationReceipt,
+        RevocationSignal,
+    )
+
+
+def _published(**changes: object):
+    _, published_type, *_ = _post_publish_api()
+    candidate = _candidate()
+    values: dict[str, object] = {
+        "repository": candidate.repository,
+        "github_release_id": 5678,
+        "github_release_url": "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v1.0.3",
+        "tag_name": candidate.tag_name,
+        "commit_sha": candidate.commit_sha,
+        "tree_sha": candidate.tree_sha,
+        "published": True,
+        "draft": False,
+        "immutable": True,
+        "release_attestation_verified": True,
+        "release_attestation_digest": "sha256:" + "4" * 64,
+        "assets": candidate.assets,
+        "revocation_generation": 0,
+    }
+    values.update(changes)
+    return published_type(**values)
+
+
+def _certificate():
+    release_truth, *_ = _post_publish_api()
+    return release_truth.build_release_certificate(
+        release_truth.build_release_satisfaction_proof(_candidate()),
+        _published(),
+        release_attestation_digest="sha256:" + "4" * 64,
+        issued_at="2026-08-05T20:10:00Z",
+    )
+
+
+def _signal(**changes: object):
+    *_, signal_type = _post_publish_api()
+    values: dict[str, object] = {
+        "reason_code": "post_publish_smoke_failed",
+        "evidence_digest": "sha256:" + "5" * 64,
+        "work_item_id": "005-release-truth-incident",
+        "observed_at": "2026-08-05T20:12:00Z",
+    }
+    values.update(changes)
+    return signal_type(**values)
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"published": False}, "published"),
+        ({"draft": True}, "published"),
+        ({"immutable": False}, "immutable"),
+        ({"release_attestation_verified": False}, "attestation"),
+        ({"release_attestation_digest": "sha256:" + "6" * 64}, "attestation"),
+        ({"tag_name": "v1.0.4"}, "identity"),
+        ({"revocation_generation": 1}, "generation"),
+    ],
+)
+def test_certificate_rejects_unverified_or_drifted_release(
+    change: dict[str, object], message: str
+) -> None:
+    """捕获 published_unverified、可变 Release、attestation 或身份漂移仍签发证书。"""
+    release_truth, *_ = _post_publish_api()
+    proof = release_truth.build_release_satisfaction_proof(_candidate())
+
+    with pytest.raises(release_truth.ReleaseTruthError, match=message):
+        release_truth.build_release_certificate(
+            proof,
+            _published(**change),
+            release_attestation_digest="sha256:" + "4" * 64,
+            issued_at="2026-08-05T20:10:00Z",
+        )
+
+
+def test_certificate_rejects_final_asset_drift() -> None:
+    """捕获 Publish 后资产同名摘要变化仍生成 trusted Certificate。"""
+    release_truth, *_ = _post_publish_api()
+    proof = release_truth.build_release_satisfaction_proof(_candidate())
+    assets = list(_published().assets)
+    assets[0] = assets[0].model_copy(update={"digest": "sha256:" + "7" * 64})
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="asset"):
+        release_truth.build_release_certificate(
+            proof,
+            _published(assets=tuple(assets)),
+            release_attestation_digest="sha256:" + "4" * 64,
+            issued_at="2026-08-05T20:10:00Z",
+        )
+
+
+def test_certificate_replay_is_deterministic_and_tamper_evident() -> None:
+    """捕获同一发布产生多个 generation-0 身份或篡改后沿用 digest。"""
+    _, _, certificate_type, *_ = _post_publish_api()
+    first = _certificate()
+    second = _certificate()
+
+    assert first == second
+    payload = first.model_dump(mode="json")
+    payload["tree_sha"] = "9" * 40
+    with pytest.raises(ValueError, match="certificate_digest"):
+        certificate_type.model_validate(payload)
+
+
+def test_certificate_revalidates_proof_digest_before_issue() -> None:
+    """捕获调用者用未重验证的 model_copy 绕过 Proof digest 绑定。"""
+    release_truth, *_ = _post_publish_api()
+    proof = release_truth.build_release_satisfaction_proof(_candidate()).model_copy(
+        update={"required_policy_digest": "sha256:" + "0" * 64}
+    )
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="proof"):
+        release_truth.build_release_certificate(
+            proof,
+            _published(),
+            release_attestation_digest="sha256:" + "4" * 64,
+            issued_at="2026-08-05T20:10:00Z",
+        )
+
+
+def test_revocation_receipt_generation_is_monotonic_and_replayable() -> None:
+    """捕获跳号、错 predecessor 或同安全信号重放产生不同 Receipt。"""
+    release_truth, *_ = _post_publish_api()
+    certificate = _certificate()
+
+    first = release_truth.build_revocation_receipt(
+        certificate,
+        None,
+        _signal(),
+        expected_generation=1,
+    )
+    replay = release_truth.build_revocation_receipt(
+        certificate,
+        None,
+        _signal(),
+        expected_generation=1,
+    )
+    second = release_truth.build_revocation_receipt(
+        certificate,
+        first,
+        _signal(
+            reason_code="late_p0",
+            evidence_digest="sha256:" + "8" * 64,
+            observed_at="2026-08-05T20:13:00Z",
+        ),
+        expected_generation=2,
+    )
+
+    assert replay == first
+    assert first.generation == 1
+    assert first.predecessor_receipt_digest == ""
+    assert second.generation == 2
+    assert second.predecessor_receipt_digest == first.receipt_digest
+    with pytest.raises(release_truth.ReleaseTruthError, match="generation"):
+        release_truth.build_revocation_receipt(
+            certificate,
+            first,
+            _signal(),
+            expected_generation=3,
+        )
+
+
+def test_revocation_receipt_rejects_certificate_fork() -> None:
+    """捕获 latest Receipt 属于另一 Certificate 时继续追加 generation。"""
+    release_truth, *_ = _post_publish_api()
+    certificate = _certificate()
+    first = release_truth.build_revocation_receipt(
+        certificate, None, _signal(), expected_generation=1
+    )
+    fork = first.model_copy(update={"certificate_digest": "sha256:" + "0" * 64})
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="certificate"):
+        release_truth.build_revocation_receipt(
+            certificate,
+            fork,
+            _signal(),
+            expected_generation=2,
+        )
+
+
+def test_revocation_receipt_revalidates_certificate_before_append() -> None:
+    """捕获调用者用未重验证的 Certificate 内容生成 Receipt。"""
+    release_truth, *_ = _post_publish_api()
+    certificate = _certificate().model_copy(
+        update={"github_release_url": "https://example.invalid/fork"}
+    )
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="certificate"):
+        release_truth.build_revocation_receipt(
+            certificate,
+            None,
+            _signal(),
+            expected_generation=1,
+        )
+
+
+def test_trust_reducer_transitions_from_certificate_to_receipt() -> None:
+    """捕获推荐读取后 Receipt 已提交却仍沿用先前 trusted 投影。"""
+    release_truth, *_ = _post_publish_api()
+    certificate = _certificate()
+    observed_at = "2026-08-05T20:14:00Z"
+    now = datetime(2026, 8, 5, 20, 20, tzinfo=UTC)
+
+    before = release_truth.evaluate_release_trust(
+        _published(), certificate, (), observed_at=observed_at, now=now
+    )
+    receipt = release_truth.build_revocation_receipt(
+        certificate, None, _signal(), expected_generation=1
+    )
+    after = release_truth.evaluate_release_trust(
+        _published(revocation_generation=1),
+        certificate,
+        (receipt,),
+        observed_at=observed_at,
+        now=now,
+    )
+
+    assert before.status == "trusted"
+    assert before.revocation_generation == 0
+    assert after.status == "untrusted"
+    assert after.reason_code == "revoked"
+    assert after.revocation_generation == 1
+
+
+def test_trust_reducer_returns_unknown_for_stale_projection() -> None:
+    """捕获超过 15 分钟仍声称当前 trusted。"""
+    release_truth, *_ = _post_publish_api()
+
+    decision = release_truth.evaluate_release_trust(
+        _published(),
+        _certificate(),
+        (),
+        observed_at="2026-08-05T20:00:00Z",
+        now=datetime(2026, 8, 5, 20, 0, tzinfo=UTC) + timedelta(minutes=15, seconds=1),
+    )
+
+    assert decision.status == "unknown"
+    assert decision.reason_code == "stale_projection"
+
+
+def test_trust_reducer_returns_unknown_for_receipt_gap_or_fork() -> None:
+    """捕获 Receipt 缺代或同 generation 身份分叉时错误推荐。"""
+    release_truth, *_ = _post_publish_api()
+    certificate = _certificate()
+    first = release_truth.build_revocation_receipt(
+        certificate, None, _signal(), expected_generation=1
+    )
+    second = release_truth.build_revocation_receipt(
+        certificate,
+        first,
+        _signal(
+            reason_code="late_p0",
+            evidence_digest="sha256:" + "8" * 64,
+            observed_at="2026-08-05T20:13:00Z",
+        ),
+        expected_generation=2,
+    )
+    now = datetime(2026, 8, 5, 20, 20, tzinfo=UTC)
+
+    gap = release_truth.evaluate_release_trust(
+        _published(revocation_generation=2),
+        certificate,
+        (second,),
+        observed_at="2026-08-05T20:14:00Z",
+        now=now,
+    )
+    fork = release_truth.evaluate_release_trust(
+        _published(revocation_generation=1),
+        certificate,
+        (first, first.model_copy(update={"receipt_digest": "sha256:" + "f" * 64})),
+        observed_at="2026-08-05T20:14:00Z",
+        now=now,
+    )
+
+    assert gap.status == "unknown"
+    assert gap.reason_code == "receipt_chain_invalid"
+    assert fork.status == "unknown"
+    assert fork.reason_code == "receipt_chain_invalid"
+
+
+def test_trust_reducer_does_not_trust_missing_or_mismatched_certificate() -> None:
+    """捕获仅凭 GitHub Published/tag 或另一 Release 的 Certificate 推荐。"""
+    release_truth, *_ = _post_publish_api()
+    now = datetime(2026, 8, 5, 20, 20, tzinfo=UTC)
+    missing = release_truth.evaluate_release_trust(
+        _published(),
+        None,
+        (),
+        observed_at="2026-08-05T20:14:00Z",
+        now=now,
+    )
+    mismatch = release_truth.evaluate_release_trust(
+        _published(commit_sha="9" * 40),
+        _certificate(),
+        (),
+        observed_at="2026-08-05T20:14:00Z",
+        now=now,
+    )
+
+    assert missing.status == "untrusted"
+    assert missing.reason_code == "certificate_missing"
+    assert mismatch.status == "unknown"
+    assert mismatch.reason_code == "certificate_mismatch"
