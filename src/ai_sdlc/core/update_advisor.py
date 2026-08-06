@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import base64
-import binascii
 import hashlib
 import json
 import os
 import platform
 import re
+import subprocess
 import sys
 import tempfile
 import time
@@ -863,10 +862,14 @@ def _verify_certificate_artifact_attestation(
         f"{proof.workflow_run_id}/attempts/{proof.workflow_run_attempt}"
     )
     expected_dependency = f"git+https://github.com/{GITHUB_REPOSITORY}@refs/heads/main"
-    for attestation in attestations:
-        statement = _artifact_attestation_statement(attestation)
-        if statement is None:
-            continue
+    statements = _cryptographically_verified_artifact_attestation_statements(
+        certificate_bytes,
+        attestations,
+        proof,
+        workflow_path,
+        timeout_seconds,
+    )
+    for statement in statements:
         subjects = statement.get("subject")
         predicate = statement.get("predicate")
         if (
@@ -920,39 +923,122 @@ def _verify_certificate_artifact_attestation(
     raise ValueError("certificate artifact attestation authority is invalid")
 
 
-def _artifact_attestation_statement(attestation: object) -> dict[str, Any] | None:
-    if not isinstance(attestation, dict):
-        return None
-    bundle = attestation.get("bundle")
-    if not isinstance(bundle, dict) or bundle.get("mediaType") != (
-        "application/vnd.dev.sigstore.bundle.v0.3+json"
-    ):
-        return None
-    envelope = bundle.get("dsseEnvelope")
-    material = bundle.get("verificationMaterial")
-    if not isinstance(envelope, dict) or not isinstance(material, dict):
-        return None
-    signatures = envelope.get("signatures")
-    certificate = material.get("certificate")
-    transparency = material.get("tlogEntries")
-    if (
-        envelope.get("payloadType") != "application/vnd.in-toto+json"
-        or not isinstance(signatures, list)
-        or not signatures
-        or not isinstance(certificate, dict)
-        or not certificate.get("rawBytes")
-        or not isinstance(transparency, list)
-        or not transparency
-    ):
-        return None
-    encoded = envelope.get("payload")
-    if not isinstance(encoded, str):
-        return None
+def _cryptographically_verified_artifact_attestation_statements(
+    certificate_bytes: bytes,
+    attestations: list[object],
+    proof: ReleaseSatisfactionProof,
+    workflow_path: str,
+    timeout_seconds: float,
+) -> tuple[dict[str, Any], ...]:
+    """使用 GitHub CLI 的私有 Sigstore trust root 验证本地 bundle。"""
+
+    bundles = [
+        attestation["bundle"]
+        for attestation in attestations
+        if isinstance(attestation, dict) and isinstance(attestation.get("bundle"), dict)
+    ]
+    if not bundles:
+        raise ValueError("certificate artifact attestation bundle is missing")
+
+    with tempfile.TemporaryDirectory(prefix="ai-sdlc-attestation-") as temp_dir:
+        root = Path(temp_dir)
+        artifact_path = root / "release-certificate.json"
+        bundle_path = root / "attestations.jsonl"
+        artifact_path.write_bytes(certificate_bytes)
+        bundle_path.write_text(
+            "".join(
+                json.dumps(bundle, ensure_ascii=False, sort_keys=True) + "\n"
+                for bundle in bundles
+            ),
+            encoding="utf-8",
+        )
+        command = [
+            "gh",
+            "attestation",
+            "verify",
+            str(artifact_path),
+            "--bundle",
+            str(bundle_path),
+            "--repo",
+            GITHUB_REPOSITORY,
+            "--signer-workflow",
+            f"{GITHUB_REPOSITORY}/{workflow_path}",
+            "--signer-digest",
+            proof.commit_sha,
+            "--source-ref",
+            "refs/heads/main",
+            "--source-digest",
+            proof.commit_sha,
+            "--deny-self-hosted-runners",
+            "--no-public-good",
+            "--hostname",
+            "github.com",
+            "--format",
+            "json",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=timeout_seconds,
+            )
+        except FileNotFoundError as exc:
+            raise ValueError(
+                "certificate artifact attestation cryptographic verifier is unavailable"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise TimeoutError(
+                "certificate artifact attestation cryptographic verification timed out"
+            ) from exc
+
+    if completed.returncode != 0:
+        raise ValueError(
+            "certificate artifact attestation cryptographic verification failed"
+        )
     try:
-        statement = json.loads(base64.b64decode(encoded, validate=True))
-    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
-        return None
-    return statement if isinstance(statement, dict) else None
+        results = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            "certificate artifact attestation verification result is invalid"
+        ) from exc
+    if not isinstance(results, list):
+        raise ValueError(
+            "certificate artifact attestation verification result is invalid"
+        )
+
+    statements: list[dict[str, Any]] = []
+    for result in results:
+        verification = (
+            result.get("verificationResult") if isinstance(result, dict) else None
+        )
+        signature = (
+            verification.get("signature") if isinstance(verification, dict) else None
+        )
+        certificate = (
+            signature.get("certificate") if isinstance(signature, dict) else None
+        )
+        timestamps = (
+            verification.get("verifiedTimestamps")
+            if isinstance(verification, dict)
+            else None
+        )
+        statement = (
+            verification.get("statement") if isinstance(verification, dict) else None
+        )
+        if (
+            isinstance(certificate, dict)
+            and isinstance(timestamps, list)
+            and timestamps
+            and isinstance(statement, dict)
+        ):
+            statements.append(statement)
+    if not statements:
+        raise ValueError(
+            "certificate artifact attestation verification result is invalid"
+        )
+    return tuple(statements)
 
 
 def _protected_workflow_path(workflow_ref: str) -> str:

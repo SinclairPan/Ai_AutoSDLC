@@ -480,6 +480,9 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     )
     assert 'gh release edit "${RELEASE_TAG}" --draft=false' not in workflow_text
     assert '"repos/${GITHUB_REPOSITORY}/releases/${release_id}"' in workflow_text
+    assert "release-before-publish.http" in workflow_text
+    assert "release-publish-etag.txt" in workflow_text
+    assert '-H "If-Match: ${release_etag}"' in workflow_text
     assert "--input release-publish-request.json" in workflow_text
     assert "release-publish-response.json" in workflow_text
     assert "Published release differs from Proof-bound transition" in workflow_text

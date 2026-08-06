@@ -731,7 +731,9 @@ jobs:
             exit 1
           fi
 
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-before-publish.json
+          gh api --include \
+            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            > release-before-publish.http
           uv run --project trusted-writer python - <<'PY'
           from __future__ import annotations
 
@@ -739,8 +741,26 @@ jobs:
           import json
           from pathlib import Path
 
+          response = Path("release-before-publish.http").read_bytes()
+          separator = b"\r\n\r\n" if b"\r\n\r\n" in response else b"\n\n"
+          raw_headers, found, body = response.partition(separator)
+          if not found:
+              raise SystemExit("Draft response did not include HTTP headers")
+          etag = next(
+              (
+                  line.partition(":")[2].strip()
+                  for line in raw_headers.decode("iso-8859-1").splitlines()
+                  if line.partition(":")[0].lower() == "etag"
+              ),
+              "",
+          )
+          if not etag:
+              raise SystemExit("Draft response did not include an ETag")
+          Path("release-publish-etag.txt").write_text(etag, encoding="ascii")
+          Path("release-before-publish.json").write_bytes(body)
+
           before = json.loads(Path("release-cas.json").read_text(encoding="utf-8"))
-          current = json.loads(Path("release-before-publish.json").read_text(encoding="utf-8"))
+          current = json.loads(body)
           if not current["draft"] or current["id"] != before["id"]:
               raise SystemExit("Draft identity changed after Proof CAS")
           settings = ("name", "body", "tag_name", "target_commitish", "draft", "prerelease")
@@ -787,7 +807,9 @@ jobs:
           PY
 
           release_id="$(jq -er '.id' release-before-publish.json)"
+          release_etag="$(cat release-publish-etag.txt)"
           gh api --method PATCH \
+            -H "If-Match: ${release_etag}" \
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             --input release-publish-request.json > release-publish-response.json
           uv run --project trusted-writer python - <<'PY'

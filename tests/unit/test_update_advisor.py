@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import json
+import subprocess
 import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -17,6 +18,7 @@ from ai_sdlc.core.release_truth_models import (
     ReleaseCandidateSnapshot,
     ReleaseCertificate,
     ReleaseRevocationReceipt,
+    ReleaseSatisfactionProof,
     ReleaseTrustDecision,
     RequiredGateBinding,
 )
@@ -25,6 +27,7 @@ from ai_sdlc.core.update_advisor import (
     NOTICE_ACTIONABLE,
     NOTICE_LIGHT,
     _cache_path,
+    _cryptographically_verified_artifact_attestation_statements,
     _fetch_public_release_pages,
     ack_notice,
     detect_runtime_identity,
@@ -299,6 +302,46 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
         workflow_runs,
         attestations,
     )
+
+
+def _install_verified_attestation_command(monkeypatch) -> None:
+    """让非密码学单测消费与 gh 验签成功相同的已解析 statement。"""
+
+    def verified(command, **kwargs):
+        assert command[:3] == ["gh", "attestation", "verify"]
+        for required in (
+            "--bundle",
+            "--repo",
+            "--signer-workflow",
+            "--signer-digest",
+            "--source-ref",
+            "--source-digest",
+            "--deny-self-hosted-runners",
+            "--no-public-good",
+        ):
+            assert required in command
+        bundle_path = Path(command[command.index("--bundle") + 1])
+        results = []
+        for line in bundle_path.read_text(encoding="utf-8").splitlines():
+            bundle = json.loads(line)
+            statement = json.loads(base64.b64decode(bundle["dsseEnvelope"]["payload"]))
+            results.append(
+                {
+                    "verificationResult": {
+                        "signature": {"certificate": {"issuer": "GitHub"}},
+                        "verifiedTimestamps": [{"type": "transparency-log"}],
+                        "statement": statement,
+                    }
+                }
+            )
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(results),
+            stderr="",
+        )
+
+    monkeypatch.setattr("subprocess.run", verified)
 
 
 def test_source_runtime_fails_closed(monkeypatch, tmp_path) -> None:
@@ -643,6 +686,7 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
     monkeypatch,
 ) -> None:
     """捕获公开 loader 不核验 GitHub asset digest，或漏代 Receipt 仍 trusted。"""
+    _install_verified_attestation_command(monkeypatch)
     software, certificate, pages, content, workflow_runs, attestations = (
         _public_truth_fixture()
     )
@@ -693,6 +737,7 @@ def test_public_truth_loader_rejects_unverified_publish_workflow_authority(
     monkeypatch,
 ) -> None:
     """捕获公开 loader 仅复制 Certificate attestation 摘要并自证 trusted。"""
+    _install_verified_attestation_command(monkeypatch)
     software, certificate, pages, content, workflow_runs, attestations = (
         _public_truth_fixture()
     )
@@ -723,6 +768,7 @@ def test_public_truth_loader_rejects_certificate_without_protected_provenance(
     monkeypatch,
 ) -> None:
     """捕获任意 contents:write 发布者复用历史成功 run 自证 Certificate。"""
+    _install_verified_attestation_command(monkeypatch)
     software, certificate, pages, content, workflow_runs, attestations = (
         _public_truth_fixture()
     )
@@ -753,6 +799,66 @@ def test_public_truth_loader_rejects_certificate_without_protected_provenance(
 
     with pytest.raises(ValueError, match="artifact attestation"):
         fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
+
+
+def test_public_truth_loader_invokes_cryptographic_attestation_verifier(
+    monkeypatch,
+) -> None:
+    """捕获把未验签的 DSSE payload 直接当作受保护发布者证据。"""
+    software, certificate, pages, content, workflow_runs, attestations = (
+        _public_truth_fixture()
+    )
+
+    def fetch_json(url: str, timeout: float):
+        if "/actions/runs/" in url:
+            return workflow_runs[url]
+        if "/attestations/" in url:
+            return next(iter(attestations.values()))
+        return pages if "?per_page=" in url else certificate
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_json,
+    )
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_bytes",
+        lambda url, timeout: content[url],
+    )
+
+    def reject_unverified_payload(*args, **kwargs):
+        raise RuntimeError("cryptographic verifier invoked")
+
+    monkeypatch.setattr("subprocess.run", reject_unverified_payload)
+    with pytest.raises(RuntimeError, match="cryptographic verifier invoked"):
+        fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
+
+
+def test_artifact_attestation_verifier_fails_closed_on_invalid_signature(
+    monkeypatch,
+) -> None:
+    """捕获 gh 验签失败后仍解析 bundle payload 的回退路径。"""
+    _, _, _, content, _, attestations = _public_truth_fixture()
+    proof_bytes = content["https://example.test/proof"]
+    proof = ReleaseSatisfactionProof.model_validate_json(proof_bytes)
+    provenance = next(iter(attestations.values()))["attestations"]
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            1,
+            stdout="",
+            stderr="invalid signature",
+        ),
+    )
+
+    with pytest.raises(ValueError, match="cryptographic verification failed"):
+        _cryptographically_verified_artifact_attestation_statements(
+            b"certificate",
+            provenance,
+            proof,
+            ".github/workflows/release-build.yml",
+            1.0,
+        )
 
 
 def test_public_truth_loader_uses_one_timeout_budget(monkeypatch) -> None:
