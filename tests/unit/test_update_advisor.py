@@ -156,9 +156,7 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
                         "path": ".github/workflows/release-build.yml",
                     }
                 },
-                "internalParameters": {
-                    "github": {"event_name": "workflow_dispatch"}
-                },
+                "internalParameters": {"github": {"event_name": "workflow_dispatch"}},
                 "resolvedDependencies": [
                     {
                         "uri": f"git+https://github.com/{repository}@refs/heads/main",
@@ -167,7 +165,7 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
                 ],
             },
             "runDetails": {
-                "builder": {"id": f"https://github.com/{gate.workflow_ref}"},
+                "builder": {"id": "https://github.com/actions/runner/github-hosted"},
                 "metadata": {
                     "invocationId": (
                         f"https://github.com/{repository}/actions/runs/"
@@ -316,7 +314,9 @@ def test_source_runtime_fails_closed(monkeypatch, tmp_path) -> None:
     assert evaluation.eligible_notice_classes == ()
 
 
-def test_installed_module_invocation_is_installed_runtime(monkeypatch, tmp_path) -> None:
+def test_installed_module_invocation_is_installed_runtime(
+    monkeypatch, tmp_path
+) -> None:
     site_packages = tmp_path / "site-packages"
     executable = site_packages / "ai_sdlc" / "__main__.py"
     executable.parent.mkdir(parents=True)
@@ -351,9 +351,7 @@ def test_github_archive_installed_runtime_gets_actionable_notice(
     _force_installed(monkeypatch, tmp_path, channel="github-archive")
     monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
 
-    evaluation = evaluate_update_advisor(
-        now=datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
-    )
+    evaluation = evaluate_update_advisor(now=datetime(2026, 5, 1, 12, 0, tzinfo=UTC))
 
     assert evaluation.refresh_attempted is True
     assert evaluation.refresh_result == "success"
@@ -365,7 +363,9 @@ def test_github_archive_installed_runtime_gets_actionable_notice(
     assert evaluation.upgrade_command == "ai-sdlc self-update check"
 
 
-def test_cache_path_sanitizes_runtime_identity_for_windows(monkeypatch, tmp_path) -> None:
+def test_cache_path_sanitizes_runtime_identity_for_windows(
+    monkeypatch, tmp_path
+) -> None:
     _force_installed(monkeypatch, tmp_path, channel="github-archive")
 
     identity = detect_runtime_identity()
@@ -437,6 +437,28 @@ def test_explicit_check_can_ignore_failure_backoff(monkeypatch, tmp_path) -> Non
     assert calls == 2
 
 
+def test_update_refresh_uses_one_timeout_budget(monkeypatch, tmp_path) -> None:
+    """捕获 latest 请求耗尽预算后仍继续执行 Release Truth 网络链。"""
+    _force_installed(monkeypatch, tmp_path)
+    clock = {"seconds": 0.0}
+    monkeypatch.setattr("time.monotonic", lambda: clock["seconds"])
+
+    def slow_latest(timeout: float) -> dict[str, object]:
+        clock["seconds"] += 1.0
+        return _latest_release()
+
+    evaluation = evaluate_update_advisor(
+        now=datetime(2026, 5, 1, 12, 0, tzinfo=UTC),
+        fetch_latest=slow_latest,
+        fetch_release_truth=lambda release, timeout, observed: _truth(),
+        timeout_seconds=1.0,
+    )
+
+    assert evaluation.refresh_result == "timeout"
+    assert evaluation.release_trust == "unknown"
+    assert evaluation.eligible_notice_classes == ()
+
+
 def test_stale_cache_still_emits_known_update_notice_without_refresh(
     monkeypatch, tmp_path
 ) -> None:
@@ -456,9 +478,7 @@ def test_stale_cache_still_emits_known_update_notice_without_refresh(
     assert stale.upgrade_command is None
 
 
-def test_rendered_notice_throttles_without_acknowledging(
-    monkeypatch, tmp_path
-) -> None:
+def test_rendered_notice_throttles_without_acknowledging(monkeypatch, tmp_path) -> None:
     _force_installed(monkeypatch, tmp_path)
     monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
@@ -653,9 +673,7 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
         )
 
     install_fixture(certificate, pages, content, workflow_runs, attestations)
-    trusted = fetch_release_truth_github(
-        software, 1.0, "2026-05-01T12:02:00Z"
-    )
+    trusted = fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
     install_fixture(
         gap_certificate,
         gap_pages,
@@ -663,9 +681,7 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
         gap_workflow_runs,
         gap_attestations,
     )
-    gap = fetch_release_truth_github(
-        gap_software, 1.0, "2026-05-01T12:02:00Z"
-    )
+    gap = fetch_release_truth_github(gap_software, 1.0, "2026-05-01T12:02:00Z")
 
     assert trusted.status == "trusted"
     assert trusted.revocation_generation == 0
@@ -739,6 +755,43 @@ def test_public_truth_loader_rejects_certificate_without_protected_provenance(
         fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
 
 
+def test_public_truth_loader_uses_one_timeout_budget(monkeypatch) -> None:
+    """捕获公开 Truth 的每个 HTTP 请求各自重置完整超时。"""
+    software, certificate, pages, content, workflow_runs, attestations = (
+        _public_truth_fixture()
+    )
+    clock = {"seconds": 0.0}
+    monkeypatch.setattr("time.monotonic", lambda: clock["seconds"])
+
+    def fetch_json(url: str, timeout: float):
+        clock["seconds"] += 0.26
+        if "/actions/runs/" in url:
+            return workflow_runs[url]
+        if "/attestations/" in url:
+            return attestations[url]
+        return pages if "?per_page=" in url else certificate
+
+    def fetch_bytes(url: str, timeout: float) -> bytes:
+        clock["seconds"] += 0.26
+        return content[url]
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_json,
+    )
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_bytes",
+        fetch_bytes,
+    )
+
+    with pytest.raises(TimeoutError):
+        fetch_release_truth_github(
+            software,
+            1.0,
+            "2026-05-01T12:02:00Z",
+        )
+
+
 def test_public_release_pages_continue_past_ten_pages_and_stop_at_software_release(
     monkeypatch,
 ) -> None:
@@ -790,9 +843,7 @@ def test_public_truth_loader_marks_missing_certificate_untrusted(monkeypatch) ->
         missing,
     )
 
-    decision = fetch_release_truth_github(
-        software, 1.0, "2026-05-01T12:02:00Z"
-    )
+    decision = fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
 
     assert decision.status == "untrusted"
     assert decision.reason_code == "certificate_missing"

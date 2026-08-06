@@ -159,7 +159,7 @@
       "sha256:f8bc632f7814532abc83472b04a2bfe4c28480913177354e0184178bd80aa3c2"
     ]
   },
-  "baseline_digest": "sha256:6ac2bd37e2401054ef835d715f6977cf73926f55eeae546fbd884878a127c085",
+  "baseline_digest": "sha256:d2508e3aae2a88544a15898128798bae65bd9519a38ca66eb023eee86f254e59",
   "case_ids": [
     "sha256:001ab3ce32d4877218f3f225172b8ef762ca2a7a91fbd23f3df012f71c69dfe7",
     "sha256:001c94733f6e183d7193f5e652b8d0056ccd65d7455840343645cebc21d8bf1c",
@@ -2385,6 +2385,7 @@
     "sha256:5ad8f2cbb0b01510af21dd726c2107747b00c69f115abfd4c5b30eab90a13b64",
     "sha256:5aed36e0c4b7347f62d410c9c319d3b62a592e41052324bca6d26259dcf6c6cc",
     "sha256:5af886633be27980272810364a3438fc2a9db115ff00d337e8f13b9bbd704b10",
+    "sha256:5afd507677c5e2006c3c46b78fe26f8b79602ce3b4cfc32ccafebad3820ad764",
     "sha256:5afe2f1ec6c2d6cda4b22205674a5772d98ea97a042888974eebfcac672b3389",
     "sha256:5b00f9757056974e69d40c5cff11c6b211bceaad56aa08e044a1cb9f183aeaf3",
     "sha256:5b055fb4fd6ec167d9339de74c4b092cbabffe560e40e491ee2d3404e73197b9",
@@ -5078,6 +5079,7 @@
     "sha256:c9e51c751777d06f624533efa09e392c85a1b32366574b220df909652f13d20a",
     "sha256:c9fc22b257849ce6fd404962742ec8033ae01eae50de85154027c9a79cf8bfc1",
     "sha256:ca001d207f59922829b406772c181d3bec37a70f51c08eb39dac06dc64d1ea4d",
+    "sha256:ca0493497692aca8845e14268a0404d8cc13094eff05cf42fd821b259ba8c270",
     "sha256:ca0de397929efc89b04773eeae1e8737df802f2dd475dd3b27dc182249923ce5",
     "sha256:ca0fec190d764fae5f0292803db76cbbcc7be28ea5a545a94ef278e2492197aa",
     "sha256:ca1650d11e9c45c5f5b84af451fe69ecd5ab9cc2bb10d1b188ff0558a8ff6a32",
@@ -6462,11 +6464,11 @@
     "windows-latest-py3.14"
   ],
   "collection_command": "pytest --collect-only -q --ignore=tests/e2e/stage_review",
-  "execution_member_count": 74540,
-  "execution_member_digest": "sha256:828169d3e6a4364019a4b0a900b08b5aacf679e46cdcbdcbd6b404e077827e6e",
+  "execution_member_count": 74564,
+  "execution_member_digest": "sha256:d30062130a49c08e3ea3eff50c6c910aaae6e62ed26d0a508ca5b9af5ab4c862",
   "genesis_base_commit": null,
   "namespace": "pytest-nodeid-v1",
   "previous_baseline_digest": "sha256:71f9d0c642f1575033b667470569b559ce4f582613005de89b47d861e96c1f90",
   "schema_version": "ci-baseline-v1",
-  "source_commit": "45c1d63a381187d9dd0a9eba365994cb5738202b"
+  "source_commit": "8a80517da87839402bd49b3c52e70b6c00e954c1"
 }

@@ -324,10 +324,10 @@ jobs:
       WINDOWS_SMOKE_RESULT: ${{ needs.windows-zip.result }}
       POSIX_SMOKE_RESULT: ${{ needs.posix-tar.result }}
     steps:
-      - name: Checkout protected default-branch revocation writer
+      - name: Checkout exact protected revocation writer revision
         uses: actions/checkout@v6
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          ref: ${{ github.workflow_sha }}
           fetch-depth: 0
           persist-credentials: false
           path: trusted-writer

@@ -11,6 +11,7 @@ import platform
 import re
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -36,6 +37,7 @@ GITHUB_RELEASES_LATEST_URL = (
     "https://api.github.com/repos/SinclairPan/Ai_AutoSDLC/releases/latest"
 )
 GITHUB_REPOSITORY = "SinclairPan/Ai_AutoSDLC"
+GITHUB_HOSTED_RUNNER_BUILDER_ID = "https://github.com/actions/runner/github-hosted"
 
 NOTICE_LIGHT = "light_upstream_release_notice"
 NOTICE_ACTIONABLE = "actionable_cli_update_notice"
@@ -58,6 +60,23 @@ RELEASE_TRUTH_FRESHNESS_TTL = timedelta(minutes=15)
 
 FetchLatest = Callable[[float], dict[str, Any]]
 FetchReleaseTruth = Callable[[dict[str, Any], float, str], ReleaseTrustDecision]
+
+
+@dataclass(frozen=True)
+class _TimeoutBudget:
+    deadline: float
+
+    @classmethod
+    def start(cls, timeout_seconds: float) -> _TimeoutBudget:
+        if timeout_seconds <= 0:
+            raise TimeoutError("update refresh timeout budget is exhausted")
+        return cls(deadline=time.monotonic() + timeout_seconds)
+
+    def remaining(self) -> float:
+        remaining = self.deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("update refresh timeout budget is exhausted")
+        return remaining
 
 
 @dataclass(frozen=True)
@@ -130,9 +149,7 @@ class UpdateCache:
             ),
             revocation_generation=_as_int(raw.get("revocation_generation"), 0),
             last_checked_at=_optional_str(raw.get("last_checked_at")),
-            last_success_checked_at=_optional_str(
-                raw.get("last_success_checked_at")
-            ),
+            last_success_checked_at=_optional_str(raw.get("last_success_checked_at")),
             last_check_status=_optional_str(raw.get("last_check_status")),
             failure_count=_as_int(raw.get("failure_count"), 0),
             failure_backoff_until=_optional_str(raw.get("failure_backoff_until")),
@@ -234,9 +251,7 @@ def detect_runtime_identity(env: dict[str, str] | None = None) -> RuntimeIdentit
     forced = env_map.get("AI_SDLC_UPDATE_ADVISOR_TEST_INSTALLED")
     if forced == "1":
         version = env_map.get("AI_SDLC_UPDATE_ADVISOR_TEST_VERSION", "1.0.0")
-        channel = env_map.get(
-            "AI_SDLC_UPDATE_ADVISOR_TEST_CHANNEL", "github-archive"
-        )
+        channel = env_map.get("AI_SDLC_UPDATE_ADVISOR_TEST_CHANNEL", "github-archive")
         executable = env_map.get("AI_SDLC_UPDATE_ADVISOR_TEST_EXECUTABLE", sys.argv[0])
         distribution_path = env_map.get(
             "AI_SDLC_UPDATE_ADVISOR_TEST_DISTRIBUTION", sys.prefix
@@ -333,9 +348,7 @@ def evaluate_update_advisor(
     refresh_result = REFRESH_NOT_NEEDED
     reason_code = "cache_fresh" if freshness == "fresh" else "cache_only"
 
-    if allow_refresh and (
-        freshness != "fresh" or release_truth_freshness != "fresh"
-    ):
+    if allow_refresh and (freshness != "fresh" or release_truth_freshness != "fresh"):
         backoff_until = _parse_iso(cache.failure_backoff_until)
         if (
             backoff_until is not None
@@ -360,9 +373,7 @@ def evaluate_update_advisor(
 
     _save_cache(identity, cache)
     release_trust = (
-        cache.release_trust
-        if release_truth_freshness == "fresh"
-        else "unknown"
+        cache.release_trust if release_truth_freshness == "fresh" else "unknown"
     )
     release_truth_reason = (
         cache.release_truth_reason_code
@@ -468,7 +479,10 @@ def render_notice_lines(evaluation: UpdateEvaluation) -> list[str]:
         ]
     if NOTICE_LIGHT in classes:
         latest = evaluation.upstream_latest_version
-        release_url = evaluation.release_url or "https://github.com/SinclairPan/Ai_AutoSDLC/releases"
+        release_url = (
+            evaluation.release_url
+            or "https://github.com/SinclairPan/Ai_AutoSDLC/releases"
+        )
         return [
             f"检测到 GitHub 上游新 release：AI-SDLC {latest}。",
             f"A newer upstream AI-SDLC release is available: {latest}.",
@@ -476,7 +490,11 @@ def render_notice_lines(evaluation: UpdateEvaluation) -> list[str]:
             "当前运行入口不能被 CLI 安全覆盖；请使用离线安装包或公司/项目提供的安装入口更新。",
             "This CLI entry cannot be safely replaced automatically; use the offline bundle or your company/project installer.",
         ]
-    if evaluation.refresh_result in {REFRESH_NETWORK_ERROR, REFRESH_PARSE_ERROR, REFRESH_TIMEOUT}:
+    if evaluation.refresh_result in {
+        REFRESH_NETWORK_ERROR,
+        REFRESH_PARSE_ERROR,
+        REFRESH_TIMEOUT,
+    }:
         return [
             "本次无法刷新 AI-SDLC update state；主命令会继续执行。",
             "Update check failed; the main command continues.",
@@ -539,10 +557,11 @@ def _refresh_cache(
 ) -> tuple[str, str]:
     cache.last_checked_at = _iso(now)
     try:
+        budget = _TimeoutBudget.start(timeout_seconds)
         raw = _latest_release_from_env(env)
         if raw is None:
             fetcher = fetch_latest or fetch_latest_github_release
-            raw = fetcher(timeout_seconds)
+            raw = fetcher(budget.remaining())
         tag = str(raw.get("tag_name") or raw.get("version") or "").strip()
         if not tag:
             raise ValueError("release response did not include tag_name")
@@ -559,10 +578,8 @@ def _refresh_cache(
             )
         else:
             truth_fetcher = fetch_release_truth or fetch_release_truth_github
-            truth = truth_fetcher(raw, timeout_seconds, _iso(now))
-            truth = ReleaseTrustDecision.model_validate(
-                truth.model_dump(mode="json")
-            )
+            truth = truth_fetcher(raw, budget.remaining(), _iso(now))
+            truth = ReleaseTrustDecision.model_validate(truth.model_dump(mode="json"))
         cache.upstream_latest_version = latest
         cache.release_url = _optional_str(raw.get("html_url") or raw.get("url"))
         cache.channel_latest_version = latest
@@ -607,6 +624,7 @@ def fetch_release_truth_github(
     release: dict[str, Any], timeout_seconds: float, observed_at: str
 ) -> ReleaseTrustDecision:
     """从公开 GitHub Release/evidence assets 重建当前推荐真值。"""
+    budget = _TimeoutBudget.start(timeout_seconds)
     if bool(release.get("draft")) or bool(release.get("prerelease")):
         raise ValueError("software release is not a published stable release")
     if release.get("immutable") is not True:
@@ -619,7 +637,7 @@ def fetch_release_truth_github(
         raise ValueError("software release id is invalid")
 
     proof_bytes = _verified_release_asset(
-        release, "release-satisfaction-proof.json", timeout_seconds
+        release, "release-satisfaction-proof.json", budget.remaining()
     )
     proof = ReleaseSatisfactionProof.model_validate_json(proof_bytes)
     encoded_certificate_tag = urllib.parse.quote(
@@ -629,7 +647,7 @@ def fetch_release_truth_github(
         certificate_release = _fetch_public_json(
             f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases/tags/"
             f"{encoded_certificate_tag}",
-            timeout_seconds,
+            budget.remaining(),
         )
     except urllib.error.HTTPError as exc:
         if exc.code != 404:
@@ -646,7 +664,7 @@ def fetch_release_truth_github(
         certificate_release,
         expected_tag=f"release-truth/{tag_name}/certificate/g0",
         asset_name="release-certificate.json",
-        timeout_seconds=timeout_seconds,
+        timeout_seconds=budget.remaining(),
     )
     certificate = ReleaseCertificate.model_validate_json(certificate_bytes)
     proof_identity = (
@@ -672,9 +690,9 @@ def fetch_release_truth_github(
     _verify_certificate_artifact_attestation(
         certificate_bytes,
         proof,
-        timeout_seconds,
+        budget.remaining(),
     )
-    _verify_public_workflow_authority(proof, timeout_seconds)
+    _verify_public_workflow_authority(proof, budget.remaining())
 
     live_assets = {
         str(asset.get("name") or ""): asset
@@ -695,7 +713,7 @@ def fetch_release_truth_github(
     receipts: list[ReleaseRevocationReceipt] = []
     receipt_prefix = f"release-truth/{tag_name}/revocation/g"
     for evidence_release in _fetch_public_release_pages(
-        timeout_seconds,
+        budget.remaining(),
         stop_release_id=release_id,
     ):
         evidence_tag = str(evidence_release.get("tag_name") or "")
@@ -708,7 +726,7 @@ def fetch_release_truth_github(
             evidence_release,
             expected_tag=evidence_tag,
             asset_name="release-revocation-receipt.json",
-            timeout_seconds=timeout_seconds,
+            timeout_seconds=budget.remaining(),
         )
         receipt = ReleaseRevocationReceipt.model_validate_json(receipt_bytes)
         if receipt.generation != int(generation_text):
@@ -749,6 +767,7 @@ def _verify_public_workflow_authority(
 ) -> None:
     """从公开 Actions run 重建 Proof 的受保护 publisher 与 required gates 权威。"""
 
+    budget = _TimeoutBudget.start(timeout_seconds)
     cached_runs: dict[tuple[int, int], dict[str, Any]] = {}
 
     def verified_run(
@@ -766,7 +785,7 @@ def _verify_public_workflow_authority(
             payload = _fetch_public_json(
                 f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/"
                 f"{workflow_run_id}/attempts/{workflow_run_attempt}",
-                timeout_seconds,
+                budget.remaining(),
             )
             if not isinstance(payload, dict):
                 raise ValueError("release workflow authority response is invalid")
@@ -786,8 +805,7 @@ def _verify_public_workflow_authority(
         ):
             raise ValueError("release workflow authority differs from proof")
         if publisher and (
-            run.get("event") != "workflow_dispatch"
-            or run.get("head_branch") != "main"
+            run.get("event") != "workflow_dispatch" or run.get("head_branch") != "main"
         ):
             raise ValueError("release publisher workflow authority is invalid")
 
@@ -840,14 +858,11 @@ def _verify_certificate_artifact_attestation(
         raise ValueError("certificate artifact attestation is missing")
 
     workflow_path = _protected_workflow_path(proof.publish_workflow_ref)
-    expected_builder = f"https://github.com/{proof.publish_workflow_ref}"
     expected_invocation = (
         f"https://github.com/{GITHUB_REPOSITORY}/actions/runs/"
         f"{proof.workflow_run_id}/attempts/{proof.workflow_run_attempt}"
     )
-    expected_dependency = (
-        f"git+https://github.com/{GITHUB_REPOSITORY}@refs/heads/main"
-    )
+    expected_dependency = f"git+https://github.com/{GITHUB_REPOSITORY}@refs/heads/main"
     for attestation in attestations:
         statement = _artifact_attestation_statement(attestation)
         if statement is None:
@@ -884,8 +899,7 @@ def _verify_certificate_artifact_attestation(
             "digest": {"gitCommit": proof.commit_sha},
         }
         if (
-            build.get("buildType")
-            != "https://actions.github.io/buildtypes/workflow/v1"
+            build.get("buildType") != "https://actions.github.io/buildtypes/workflow/v1"
             or workflow
             != {
                 "ref": "refs/heads/main",
@@ -897,7 +911,7 @@ def _verify_certificate_artifact_attestation(
             or not isinstance(dependencies, list)
             or protected_dependency not in dependencies
             or not isinstance(builder, dict)
-            or builder.get("id") != expected_builder
+            or builder.get("id") != GITHUB_HOSTED_RUNNER_BUILDER_ID
             or not isinstance(metadata, dict)
             or metadata.get("invocationId") != expected_invocation
         ):
@@ -947,7 +961,9 @@ def _protected_workflow_path(workflow_ref: str) -> str:
     if not workflow_ref.startswith(prefix) or not workflow_ref.endswith(suffix):
         raise ValueError("release workflow authority is not protected main")
     path = workflow_ref[len(prefix) : -len(suffix)]
-    if not path.startswith(".github/workflows/") or not path.endswith((".yml", ".yaml")):
+    if not path.startswith(".github/workflows/") or not path.endswith(
+        (".yml", ".yaml")
+    ):
         raise ValueError("release workflow authority path is invalid")
     return path
 
@@ -1002,13 +1018,14 @@ def _fetch_public_release_pages(
     *,
     stop_release_id: int,
 ) -> list[dict[str, Any]]:
+    budget = _TimeoutBudget.start(timeout_seconds)
     releases: list[dict[str, Any]] = []
     page = 1
     while True:
         payload = _fetch_public_json(
             f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases"
             f"?per_page=100&page={page}",
-            timeout_seconds,
+            budget.remaining(),
         )
         if not isinstance(payload, list) or any(
             not isinstance(item, dict) for item in payload
@@ -1151,7 +1168,9 @@ def _save_cache(identity: RuntimeIdentity, cache: UpdateCache) -> None:
             prefix=f".{path.name}.", suffix=".tmp", dir=str(path.parent)
         )
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump(cache.to_dict(), handle, ensure_ascii=False, indent=2, sort_keys=True)
+            json.dump(
+                cache.to_dict(), handle, ensure_ascii=False, indent=2, sort_keys=True
+            )
             handle.write("\n")
         os.replace(temp_name, path)
     except OSError:
@@ -1203,7 +1222,9 @@ def _is_source_or_module_invocation(executable: str, env: dict[str, str]) -> boo
     return env.get("AI_SDLC_SOURCE_RUNTIME") == "1"
 
 
-def _module_invocation_uses_distribution(executable: str, distribution_path: str) -> bool:
+def _module_invocation_uses_distribution(
+    executable: str, distribution_path: str
+) -> bool:
     if Path(executable).name.lower() != "__main__.py" or not distribution_path:
         return False
     try:
@@ -1323,7 +1344,9 @@ def _utc_now(now: datetime | None = None) -> datetime:
 
 
 def _iso(value: datetime) -> str:
-    return value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    return (
+        value.astimezone(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+    )
 
 
 def _parse_iso(value: str | None) -> datetime | None:
