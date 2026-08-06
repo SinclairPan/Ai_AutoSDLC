@@ -159,7 +159,7 @@
       "sha256:f8bc632f7814532abc83472b04a2bfe4c28480913177354e0184178bd80aa3c2"
     ]
   },
-  "baseline_digest": "sha256:c792f9f3d5742087012f4cab2849a1b39bbf2c9ec99ab789e274864a17b82370",
+  "baseline_digest": "sha256:557d2671d80a9aa2f7a946c79659f37266117732f47e61f50468fe1373bc9bc9",
   "case_ids": [
     "sha256:001ab3ce32d4877218f3f225172b8ef762ca2a7a91fbd23f3df012f71c69dfe7",
     "sha256:001c94733f6e183d7193f5e652b8d0056ccd65d7455840343645cebc21d8bf1c",
@@ -6476,7 +6476,7 @@
   "execution_member_digest": "sha256:89112a3335886fbf861a880c83189f5d06461090c772d83dee66434c43d3108c",
   "genesis_base_commit": null,
   "namespace": "pytest-nodeid-v1",
-  "previous_baseline_digest": "sha256:bf4f7f97f568d1e9578e7bb7b402a315cfcf26d752e5f98ba3a396d6ea1cb11b",
+  "previous_baseline_digest": "sha256:71f9d0c642f1575033b667470569b559ce4f582613005de89b47d861e96c1f90",
   "schema_version": "ci-baseline-v1",
-  "source_commit": "c24da6175d6eaa751eef0e3447e04d88fb07dbce"
+  "source_commit": "7b697a610973f3bd716b173cbf432d357ae0b38f"
 }
