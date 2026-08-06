@@ -286,6 +286,7 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert writer["needs"] == ["windows-zip", "posix-tar"]
     assert writer["environment"] == "release-publish"
     assert writer["permissions"] == {"contents": "write"}
+    assert writer["env"]["GH_REPO"] == "${{ github.repository }}"
     assert writer["concurrency"] == {
         "group": "release-revocation-${{ github.event.release.tag_name || inputs.tag }}",
         "cancel-in-progress": False,
@@ -439,6 +440,7 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         "contents": "write",
         "id-token": "write",
     }
+    assert publish_job["env"]["GH_REPO"] == "${{ github.repository }}"
     assert publish_job["concurrency"] == {
         "group": "release-publish-${{ inputs.tag }}",
         "cancel-in-progress": False,

@@ -318,6 +318,7 @@ jobs:
       group: release-revocation-${{ github.event.release.tag_name || inputs.tag }}
       cancel-in-progress: false
     env:
+      GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
       GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
