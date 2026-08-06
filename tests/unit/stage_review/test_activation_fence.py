@@ -5,6 +5,7 @@ import multiprocessing
 import os
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Event
 
 import pytest
 
@@ -104,6 +105,218 @@ def test_inactive_local_writer_marker_ignores_delayed_windows_owner_unlock(
     assert owner_probe_calls == 0
 
 
+def test_local_mutation_contenders_do_not_probe_live_writer_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """同项目的本进程 writer 必须先串行化，不能争抢 live 文件租约。"""
+
+    project_id = "project.activation-fence-local-mutation-serialization"
+    first_entered = Event()
+    release_first = Event()
+    second_started = Event()
+    second_entered = Event()
+    live_writer_probe = Event()
+    original_clear_stale_owner = activation_fence._clear_stale_owner
+
+    def reject_live_writer_probe(path: Path) -> bool:
+        if path.name == "writer-intent.lock" and path.is_file():
+            live_writer_probe.set()
+            raise AssertionError("second local writer probed the live writer marker")
+        return original_clear_stale_owner(path)
+
+    monkeypatch.setattr(
+        activation_fence,
+        "_clear_stale_owner",
+        reject_live_writer_probe,
+    )
+
+    def hold_first_mutation() -> None:
+        with activation_fence.activation_safety_mutation_fence(
+            tmp_path,
+            project_id,
+        ):
+            first_entered.set()
+            assert release_first.wait(timeout=5)
+
+    def enter_second_mutation() -> None:
+        second_started.set()
+        with activation_fence.activation_safety_mutation_fence(
+            tmp_path,
+            project_id,
+        ):
+            second_entered.set()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(hold_first_mutation)
+        assert first_entered.wait(timeout=5)
+        second = executor.submit(enter_second_mutation)
+        assert second_started.wait(timeout=5)
+        try:
+            live_writer_probe.wait(timeout=1)
+        finally:
+            release_first.set()
+        assert first.result(timeout=5) is None
+        assert second.result(timeout=5) is None
+
+    assert live_writer_probe.is_set() is False
+    assert second_entered.is_set()
+
+
+def test_local_mutation_wait_consumes_single_acquisition_deadline(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本地排队与文件租约必须共用同一份 300 秒总预算。"""
+
+    clock = [0.0]
+    create_attempts = 0
+
+    class FakeLock:
+        def acquire(self, *, timeout: float) -> bool:
+            assert timeout == pytest.approx(300)
+            clock[0] += 299
+            return True
+
+        def release(self) -> None:
+            pass
+
+    class FakeGate:
+        def __init__(self) -> None:
+            self.lock = FakeLock()
+            self.users = 0
+
+    def deny_file_lease(*_args: object, **_kwargs: object) -> bool:
+        nonlocal create_attempts
+        create_attempts += 1
+        return False
+
+    monkeypatch.setattr(activation_fence, "_LocalMutationGate", FakeGate)
+    monkeypatch.setattr(activation_fence.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        activation_fence.time,
+        "sleep",
+        lambda _seconds: clock.__setitem__(0, clock[0] + 10),
+    )
+    monkeypatch.setattr(
+        activation_fence,
+        "create_json_exclusive",
+        deny_file_lease,
+    )
+
+    with (
+        pytest.raises(
+            stage_review_artifacts.ResourceLockUnavailableError,
+            match="timed out waiting for activation safety mutation lease",
+        ),
+        activation_fence.activation_safety_mutation_fence(
+            tmp_path,
+            "project.activation-fence-single-deadline",
+        ),
+    ):
+        pytest.fail("mutation fence unexpectedly acquired")
+
+    assert create_attempts == 2
+
+
+def test_local_mutation_rejects_budget_expired_before_gate_acquire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本地 gate 开始等待前已耗尽预算时必须 fail-closed。"""
+
+    project_id = "project.activation-fence-expired-before-local-gate"
+    monotonic_values = iter((0.0, 301.0))
+
+    class RejectAcquireLock:
+        def acquire(self, *, timeout: float) -> bool:
+            pytest.fail(f"expired local gate attempted acquire with timeout={timeout}")
+
+        def release(self) -> None:
+            pass
+
+    class FakeGate:
+        def __init__(self) -> None:
+            self.lock = RejectAcquireLock()
+            self.users = 0
+
+    monkeypatch.setattr(activation_fence, "_LocalMutationGate", FakeGate)
+    monkeypatch.setattr(
+        activation_fence.time,
+        "monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    with (
+        pytest.raises(
+            stage_review_artifacts.ResourceLockUnavailableError,
+            match="timed out waiting for activation safety mutation lease",
+        ),
+        activation_fence.activation_safety_mutation_fence(
+            tmp_path,
+            project_id,
+        ),
+    ):
+        pytest.fail("expired mutation fence unexpectedly acquired")
+
+    gate_key = str(activation_fence._fence_root(tmp_path, project_id).resolve())
+    assert gate_key not in activation_fence._LOCAL_MUTATION_GATES
+
+
+def test_local_mutation_rejects_budget_expired_during_gate_acquire(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """本地 gate 返回时已耗尽预算，不能继续申请文件租约。"""
+
+    project_id = "project.activation-fence-expired-during-local-gate"
+    clock = [0.0]
+    file_lease_attempted = False
+
+    class ExpiringLock:
+        def acquire(self, *, timeout: float) -> bool:
+            assert timeout == pytest.approx(300)
+            clock[0] = 301
+            return True
+
+        def release(self) -> None:
+            pass
+
+    class FakeGate:
+        def __init__(self) -> None:
+            self.lock = ExpiringLock()
+            self.users = 0
+
+    def record_file_lease_attempt(*_args: object, **_kwargs: object) -> bool:
+        nonlocal file_lease_attempted
+        file_lease_attempted = True
+        return True
+
+    monkeypatch.setattr(activation_fence, "_LocalMutationGate", FakeGate)
+    monkeypatch.setattr(activation_fence.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(
+        activation_fence,
+        "create_json_exclusive",
+        record_file_lease_attempt,
+    )
+
+    with (
+        pytest.raises(
+            stage_review_artifacts.ResourceLockUnavailableError,
+            match="timed out waiting for activation safety mutation lease",
+        ),
+        activation_fence.activation_safety_mutation_fence(
+            tmp_path,
+            project_id,
+        ),
+    ):
+        pytest.fail("expired mutation fence unexpectedly acquired")
+
+    gate_key = str(activation_fence._fence_root(tmp_path, project_id).resolve())
+    assert file_lease_attempted is False
+    assert gate_key not in activation_fence._LOCAL_MUTATION_GATES
+
+
 def _complete_lease_while_process_stays_alive(
     root: str,
     project_id: str,
@@ -112,9 +325,9 @@ def _complete_lease_while_process_stays_alive(
     release_process,
 ) -> None:
     original_unlink = activation_fence._unlink_with_retry
-    activation_fence._unlink_with_retry = lambda *_args, **_kwargs: (_ for _ in ()).throw(
-        PermissionError(13, "simulated cleanup sharing violation")
-    )
+    activation_fence._unlink_with_retry = lambda *_args, **_kwargs: (
+        _ for _ in ()
+    ).throw(PermissionError(13, "simulated cleanup sharing violation"))
     try:
         lease = (
             activation_fence.activation_safety_read_lease(Path(root), project_id)
