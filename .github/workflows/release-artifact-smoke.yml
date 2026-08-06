@@ -304,6 +304,7 @@ jobs:
     needs: [windows-zip, posix-tar]
     if: >-
       always() &&
+      github.event_name == 'release' &&
       startsWith(github.event.release.tag_name || inputs.tag, 'v') &&
       (
         needs.windows-zip.result != 'success' ||
@@ -313,7 +314,9 @@ jobs:
     timeout-minutes: 30
     environment: release-publish
     permissions:
+      attestations: write
       contents: write
+      id-token: write
     concurrency:
       group: release-revocation-${{ github.event.release.tag_name || inputs.tag }}
       cancel-in-progress: false
@@ -491,8 +494,6 @@ jobs:
               "repository": os.environ["GITHUB_REPOSITORY"],
               "release_tag": os.environ["RELEASE_TAG"],
               "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
-              "windows_smoke_result": os.environ["WINDOWS_SMOKE_RESULT"],
-              "posix_smoke_result": os.environ["POSIX_SMOKE_RESULT"],
           }
           signal = RevocationSignal(
               reason_code="post_publish_smoke_failed",
@@ -716,6 +717,11 @@ jobs:
             echo "Receipt evidence release did not become immutable within five minutes." >&2
             exit 1
           fi
+
+      - name: Attest immutable Receipt generation
+        uses: actions/attest@v4
+        with:
+          subject-path: release-revocation-receipt.json
 
       - name: Project stop recommendation and incident
         if: >-

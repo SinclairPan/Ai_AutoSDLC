@@ -264,6 +264,21 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     workflow_path = _WORKFLOWS_DIR / "release-artifact-smoke.yml"
     workflow_text = workflow_path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
+    revocation_job = workflow["jobs"]["record-revocation"]
+    assert revocation_job["permissions"] == {
+        "attestations": "write",
+        "contents": "write",
+        "id-token": "write",
+    }
+    attestation_steps = [
+        step
+        for step in revocation_job["steps"]
+        if step.get("uses") == "actions/attest@v4"
+    ]
+    assert len(attestation_steps) == 1
+    assert attestation_steps[0]["with"]["subject-path"] == (
+        "release-revocation-receipt.json"
+    )
     jobs = workflow["jobs"]
 
     assert workflow["permissions"] == {"contents": "read"}
@@ -285,12 +300,17 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert writer["timeout-minutes"] >= 30
     assert writer["needs"] == ["windows-zip", "posix-tar"]
     assert writer["environment"] == "release-publish"
-    assert writer["permissions"] == {"contents": "write"}
+    assert writer["permissions"] == {
+        "attestations": "write",
+        "contents": "write",
+        "id-token": "write",
+    }
     assert writer["env"]["GH_REPO"] == "${{ github.repository }}"
     assert writer["concurrency"] == {
         "group": "release-revocation-${{ github.event.release.tag_name || inputs.tag }}",
         "cancel-in-progress": False,
     }
+    assert "github.event_name == 'release'" in writer["if"]
     assert "needs.windows-zip.result != 'success'" in writer["if"]
     assert "needs.posix-tar.result != 'success'" in writer["if"]
     revocation_checkout = next(
@@ -333,6 +353,12 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     receipt_index = workflow_text.index('gh release create "${receipt_tag}"')
     projection_index = workflow_text.index("Project stop recommendation and incident")
     assert receipt_index < projection_index
+
+
+def test_installed_runtime_declares_embedded_sigstore_verifier() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"sigstore==4.5.0"' in pyproject
 
 
 def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> None:

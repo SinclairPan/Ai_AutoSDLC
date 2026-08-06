@@ -730,6 +730,12 @@ def fetch_release_truth_github(
         receipt = ReleaseRevocationReceipt.model_validate_json(receipt_bytes)
         if receipt.generation != int(generation_text):
             raise ValueError("receipt generation differs from evidence tag")
+        _verify_receipt_artifact_attestation(
+            receipt_bytes,
+            receipt,
+            certificate,
+            budget.remaining(),
+        )
         receipts.append(receipt)
     receipts.sort(key=lambda value: (value.generation, value.receipt_digest))
     max_generation = max((receipt.generation for receipt in receipts), default=0)
@@ -923,6 +929,161 @@ def _verify_certificate_artifact_attestation(
     raise ValueError("certificate artifact attestation authority is invalid")
 
 
+def _verify_receipt_artifact_attestation(
+    receipt_bytes: bytes,
+    receipt: ReleaseRevocationReceipt,
+    certificate: ReleaseCertificate,
+    timeout_seconds: float,
+) -> None:
+    """核验 Receipt 摘要来自受保护 post-publish smoke writer。"""
+
+    budget = _TimeoutBudget.start(timeout_seconds)
+    receipt_digest = hashlib.sha256(receipt_bytes).hexdigest()
+    response = _fetch_public_json(
+        f"https://api.github.com/repos/{GITHUB_REPOSITORY}/attestations/"
+        f"sha256:{receipt_digest}?per_page=100",
+        budget.remaining(),
+    )
+    if not isinstance(response, dict):
+        raise ValueError("receipt artifact attestation response is invalid")
+    attestations = response.get("attestations")
+    if not isinstance(attestations, list) or not attestations:
+        raise ValueError("receipt artifact attestation is missing")
+
+    workflow_path = ".github/workflows/release-artifact-smoke.yml"
+    statements = _verified_artifact_attestation_statements(
+        receipt_bytes,
+        attestations,
+        artifact_name="release-revocation-receipt.json",
+        signer_workflow=(f"{GITHUB_REPOSITORY}/{workflow_path}@refs/heads/main"),
+        source_ref=f"refs/tags/{receipt.tag_name}",
+        source_digest=certificate.commit_sha,
+        build_trigger="release",
+        timeout_seconds=budget.remaining(),
+    )
+    expected_dependency = (
+        f"git+https://github.com/{GITHUB_REPOSITORY}@refs/tags/{receipt.tag_name}"
+    )
+    for statement in statements:
+        subjects = statement.get("subject")
+        predicate = statement.get("predicate")
+        if (
+            statement.get("_type") != "https://in-toto.io/Statement/v1"
+            or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+            or subjects
+            != [
+                {
+                    "name": "release-revocation-receipt.json",
+                    "digest": {"sha256": receipt_digest},
+                }
+            ]
+            or not isinstance(predicate, dict)
+        ):
+            continue
+        build = predicate.get("buildDefinition")
+        run = predicate.get("runDetails")
+        if not isinstance(build, dict) or not isinstance(run, dict):
+            continue
+        external = build.get("externalParameters")
+        internal = build.get("internalParameters")
+        dependencies = build.get("resolvedDependencies")
+        builder = run.get("builder")
+        metadata = run.get("metadata")
+        workflow = external.get("workflow") if isinstance(external, dict) else None
+        github = internal.get("github") if isinstance(internal, dict) else None
+        invocation = (
+            metadata.get("invocationId") if isinstance(metadata, dict) else None
+        )
+        if (
+            build.get("buildType") != "https://actions.github.io/buildtypes/workflow/v1"
+            or workflow
+            != {
+                "ref": "refs/heads/main",
+                "repository": f"https://github.com/{GITHUB_REPOSITORY}",
+                "path": workflow_path,
+            }
+            or not isinstance(github, dict)
+            or github.get("event_name") != "release"
+            or not isinstance(dependencies, list)
+            or {
+                "uri": expected_dependency,
+                "digest": {"gitCommit": certificate.commit_sha},
+            }
+            not in dependencies
+            or not isinstance(builder, dict)
+            or builder.get("id") != GITHUB_HOSTED_RUNNER_BUILDER_ID
+            or not isinstance(invocation, str)
+        ):
+            continue
+        if _verify_receipt_workflow_authority(
+            invocation,
+            certificate.commit_sha,
+            workflow_path,
+            receipt,
+            budget.remaining(),
+        ):
+            return
+    raise ValueError("receipt artifact attestation authority is invalid")
+
+
+def _verify_receipt_workflow_authority(
+    invocation: str,
+    head_sha: str,
+    workflow_path: str,
+    receipt: ReleaseRevocationReceipt,
+    timeout_seconds: float,
+) -> bool:
+    prefix = f"https://github.com/{GITHUB_REPOSITORY}/actions/runs/"
+    match = re.fullmatch(
+        re.escape(prefix)
+        + r"(?P<run_id>[1-9][0-9]*)/attempts/(?P<attempt>[1-9][0-9]*)",
+        invocation,
+    )
+    if match is None:
+        return False
+    run_id = int(match.group("run_id"))
+    attempt = int(match.group("attempt"))
+    payload = _fetch_public_json(
+        f"https://api.github.com/repos/{GITHUB_REPOSITORY}/actions/runs/"
+        f"{run_id}/attempts/{attempt}",
+        timeout_seconds,
+    )
+    head_repository = (
+        payload.get("head_repository") if isinstance(payload, dict) else None
+    )
+    signal_evidence = {
+        "release_tag": receipt.tag_name,
+        "repository": GITHUB_REPOSITORY,
+        "workflow_run_id": run_id,
+    }
+    evidence_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                signal_evidence,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+    )
+    return bool(
+        isinstance(payload, dict)
+        and payload.get("id") == run_id
+        and payload.get("run_attempt") == attempt
+        and payload.get("status") == "completed"
+        and payload.get("conclusion") == "failure"
+        and payload.get("event") == "release"
+        and payload.get("head_sha") == head_sha
+        and payload.get("path") == workflow_path
+        and isinstance(head_repository, dict)
+        and head_repository.get("full_name") == GITHUB_REPOSITORY
+        and receipt.repository == GITHUB_REPOSITORY
+        and receipt.work_item_id == f"release-smoke-{run_id}"
+        and receipt.evidence_digest == evidence_digest
+    )
+
+
 def _cryptographically_verified_artifact_attestation_statements(
     certificate_bytes: bytes,
     attestations: list[object],
@@ -930,7 +1091,35 @@ def _cryptographically_verified_artifact_attestation_statements(
     workflow_path: str,
     timeout_seconds: float,
 ) -> tuple[dict[str, Any], ...]:
-    """使用 GitHub CLI 的私有 Sigstore trust root 验证本地 bundle。"""
+    """使用已声明的 Python Sigstore verifier 核验 Certificate bundle。"""
+
+    return _verified_artifact_attestation_statements(
+        certificate_bytes,
+        attestations,
+        artifact_name="release-certificate.json",
+        signer_workflow=(f"{GITHUB_REPOSITORY}/{workflow_path}@refs/heads/main"),
+        signer_digest=proof.commit_sha,
+        source_ref="refs/heads/main",
+        source_digest=proof.commit_sha,
+        build_trigger="workflow_dispatch",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def _verified_artifact_attestation_statements(
+    artifact_bytes: bytes,
+    attestations: list[object],
+    *,
+    artifact_name: str,
+    signer_workflow: str,
+    source_ref: str,
+    source_digest: str,
+    build_trigger: str,
+    timeout_seconds: float,
+    signer_digest: str | None = None,
+    run_invocation: str | None = None,
+) -> tuple[dict[str, Any], ...]:
+    """在当前 Python runtime 中执行 GitHub 私有 Sigstore 验签。"""
 
     bundles = [
         attestation["bundle"]
@@ -942,9 +1131,9 @@ def _cryptographically_verified_artifact_attestation_statements(
 
     with tempfile.TemporaryDirectory(prefix="ai-sdlc-attestation-") as temp_dir:
         root = Path(temp_dir)
-        artifact_path = root / "release-certificate.json"
+        artifact_path = root / artifact_name
         bundle_path = root / "attestations.jsonl"
-        artifact_path.write_bytes(certificate_bytes)
+        artifact_path.write_bytes(artifact_bytes)
         bundle_path.write_text(
             "".join(
                 json.dumps(bundle, ensure_ascii=False, sort_keys=True) + "\n"
@@ -953,29 +1142,27 @@ def _cryptographically_verified_artifact_attestation_statements(
             encoding="utf-8",
         )
         command = [
-            "gh",
-            "attestation",
-            "verify",
+            sys.executable,
+            "-m",
+            "ai_sdlc.core.github_attestation_verifier",
             str(artifact_path),
             "--bundle",
             str(bundle_path),
-            "--repo",
+            "--repository",
             GITHUB_REPOSITORY,
             "--signer-workflow",
-            f"{GITHUB_REPOSITORY}/{workflow_path}",
-            "--signer-digest",
-            proof.commit_sha,
+            signer_workflow,
             "--source-ref",
-            "refs/heads/main",
+            source_ref,
             "--source-digest",
-            proof.commit_sha,
-            "--deny-self-hosted-runners",
-            "--no-public-good",
-            "--hostname",
-            "github.com",
-            "--format",
-            "json",
+            source_digest,
+            "--build-trigger",
+            build_trigger,
         ]
+        if signer_digest:
+            command.extend(["--signer-digest", signer_digest])
+        if run_invocation:
+            command.extend(["--run-invocation", run_invocation])
         try:
             completed = subprocess.run(
                 command,
@@ -986,59 +1173,24 @@ def _cryptographically_verified_artifact_attestation_statements(
             )
         except FileNotFoundError as exc:
             raise ValueError(
-                "certificate artifact attestation cryptographic verifier is unavailable"
+                "artifact attestation cryptographic verifier is unavailable"
             ) from exc
         except subprocess.TimeoutExpired as exc:
             raise TimeoutError(
-                "certificate artifact attestation cryptographic verification timed out"
+                "artifact attestation cryptographic verification timed out"
             ) from exc
 
     if completed.returncode != 0:
-        raise ValueError(
-            "certificate artifact attestation cryptographic verification failed"
-        )
+        raise ValueError("artifact attestation cryptographic verification failed")
     try:
         results = json.loads(completed.stdout)
     except json.JSONDecodeError as exc:
-        raise ValueError(
-            "certificate artifact attestation verification result is invalid"
-        ) from exc
+        raise ValueError("artifact attestation verification result is invalid") from exc
     if not isinstance(results, list):
-        raise ValueError(
-            "certificate artifact attestation verification result is invalid"
-        )
-
-    statements: list[dict[str, Any]] = []
-    for result in results:
-        verification = (
-            result.get("verificationResult") if isinstance(result, dict) else None
-        )
-        signature = (
-            verification.get("signature") if isinstance(verification, dict) else None
-        )
-        certificate = (
-            signature.get("certificate") if isinstance(signature, dict) else None
-        )
-        timestamps = (
-            verification.get("verifiedTimestamps")
-            if isinstance(verification, dict)
-            else None
-        )
-        statement = (
-            verification.get("statement") if isinstance(verification, dict) else None
-        )
-        if (
-            isinstance(certificate, dict)
-            and isinstance(timestamps, list)
-            and timestamps
-            and isinstance(statement, dict)
-        ):
-            statements.append(statement)
-    if not statements:
-        raise ValueError(
-            "certificate artifact attestation verification result is invalid"
-        )
-    return tuple(statements)
+        raise ValueError("artifact attestation verification result is invalid")
+    if not results or not all(isinstance(statement, dict) for statement in results):
+        raise ValueError("artifact attestation verification result is invalid")
+    return tuple(results)
 
 
 def _protected_workflow_path(workflow_ref: str) -> str:

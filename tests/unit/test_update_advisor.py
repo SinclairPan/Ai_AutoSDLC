@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 import subprocess
+import sys
 import urllib.error
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -29,6 +30,7 @@ from ai_sdlc.core.update_advisor import (
     _cache_path,
     _cryptographically_verified_artifact_attestation_statements,
     _fetch_public_release_pages,
+    _verify_receipt_workflow_authority,
     ack_notice,
     detect_runtime_identity,
     evaluate_update_advisor,
@@ -243,16 +245,36 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
         "https://example.test/proof": proof_bytes,
         "https://example.test/certificate": certificate_bytes,
     }
+    receipt_workflow_runs: dict[str, dict[str, object]] = {}
     if receipt_generation:
+        receipt_run_id = 200
+        signal_evidence = {
+            "release_tag": tag,
+            "repository": repository,
+            "workflow_run_id": receipt_run_id,
+        }
+        evidence_digest = (
+            "sha256:"
+            + hashlib.sha256(
+                json.dumps(
+                    signal_evidence,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ).encode()
+            ).hexdigest()
+        )
         receipt = ReleaseRevocationReceipt(
             repository=repository,
             tag_name=tag,
             certificate_digest=certificate.certificate_digest,
             generation=receipt_generation,
-            predecessor_receipt_digest="sha256:" + "7" * 64,
+            predecessor_receipt_digest=(
+                "" if receipt_generation == 1 else "sha256:" + "7" * 64
+            ),
             reason_code="post_publish_smoke_failed",
-            evidence_digest="sha256:" + "8" * 64,
-            work_item_id="release-smoke-100",
+            evidence_digest=evidence_digest,
+            work_item_id=f"release-smoke-{receipt_run_id}",
             observed_at="2026-05-01T12:01:00Z",
         )
         receipt_bytes = json.dumps(
@@ -276,6 +298,69 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
             }
         )
         bytes_by_url[receipt_url] = receipt_bytes
+        receipt_statement = json.loads(json.dumps(attestation_statement))
+        receipt_statement["subject"] = [
+            {
+                "name": "release-revocation-receipt.json",
+                "digest": {"sha256": hashlib.sha256(receipt_bytes).hexdigest()},
+            }
+        ]
+        build = receipt_statement["predicate"]["buildDefinition"]
+        build["externalParameters"]["workflow"]["path"] = (
+            ".github/workflows/release-artifact-smoke.yml"
+        )
+        build["internalParameters"]["github"]["event_name"] = "release"
+        build["resolvedDependencies"] = [
+            {
+                "uri": f"git+https://github.com/{repository}@refs/tags/{tag}",
+                "digest": {"gitCommit": commit},
+            }
+        ]
+        receipt_attempt = 1
+        receipt_statement["predicate"]["runDetails"]["metadata"]["invocationId"] = (
+            f"https://github.com/{repository}/actions/runs/"
+            f"{receipt_run_id}/attempts/{receipt_attempt}"
+        )
+        receipt_attestation_url = (
+            f"https://api.github.com/repos/{repository}/attestations/"
+            f"sha256:{hashlib.sha256(receipt_bytes).hexdigest()}?per_page=100"
+        )
+        attestations[receipt_attestation_url] = {
+            "attestations": [
+                {
+                    "repository_id": 1_303_749_243,
+                    "bundle": {
+                        "mediaType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+                        "dsseEnvelope": {
+                            "payloadType": "application/vnd.in-toto+json",
+                            "payload": base64.b64encode(
+                                json.dumps(receipt_statement).encode()
+                            ).decode(),
+                            "signatures": [{"keyid": "", "sig": "signature"}],
+                        },
+                        "verificationMaterial": {
+                            "certificate": {"rawBytes": "certificate"},
+                            "tlogEntries": [{"logIndex": "1"}],
+                        },
+                    },
+                }
+            ]
+        }
+        receipt_run_url = (
+            f"https://api.github.com/repos/{repository}/actions/runs/"
+            f"{receipt_run_id}/attempts/{receipt_attempt}"
+        )
+        receipt_workflow_runs[receipt_run_url] = {
+            "id": receipt_run_id,
+            "run_attempt": receipt_attempt,
+            "status": "completed",
+            "conclusion": "failure",
+            "event": "release",
+            "head_sha": commit,
+            "head_branch": tag,
+            "path": ".github/workflows/release-artifact-smoke.yml",
+            "head_repository": {"full_name": repository},
+        }
     release_pages.append({"id": software_release["id"], "tag_name": tag})
     workflow_run = {
         "id": candidate.workflow_run_id,
@@ -294,6 +379,7 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
             f"{candidate.workflow_run_id}/attempts/{candidate.workflow_run_attempt}"
         ): workflow_run
     }
+    workflow_runs.update(receipt_workflow_runs)
     return (
         software_release,
         certificate_release,
@@ -305,39 +391,34 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
 
 
 def _install_verified_attestation_command(monkeypatch) -> None:
-    """让非密码学单测消费与 gh 验签成功相同的已解析 statement。"""
+    """让非密码学单测消费与内置验签器成功相同的 statement。"""
 
     def verified(command, **kwargs):
-        assert command[:3] == ["gh", "attestation", "verify"]
+        assert command[:3] == [
+            sys.executable,
+            "-m",
+            "ai_sdlc.core.github_attestation_verifier",
+        ]
+        assert "gh" not in command
         for required in (
             "--bundle",
-            "--repo",
+            "--repository",
             "--signer-workflow",
-            "--signer-digest",
             "--source-ref",
             "--source-digest",
-            "--deny-self-hosted-runners",
-            "--no-public-good",
+            "--build-trigger",
         ):
             assert required in command
         bundle_path = Path(command[command.index("--bundle") + 1])
-        results = []
+        statements = []
         for line in bundle_path.read_text(encoding="utf-8").splitlines():
             bundle = json.loads(line)
             statement = json.loads(base64.b64decode(bundle["dsseEnvelope"]["payload"]))
-            results.append(
-                {
-                    "verificationResult": {
-                        "signature": {"certificate": {"issuer": "GitHub"}},
-                        "verifiedTimestamps": [{"type": "transparency-log"}],
-                        "statement": statement,
-                    }
-                }
-            )
+            statements.append(statement)
         return subprocess.CompletedProcess(
             command,
             0,
-            stdout=json.dumps(results),
+            stdout=json.dumps(statements),
             stderr="",
         )
 
@@ -859,6 +940,113 @@ def test_artifact_attestation_verifier_fails_closed_on_invalid_signature(
             ".github/workflows/release-build.yml",
             1.0,
         )
+
+
+def test_public_truth_loader_rejects_receipt_without_protected_provenance(
+    monkeypatch,
+) -> None:
+    """捕获合法摘要链但未由受保护 smoke writer 验签的伪造 Receipt。"""
+
+    _install_verified_attestation_command(monkeypatch)
+    software, certificate, pages, content, workflow_runs, attestations = (
+        _public_truth_fixture(receipt_generation=1)
+    )
+    receipt_attestation_url = next(
+        url
+        for url in attestations
+        if url
+        != next(
+            candidate
+            for candidate in attestations
+            if hashlib.sha256(content["https://example.test/certificate"]).hexdigest()
+            in candidate
+        )
+    )
+    del attestations[receipt_attestation_url]
+
+    def fetch_json(url: str, timeout: float):
+        if "/actions/runs/" in url:
+            return workflow_runs[url]
+        if "/attestations/" in url:
+            return attestations.get(url, {"attestations": []})
+        return pages if "?per_page=" in url else certificate
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_json,
+    )
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_bytes",
+        lambda url, timeout: content[url],
+    )
+
+    with pytest.raises(ValueError, match="receipt artifact attestation"):
+        fetch_release_truth_github(software, 1.0, "2026-05-01T12:02:00Z")
+
+
+def test_receipt_workflow_authority_binds_receipt_to_logical_run(monkeypatch) -> None:
+    repository = "SinclairPan/Ai_AutoSDLC"
+    tag = "v1.0.1"
+    run_id = 200
+    attempt = 2
+    evidence = {
+        "release_tag": tag,
+        "repository": repository,
+        "workflow_run_id": run_id,
+    }
+    evidence_digest = (
+        "sha256:"
+        + hashlib.sha256(
+            json.dumps(
+                evidence,
+                ensure_ascii=False,
+                separators=(",", ":"),
+                sort_keys=True,
+            ).encode()
+        ).hexdigest()
+    )
+    receipt = ReleaseRevocationReceipt(
+        repository=repository,
+        tag_name=tag,
+        certificate_digest="sha256:" + "1" * 64,
+        generation=1,
+        predecessor_receipt_digest="",
+        reason_code="post_publish_smoke_failed",
+        evidence_digest=evidence_digest,
+        work_item_id=f"release-smoke-{run_id}",
+        observed_at="2026-05-01T12:01:00Z",
+    )
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        lambda url, timeout: {
+            "id": run_id,
+            "run_attempt": attempt,
+            "status": "completed",
+            "conclusion": "failure",
+            "event": "release",
+            "head_sha": "a" * 40,
+            "path": ".github/workflows/release-artifact-smoke.yml",
+            "head_repository": {"full_name": repository},
+        },
+    )
+    invocation = (
+        f"https://github.com/{repository}/actions/runs/{run_id}/attempts/{attempt}"
+    )
+
+    assert _verify_receipt_workflow_authority(
+        invocation,
+        "a" * 40,
+        ".github/workflows/release-artifact-smoke.yml",
+        receipt,
+        1.0,
+    )
+    assert not _verify_receipt_workflow_authority(
+        invocation,
+        "a" * 40,
+        ".github/workflows/release-artifact-smoke.yml",
+        receipt.model_copy(update={"work_item_id": "release-smoke-201"}),
+        1.0,
+    )
 
 
 def test_public_truth_loader_uses_one_timeout_budget(monkeypatch) -> None:
