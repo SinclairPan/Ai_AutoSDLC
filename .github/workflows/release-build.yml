@@ -527,8 +527,10 @@ jobs:
     environment: release-publish
     permissions:
       actions: read
-      attestations: read
+      artifact-metadata: write
+      attestations: write
       contents: write
+      id-token: write
     concurrency:
       group: release-publish-${{ inputs.tag }}
       cancel-in-progress: false
@@ -947,33 +949,119 @@ jobs:
             --issued-at "${issued_at}" \
             --output release-certificate.json
 
+      - name: Attest generation-0 Release Certificate
+        uses: actions/attest@v4
+        with:
+          subject-path: release-certificate.json
+
       - name: Publish immutable Certificate evidence release
         shell: bash
         run: |
           set -euo pipefail
           certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
-          certificate_digest="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
-          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null; then
+          certificate_target="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
+          CERTIFICATE_DIGEST="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
+          CERTIFICATE_TITLE="Release Truth ${RELEASE_TAG} Certificate g0"
+          CERTIFICATE_BODY="Permanent generation-0 release certificate for ${RELEASE_TAG}."
+          export certificate_tag certificate_target
+          export CERTIFICATE_DIGEST CERTIFICATE_TITLE CERTIFICATE_BODY
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null; then
+            if ! gh release create "${certificate_tag}" \
+              release-certificate.json#release-certificate.json \
+              --target "${certificate_target}" \
+              --title "${CERTIFICATE_TITLE}" \
+              --notes "${CERTIFICATE_BODY}" \
+              --draft \
+              --prerelease \
+              --latest=false; then
+              echo "Certificate draft create returned non-zero; resolving GitHub authority."
+            fi
+          fi
+          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null; then
+            echo "Certificate draft was not recoverable after create." >&2
+            exit 1
+          fi
+
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          release = json.loads(Path("certificate-release.json").read_text(encoding="utf-8"))
+          assets = release.get("assets")
+          draft = release.get("draft")
+          if (
+              release.get("tag_name") != os.environ["certificate_tag"]
+              or not isinstance(draft, bool)
+              or release.get("prerelease") is not True
+              or (draft and release.get("immutable") is True)
+              or release.get("target_commitish") != os.environ["certificate_target"]
+              or release.get("name") != os.environ["CERTIFICATE_TITLE"]
+              or release.get("body") != os.environ["CERTIFICATE_BODY"]
+              or not isinstance(assets, list)
+              or len(assets) > 1
+              or (not draft and len(assets) != 1)
+              or (
+                  assets
+                  and (
+                      assets[0].get("name") != "release-certificate.json"
+                      or assets[0].get("digest") != os.environ["CERTIFICATE_DIGEST"]
+                  )
+              )
+          ):
+              raise SystemExit("Certificate release differs from expected recovery identity")
+          PY
+
+          certificate_release_id="$(jq -r '.id' certificate-release.json)"
+          if [[ "$(jq -r '.draft' certificate-release.json)" == "true" ]]; then
+            if [[ "$(jq '.assets | length' certificate-release.json)" == "0" ]]; then
+              gh release upload "${certificate_tag}" \
+                release-certificate.json#release-certificate.json
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json
+            fi
             existing_digest="$(jq -r '.assets[] | select(.name == "release-certificate.json") | .digest' certificate-release.json)"
-            if [[ "${existing_digest}" != "${certificate_digest}" || "$(jq -r '.prerelease' certificate-release.json)" != "true" ]]; then
-              echo "Certificate evidence generation fork detected." >&2
+            if [[ "${existing_digest}" != "${CERTIFICATE_DIGEST}" ]] \
+              || [[ "$(jq '.assets | length' certificate-release.json)" != "1" ]]; then
+              echo "Certificate draft asset differs from expected recovery identity." >&2
               exit 1
             fi
-          else
-            gh release create "${certificate_tag}" \
-              release-certificate.json#release-certificate.json \
-              --target "$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")" \
-              --title "Release Truth ${RELEASE_TAG} Certificate g0" \
-              --notes "Permanent generation-0 release certificate for ${RELEASE_TAG}." \
-              --prerelease \
-              --latest=false
+            jq -n \
+              --arg target_commitish "${certificate_target}" \
+              --arg name "${CERTIFICATE_TITLE}" \
+              --arg body "${CERTIFICATE_BODY}" \
+              '{target_commitish:$target_commitish,name:$name,body:$body,draft:false,prerelease:true,make_latest:"false"}' \
+              > certificate-publish-request.json
+            gh api --method PATCH \
+              "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" \
+              --input certificate-publish-request.json \
+              > certificate-publish-response.json
+            if [[ "$(jq -r '.id' certificate-publish-response.json)" != "${certificate_release_id}" ]] \
+              || [[ "$(jq -r '.draft' certificate-publish-response.json)" != "false" ]] \
+              || [[ "$(jq -r '.prerelease' certificate-publish-response.json)" != "true" ]]; then
+              echo "Certificate publish response differs from expected recovery identity." >&2
+              exit 1
+            fi
           fi
 
           evidence_ready=false
           for attempt in $(seq 1 20); do
-            if gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
-              immutable="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" --jq '.immutable // false')"
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null \
+              && gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
+              immutable="$(jq -r '.immutable // false' certificate-release.json)"
               if [[ "${immutable}" == "true" ]]; then
+                existing_digest="$(jq -r '.assets[] | select(.name == "release-certificate.json") | .digest' certificate-release.json)"
+                if [[ "${existing_digest}" != "${CERTIFICATE_DIGEST}" ]] \
+                  || [[ "$(jq '.assets | length' certificate-release.json)" != "1" ]] \
+                  || [[ "$(jq -r '.draft' certificate-release.json)" != "false" ]] \
+                  || [[ "$(jq -r '.prerelease' certificate-release.json)" != "true" ]] \
+                  || [[ "$(jq -r '.target_commitish' certificate-release.json)" != "${certificate_target}" ]] \
+                  || [[ "$(jq -r '.name' certificate-release.json)" != "${CERTIFICATE_TITLE}" ]] \
+                  || [[ "$(jq -r '.body' certificate-release.json)" != "${CERTIFICATE_BODY}" ]]; then
+                  echo "Certificate immutable release differs from expected recovery identity." >&2
+                  exit 1
+                fi
                 evidence_ready=true
                 break
               fi

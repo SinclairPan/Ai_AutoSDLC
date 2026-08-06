@@ -416,8 +416,10 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert publish_job["environment"] == "release-publish"
     assert publish_job["permissions"] == {
         "actions": "read",
-        "attestations": "read",
+        "artifact-metadata": "write",
+        "attestations": "write",
         "contents": "write",
+        "id-token": "write",
     }
     assert publish_job["concurrency"] == {
         "group": "release-publish-${{ inputs.tag }}",
@@ -429,6 +431,8 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "scripts/release_truth.py proof" in workflow_text
     assert "scripts/release_truth.py publish-check" in workflow_text
     assert "scripts/release_truth.py certificate" in workflow_text
+    assert "actions/attest@v4" in workflow_text
+    assert "subject-path: release-certificate.json" in workflow_text
     assert "GITHUB_WORKFLOW_REF" in workflow_text
     assert "github.run_id" in workflow_text
     assert "github.run_attempt" in workflow_text
@@ -441,8 +445,14 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     verify_index = workflow_text.index('gh release verify "${RELEASE_TAG}" --format json')
     certificate_index = workflow_text.index("scripts/release_truth.py certificate")
     evidence_release_index = workflow_text.index('gh release create "${certificate_tag}"')
+    certificate_attestation_index = workflow_text.index("actions/attest@v4")
     assert upload_index < cas_index < publish_index < verify_index
-    assert verify_index < certificate_index < evidence_release_index
+    assert (
+        verify_index
+        < certificate_index
+        < certificate_attestation_index
+        < evidence_release_index
+    )
     assert 'gh release edit "${RELEASE_TAG}" --draft=false' not in workflow_text
     assert '"repos/${GITHUB_REPOSITORY}/releases/${release_id}"' in workflow_text
     assert "--input release-publish-request.json" in workflow_text
@@ -452,6 +462,14 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "--prerelease" in workflow_text
     assert "--latest=false" in workflow_text
     assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
+    assert 'gh release upload "${certificate_tag}"' in workflow_text
+    assert "certificate-publish-request.json" in workflow_text
+    assert "certificate-publish-response.json" in workflow_text
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}"'
+        in workflow_text
+    )
+    assert "Certificate release differs from expected recovery identity" in workflow_text
     assert "immutable" in workflow_text
     assert "release-satisfaction-proof.json" in workflow_text
     assert "release-certificate.json" in workflow_text

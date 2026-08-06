@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hashlib
 import json
 import os
@@ -667,6 +669,11 @@ def fetch_release_truth_github(
         raise ValueError("certificate assets differ from satisfaction proof")
     if certificate.repository != GITHUB_REPOSITORY:
         raise ValueError("certificate repository differs")
+    _verify_certificate_artifact_attestation(
+        certificate_bytes,
+        proof,
+        timeout_seconds,
+    )
     _verify_public_workflow_authority(proof, timeout_seconds)
 
     live_assets = {
@@ -811,6 +818,127 @@ def _verify_public_workflow_authority(
             conclusion=gate.conclusion,
             publisher=False,
         )
+
+
+def _verify_certificate_artifact_attestation(
+    certificate_bytes: bytes,
+    proof: ReleaseSatisfactionProof,
+    timeout_seconds: float,
+) -> None:
+    """核验 Certificate 摘要对应受保护 publisher 的 GitHub provenance。"""
+
+    certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
+    response = _fetch_public_json(
+        f"https://api.github.com/repos/{GITHUB_REPOSITORY}/attestations/"
+        f"sha256:{certificate_digest}?per_page=100",
+        timeout_seconds,
+    )
+    if not isinstance(response, dict):
+        raise ValueError("certificate artifact attestation response is invalid")
+    attestations = response.get("attestations")
+    if not isinstance(attestations, list) or not attestations:
+        raise ValueError("certificate artifact attestation is missing")
+
+    workflow_path = _protected_workflow_path(proof.publish_workflow_ref)
+    expected_builder = f"https://github.com/{proof.publish_workflow_ref}"
+    expected_invocation = (
+        f"https://github.com/{GITHUB_REPOSITORY}/actions/runs/"
+        f"{proof.workflow_run_id}/attempts/{proof.workflow_run_attempt}"
+    )
+    expected_dependency = (
+        f"git+https://github.com/{GITHUB_REPOSITORY}@refs/heads/main"
+    )
+    for attestation in attestations:
+        statement = _artifact_attestation_statement(attestation)
+        if statement is None:
+            continue
+        subjects = statement.get("subject")
+        predicate = statement.get("predicate")
+        if (
+            statement.get("_type") != "https://in-toto.io/Statement/v1"
+            or statement.get("predicateType") != "https://slsa.dev/provenance/v1"
+            or not isinstance(subjects, list)
+            or subjects
+            != [
+                {
+                    "name": "release-certificate.json",
+                    "digest": {"sha256": certificate_digest},
+                }
+            ]
+            or not isinstance(predicate, dict)
+        ):
+            continue
+        build = predicate.get("buildDefinition")
+        run = predicate.get("runDetails")
+        if not isinstance(build, dict) or not isinstance(run, dict):
+            continue
+        external = build.get("externalParameters")
+        internal = build.get("internalParameters")
+        dependencies = build.get("resolvedDependencies")
+        builder = run.get("builder")
+        metadata = run.get("metadata")
+        workflow = external.get("workflow") if isinstance(external, dict) else None
+        github = internal.get("github") if isinstance(internal, dict) else None
+        protected_dependency = {
+            "uri": expected_dependency,
+            "digest": {"gitCommit": proof.commit_sha},
+        }
+        if (
+            build.get("buildType")
+            != "https://actions.github.io/buildtypes/workflow/v1"
+            or workflow
+            != {
+                "ref": "refs/heads/main",
+                "repository": f"https://github.com/{GITHUB_REPOSITORY}",
+                "path": workflow_path,
+            }
+            or not isinstance(github, dict)
+            or github.get("event_name") != "workflow_dispatch"
+            or not isinstance(dependencies, list)
+            or protected_dependency not in dependencies
+            or not isinstance(builder, dict)
+            or builder.get("id") != expected_builder
+            or not isinstance(metadata, dict)
+            or metadata.get("invocationId") != expected_invocation
+        ):
+            continue
+        return
+    raise ValueError("certificate artifact attestation authority is invalid")
+
+
+def _artifact_attestation_statement(attestation: object) -> dict[str, Any] | None:
+    if not isinstance(attestation, dict):
+        return None
+    bundle = attestation.get("bundle")
+    if not isinstance(bundle, dict) or bundle.get("mediaType") != (
+        "application/vnd.dev.sigstore.bundle.v0.3+json"
+    ):
+        return None
+    envelope = bundle.get("dsseEnvelope")
+    material = bundle.get("verificationMaterial")
+    if not isinstance(envelope, dict) or not isinstance(material, dict):
+        return None
+    signatures = envelope.get("signatures")
+    certificate = material.get("certificate")
+    transparency = material.get("tlogEntries")
+    if (
+        envelope.get("payloadType") != "application/vnd.in-toto+json"
+        or not isinstance(signatures, list)
+        or not signatures
+        or not isinstance(certificate, dict)
+        or not certificate.get("rawBytes")
+        or not isinstance(transparency, list)
+        or not transparency
+    ):
+        return None
+    encoded = envelope.get("payload")
+    if not isinstance(encoded, str):
+        return None
+    try:
+        statement = json.loads(base64.b64decode(encoded, validate=True))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return statement if isinstance(statement, dict) else None
 
 
 def _protected_workflow_path(workflow_ref: str) -> str:
