@@ -815,6 +815,49 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
     assert gap.reason_code == "receipt_chain_invalid"
 
 
+def test_public_truth_loader_ignores_noncanonical_receipt_generation_tags(
+    monkeypatch,
+) -> None:
+    """捕获非规范 Receipt 标签在验真前触发全局 parse_error。"""
+    _install_verified_attestation_command(monkeypatch)
+    software, certificate, pages, content, workflow_runs, attestations = (
+        _public_truth_fixture()
+    )
+    receipt_prefix = "release-truth/v1.0.1/revocation/g"
+    pages[:0] = [
+        {"tag_name": f"{receipt_prefix}mistyped"},
+        {"tag_name": f"{receipt_prefix}0"},
+        {"tag_name": f"{receipt_prefix}01"},
+        {"tag_name": f"{receipt_prefix}１"},
+        {"tag_name": f"{receipt_prefix}{'1' * 128}"},
+    ]
+
+    def fetch_json(url: str, timeout: float):
+        if "/actions/runs/" in url:
+            return workflow_runs[url]
+        if "/attestations/" in url:
+            return attestations[url]
+        return pages if "?per_page=" in url else certificate
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_json,
+    )
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_bytes",
+        lambda url, timeout: content[url],
+    )
+
+    decision = fetch_release_truth_github(
+        software,
+        1.0,
+        "2026-05-01T12:02:00Z",
+    )
+
+    assert decision.status == "trusted"
+    assert decision.revocation_generation == 0
+
+
 def test_public_truth_loader_rejects_unverified_publish_workflow_authority(
     monkeypatch,
 ) -> None:
