@@ -425,7 +425,8 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         "group": "release-publish-${{ inputs.tag }}",
         "cancel-in-progress": False,
     }
-    assert "ref: ${{ github.event.repository.default_branch }}" in workflow_text
+    assert workflow_text.count("ref: ${{ github.sha }}") == 2
+    assert "ref: ${{ github.event.repository.default_branch }}" not in workflow_text
     assert "path: trusted-writer" in workflow_text
     assert "persist-credentials: false" in workflow_text
     assert "scripts/release_truth.py proof" in workflow_text

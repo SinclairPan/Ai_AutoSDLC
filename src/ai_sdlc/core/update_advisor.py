@@ -1175,6 +1175,8 @@ def _freshness(cache: UpdateCache, now: datetime) -> str:
     if last_success is None:
         return "expired"
     age = now - last_success
+    if age < timedelta(0):
+        return "expired"
     if age < FRESH_WINDOW:
         return "fresh"
     if age < EXPIRED_WINDOW:
@@ -1186,7 +1188,8 @@ def _release_truth_freshness(cache: UpdateCache, now: datetime) -> str:
     observed_at = _parse_iso(cache.release_truth_observed_at)
     if observed_at is None:
         return "unavailable"
-    if now - observed_at <= RELEASE_TRUTH_FRESHNESS_TTL:
+    age = now - observed_at
+    if timedelta(0) <= age <= RELEASE_TRUTH_FRESHNESS_TTL:
         return "fresh"
     return "expired"
 

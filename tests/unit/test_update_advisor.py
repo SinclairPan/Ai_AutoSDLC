@@ -511,6 +511,30 @@ def test_fresh_public_release_truth_allows_actionable_notice(
     assert evaluation.to_machine_dict()["release_trust"] == "trusted"
 
 
+def test_future_cache_observations_expire_after_clock_rollback(
+    monkeypatch, tmp_path
+) -> None:
+    """捕获系统时钟回拨后沿用来自未来的版本与 Release Truth 缓存。"""
+    _force_installed(monkeypatch, tmp_path)
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    evaluate_update_advisor(
+        now=now,
+        fetch_latest=lambda timeout: _latest_release(),
+        fetch_release_truth=lambda release, timeout, observed: _truth(),
+    )
+
+    rollback = evaluate_update_advisor(
+        now=now - timedelta(minutes=1),
+        allow_refresh=False,
+    )
+
+    assert rollback.freshness == "expired"
+    assert rollback.release_truth_freshness == "expired"
+    assert rollback.release_trust == "unknown"
+    assert rollback.eligible_notice_classes == ()
+    assert rollback.upgrade_command is None
+
+
 def test_missing_or_invalid_release_truth_blocks_all_update_notices(
     monkeypatch, tmp_path
 ) -> None:
