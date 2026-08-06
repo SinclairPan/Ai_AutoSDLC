@@ -391,38 +391,52 @@ jobs:
       startsWith(github.event.release.tag_name || inputs.tag, 'v')
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
     outputs:
       linux-smoke-verdict: ${{ steps.aggregate.outputs.linux_smoke_verdict }}
       macos-smoke-verdict: ${{ steps.aggregate.outputs.macos_smoke_verdict }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Checkout exact protected verdict aggregator revision
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          path: trusted-verdict
+
       - name: Download independent POSIX smoke verdicts
+        id: verdict-artifacts
+        continue-on-error: true
         uses: actions/download-artifact@v7
         with:
           pattern: release-*-tar-smoke-verdict
           path: posix-smoke-verdicts
           merge-multiple: true
 
-      - name: Aggregate independent POSIX smoke verdicts
-        id: aggregate
+      - name: Query authoritative current-attempt smoke jobs
+        id: authoritative-jobs
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
-          for platform in macos linux; do
-            verdict_path="posix-smoke-verdicts/${platform}.txt"
-            if [[ ! -f "${verdict_path}" ]]; then
-              echo "Missing independent ${platform} smoke verdict." >&2
-              exit 1
-            fi
-            verdict="$(tr -d '\r\n' < "${verdict_path}")"
-            case "${verdict}" in
-              passed|failed|unavailable) ;;
-              *)
-                echo "Invalid independent ${platform} smoke verdict: ${verdict}" >&2
-                exit 1
-                ;;
-            esac
-            printf '%s_smoke_verdict=%s\n' "${platform}" "${verdict}" >> "${GITHUB_OUTPUT}"
-          done
+          gh api --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/attempts/${GITHUB_RUN_ATTEMPT}/jobs?per_page=100" \
+            > posix-smoke-jobs.json
+
+      - name: Aggregate independent POSIX smoke verdicts
+        id: aggregate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          # artifact 是快路；缺失时只从当前 run attempt 的权威 job-step 元数据恢复。
+          python trusted-verdict/scripts/aggregate_posix_smoke_verdicts.py \
+            --artifact-root posix-smoke-verdicts \
+            --jobs-json posix-smoke-jobs.json \
+            --github-output "${GITHUB_OUTPUT}"
 
   record-revocation:
     name: Record Receipt before incident projection
@@ -512,6 +526,8 @@ jobs:
           import os
           from pathlib import Path
 
+          from ai_sdlc.core.release_truth import parse_canonical_revocation_generation
+
           pages = json.loads(
               Path("release-truth-input/release-pages.json").read_text(encoding="utf-8")
           )
@@ -521,18 +537,16 @@ jobs:
           drafts = []
           for release in releases:
               tag = str(release.get("tag_name") or "")
-              if not tag.startswith(prefix):
+              generation = parse_canonical_revocation_generation(tag, prefix)
+              if generation is None:
                   continue
-              generation = tag.removeprefix(prefix)
-              if not generation.isdigit() or int(generation) < 1:
-                  raise SystemExit("Receipt evidence release authority is invalid")
               if release.get("draft") is True:
                   if (
                       release.get("prerelease") is not True
                       or release.get("immutable") is True
                   ):
                       raise SystemExit("Receipt draft authority is invalid")
-                  drafts.append({"generation": int(generation), "tag": tag})
+                  drafts.append({"generation": generation, "tag": tag})
                   continue
               if (
                   release.get("prerelease") is not True
@@ -546,7 +560,7 @@ jobs:
                   or assets[0].get("name") != "release-revocation-receipt.json"
               ):
                   raise SystemExit("Receipt evidence release asset set is invalid")
-              receipts.append({"generation": int(generation), "tag": tag})
+              receipts.append({"generation": generation, "tag": tag})
           receipts.sort(key=lambda value: value["generation"])
           if [item["generation"] for item in receipts] != list(
               range(1, len(receipts) + 1)

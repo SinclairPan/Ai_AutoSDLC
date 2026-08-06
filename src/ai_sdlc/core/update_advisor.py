@@ -21,7 +21,10 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any
 
-from ai_sdlc.core.release_truth import evaluate_release_trust
+from ai_sdlc.core.release_truth import (
+    evaluate_release_trust,
+    parse_canonical_revocation_generation,
+)
 from ai_sdlc.core.release_truth_models import (
     PublishedReleaseSnapshot,
     ReleaseCertificate,
@@ -37,7 +40,6 @@ GITHUB_RELEASES_LATEST_URL = (
 )
 GITHUB_REPOSITORY = "SinclairPan/Ai_AutoSDLC"
 GITHUB_HOSTED_RUNNER_BUILDER_ID = "https://github.com/actions/runner/github-hosted"
-_MAX_REVOCATION_GENERATION_DIGITS = 19
 
 NOTICE_LIGHT = "light_upstream_release_notice"
 NOTICE_ACTIONABLE = "actionable_cli_update_notice"
@@ -717,15 +719,11 @@ def fetch_release_truth_github(
         stop_release_id=release_id,
     ):
         evidence_tag = str(evidence_release.get("tag_name") or "")
-        if not evidence_tag.startswith(receipt_prefix):
-            continue
-        generation_text = evidence_tag.removeprefix(receipt_prefix)
-        if (
-            not generation_text.isascii()
-            or not generation_text.isdigit()
-            or generation_text.startswith("0")
-            or len(generation_text) > _MAX_REVOCATION_GENERATION_DIGITS
-        ):
+        generation = parse_canonical_revocation_generation(
+            evidence_tag,
+            receipt_prefix,
+        )
+        if generation is None:
             continue
         receipt_bytes = _verified_evidence_asset(
             evidence_release,
@@ -734,7 +732,7 @@ def fetch_release_truth_github(
             timeout_seconds=budget.remaining(),
         )
         receipt = ReleaseRevocationReceipt.model_validate_json(receipt_bytes)
-        if str(receipt.generation) != generation_text:
+        if receipt.generation != generation:
             raise ValueError("receipt generation differs from evidence tag")
         _verify_receipt_artifact_attestation(
             receipt_bytes,

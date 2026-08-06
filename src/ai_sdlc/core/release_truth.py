@@ -19,10 +19,27 @@ from ai_sdlc.core.release_truth_models import (
 )
 
 RELEASE_TRUTH_FRESHNESS_TTL = timedelta(minutes=15)
+MAX_REVOCATION_GENERATION_DIGITS = 19
 
 
 class ReleaseTruthError(ValueError):
     """Release Truth 输入无法证明安全发布时的统一 fail-closed 错误。"""
+
+
+def parse_canonical_revocation_generation(tag: str, prefix: str) -> int | None:
+    """仅接受固定成本的 ASCII 正十进制 generation tag。"""
+
+    if not tag.startswith(prefix):
+        return None
+    generation = tag.removeprefix(prefix)
+    if (
+        not generation.isascii()
+        or not generation.isdigit()
+        or generation.startswith("0")
+        or len(generation) > MAX_REVOCATION_GENERATION_DIGITS
+    ):
+        return None
+    return int(generation)
 
 
 def _parse_utc(value: str) -> datetime:
@@ -47,9 +64,9 @@ def _validate_gate(
     if gate.authority_repository != snapshot.repository:
         raise ReleaseTruthError("required gate authority repository differs")
     expected_prefix = f"{snapshot.repository}/.github/workflows/"
-    if not gate.workflow_ref.startswith(expected_prefix) or not gate.workflow_ref.endswith(
-        "@refs/heads/main"
-    ):
+    if not gate.workflow_ref.startswith(
+        expected_prefix
+    ) or not gate.workflow_ref.endswith("@refs/heads/main"):
         raise ReleaseTruthError("required gate is not bound to protected mainline")
     if gate.head_sha != snapshot.commit_sha:
         raise ReleaseTruthError("required gate head SHA differs")
@@ -85,7 +102,10 @@ def build_release_satisfaction_proof(
         raise ReleaseTruthError("required gate name collection is not canonical")
     if not _is_canonical(snapshot.required_gates, lambda value: value.name):
         raise ReleaseTruthError("required gate collection is not canonical")
-    if tuple(gate.name for gate in snapshot.required_gates) != snapshot.required_gate_names:
+    if (
+        tuple(gate.name for gate in snapshot.required_gates)
+        != snapshot.required_gate_names
+    ):
         raise ReleaseTruthError("required gate set differs from policy")
     for gate in snapshot.required_gates:
         _validate_gate(gate, snapshot)
@@ -206,7 +226,10 @@ def build_revocation_receipt(
     else:
         if latest.certificate_digest != certificate.certificate_digest:
             raise ReleaseTruthError("latest receipt belongs to another certificate")
-        if latest.repository != certificate.repository or latest.tag_name != certificate.tag_name:
+        if (
+            latest.repository != certificate.repository
+            or latest.tag_name != certificate.tag_name
+        ):
             raise ReleaseTruthError("latest receipt release identity differs")
         try:
             latest = ReleaseRevocationReceipt.model_validate(
@@ -360,10 +383,12 @@ def evaluate_release_trust(
 
 
 __all__ = [
+    "MAX_REVOCATION_GENERATION_DIGITS",
     "ReleaseTruthError",
     "build_release_certificate",
     "build_revocation_receipt",
     "build_release_satisfaction_proof",
     "evaluate_release_trust",
+    "parse_canonical_revocation_generation",
     "validate_publish_claim",
 ]
