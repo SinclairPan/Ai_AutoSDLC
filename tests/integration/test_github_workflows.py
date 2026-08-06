@@ -298,7 +298,7 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     )
     writer = jobs["record-revocation"]
     assert writer["timeout-minutes"] >= 30
-    assert writer["needs"] == ["windows-zip", "posix-tar"]
+    assert writer["needs"] == ["windows-zip", "posix-smoke-verdicts"]
     assert writer["environment"] == "release-publish"
     assert writer["permissions"] == {
         "attestations": "write",
@@ -313,12 +313,19 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert jobs["windows-zip"]["outputs"] == {
         "smoke-verdict": "${{ steps.smoke-verdict.outputs.smoke_verdict }}"
     }
-    assert jobs["posix-tar"]["outputs"] == {
+    assert "outputs" not in jobs["posix-tar"]
+    posix_verdicts = jobs["posix-smoke-verdicts"]
+    assert posix_verdicts["needs"] == "posix-tar"
+    assert posix_verdicts["if"] == (
+        "always() && "
+        "startsWith(github.event.release.tag_name || inputs.tag, 'v')"
+    )
+    assert posix_verdicts["outputs"] == {
         "linux-smoke-verdict": (
-            "${{ steps.smoke-verdict.outputs.linux_smoke_verdict }}"
+            "${{ steps.aggregate.outputs.linux_smoke_verdict }}"
         ),
         "macos-smoke-verdict": (
-            "${{ steps.smoke-verdict.outputs.macos_smoke_verdict }}"
+            "${{ steps.aggregate.outputs.macos_smoke_verdict }}"
         ),
     }
     windows_smoke = next(
@@ -361,13 +368,40 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     )
     assert windows_verdict["if"] == "always()"
     assert posix_verdict["if"] == "always()"
+    posix_verdict_upload = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("name") == "Upload independent release tar smoke verdict"
+    )
+    assert posix_verdict_upload["if"] == "always()"
+    assert posix_verdict_upload["with"]["name"] == (
+        "release-${{ matrix.asset_os }}-tar-smoke-verdict"
+    )
+    posix_step_names = [
+        step.get("name") for step in jobs["posix-tar"]["steps"]
+    ]
+    assert posix_step_names.index(
+        "Enforce explicit release tar smoke failure"
+    ) < posix_step_names.index("Upload independent release tar smoke verdict")
+    verdict_download = next(
+        step
+        for step in posix_verdicts["steps"]
+        if step.get("uses") == "actions/download-artifact@v7"
+    )
+    assert verdict_download["with"] == {
+        "pattern": "release-*-tar-smoke-verdict",
+        "path": "posix-smoke-verdicts",
+        "merge-multiple": True,
+    }
     assert "github.event_name == 'release'" in writer["if"]
     assert "needs.windows-zip.outputs.smoke-verdict == 'failed'" in writer["if"]
     assert (
-        "needs.posix-tar.outputs.macos-smoke-verdict == 'failed'" in writer["if"]
+        "needs.posix-smoke-verdicts.outputs.macos-smoke-verdict == 'failed'"
+        in writer["if"]
     )
     assert (
-        "needs.posix-tar.outputs.linux-smoke-verdict == 'failed'" in writer["if"]
+        "needs.posix-smoke-verdicts.outputs.linux-smoke-verdict == 'failed'"
+        in writer["if"]
     )
     assert "needs.windows-zip.result" not in writer["if"]
     assert "needs.posix-tar.result" not in writer["if"]
@@ -375,10 +409,10 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
         "${{ needs.windows-zip.outputs.smoke-verdict }}"
     )
     assert writer["env"]["MACOS_SMOKE_VERDICT"] == (
-        "${{ needs.posix-tar.outputs.macos-smoke-verdict }}"
+        "${{ needs.posix-smoke-verdicts.outputs.macos-smoke-verdict }}"
     )
     assert writer["env"]["LINUX_SMOKE_VERDICT"] == (
-        "${{ needs.posix-tar.outputs.linux-smoke-verdict }}"
+        "${{ needs.posix-smoke-verdicts.outputs.linux-smoke-verdict }}"
     )
     revocation_checkout = next(
         step
