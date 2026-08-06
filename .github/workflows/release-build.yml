@@ -394,16 +394,522 @@ jobs:
             dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}.sha256
           if-no-files-found: error
 
-      - name: Report emergency publish freeze
-        if: always()
+  build-release-proof:
+    name: Build Release Proof Inputs
+    needs:
+      - release-assurance-policy
+      - release-assurance
+      - build-smoke-candidate
+    if: >-
+      always() &&
+      needs.release-assurance-policy.result == 'success' &&
+      needs.build-smoke-candidate.result == 'success' &&
+      needs.release-assurance-policy.outputs.assurance_required == 'true' &&
+      needs.release-assurance.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout protected default-branch verifier
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted-writer
+
+      - name: Download exact run-attempt candidates
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}-*
+          path: release-proof-inputs/candidates
+          merge-multiple: true
+
+      - name: Freeze protected Gate and candidate inputs
+        shell: bash
+        env:
+          ASSURANCE_RESULT: ${{ needs.release-assurance.result }}
+          BUILD_RESULT: ${{ needs.build-smoke-candidate.result }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${GITHUB_WORKFLOW_REF}" != "${GITHUB_REPOSITORY}/.github/workflows/release-build.yml@refs/heads/main" ]]; then
+            echo "Release writer authority must come from protected main." >&2
+            exit 1
+          fi
+          tag_commit="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
+          if [[ "${tag_commit}" != "${GITHUB_SHA}" ]]; then
+            echo "Workflow SHA ${GITHUB_SHA} differs from release tag commit ${tag_commit}." >&2
+            exit 1
+          fi
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path("release-proof-inputs")
+          candidates = root / "candidates"
+          files = sorted(path for path in candidates.iterdir() if path.is_file())
+          archives = [path for path in files if not path.name.endswith(".sha256")]
+          sidecars = [path for path in files if path.name.endswith(".sha256")]
+          if len(archives) != 3 or len(sidecars) != 3 or len(files) != 6:
+              raise SystemExit("expected exactly three archives and three SHA256 sidecars")
+
+          assets = []
+          for path in files:
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if path.name.endswith(".sha256"):
+                  archive_name = path.name.removesuffix(".sha256")
+                  line = path.read_text(encoding="utf-8").strip().split()
+                  if len(line) != 2 or line[1] != archive_name:
+                      raise SystemExit(f"invalid checksum sidecar: {path.name}")
+                  archive = candidates / archive_name
+                  if not archive.is_file() or line[0].lower() != hashlib.sha256(archive.read_bytes()).hexdigest():
+                      raise SystemExit(f"checksum sidecar differs: {path.name}")
+              platform = next(
+                  (value for value in ("linux-amd64", "macos-arm64", "windows-amd64") if value in path.name),
+                  None,
+              )
+              if platform is None:
+                  raise SystemExit(f"unknown release asset platform: {path.name}")
+              assets.append(
+                  {
+                      "name": path.name,
+                      "digest": f"sha256:{digest}",
+                      "size_bytes": path.stat().st_size,
+                      "platform": platform,
+                  }
+              )
+
+          gates = [
+              {
+                  "name": "Release Assurance",
+                  "conclusion": os.environ["ASSURANCE_RESULT"],
+              },
+              {
+                  "name": "Build Smoke Candidate",
+                  "conclusion": os.environ["BUILD_RESULT"],
+              },
+          ]
+          if any(gate["conclusion"] != "success" for gate in gates):
+              raise SystemExit("a required release Gate did not succeed")
+          payload = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "release_tag": os.environ["RELEASE_TAG"],
+              "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "gates": gates,
+              "assets": assets,
+          }
+          (root / "release-proof-inputs.json").write_text(
+              json.dumps(payload, ensure_ascii=False, sort_keys=True),
+              encoding="utf-8",
+          )
+          PY
+
+      - name: Upload immutable run-attempt proof inputs
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-proof-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-proof-inputs
+          if-no-files-found: error
+
+  publish-release:
+    name: Publish Proof-bound Release
+    needs: [build-release-proof]
+    if: needs.build-release-proof.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release-publish
+    permissions:
+      actions: read
+      attestations: read
+      contents: write
+    concurrency:
+      group: release-publish-${{ inputs.tag }}
+      cancel-in-progress: false
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+      RELEASE_TAG: ${{ inputs.tag }}
+    steps:
+      - name: Checkout protected default-branch writer
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+          path: trusted-writer
+
+      - name: Set up protected writer Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Install protected writer runtime
+        uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      - name: Download exact proof inputs
+        uses: actions/download-artifact@v7
+        with:
+          name: release-proof-inputs-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-proof-inputs
+
+      - name: Upload only missing candidate assets without replacement
         shell: bash
         run: |
-          {
-            echo "## Emergency Publish Freeze"
-            echo "- result: publish_blocked"
-            echo "- reason: writer_isolation_unavailable"
-            echo "- candidate_status: ${{ job.status }}"
-            echo "- candidate_source_tag: ${RELEASE_TAG}"
-            echo "- candidate_artifact: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.asset_machine }}"
-            echo "- next: keep the GitHub Release in Draft until the permanent Release Truth path authorizes publication"
-          } >> "${GITHUB_STEP_SUMMARY}"
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-before.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+
+          release = json.loads(Path("release-before.json").read_text(encoding="utf-8"))
+          proof_inputs = json.loads(
+              Path("release-proof-inputs/release-proof-inputs.json").read_text(encoding="utf-8")
+          )
+          if not release["draft"] or release["prerelease"]:
+              raise SystemExit("software release must be a non-prerelease Draft")
+          expected = {asset["name"]: asset for asset in proof_inputs["assets"]}
+          existing = {asset["name"]: asset for asset in release["assets"]}
+          unexpected = sorted(set(existing).difference(expected, {"release-satisfaction-proof.json"}))
+          if unexpected:
+              raise SystemExit(f"Draft contains unexpected assets: {unexpected}")
+          upload = []
+          for name, binding in expected.items():
+              current = existing.get(name)
+              if current is None:
+                  upload.append(name)
+                  continue
+              path = Path("release-proof-inputs/candidates") / name
+              digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+              if digest != binding["digest"] or current.get("digest") != digest or current["size"] != binding["size_bytes"]:
+                  raise SystemExit(f"existing Draft asset differs and cannot be replaced: {name}")
+          Path("assets-to-upload.txt").write_text("\n".join(upload), encoding="utf-8")
+          PY
+          while IFS= read -r asset_name; do
+            [[ -z "${asset_name}" ]] && continue
+            gh release upload "${RELEASE_TAG}" "release-proof-inputs/candidates/${asset_name}"
+          done < assets-to-upload.txt
+
+      - name: Build canonical Proof from live Draft authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-cas.json
+          tag_object_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}")"
+          tag_commit_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
+          tag_tree_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{tree}")"
+          export tag_object_sha tag_commit_sha tag_tree_sha
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          import os
+          from datetime import UTC, datetime, timedelta
+          from pathlib import Path
+
+          inputs = json.loads(
+              Path("release-proof-inputs/release-proof-inputs.json").read_text(encoding="utf-8")
+          )
+          release = json.loads(Path("release-cas.json").read_text(encoding="utf-8"))
+          if not release["draft"] or release["tag_name"] != inputs["release_tag"]:
+              raise SystemExit("live Draft identity differs")
+          expected = sorted(inputs["assets"], key=lambda value: value["name"])
+          live = {
+              asset["name"]: asset
+              for asset in release["assets"]
+              if asset["name"] != "release-satisfaction-proof.json"
+          }
+          if set(live) != {asset["name"] for asset in expected}:
+              raise SystemExit("live Draft asset set differs")
+          for binding in expected:
+              asset = live[binding["name"]]
+              if asset.get("digest") != binding["digest"] or asset["size"] != binding["size_bytes"]:
+                  raise SystemExit(f"live Draft asset differs: {binding['name']}")
+
+          def digest(value: object) -> str:
+              encoded = json.dumps(
+                  value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+              ).encode()
+              return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+          cutoff = datetime.now(UTC).replace(microsecond=0)
+          completed_at = cutoff.isoformat().replace("+00:00", "Z")
+          valid_until = (cutoff + timedelta(minutes=15)).isoformat().replace("+00:00", "Z")
+          gate_names = sorted(gate["name"] for gate in inputs["gates"])
+          gates = []
+          for gate in sorted(inputs["gates"], key=lambda value: value["name"]):
+              evidence = {
+                  "name": gate["name"],
+                  "conclusion": gate["conclusion"],
+                  "workflow_run_id": inputs["workflow_run_id"],
+                  "workflow_run_attempt": inputs["workflow_run_attempt"],
+                  "head_sha": os.environ["tag_commit_sha"],
+              }
+              gates.append(
+                  {
+                      **evidence,
+                      "required": True,
+                      "protected": True,
+                      "authority_repository": inputs["repository"],
+                      "workflow_ref": inputs["workflow_ref"],
+                      "completed_at": completed_at,
+                      "valid_until": valid_until,
+                      "evidence_digest": digest(evidence),
+                  }
+              )
+          settings = {
+              "id": release["id"],
+              "name": release["name"],
+              "tag_name": release["tag_name"],
+              "target_commitish": release["target_commitish"],
+              "draft": release["draft"],
+              "prerelease": release["prerelease"],
+          }
+          snapshot = {
+              "repository": inputs["repository"],
+              "draft_release_id": release["id"],
+              "draft_release_updated_at": release["updated_at"],
+              "draft": release["draft"],
+              "tag_name": release["tag_name"],
+              "tag_object_sha": os.environ["tag_object_sha"],
+              "commit_sha": os.environ["tag_commit_sha"],
+              "tree_sha": os.environ["tag_tree_sha"],
+              "required_policy_digest": digest(
+                  {"required_gate_names": gate_names, "workflow_ref": inputs["workflow_ref"]}
+              ),
+              "required_gate_names": gate_names,
+              "required_gates": gates,
+              "workflow_run_id": inputs["workflow_run_id"],
+              "workflow_run_attempt": inputs["workflow_run_attempt"],
+              "expected_assets": expected,
+              "assets": expected,
+              "release_settings_digest": digest(settings),
+              "publish_workflow_ref": inputs["workflow_ref"],
+              "evidence_cutoff_at": completed_at,
+          }
+          Path("release-candidate-snapshot.json").write_text(
+              json.dumps(snapshot, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+          )
+          PY
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py proof \
+            --snapshot release-candidate-snapshot.json \
+            --output release-satisfaction-proof.json
+
+      - name: Linearize Publish with Proof CAS
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
+            --proof release-satisfaction-proof.json \
+            --snapshot release-candidate-snapshot.json \
+            --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --caller-run-id "${{ github.run_id }}" \
+            --caller-run-attempt "${{ github.run_attempt }}"
+
+          existing_proof="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.assets[] | select(.name == "release-satisfaction-proof.json") | .digest')"
+          expected_proof="sha256:$(sha256sum release-satisfaction-proof.json | awk '{print $1}')"
+          if [[ -z "${existing_proof}" ]]; then
+            gh release upload "${RELEASE_TAG}" release-satisfaction-proof.json
+          elif [[ "${existing_proof}" != "${expected_proof}" ]]; then
+            echo "Existing Release Satisfaction Proof differs and cannot be replaced." >&2
+            exit 1
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-before-publish.json
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import hashlib
+          import json
+          from pathlib import Path
+
+          before = json.loads(Path("release-cas.json").read_text(encoding="utf-8"))
+          current = json.loads(Path("release-before-publish.json").read_text(encoding="utf-8"))
+          if not current["draft"] or current["id"] != before["id"]:
+              raise SystemExit("Draft identity changed after Proof CAS")
+          settings = ("name", "tag_name", "target_commitish", "draft", "prerelease")
+          if any(current[key] != before[key] for key in settings):
+              raise SystemExit("Draft settings changed after Proof CAS")
+          before_assets = {
+              asset["name"]: (asset.get("digest"), asset["size"])
+              for asset in before["assets"]
+          }
+          current_assets = {
+              asset["name"]: (asset.get("digest"), asset["size"])
+              for asset in current["assets"]
+          }
+          expected_proof = (
+              "sha256:" + hashlib.sha256(Path("release-satisfaction-proof.json").read_bytes()).hexdigest(),
+              Path("release-satisfaction-proof.json").stat().st_size,
+          )
+          if current_assets != {**before_assets, "release-satisfaction-proof.json": expected_proof}:
+              raise SystemExit("Draft changed outside the single Proof attachment")
+          PY
+
+          set +e
+          gh release edit "${RELEASE_TAG}" --draft=false
+          publish_exit=$?
+          set -e
+          published="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '(.draft == false) and (.prerelease == false)')"
+          if [[ "${published}" != "true" ]]; then
+            echo "Release did not converge to Published state (gh exit ${publish_exit})." >&2
+            exit 1
+          fi
+
+      - name: Verify immutable Release Attestation
+        shell: bash
+        run: |
+          set -euo pipefail
+          verified=false
+          for attempt in $(seq 1 20); do
+            if gh release verify "${RELEASE_TAG}" --format json > release-attestation.json 2>release-attestation.err; then
+              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-published.json
+              immutable="$(jq -r '.immutable // false' release-published.json)"
+              if [[ "${immutable}" == "true" ]]; then
+                verified=true
+                break
+              fi
+            fi
+            sleep 15
+          done
+          if [[ "${verified}" != "true" ]]; then
+            cat release-attestation.err >&2 || true
+            echo "Release Attestation or immutable state was not observable within five minutes." >&2
+            exit 1
+          fi
+          tag_commit_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
+          tag_tree_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{tree}")"
+          export tag_commit_sha tag_tree_sha
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          release = json.loads(Path("release-published.json").read_text(encoding="utf-8"))
+          binding = {
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "tag_name": release["tag_name"],
+              "commit_sha": os.environ["tag_commit_sha"],
+              "tree_sha": os.environ["tag_tree_sha"],
+              "assets": sorted(
+                  (
+                      {
+                          "name": asset["name"],
+                          "digest": asset.get("digest"),
+                          "size_bytes": asset["size"],
+                      }
+                      for asset in release["assets"]
+                  ),
+                  key=lambda value: value["name"],
+              ),
+          }
+          Path("release-attestation-binding.json").write_text(
+              json.dumps(binding, ensure_ascii=False, separators=(",", ":"), sort_keys=True),
+              encoding="utf-8",
+          )
+          PY
+          release_attestation_digest="sha256:$(sha256sum release-attestation-binding.json | awk '{print $1}')"
+          echo "RELEASE_ATTESTATION_DIGEST=${release_attestation_digest}" >> "${GITHUB_ENV}"
+
+      - name: Build generation-0 Release Certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_commit_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
+          tag_tree_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{tree}")"
+          export tag_commit_sha tag_tree_sha
+          uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          release = json.loads(Path("release-published.json").read_text(encoding="utf-8"))
+          inputs = json.loads(
+              Path("release-proof-inputs/release-proof-inputs.json").read_text(encoding="utf-8")
+          )
+          live = {asset["name"]: asset for asset in release["assets"]}
+          assets = sorted(inputs["assets"], key=lambda value: value["name"])
+          for binding in assets:
+              asset = live.get(binding["name"])
+              if asset is None or asset.get("digest") != binding["digest"] or asset["size"] != binding["size_bytes"]:
+                  raise SystemExit(f"published asset differs: {binding['name']}")
+          snapshot = {
+              "repository": inputs["repository"],
+              "github_release_id": release["id"],
+              "github_release_url": release["html_url"],
+              "tag_name": release["tag_name"],
+              "commit_sha": os.environ["tag_commit_sha"],
+              "tree_sha": os.environ["tag_tree_sha"],
+              "published": not release["draft"],
+              "draft": release["draft"],
+              "immutable": release.get("immutable", False),
+              "release_attestation_verified": True,
+              "release_attestation_digest": os.environ["RELEASE_ATTESTATION_DIGEST"],
+              "assets": assets,
+              "revocation_generation": 0,
+          }
+          Path("published-release-snapshot.json").write_text(
+              json.dumps(snapshot, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+          )
+          PY
+          issued_at="$(jq -r '.published_at' release-published.json)"
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py certificate \
+            --proof release-satisfaction-proof.json \
+            --published published-release-snapshot.json \
+            --attestation-digest "${RELEASE_ATTESTATION_DIGEST}" \
+            --issued-at "${issued_at}" \
+            --output release-certificate.json
+
+      - name: Publish immutable Certificate evidence release
+        shell: bash
+        run: |
+          set -euo pipefail
+          certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
+          certificate_digest="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
+          if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null; then
+            existing_digest="$(jq -r '.assets[] | select(.name == "release-certificate.json") | .digest' certificate-release.json)"
+            if [[ "${existing_digest}" != "${certificate_digest}" || "$(jq -r '.prerelease' certificate-release.json)" != "true" ]]; then
+              echo "Certificate evidence generation fork detected." >&2
+              exit 1
+            fi
+          else
+            gh release create "${certificate_tag}" \
+              release-certificate.json#release-certificate.json \
+              --target "$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")" \
+              --title "Release Truth ${RELEASE_TAG} Certificate g0" \
+              --notes "Permanent generation-0 release certificate for ${RELEASE_TAG}." \
+              --prerelease \
+              --latest=false
+          fi
+
+          evidence_ready=false
+          for attempt in $(seq 1 20); do
+            if gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
+              immutable="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" --jq '.immutable // false')"
+              if [[ "${immutable}" == "true" ]]; then
+                evidence_ready=true
+                break
+              fi
+            fi
+            sleep 15
+          done
+          if [[ "${evidence_ready}" != "true" ]]; then
+            echo "Certificate evidence release did not become immutable within five minutes." >&2
+            exit 1
+          fi

@@ -313,20 +313,81 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
 
 
 def test_release_build_emergency_freeze_removes_release_write_authority() -> None:
-    workflow = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    """保留既有 baseline 身份，并证明临时冻结已被唯一受保护 writer 完整替代。"""
+    workflow_text = (_WORKFLOWS_DIR / "release-build.yml").read_text(
+        encoding="utf-8"
+    )
 
-    assert "permissions:\n  contents: read" in workflow
-    assert "upload_to_release:" not in workflow
-    assert "GH_TOKEN:" not in workflow
-    assert "gh release " not in workflow
-    assert "--clobber" not in workflow
+    assert "Emergency Publish Freeze" not in workflow_text
+    test_release_build_has_one_proof_bound_protected_writer()
+
+
+def test_release_build_has_one_proof_bound_protected_writer() -> None:
+    """捕获第二个写入者、候选 verifier 自证或缺少 Proof/CAS 即发布。"""
+    workflow_path = _WORKFLOWS_DIR / "release-build.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert workflow["permissions"] == {"contents": "read"}
+    writers = [
+        job_id
+        for job_id, job in jobs.items()
+        if isinstance(job, dict)
+        and job.get("permissions", {}).get("contents") == "write"
+    ]
+    assert writers == ["publish-release"]
+    proof_job = jobs["build-release-proof"]
+    publish_job = jobs["publish-release"]
+    assert proof_job["needs"] == [
+        "release-assurance-policy",
+        "release-assurance",
+        "build-smoke-candidate",
+    ]
     assert (
-        "name: release-build-${{ github.run_id }}-${{ github.run_attempt }}-"
-        "${{ matrix.asset_os }}-${{ matrix.archive }}-evidence"
-    ) in workflow
-    assert "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-    assert "publish_blocked" in workflow
-    assert "writer_isolation_unavailable" in workflow
+        "needs.release-assurance-policy.outputs.assurance_required == 'true'"
+        in proof_job["if"]
+    )
+    assert publish_job["needs"] == ["build-release-proof"]
+    assert publish_job["environment"] == "release-publish"
+    assert publish_job["permissions"] == {
+        "actions": "read",
+        "attestations": "read",
+        "contents": "write",
+    }
+    assert publish_job["concurrency"] == {
+        "group": "release-publish-${{ inputs.tag }}",
+        "cancel-in-progress": False,
+    }
+    assert "ref: ${{ github.event.repository.default_branch }}" in workflow_text
+    assert "path: trusted-writer" in workflow_text
+    assert "persist-credentials: false" in workflow_text
+    assert "scripts/release_truth.py proof" in workflow_text
+    assert "scripts/release_truth.py publish-check" in workflow_text
+    assert "scripts/release_truth.py certificate" in workflow_text
+    assert "GITHUB_WORKFLOW_REF" in workflow_text
+    assert "github.run_id" in workflow_text
+    assert "github.run_attempt" in workflow_text
+    assert "actions/download-artifact@v7" in workflow_text
+    assert "--clobber" not in workflow_text
+
+    upload_index = workflow_text.index("gh release upload")
+    cas_index = workflow_text.index("scripts/release_truth.py publish-check")
+    publish_index = workflow_text.index('gh release edit "${RELEASE_TAG}" --draft=false')
+    verify_index = workflow_text.index('gh release verify "${RELEASE_TAG}" --format json')
+    certificate_index = workflow_text.index("scripts/release_truth.py certificate")
+    evidence_release_index = workflow_text.index('gh release create "${certificate_tag}"')
+    assert upload_index < cas_index < publish_index < verify_index
+    assert verify_index < certificate_index < evidence_release_index
+    assert "--prerelease" in workflow_text
+    assert "--latest=false" in workflow_text
+    assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
+    assert "immutable" in workflow_text
+    assert "release-satisfaction-proof.json" in workflow_text
+    assert "release-certificate.json" in workflow_text
+    assert "scripts/release_truth.py" not in (
+        _REPO_ROOT / "pyproject.toml"
+    ).read_text(encoding="utf-8")
 
 
 def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:

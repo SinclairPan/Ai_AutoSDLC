@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import pytest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_RELEASE_TRUTH_SCRIPT = _REPO_ROOT / "scripts" / "release_truth.py"
 
 
 def _api():
@@ -544,3 +551,116 @@ def test_trust_reducer_does_not_trust_missing_or_mismatched_certificate() -> Non
     assert missing.reason_code == "certificate_missing"
     assert mismatch.status == "unknown"
     assert mismatch.reason_code == "certificate_mismatch"
+
+
+def _run_release_truth_script(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [sys.executable, str(_RELEASE_TRUTH_SCRIPT), *args],
+        cwd=_REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def test_internal_script_proof_and_publish_check_are_cas_bound(tmp_path: Path) -> None:
+    """捕获内部命令覆盖异内容 Proof 或放行漂移候选。"""
+    snapshot_path = tmp_path / "candidate.json"
+    proof_path = tmp_path / "release-satisfaction-proof.json"
+    snapshot_path.write_text(
+        json.dumps(_candidate().model_dump(mode="json")), encoding="utf-8"
+    )
+
+    first = _run_release_truth_script(
+        "proof", "--snapshot", str(snapshot_path), "--output", str(proof_path)
+    )
+    replay = _run_release_truth_script(
+        "proof", "--snapshot", str(snapshot_path), "--output", str(proof_path)
+    )
+    publish_check = _run_release_truth_script(
+        "publish-check",
+        "--proof",
+        str(proof_path),
+        "--snapshot",
+        str(snapshot_path),
+        "--caller-workflow-ref",
+        _candidate().publish_workflow_ref,
+        "--caller-run-id",
+        str(_candidate().workflow_run_id),
+        "--caller-run-attempt",
+        str(_candidate().workflow_run_attempt),
+    )
+    drifted = _candidate(
+        release_settings_digest="sha256:" + "0" * 64
+    ).model_dump(mode="json")
+    snapshot_path.write_text(json.dumps(drifted), encoding="utf-8")
+    rejected = _run_release_truth_script(
+        "publish-check",
+        "--proof",
+        str(proof_path),
+        "--snapshot",
+        str(snapshot_path),
+        "--caller-workflow-ref",
+        _candidate().publish_workflow_ref,
+        "--caller-run-id",
+        str(_candidate().workflow_run_id),
+        "--caller-run-attempt",
+        str(_candidate().workflow_run_attempt),
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert replay.returncode == 0, replay.stderr
+    assert publish_check.returncode == 0, publish_check.stderr
+    assert rejected.returncode != 0
+    assert "proof identity" in rejected.stderr
+
+
+def test_internal_script_certificate_is_idempotent_and_fork_safe(
+    tmp_path: Path,
+) -> None:
+    """捕获 Certificate 命令重复投递覆盖同 generation 异内容。"""
+    release_truth, *_ = _post_publish_api()
+    proof_path = tmp_path / "proof.json"
+    published_path = tmp_path / "published.json"
+    certificate_path = tmp_path / "release-certificate.json"
+    proof_path.write_text(
+        json.dumps(
+            release_truth.build_release_satisfaction_proof(_candidate()).model_dump(
+                mode="json"
+            )
+        ),
+        encoding="utf-8",
+    )
+    published_path.write_text(
+        json.dumps(_published().model_dump(mode="json")), encoding="utf-8"
+    )
+    args = (
+        "certificate",
+        "--proof",
+        str(proof_path),
+        "--published",
+        str(published_path),
+        "--attestation-digest",
+        "sha256:" + "4" * 64,
+        "--issued-at",
+        "2026-08-05T20:10:00Z",
+        "--output",
+        str(certificate_path),
+    )
+
+    first = _run_release_truth_script(*args)
+    replay = _run_release_truth_script(*args)
+    fork = _run_release_truth_script(
+        *(
+            *args[:-4],
+            "--issued-at",
+            "2026-08-05T20:11:00Z",
+            "--output",
+            str(certificate_path),
+        )
+    )
+
+    assert first.returncode == 0, first.stderr
+    assert replay.returncode == 0, replay.stderr
+    assert fork.returncode != 0
+    assert "immutable artifact fork" in fork.stderr
