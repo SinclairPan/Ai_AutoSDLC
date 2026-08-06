@@ -612,6 +612,9 @@ def fetch_release_truth_github(
     tag_name = str(release.get("tag_name") or "")
     if not tag_name:
         raise ValueError("software release tag is missing")
+    release_id = release.get("id")
+    if not isinstance(release_id, int) or release_id < 1:
+        raise ValueError("software release id is invalid")
 
     proof_bytes = _verified_release_asset(
         release, "release-satisfaction-proof.json", timeout_seconds
@@ -683,7 +686,10 @@ def fetch_release_truth_github(
 
     receipts: list[ReleaseRevocationReceipt] = []
     receipt_prefix = f"release-truth/{tag_name}/revocation/g"
-    for evidence_release in _fetch_public_release_pages(timeout_seconds):
+    for evidence_release in _fetch_public_release_pages(
+        timeout_seconds,
+        stop_release_id=release_id,
+    ):
         evidence_tag = str(evidence_release.get("tag_name") or "")
         if not evidence_tag.startswith(receipt_prefix):
             continue
@@ -774,9 +780,14 @@ def _verified_release_asset(
     return content
 
 
-def _fetch_public_release_pages(timeout_seconds: float) -> list[dict[str, Any]]:
+def _fetch_public_release_pages(
+    timeout_seconds: float,
+    *,
+    stop_release_id: int,
+) -> list[dict[str, Any]]:
     releases: list[dict[str, Any]] = []
-    for page in range(1, 11):
+    page = 1
+    while True:
         payload = _fetch_public_json(
             f"https://api.github.com/repos/{GITHUB_REPOSITORY}/releases"
             f"?per_page=100&page={page}",
@@ -786,10 +797,13 @@ def _fetch_public_release_pages(timeout_seconds: float) -> list[dict[str, Any]]:
             not isinstance(item, dict) for item in payload
         ):
             raise ValueError("public release list response is invalid")
-        releases.extend(payload)
+        for item in payload:
+            releases.append(item)
+            if item.get("id") == stop_release_id:
+                return releases
         if len(payload) < 100:
-            return releases
-    raise ValueError("public release truth exceeds bounded pagination")
+            raise ValueError("software release is missing from public release history")
+        page += 1
 
 
 def _fetch_public_json(url: str, timeout_seconds: float) -> object:

@@ -22,6 +22,7 @@ from ai_sdlc.core.update_advisor import (
     NOTICE_ACTIONABLE,
     NOTICE_LIGHT,
     _cache_path,
+    _fetch_public_release_pages,
     ack_notice,
     detect_runtime_identity,
     evaluate_update_advisor,
@@ -203,6 +204,7 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
             }
         )
         bytes_by_url[receipt_url] = receipt_bytes
+    release_pages.append({"id": software_release["id"], "tag_name": tag})
     return software_release, certificate_release, release_pages, bytes_by_url
 
 
@@ -530,6 +532,41 @@ def test_public_truth_loader_validates_immutable_assets_and_receipt_gaps(
     assert trusted.revocation_generation == 0
     assert gap.status == "unknown"
     assert gap.reason_code == "receipt_chain_invalid"
+
+
+def test_public_release_pages_continue_past_ten_pages_and_stop_at_software_release(
+    monkeypatch,
+) -> None:
+    """捕获固定十页上限导致长期运行后所有公开 Release Truth 失效。"""
+    software_release_id = 42
+    calls: list[int] = []
+
+    def fetch_page(url: str, timeout: float) -> list[dict[str, object]]:
+        page = int(url.rsplit("page=", 1)[1])
+        calls.append(page)
+        if page <= 10:
+            return [
+                {"id": page * 1_000 + offset, "tag_name": f"evidence-{page}-{offset}"}
+                for offset in range(100)
+            ]
+        return [
+            {"id": software_release_id, "tag_name": "v1.0.1"},
+            {"id": 1, "tag_name": "older-release"},
+        ]
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_page,
+    )
+
+    releases = _fetch_public_release_pages(
+        1.0,
+        stop_release_id=software_release_id,
+    )
+
+    assert calls == list(range(1, 12))
+    assert len(releases) == 1_001
+    assert releases[-1]["id"] == software_release_id
 
 
 def test_public_truth_loader_marks_missing_certificate_untrusted(monkeypatch) -> None:

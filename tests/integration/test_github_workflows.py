@@ -423,12 +423,18 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
 
     upload_index = workflow_text.index("gh release upload")
     cas_index = workflow_text.index("scripts/release_truth.py publish-check")
-    publish_index = workflow_text.index('gh release edit "${RELEASE_TAG}" --draft=false')
+    publish_index = workflow_text.index("gh api --method PATCH")
     verify_index = workflow_text.index('gh release verify "${RELEASE_TAG}" --format json')
     certificate_index = workflow_text.index("scripts/release_truth.py certificate")
     evidence_release_index = workflow_text.index('gh release create "${certificate_tag}"')
     assert upload_index < cas_index < publish_index < verify_index
     assert verify_index < certificate_index < evidence_release_index
+    assert 'gh release edit "${RELEASE_TAG}" --draft=false' not in workflow_text
+    assert '"repos/${GITHUB_REPOSITORY}/releases/${release_id}"' in workflow_text
+    assert "--input release-publish-request.json" in workflow_text
+    assert "release-publish-response.json" in workflow_text
+    assert "Published release differs from Proof-bound transition" in workflow_text
+    assert "publish_exit" not in workflow_text
     assert "--prerelease" in workflow_text
     assert "--latest=false" in workflow_text
     assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
