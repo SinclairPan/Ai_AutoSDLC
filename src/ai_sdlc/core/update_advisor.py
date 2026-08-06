@@ -850,11 +850,12 @@ def _verify_certificate_artifact_attestation(
 ) -> None:
     """核验 Certificate 摘要对应受保护 publisher 的 GitHub provenance。"""
 
+    budget = _TimeoutBudget.start(timeout_seconds)
     certificate_digest = hashlib.sha256(certificate_bytes).hexdigest()
     response = _fetch_public_json(
         f"https://api.github.com/repos/{GITHUB_REPOSITORY}/attestations/"
         f"sha256:{certificate_digest}?per_page=100",
-        timeout_seconds,
+        budget.remaining(),
     )
     if not isinstance(response, dict):
         raise ValueError("certificate artifact attestation response is invalid")
@@ -873,7 +874,7 @@ def _verify_certificate_artifact_attestation(
         attestations,
         proof,
         workflow_path,
-        timeout_seconds,
+        budget.remaining(),
     )
     for statement in statements:
         subjects = statement.get("subject")

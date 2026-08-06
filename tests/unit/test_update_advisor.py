@@ -30,6 +30,7 @@ from ai_sdlc.core.update_advisor import (
     _cache_path,
     _cryptographically_verified_artifact_attestation_statements,
     _fetch_public_release_pages,
+    _verify_certificate_artifact_attestation,
     _verify_receipt_workflow_authority,
     ack_notice,
     detect_runtime_identity,
@@ -940,6 +941,51 @@ def test_artifact_attestation_verifier_fails_closed_on_invalid_signature(
             ".github/workflows/release-build.yml",
             1.0,
         )
+
+
+def test_certificate_attestation_shares_one_timeout_budget(monkeypatch) -> None:
+    """捕获 API 下载与本地验签各自重复消费完整 timeout。"""
+    _, _, _, content, _, attestations = _public_truth_fixture()
+    certificate_bytes = content["https://example.test/certificate"]
+    proof = ReleaseSatisfactionProof.model_validate_json(
+        content["https://example.test/proof"]
+    )
+    attestation_response = next(iter(attestations.values()))
+    observed_timeouts: dict[str, float] = {}
+    monotonic_values = iter((100.0, 101.0, 104.0))
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor.time.monotonic",
+        lambda: next(monotonic_values),
+    )
+
+    def fetch_json(url: str, timeout: float):
+        observed_timeouts["fetch"] = timeout
+        return attestation_response
+
+    def verified(command, **kwargs):
+        observed_timeouts["verify"] = kwargs["timeout"]
+        bundle_path = Path(command[command.index("--bundle") + 1])
+        statements = [
+            json.loads(base64.b64decode(json.loads(line)["dsseEnvelope"]["payload"]))
+            for line in bundle_path.read_text(encoding="utf-8").splitlines()
+        ]
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            stdout=json.dumps(statements),
+            stderr="",
+        )
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor._fetch_public_json",
+        fetch_json,
+    )
+    monkeypatch.setattr("subprocess.run", verified)
+
+    _verify_certificate_artifact_attestation(certificate_bytes, proof, 10.0)
+
+    assert observed_timeouts == pytest.approx({"fetch": 9.0, "verify": 6.0})
 
 
 def test_public_truth_loader_rejects_receipt_without_protected_provenance(

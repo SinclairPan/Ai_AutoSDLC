@@ -159,7 +159,7 @@
       "sha256:f8bc632f7814532abc83472b04a2bfe4c28480913177354e0184178bd80aa3c2"
     ]
   },
-  "baseline_digest": "sha256:557d2671d80a9aa2f7a946c79659f37266117732f47e61f50468fe1373bc9bc9",
+  "baseline_digest": "sha256:bc79e8b9cf1499ef7e4f6e9c01de078ab6835b3e61270482df06ef1500abd7ac",
   "case_ids": [
     "sha256:001ab3ce32d4877218f3f225172b8ef762ca2a7a91fbd23f3df012f71c69dfe7",
     "sha256:001c94733f6e183d7193f5e652b8d0056ccd65d7455840343645cebc21d8bf1c",
@@ -5338,6 +5338,7 @@
     "sha256:d3fcd9272ed110eb5a4bff7be16425133322165b7d52461b7e126c9968f4a701",
     "sha256:d404d3e7bf2d3f17618cb49f7dc46fb3cc9196f470836dc2bcddb331b2e27c19",
     "sha256:d4144c95168ca9b15bbfee1a33dc977f6063dff2800952e8bfee82953b661e57",
+    "sha256:d42bb87a80e4d074beab465fd9e1afcc34ba3f6621772ee0ddd1d1098d7e6f97",
     "sha256:d42d389f6f6e1243abb7ebd24e6135dd08326419efad76dc6485388be6b84f94",
     "sha256:d430877b731da25e3989080e0b99e852b2c27858655bfe68a3dec324fa3e5248",
     "sha256:d435a5596d9c0defe2984b76d73557469c8dde546bc6369f000e235258786718",
@@ -6472,11 +6473,11 @@
     "windows-latest-py3.14"
   ],
   "collection_command": "pytest --collect-only -q --ignore=tests/e2e/stage_review",
-  "execution_member_count": 74660,
-  "execution_member_digest": "sha256:89112a3335886fbf861a880c83189f5d06461090c772d83dee66434c43d3108c",
+  "execution_member_count": 74672,
+  "execution_member_digest": "sha256:2ac1ec5ae465ddfdfdcfb4e678dabdddf78c1bcb31344075a3afd10c81a447e4",
   "genesis_base_commit": null,
   "namespace": "pytest-nodeid-v1",
   "previous_baseline_digest": "sha256:71f9d0c642f1575033b667470569b559ce4f582613005de89b47d861e96c1f90",
   "schema_version": "ci-baseline-v1",
-  "source_commit": "7b697a610973f3bd716b173cbf432d357ae0b38f"
+  "source_commit": "9feeb33123d9e2a62112b44ed6ed4060a6182e5d"
 }

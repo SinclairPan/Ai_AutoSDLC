@@ -23,6 +23,8 @@ jobs:
     if: startsWith(github.event.release.tag_name || inputs.tag, 'v')
     runs-on: windows-latest
     timeout-minutes: 30
+    outputs:
+      smoke-verdict: ${{ steps.smoke-verdict.outputs.smoke_verdict }}
     env:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
       RELEASE_ASSET_MACHINE: amd64
@@ -56,6 +58,8 @@ jobs:
           gh release download $env:RELEASE_TAG --pattern $assetName --pattern "$assetName.sha256" --dir $assetDir --repo $env:GITHUB_REPOSITORY
 
       - name: Install release zip and run CLI smoke
+        id: smoke
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
@@ -151,6 +155,37 @@ jobs:
           }
           Pop-Location
 
+      - name: Record explicit release zip smoke verdict
+        id: smoke-verdict
+        if: always()
+        shell: pwsh
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          $verdict = switch ($env:SMOKE_OUTCOME) {
+            "success" { "passed" }
+            "failure" { "failed" }
+            default { "unavailable" }
+          }
+          "smoke_verdict=$verdict" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Enforce explicit release zip smoke failure
+        if: steps.smoke-verdict.outputs.smoke_verdict == 'failed'
+        shell: pwsh
+        run: throw "Release zip smoke assertions failed."
+
+      - name: Collect release zip smoke evidence
+        if: always()
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $assetDir = Join-Path $env:RUNNER_TEMP "ai-sdlc-release-assets"
+          $smokeRoot = Join-Path $env:RUNNER_TEMP "ai-sdlc-release-zip-smoke"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "ai-sdlc-release-zip-evidence"
+          $releaseVersion = $env:RELEASE_TAG.Substring(1)
+          $assetName = "ai-sdlc-offline-$releaseVersion-windows-$env:RELEASE_ASSET_MACHINE.zip"
+          $checksumPath = Join-Path $assetDir "$assetName.sha256"
+          $bundleDir = Get-ChildItem -LiteralPath $smokeRoot -Directory | Select-Object -First 1
           Copy-Item -LiteralPath (Join-Path $bundleDir.FullName "bundle-manifest.json") -Destination $evidenceRoot
           Copy-Item -LiteralPath (Join-Path $bundleDir.FullName "SHA256SUMS") -Destination $evidenceRoot
           Copy-Item -LiteralPath $checksumPath -Destination $evidenceRoot
@@ -168,6 +203,9 @@ jobs:
     name: ${{ matrix.asset_os }} tar.gz
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
+    outputs:
+      linux-smoke-verdict: ${{ steps.smoke-verdict.outputs.linux_smoke_verdict }}
+      macos-smoke-verdict: ${{ steps.smoke-verdict.outputs.macos_smoke_verdict }}
     strategy:
       fail-fast: false
       matrix:
@@ -213,6 +251,8 @@ jobs:
           gh release download "${RELEASE_TAG}" --pattern "${asset_name}" --pattern "${asset_name}.sha256" --dir "${asset_dir}" --repo "${GITHUB_REPOSITORY}"
 
       - name: Install release tar and run CLI smoke
+        id: smoke
+        continue-on-error: true
         shell: bash
         run: |
           set -euo pipefail
@@ -287,6 +327,42 @@ jobs:
           printf '%s\n' "${actual_version}" > "${evidence_root}/version.txt"
           ai-sdlc adapter status 2>&1 | tee "${evidence_root}/adapter-status.txt"
           ai-sdlc run --dry-run 2>&1 | tee "${evidence_root}/run-dry-run.txt"
+      - name: Record explicit release tar smoke verdict
+        id: smoke-verdict
+        if: always()
+        shell: bash
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
+        run: |
+          set -euo pipefail
+          case "${SMOKE_OUTCOME}" in
+            success) verdict=passed ;;
+            failure) verdict=failed ;;
+            *) verdict=unavailable ;;
+          esac
+          printf '%s_smoke_verdict=%s\n' "${RELEASE_ASSET_OS}" "${verdict}" >> "${GITHUB_OUTPUT}"
+
+      - name: Enforce explicit release tar smoke failure
+        if: >-
+          steps.smoke-verdict.outputs.macos_smoke_verdict == 'failed' ||
+          steps.smoke-verdict.outputs.linux_smoke_verdict == 'failed'
+        shell: bash
+        run: |
+          echo "Release ${RELEASE_ASSET_OS} tar smoke assertions failed." >&2
+          exit 1
+
+      - name: Collect release tar smoke evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          asset_dir="${RUNNER_TEMP}/ai-sdlc-release-assets"
+          smoke_root="${RUNNER_TEMP}/ai-sdlc-release-tar-smoke"
+          evidence_root="${RUNNER_TEMP}/ai-sdlc-release-tar-evidence"
+          release_version="${RELEASE_TAG#v}"
+          asset_name="ai-sdlc-offline-${release_version}-${RELEASE_ASSET_OS}-${RELEASE_ASSET_MACHINE}.tar.gz"
+          checksum_path="${asset_dir}/${asset_name}.sha256"
+          bundle_dir="$(find "${smoke_root}" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
           cp "${bundle_dir}/bundle-manifest.json" "${evidence_root}/"
           cp "${bundle_dir}/SHA256SUMS" "${evidence_root}/"
           cp "${checksum_path}" "${evidence_root}/"
@@ -307,8 +383,9 @@ jobs:
       github.event_name == 'release' &&
       startsWith(github.event.release.tag_name || inputs.tag, 'v') &&
       (
-        needs.windows-zip.result != 'success' ||
-        needs.posix-tar.result != 'success'
+        needs.windows-zip.outputs.smoke-verdict == 'failed' ||
+        needs.posix-tar.outputs.macos-smoke-verdict == 'failed' ||
+        needs.posix-tar.outputs.linux-smoke-verdict == 'failed'
       )
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -325,8 +402,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
-      WINDOWS_SMOKE_RESULT: ${{ needs.windows-zip.result }}
-      POSIX_SMOKE_RESULT: ${{ needs.posix-tar.result }}
+      WINDOWS_SMOKE_VERDICT: ${{ needs.windows-zip.outputs.smoke-verdict }}
+      MACOS_SMOKE_VERDICT: ${{ needs.posix-tar.outputs.macos-smoke-verdict }}
+      LINUX_SMOKE_VERDICT: ${{ needs.posix-tar.outputs.linux-smoke-verdict }}
     steps:
       - name: Checkout exact protected revocation writer revision
         uses: actions/checkout@v6

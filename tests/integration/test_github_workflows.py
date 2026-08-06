@@ -310,9 +310,76 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
         "group": "release-revocation-${{ github.event.release.tag_name || inputs.tag }}",
         "cancel-in-progress": False,
     }
+    assert jobs["windows-zip"]["outputs"] == {
+        "smoke-verdict": "${{ steps.smoke-verdict.outputs.smoke_verdict }}"
+    }
+    assert jobs["posix-tar"]["outputs"] == {
+        "linux-smoke-verdict": (
+            "${{ steps.smoke-verdict.outputs.linux_smoke_verdict }}"
+        ),
+        "macos-smoke-verdict": (
+            "${{ steps.smoke-verdict.outputs.macos_smoke_verdict }}"
+        ),
+    }
+    windows_smoke = next(
+        step
+        for step in jobs["windows-zip"]["steps"]
+        if step.get("name") == "Install release zip and run CLI smoke"
+    )
+    posix_smoke = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("name") == "Install release tar and run CLI smoke"
+    )
+    assert windows_smoke["id"] == "smoke"
+    assert windows_smoke["continue-on-error"] is True
+    assert posix_smoke["id"] == "smoke"
+    assert posix_smoke["continue-on-error"] is True
+    assert "Copy-Item" not in windows_smoke["run"]
+    assert 'cp "${bundle_dir}/bundle-manifest.json"' not in posix_smoke["run"]
+    windows_collect = next(
+        step
+        for step in jobs["windows-zip"]["steps"]
+        if step.get("name") == "Collect release zip smoke evidence"
+    )
+    posix_collect = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("name") == "Collect release tar smoke evidence"
+    )
+    assert windows_collect["if"] == "always()"
+    assert posix_collect["if"] == "always()"
+    windows_verdict = next(
+        step
+        for step in jobs["windows-zip"]["steps"]
+        if step.get("id") == "smoke-verdict"
+    )
+    posix_verdict = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("id") == "smoke-verdict"
+    )
+    assert windows_verdict["if"] == "always()"
+    assert posix_verdict["if"] == "always()"
     assert "github.event_name == 'release'" in writer["if"]
-    assert "needs.windows-zip.result != 'success'" in writer["if"]
-    assert "needs.posix-tar.result != 'success'" in writer["if"]
+    assert "needs.windows-zip.outputs.smoke-verdict == 'failed'" in writer["if"]
+    assert (
+        "needs.posix-tar.outputs.macos-smoke-verdict == 'failed'" in writer["if"]
+    )
+    assert (
+        "needs.posix-tar.outputs.linux-smoke-verdict == 'failed'" in writer["if"]
+    )
+    assert "needs.windows-zip.result" not in writer["if"]
+    assert "needs.posix-tar.result" not in writer["if"]
+    assert writer["env"]["WINDOWS_SMOKE_VERDICT"] == (
+        "${{ needs.windows-zip.outputs.smoke-verdict }}"
+    )
+    assert writer["env"]["MACOS_SMOKE_VERDICT"] == (
+        "${{ needs.posix-tar.outputs.macos-smoke-verdict }}"
+    )
+    assert writer["env"]["LINUX_SMOKE_VERDICT"] == (
+        "${{ needs.posix-tar.outputs.linux-smoke-verdict }}"
+    )
     revocation_checkout = next(
         step
         for step in writer["steps"]
