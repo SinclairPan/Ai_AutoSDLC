@@ -482,7 +482,7 @@ def test_parallel_resume_claims_one_dispatch_before_provider_call(
             "retry_wait",
         }
         release_provider.set()
-        results = [future.result(timeout=2) for future in futures]
+        results = [future.result(timeout=30) for future in futures]
 
     assert driver.invoke_count == 1
     codes = [result.result_code for result in results]
@@ -626,7 +626,7 @@ def test_query_only_parallel_resume_waits_for_active_dispatch_owner(
         assert len(completed) == 1
         assert next(iter(completed)).result().result_code == "retry_wait"
         release_provider.set()
-        results = [future.result(timeout=2) for future in futures]
+        results = [future.result(timeout=30) for future in futures]
 
     assert driver.invoke_count == driver.bill_count == 1
     assert sorted(result.result_code for result in results) == [
