@@ -279,6 +279,12 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert attestation_steps[0]["with"]["subject-path"] == (
         "release-revocation-receipt.json"
     )
+    revocation_step_names = [
+        step.get("name") for step in revocation_job["steps"]
+    ]
+    assert revocation_step_names.index(
+        "Attest Receipt generation before publication"
+    ) < revocation_step_names.index("Append immutable Receipt generation")
     jobs = workflow["jobs"]
 
     assert workflow["permissions"] == {"contents": "read"}

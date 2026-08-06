@@ -719,6 +719,11 @@ jobs:
           echo "target_commit=$(jq -r '.target_commit' receipt-metadata.json)" >> "${GITHUB_OUTPUT}"
           echo "idempotent=$(jq -r '.idempotent' receipt-metadata.json)" >> "${GITHUB_OUTPUT}"
 
+      - name: Attest Receipt generation before publication
+        uses: actions/attest@v4
+        with:
+          subject-path: release-revocation-receipt.json
+
       - name: Append immutable Receipt generation
         id: append
         if: steps.receipt.outputs.idempotent != 'true'
@@ -844,11 +849,6 @@ jobs:
             echo "Receipt evidence release did not become immutable within five minutes." >&2
             exit 1
           fi
-
-      - name: Attest immutable Receipt generation
-        uses: actions/attest@v4
-        with:
-          subject-path: release-revocation-receipt.json
 
       - name: Project stop recommendation and incident
         if: >-
