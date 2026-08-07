@@ -1796,9 +1796,9 @@ def test_user_guide_documents_published_assets_and_two_new_user_paths() -> None:
     assert "## 第一章：全新用户 + 全新空项目" in guide
     assert "## 第二章：全新用户 + 已有项目" in guide
     assert "https://github.com/SinclairPan/Ai_AutoSDLC" in guide
-    assert "ai-sdlc-offline-1.0.2-windows-amd64.zip" in guide
-    assert "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz" in guide
-    assert "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz" in guide
+    assert "ai-sdlc-offline-1.0.3-windows-amd64.zip" in guide
+    assert "ai-sdlc-offline-1.0.3-macos-arm64.tar.gz" in guide
+    assert "ai-sdlc-offline-1.0.3-linux-amd64.tar.gz" in guide
     assert "Get-FileHash -Algorithm SHA256" in guide
     assert "shasum -a 256 -c" in guide
     assert "sha256sum -c" in guide
