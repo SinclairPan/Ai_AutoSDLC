@@ -209,8 +209,14 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
     assert "ref: ${{ github.event.release.tag_name || inputs.tag }}" in workflow
-    assert "ai-sdlc-offline-$releaseVersion-windows-$env:RELEASE_ASSET_MACHINE.zip" in workflow
-    assert "ai-sdlc-offline-${release_version}-${RELEASE_ASSET_OS}-${RELEASE_ASSET_MACHINE}.tar.gz" in workflow
+    assert (
+        "ai-sdlc-offline-$releaseVersion-windows-$env:RELEASE_ASSET_MACHINE.zip"
+        in workflow
+    )
+    assert (
+        "ai-sdlc-offline-${release_version}-${RELEASE_ASSET_OS}-${RELEASE_ASSET_MACHINE}.tar.gz"
+        in workflow
+    )
     assert "RELEASE_ASSET_OS" in workflow
     assert "RELEASE_ASSET_MACHINE" in workflow
     assert ".sha256" in workflow
@@ -253,6 +259,215 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
     assert posix_hash < posix_extract < posix_verify < posix_install
 
 
+def test_release_artifact_smoke_records_receipt_before_incident_projection() -> None:
+    """捕获后验失败先投影事故、后写 Receipt 或出现第二条撤销状态。"""
+    workflow_path = _WORKFLOWS_DIR / "release-artifact-smoke.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    revocation_job = workflow["jobs"]["record-revocation"]
+    assert revocation_job["permissions"] == {
+        "attestations": "write",
+        "contents": "write",
+        "id-token": "write",
+    }
+    attestation_steps = [
+        step
+        for step in revocation_job["steps"]
+        if step.get("uses") == "actions/attest@v4"
+    ]
+    assert len(attestation_steps) == 1
+    assert attestation_steps[0]["with"]["subject-path"] == (
+        "release-revocation-receipt.json"
+    )
+    revocation_step_names = [
+        step.get("name") for step in revocation_job["steps"]
+    ]
+    assert revocation_step_names.index(
+        "Attest Receipt generation before publication"
+    ) < revocation_step_names.index("Append immutable Receipt generation")
+    jobs = workflow["jobs"]
+
+    assert workflow["permissions"] == {"contents": "read"}
+    writer_jobs = [
+        job_id
+        for job_id, job in jobs.items()
+        if job.get("permissions", {}).get("contents") == "write"
+    ]
+    assert writer_jobs == ["record-revocation"]
+    assert (
+        "startsWith(github.event.release.tag_name || inputs.tag, 'v')"
+        in jobs["windows-zip"]["if"]
+    )
+    assert (
+        "startsWith(github.event.release.tag_name || inputs.tag, 'v')"
+        in jobs["posix-tar"]["if"]
+    )
+    writer = jobs["record-revocation"]
+    assert writer["timeout-minutes"] >= 30
+    assert writer["needs"] == ["windows-zip", "posix-smoke-verdicts"]
+    assert writer["environment"] == "release-publish"
+    assert writer["permissions"] == {
+        "attestations": "write",
+        "contents": "write",
+        "id-token": "write",
+    }
+    assert writer["env"]["GH_REPO"] == "${{ github.repository }}"
+    assert writer["concurrency"] == {
+        "group": "release-revocation-${{ github.event.release.tag_name || inputs.tag }}",
+        "cancel-in-progress": False,
+    }
+    assert jobs["windows-zip"]["outputs"] == {
+        "smoke-verdict": "${{ steps.smoke-verdict.outputs.smoke_verdict }}"
+    }
+    assert "outputs" not in jobs["posix-tar"]
+    posix_verdicts = jobs["posix-smoke-verdicts"]
+    assert posix_verdicts["needs"] == "posix-tar"
+    assert posix_verdicts["if"] == (
+        "always() && "
+        "startsWith(github.event.release.tag_name || inputs.tag, 'v')"
+    )
+    assert posix_verdicts["outputs"] == {
+        "linux-smoke-verdict": (
+            "${{ steps.aggregate.outputs.linux_smoke_verdict }}"
+        ),
+        "macos-smoke-verdict": (
+            "${{ steps.aggregate.outputs.macos_smoke_verdict }}"
+        ),
+    }
+    windows_smoke = next(
+        step
+        for step in jobs["windows-zip"]["steps"]
+        if step.get("name") == "Install release zip and run CLI smoke"
+    )
+    posix_smoke = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("name") == "Install release tar and run CLI smoke"
+    )
+    assert windows_smoke["id"] == "smoke"
+    assert windows_smoke["continue-on-error"] is True
+    assert posix_smoke["id"] == "smoke"
+    assert posix_smoke["continue-on-error"] is True
+    assert "Copy-Item" not in windows_smoke["run"]
+    assert 'cp "${bundle_dir}/bundle-manifest.json"' not in posix_smoke["run"]
+    windows_collect = next(
+        step
+        for step in jobs["windows-zip"]["steps"]
+        if step.get("name") == "Collect release zip smoke evidence"
+    )
+    posix_collect = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("name") == "Collect release tar smoke evidence"
+    )
+    assert windows_collect["if"] == "always()"
+    assert posix_collect["if"] == "always()"
+    windows_verdict = next(
+        step
+        for step in jobs["windows-zip"]["steps"]
+        if step.get("id") == "smoke-verdict"
+    )
+    posix_verdict = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("id") == "smoke-verdict"
+    )
+    assert windows_verdict["if"] == "always()"
+    assert posix_verdict["if"] == "always()"
+    posix_verdict_upload = next(
+        step
+        for step in jobs["posix-tar"]["steps"]
+        if step.get("name") == "Upload independent release tar smoke verdict"
+    )
+    assert posix_verdict_upload["if"] == "always()"
+    assert posix_verdict_upload["with"]["name"] == (
+        "release-${{ matrix.asset_os }}-tar-smoke-verdict"
+    )
+    posix_step_names = [
+        step.get("name") for step in jobs["posix-tar"]["steps"]
+    ]
+    assert posix_step_names.index(
+        "Enforce explicit release tar smoke failure"
+    ) < posix_step_names.index("Upload independent release tar smoke verdict")
+    verdict_download = next(
+        step
+        for step in posix_verdicts["steps"]
+        if step.get("uses") == "actions/download-artifact@v7"
+    )
+    assert verdict_download["with"] == {
+        "pattern": "release-*-tar-smoke-verdict",
+        "path": "posix-smoke-verdicts",
+        "merge-multiple": True,
+    }
+    assert "github.event_name == 'release'" in writer["if"]
+    assert "needs.windows-zip.outputs.smoke-verdict == 'failed'" in writer["if"]
+    assert (
+        "needs.posix-smoke-verdicts.outputs.macos-smoke-verdict == 'failed'"
+        in writer["if"]
+    )
+    assert (
+        "needs.posix-smoke-verdicts.outputs.linux-smoke-verdict == 'failed'"
+        in writer["if"]
+    )
+    assert "needs.windows-zip.result" not in writer["if"]
+    assert "needs.posix-tar.result" not in writer["if"]
+    assert writer["env"]["WINDOWS_SMOKE_VERDICT"] == (
+        "${{ needs.windows-zip.outputs.smoke-verdict }}"
+    )
+    assert writer["env"]["MACOS_SMOKE_VERDICT"] == (
+        "${{ needs.posix-smoke-verdicts.outputs.macos-smoke-verdict }}"
+    )
+    assert writer["env"]["LINUX_SMOKE_VERDICT"] == (
+        "${{ needs.posix-smoke-verdicts.outputs.linux-smoke-verdict }}"
+    )
+    revocation_checkout = next(
+        step
+        for step in writer["steps"]
+        if step.get("name") == "Checkout exact protected revocation writer revision"
+    )
+    assert revocation_checkout["with"]["ref"] == "${{ github.workflow_sha }}"
+    assert "path: trusted-writer" in workflow_text
+    assert "persist-credentials: false" in workflow_text
+    assert "build_revocation_receipt" in workflow_text
+    assert "release-revocation-receipt.json" in workflow_text
+    assert (
+        "release-truth/${RELEASE_TAG}/revocation/g${next_generation}" in workflow_text
+    )
+    assert 'gh release create "${receipt_tag}"' in workflow_text
+    assert "--draft" in workflow_text
+    assert 'gh release upload "${receipt_tag}"' in workflow_text
+    assert "receipt-publish-request.json" in workflow_text
+    assert "receipt-publish-response.json" in workflow_text
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/releases/${receipt_release_id}"' in workflow_text
+    )
+    assert "Receipt release differs from expected recovery identity" in workflow_text
+    assert (
+        "Receipt published release differs from expected recovery identity"
+        in workflow_text
+    )
+    assert "create_exit" not in workflow_text
+    assert "for attempt in $(seq 1 48)" in workflow_text
+    assert "within twelve minutes" in workflow_text
+    assert "--prerelease" in workflow_text
+    assert "--latest=false" in workflow_text
+    assert "immutable" in workflow_text
+    assert "--clobber" not in workflow_text
+    assert jobs["record-revocation"]["steps"][-1]["if"] == (
+        "steps.receipt.outputs.idempotent == 'true' || "
+        "steps.append.outcome == 'success'"
+    )
+    receipt_index = workflow_text.index('gh release create "${receipt_tag}"')
+    projection_index = workflow_text.index("Project stop recommendation and incident")
+    assert receipt_index < projection_index
+
+
+def test_installed_runtime_declares_embedded_sigstore_verifier() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"sigstore==4.5.0"' in pyproject
+
+
 def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> None:
     workflow_path = _WORKFLOWS_DIR / "release-build.yml"
 
@@ -284,7 +499,10 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     assert "adapter status" in workflow
     assert "run --dry-run" in workflow
     assert "actions/upload-artifact@v7" in workflow
-    assert "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
+    assert (
+        "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}"
+        in workflow
+    )
     assert ".${{ matrix.archive }}.sha256" in workflow
     assert "WindowsPowerShell\\v1.0\\powershell.exe" in workflow
     assert (
@@ -313,20 +531,114 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
 
 
 def test_release_build_emergency_freeze_removes_release_write_authority() -> None:
-    workflow = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    """保留既有 baseline 身份，并证明临时冻结已被唯一受保护 writer 完整替代。"""
+    workflow_text = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
 
-    assert "permissions:\n  contents: read" in workflow
-    assert "upload_to_release:" not in workflow
-    assert "GH_TOKEN:" not in workflow
-    assert "gh release " not in workflow
-    assert "--clobber" not in workflow
+    assert "Emergency Publish Freeze" not in workflow_text
+    test_release_build_has_one_proof_bound_protected_writer()
+
+
+def test_release_build_has_one_proof_bound_protected_writer() -> None:
+    """捕获第二个写入者、候选 verifier 自证或缺少 Proof/CAS 即发布。"""
+    workflow_path = _WORKFLOWS_DIR / "release-build.yml"
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert workflow["permissions"] == {"contents": "read"}
+    writers = [
+        job_id
+        for job_id, job in jobs.items()
+        if isinstance(job, dict)
+        and job.get("permissions", {}).get("contents") == "write"
+    ]
+    assert writers == ["publish-release"]
+    proof_job = jobs["build-release-proof"]
+    publish_job = jobs["publish-release"]
+    assert proof_job["needs"] == [
+        "release-assurance-policy",
+        "release-assurance",
+        "build-smoke-candidate",
+    ]
     assert (
-        "name: release-build-${{ github.run_id }}-${{ github.run_attempt }}-"
-        "${{ matrix.asset_os }}-${{ matrix.archive }}-evidence"
-    ) in workflow
-    assert "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}" in workflow
-    assert "publish_blocked" in workflow
-    assert "writer_isolation_unavailable" in workflow
+        "needs.release-assurance-policy.outputs.assurance_required == 'true'"
+        in proof_job["if"]
+    )
+    assert publish_job["needs"] == ["build-release-proof"]
+    assert publish_job["environment"] == "release-publish"
+    assert publish_job["permissions"] == {
+        "actions": "read",
+        "artifact-metadata": "write",
+        "attestations": "write",
+        "contents": "write",
+        "id-token": "write",
+    }
+    assert publish_job["env"]["GH_REPO"] == "${{ github.repository }}"
+    assert publish_job["concurrency"] == {
+        "group": "release-publish-${{ inputs.tag }}",
+        "cancel-in-progress": False,
+    }
+    assert workflow_text.count("ref: ${{ github.sha }}") == 2
+    assert "ref: ${{ github.event.repository.default_branch }}" not in workflow_text
+    assert "path: trusted-writer" in workflow_text
+    assert "persist-credentials: false" in workflow_text
+    assert "scripts/release_truth.py proof" in workflow_text
+    assert "scripts/release_truth.py publish-check" in workflow_text
+    assert "scripts/release_truth.py certificate" in workflow_text
+    assert "actions/attest@v4" in workflow_text
+    assert "subject-path: release-certificate.json" in workflow_text
+    assert "GITHUB_WORKFLOW_REF" in workflow_text
+    assert "github.run_id" in workflow_text
+    assert "github.run_attempt" in workflow_text
+    assert "actions/download-artifact@v7" in workflow_text
+    assert "--clobber" not in workflow_text
+
+    upload_index = workflow_text.index("gh release upload")
+    cas_index = workflow_text.index("scripts/release_truth.py publish-check")
+    publish_index = workflow_text.index("gh api --method PATCH")
+    verify_index = workflow_text.index(
+        'gh release verify "${RELEASE_TAG}" --format json'
+    )
+    certificate_index = workflow_text.index("scripts/release_truth.py certificate")
+    evidence_release_index = workflow_text.index(
+        'gh release create "${certificate_tag}"'
+    )
+    certificate_attestation_index = workflow_text.index("actions/attest@v4")
+    assert upload_index < cas_index < publish_index < verify_index
+    assert (
+        verify_index
+        < certificate_index
+        < certificate_attestation_index
+        < evidence_release_index
+    )
+    assert 'gh release edit "${RELEASE_TAG}" --draft=false' not in workflow_text
+    assert '"repos/${GITHUB_REPOSITORY}/releases/${release_id}"' in workflow_text
+    assert "release-before-publish.http" in workflow_text
+    assert "release-publish-etag.txt" in workflow_text
+    assert '-H "If-Match: ${release_etag}"' in workflow_text
+    assert "--input release-publish-request.json" in workflow_text
+    assert "release-publish-response.json" in workflow_text
+    assert "Published release differs from Proof-bound transition" in workflow_text
+    assert "publish_exit" not in workflow_text
+    assert "--prerelease" in workflow_text
+    assert "--latest=false" in workflow_text
+    assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
+    assert 'gh release upload "${certificate_tag}"' in workflow_text
+    assert "certificate-publish-request.json" in workflow_text
+    assert "certificate-publish-response.json" in workflow_text
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}"'
+        in workflow_text
+    )
+    assert (
+        "Certificate release differs from expected recovery identity" in workflow_text
+    )
+    assert "immutable" in workflow_text
+    assert "release-satisfaction-proof.json" in workflow_text
+    assert "release-certificate.json" in workflow_text
+    assert "scripts/release_truth.py" not in (_REPO_ROOT / "pyproject.toml").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
@@ -405,7 +717,7 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "bash packaging/offline/build_offline_bundle.sh" in workflow
     assert 'package_source="pull_request_local_bundle"' in workflow
     assert 'package_source="published_release"' in workflow
-    assert 'dist-offline/${PACKAGE_NAME}' in workflow
+    assert "dist-offline/${PACKAGE_NAME}" in workflow
     assert "curl --fail --location --retry 3" in workflow
     assert "releases/download/$RELEASE_TAG/$PACKAGE_NAME" in workflow
     assert "shasum -a 256 -c" in workflow
@@ -483,7 +795,7 @@ def test_windows_clean_user_e2e_uses_real_codex_cli_and_archives_adapter_files()
 
     assert "actions/setup-node@v6" in workflow
     assert '"@openai/codex@0.138.0"' in workflow
-    assert "shutil.which(\"codex\")" in driver
+    assert 'shutil.which("codex")' in driver
     assert "codex-cli-version.txt" in driver
     assert "codex-adapter-files" in driver
     assert "codex-adapter-manifest.json" in driver
@@ -502,7 +814,7 @@ def test_windows_clean_user_e2e_pins_release_tag_before_online_install() -> None
         "clean-online-interactive-user-journey:", 1
     )[1]
     resolve_release_tag = (
-        'git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git '
+        "git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "
         '"refs/tags/$env:RELEASE_TAG" "refs/tags/$env:RELEASE_TAG^{}"'
     )
     pinned_installer = (
@@ -782,10 +1094,10 @@ def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
     assert jobs["compatibility-gate-result"]["name"] == "Compatibility Gate Result"
 
 
-def test_compatibility_gate_preflights_draft_baseline_with_protected_authority() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
-        encoding="utf-8"
-    )
+def test_compatibility_gate_preflights_draft_baseline_with_protected_authority() -> (
+    None
+):
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
     parsed = yaml.safe_load(workflow)
     preflight = parsed["jobs"]["baseline-preflight"]
     step_names = [step.get("name") for step in preflight["steps"]]
@@ -850,19 +1162,17 @@ def test_draft_short_circuits_before_legacy_protected_authority_decision() -> No
         decision.index(draft_guard) : decision.index(authority_fallback)
     ]
     assert '"${FORCE_FULL}" != "true"' in draft_block
-    assert 'reason=protected_ci_draft_preflight' in draft_block
-    assert 'reason=ordinary_draft_fast_gate' in draft_block
-    assert 'reason=baseline_preflight_authority_unavailable' in draft_block
-    assert 'full_assurance_required=true' in draft_block
+    assert "reason=protected_ci_draft_preflight" in draft_block
+    assert "reason=ordinary_draft_fast_gate" in draft_block
+    assert "reason=baseline_preflight_authority_unavailable" in draft_block
+    assert "full_assurance_required=true" in draft_block
     assert "baseline_preflight_authority_available" in draft_block
     assert "exit 0" in draft_block
     assert decision.index(authority_fallback) < decision.index(legacy_authority_call)
 
 
 def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
 
     assert "Checkout protected base authority" in workflow
     assert "inputs.authority_ref" in workflow
@@ -889,9 +1199,7 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
 
     parsed = yaml.safe_load(workflow)
     matrix_steps = parsed["jobs"]["cross-platform-validation"]["steps"]
-    assert all(
-        "cell-evidence" not in str(step.get("run", "")) for step in matrix_steps
-    )
+    assert all("cell-evidence" not in str(step.get("run", "")) for step in matrix_steps)
     full_pytest_step = next(
         step for step in matrix_steps if step.get("name") == "Run full pytest suite"
     )
@@ -903,9 +1211,7 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     step_names = [step.get("name") for step in matrix_steps]
     assert step_names.index("Doctor") < step_names.index("Run full pytest suite")
     merge_steps = parsed["jobs"]["merge-assurance"]["steps"]
-    assert all(
-        "uv run python" not in str(step.get("run", "")) for step in merge_steps
-    )
+    assert all("uv run python" not in str(step.get("run", "")) for step in merge_steps)
     gate_script = merge_steps[0]["run"]
     assert "needs.cross-platform-validation.result" in gate_script
     aggregate_script = next(
@@ -932,21 +1238,17 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert 'python "${assurance_script}" cell-evidence' in aggregate_script
     assert "started-at.txt" in aggregate_script
     assert "finished-at.txt" in aggregate_script
-    assert '--baseline .github/ci/test-baseline.json' in aggregate_script
+    assert "--baseline .github/ci/test-baseline.json" in aggregate_script
 
 
 def test_compatibility_gate_push_uses_pre_push_authority() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
 
     assert "github.event.before" in workflow
 
 
 def test_compatibility_gate_pull_request_executes_merge_commit() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
-        encoding="utf-8"
-    )
+    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
 
     merge_candidate_ref = "inputs.candidate_ref || github.sha"
     assert workflow.count(merge_candidate_ref) == 6

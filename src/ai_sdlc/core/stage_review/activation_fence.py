@@ -31,6 +31,16 @@ _THREAD_TOKENS_LOCK = threading.Lock()
 _ACTIVE_LEASE_TOKENS: set[str] = set()
 _ACTIVE_LEASE_TOKENS_LOCK = threading.Lock()
 _PROCESS_START_CACHE: dict[int, str] = {}
+_LOCAL_MUTATION_GATES_LOCK = threading.Lock()
+
+
+class _LocalMutationGate:
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.users = 0
+
+
+_LOCAL_MUTATION_GATES: dict[str, _LocalMutationGate] = {}
 
 
 class _LocalFenceState(TypedDict):
@@ -164,73 +174,111 @@ def activation_safety_mutation_fence(
         raise ResourceLockUnavailableError(
             "activation safety mutation cannot upgrade an active read lease"
         )
-    registry_lock = fence_root / "registry.lock"
-    writer_intent = fence_root / "writer-intent.lock"
     deadline = time.monotonic() + 300
-    intent_owned = False
-    lease_token = secrets.token_hex(32)
-    owner_lock_path = _lease_owner_lock_path(fence_root, lease_token)
-    owner_lock = ShortFileLock(owner_lock_path, timeout_seconds=5)
-    _clear_orphan_owner_locks(fence_root)
-    owner_lock.__enter__()
-    _set_lease_token_active(lease_token, active=True)
-    primary_error: BaseException | None = None
-    try:
-        while not intent_owned:
-            with ShortFileLock(registry_lock, timeout_seconds=5):
-                if writer_intent.is_file():
-                    _clear_stale_owner(writer_intent)
-                if not writer_intent.is_file():
-                    intent_owned = create_json_exclusive(
-                        writer_intent,
-                        _owner_payload(lease_token),
-                    )
-            if intent_owned:
-                break
-            if time.monotonic() >= deadline:
-                raise ResourceLockUnavailableError(
-                    "timed out waiting for activation safety mutation lease"
-                )
-            time.sleep(0.01)
-        while True:
-            readers = tuple(sorted((fence_root / "readers").glob("*.json")))
-            active = []
-            for path in readers:
-                if path in state["readers"]:
-                    continue
-                if not _clear_stale_owner(path) and path.is_file():
-                    active.append(path)
-            if not active:
-                break
-            if time.monotonic() >= deadline:
-                raise ResourceLockUnavailableError(
-                    "timed out draining activation safety readers"
-                )
-            time.sleep(0.01)
-        state["mutation_depth"] = 1
-        yield
-    except BaseException as exc:
-        primary_error = exc
-        raise
-    finally:
-        state["mutation_depth"] = 0
-        _set_lease_token_active(lease_token, active=False)
+    with _serialize_local_mutation(fence_root, deadline=deadline):
+        registry_lock = fence_root / "registry.lock"
+        writer_intent = fence_root / "writer-intent.lock"
+        intent_owned = False
+        lease_token = secrets.token_hex(32)
+        owner_lock_path = _lease_owner_lock_path(fence_root, lease_token)
+        owner_lock = ShortFileLock(owner_lock_path, timeout_seconds=5)
+        _clear_orphan_owner_locks(fence_root)
+        owner_lock.__enter__()
+        _set_lease_token_active(lease_token, active=True)
+        primary_error: BaseException | None = None
         try:
-            owner_lock.__exit__(None, None, None)
-        except Exception as cleanup_error:
-            _note_deferred_marker_cleanup(primary_error, cleanup_error)
-        if intent_owned:
-            try:
+            while not intent_owned:
                 with ShortFileLock(registry_lock, timeout_seconds=5):
-                    _unlink_owned_marker(writer_intent, lease_token)
+                    if writer_intent.is_file():
+                        _clear_stale_owner(writer_intent)
+                    if not writer_intent.is_file():
+                        intent_owned = create_json_exclusive(
+                            writer_intent,
+                            _owner_payload(lease_token),
+                        )
+                if intent_owned:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ResourceLockUnavailableError(
+                        "timed out waiting for activation safety mutation lease"
+                    )
+                time.sleep(0.01)
+            while True:
+                readers = tuple(sorted((fence_root / "readers").glob("*.json")))
+                active = []
+                for path in readers:
+                    if path in state["readers"]:
+                        continue
+                    if not _clear_stale_owner(path) and path.is_file():
+                        active.append(path)
+                if not active:
+                    break
+                if time.monotonic() >= deadline:
+                    raise ResourceLockUnavailableError(
+                        "timed out draining activation safety readers"
+                    )
+                time.sleep(0.01)
+            state["mutation_depth"] = 1
+            yield
+        except BaseException as exc:
+            primary_error = exc
+            raise
+        finally:
+            state["mutation_depth"] = 0
+            _set_lease_token_active(lease_token, active=False)
+            try:
+                owner_lock.__exit__(None, None, None)
             except Exception as cleanup_error:
                 _note_deferred_marker_cleanup(primary_error, cleanup_error)
-        _cleanup_owner_lock_file(owner_lock_path, primary_error)
+            if intent_owned:
+                try:
+                    with ShortFileLock(registry_lock, timeout_seconds=5):
+                        _unlink_owned_marker(writer_intent, lease_token)
+                except Exception as cleanup_error:
+                    _note_deferred_marker_cleanup(primary_error, cleanup_error)
+            _cleanup_owner_lock_file(owner_lock_path, primary_error)
 
 
 def _fence_root(root: Path, project_id: str) -> Path:
     shared = resolve_canonical_shared_state(root, project_id)
     return shared / "activation-safety-fence"
+
+
+@contextmanager
+def _serialize_local_mutation(
+    fence_root: Path,
+    *,
+    deadline: float,
+) -> Iterator[None]:
+    """同一进程内先按项目串行化，跨进程仍由文件租约裁决。"""
+
+    key = str(fence_root.resolve())
+    with _LOCAL_MUTATION_GATES_LOCK:
+        gate = _LOCAL_MUTATION_GATES.get(key)
+        if gate is None:
+            gate = _LocalMutationGate()
+            _LOCAL_MUTATION_GATES[key] = gate
+        gate.users += 1
+    acquired = False
+    try:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            raise ResourceLockUnavailableError(
+                "timed out waiting for activation safety mutation lease"
+            )
+        acquired = gate.lock.acquire(timeout=remaining_seconds)
+        if not acquired or time.monotonic() >= deadline:
+            raise ResourceLockUnavailableError(
+                "timed out waiting for activation safety mutation lease"
+            )
+        yield
+    finally:
+        if acquired:
+            gate.lock.release()
+        with _LOCAL_MUTATION_GATES_LOCK:
+            gate.users -= 1
+            if gate.users == 0 and _LOCAL_MUTATION_GATES.get(key) is gate:
+                del _LOCAL_MUTATION_GATES[key]
 
 
 def _local_fence_state(fence_root: Path) -> _LocalFenceState:
@@ -427,9 +475,8 @@ def _clear_stale_owner(path: Path) -> bool:
         )
     elif pid > 0 and payload.get("process_start"):
         current_start = _process_start_identity(pid)
-        stale = (
-            current_start is not None
-            and current_start != payload.get("process_start")
+        stale = current_start is not None and current_start != payload.get(
+            "process_start"
         )
     if not stale:
         return False

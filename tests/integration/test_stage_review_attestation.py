@@ -731,7 +731,7 @@ def _git(root: Path, *args: str) -> str:
 def test_tree_digest_excludes_git_database_churn(tmp_path: Path) -> None:
     _initialize_digest_repository(tmp_path)
     object_path = tmp_path / ".git" / "objects" / "aa" / "temporary"
-    object_path.parent.mkdir(parents=True)
+    object_path.parent.mkdir(parents=True, exist_ok=True)
     object_path.write_bytes(b"temporary git object")
     before = _tree_digest(tmp_path)
 
@@ -761,7 +761,7 @@ def test_tree_digest_prunes_git_database_before_scanning(
 def test_tree_digest_hashes_symlink_without_following_target(tmp_path: Path) -> None:
     _initialize_digest_repository(tmp_path)
     target_path = tmp_path / ".git" / "objects" / "aa" / "target"
-    target_path.parent.mkdir(parents=True)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
     target_path.write_bytes(b"first target")
     link_path = tmp_path / "linked-object"
     _symlink_or_skip(link_path, Path(".git") / "objects" / "aa" / "target")
