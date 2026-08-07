@@ -1,10 +1,10 @@
-# AI-SDLC 1.0.2 离线发布检查清单
+# AI-SDLC 1.0.3 离线发布检查清单
 
 ## 版本与源码
 
-- [ ] `pyproject.toml` 为 `1.0.2`；
-- [ ] 两个 `ai_sdlc/__init__.py` 回退版本均为 `1.0.2`；
-- [ ] `uv.lock` 中本项目版本为 `1.0.2`；
+- [ ] `pyproject.toml` 为 `1.0.3`；
+- [ ] 两个 `ai_sdlc/__init__.py` 回退版本均为 `1.0.3`；
+- [ ] `uv.lock` 中本项目版本为 `1.0.3`；
 - [ ] Git 地址为 `https://github.com/SinclairPan/Ai_AutoSDLC`；
 - [ ] 工作树只包含本次授权变更。
 
@@ -40,7 +40,7 @@
 - [ ] Windows 解压与 `install_offline.ps1 -AddToPath` 成功；
 - [ ] macOS 解压与 `install_offline.sh --add-to-path` 成功；
 - [ ] Linux 解压与 `install_offline.sh --add-to-path` 成功；
-- [ ] 三个平台 `ai-sdlc --version` 输出 `1.0.2`；
+- [ ] 三个平台 `ai-sdlc --version` 输出 `1.0.3`；
 - [ ] 三个平台 `ai-sdlc --help` 成功；
 - [ ] Codex + PowerShell 初始化成功；
 - [ ] `ai-sdlc adapter status` 成功；
@@ -49,7 +49,7 @@
 ## 发布与复验
 
 - [ ] README、用户指南和打包说明中的包名一致；
-- [ ] GitHub Actions 默认发布标识为 `v1.0.2`；
+- [ ] GitHub Actions 默认发布标识为 `v1.0.3`；
 - [ ] 平台工作流 artifact 完整；
 - [ ] 上传动作由有权限维护者明确执行；
 - [ ] 从全新目录安装正式制品并重复 smoke；

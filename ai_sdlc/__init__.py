@@ -14,4 +14,4 @@ __path__ = [str(_SRC_PACKAGE)]
 try:
     __version__ = version("ai-sdlc")
 except PackageNotFoundError:  # pragma: no cover - source checkout fallback
-    __version__ = "1.0.2"
+    __version__ = "1.0.3"

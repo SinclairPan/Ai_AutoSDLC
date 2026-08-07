@@ -1,4 +1,4 @@
-# AI-SDLC 1.0.2
+# AI-SDLC 1.0.3
 
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
@@ -27,18 +27,18 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 ### 从 Git 安装
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.2"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.3"
 ai-sdlc --version
 ```
 
-版本输出应为 `1.0.2`。
+版本输出应为 `1.0.3`。
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
 ### 从源码运行
 
 ```powershell
-git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v1.0.3 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -252,9 +252,9 @@ ai-sdlc enterprise configure --help
 
 离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。默认产物名称：
 
-- `ai-sdlc-offline-1.0.2-windows-amd64.zip`
-- `ai-sdlc-offline-1.0.2-macos-arm64.tar.gz`
-- `ai-sdlc-offline-1.0.2-linux-amd64.tar.gz`
+- `ai-sdlc-offline-1.0.3-windows-amd64.zip`
+- `ai-sdlc-offline-1.0.3-macos-arm64.tar.gz`
+- `ai-sdlc-offline-1.0.3-linux-amd64.tar.gz`
 
 构建入口：
 

@@ -33,16 +33,16 @@ def test_guide_lists_every_runtime_adapter_in_both_scenarios() -> None:
 def test_guide_pins_published_assets_and_stable_output_contract() -> None:
     text = guide_text()
     for asset in (
-        "ai-sdlc-offline-1.0.2-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
+        "ai-sdlc-offline-1.0.3-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.3-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.3-linux-amd64.tar.gz",
     ):
         assert asset in text
-        assert f"releases/download/v1.0.2/{asset}" in text
+        assert f"releases/download/v1.0.3/{asset}" in text
         assert f"{asset}.sha256" in text
     for anchor in (
         "Offline installation completed",
-        "1.0.2",
+        "1.0.3",
         "Initialized AI-SDLC project",
         "当前结果 / Result",
         "下一步 / Next",

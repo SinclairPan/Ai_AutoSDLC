@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the public AI-SDLC 1.0.2 release identity."""
+"""Validate the public AI-SDLC 1.0.3 release identity."""
 
 from __future__ import annotations
 
@@ -11,9 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CURRENT_REPOSITORY_URL = "https://github.com/SinclairPan/Ai_AutoSDLC"
-CURRENT_VERSION = "1.0.2"
+CURRENT_VERSION = "1.0.3"
 STABLE_SOURCE_CLONE = (
-    "git clone --branch v1.0.2 --depth 1 "
+    "git clone --branch v1.0.3 --depth 1 "
     "https://github.com/SinclairPan/Ai_AutoSDLC.git"
 )
 
@@ -32,9 +32,9 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_VERSION,
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
-        "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-windows-amd64.zip",
-        "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
-        "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
+        "releases/download/v1.0.3/ai-sdlc-offline-1.0.3-windows-amd64.zip",
+        "releases/download/v1.0.3/ai-sdlc-offline-1.0.3-macos-arm64.tar.gz",
+        "releases/download/v1.0.3/ai-sdlc-offline-1.0.3-linux-amd64.tar.gz",
         "Get-FileHash -Algorithm SHA256",
         "shasum -a 256 -c",
         "sha256sum -c",
