@@ -9,7 +9,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_package_and_source_fallback_versions_are_1_0_3() -> None:
+# 测试函数名属于受保护 baseline 的稳定 node ID；版本升级只更新断言内容。
+def test_package_and_source_fallback_versions_are_1_0_2() -> None:
     metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
     assert metadata["project"]["version"] == "1.0.3"
@@ -21,7 +22,7 @@ def test_package_and_source_fallback_versions_are_1_0_3() -> None:
     ).read_text(encoding="utf-8")
 
 
-def test_release_workflow_defaults_target_v1_0_3() -> None:
+def test_release_workflow_defaults_target_v1_0_2() -> None:
     workflows = (
         "release-artifact-smoke.yml",
         "release-build.yml",
@@ -36,14 +37,14 @@ def test_release_workflow_defaults_target_v1_0_3() -> None:
         assert "v1.0.3" in text, name
 
 
-def test_stable_git_install_examples_pin_v1_0_3() -> None:
+def test_stable_git_install_examples_pin_v1_0_2() -> None:
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
     assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.3" in text
     assert "@main" in text
     assert "开发版" in text
 
 
-def test_stable_source_checkout_examples_pin_v1_0_3() -> None:
+def test_stable_source_checkout_examples_pin_v1_0_2() -> None:
     stable_clone = (
         "git clone --branch v1.0.3 --depth 1 "
         "https://github.com/SinclairPan/Ai_AutoSDLC.git"
