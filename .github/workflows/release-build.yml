@@ -438,8 +438,8 @@ jobs:
             exit 1
           fi
           tag_commit="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
-          if [[ "${tag_commit}" != "${GITHUB_SHA}" ]]; then
-            echo "Workflow SHA ${GITHUB_SHA} differs from release tag commit ${tag_commit}." >&2
+          if ! git -C trusted-writer merge-base --is-ancestor "${tag_commit}" "${GITHUB_SHA}"; then
+            echo "Release tag commit ${tag_commit} is not an ancestor of protected writer ${GITHUB_SHA}." >&2
             exit 1
           fi
           python - <<'PY'
@@ -564,11 +564,47 @@ jobs:
           name: release-proof-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-proof-inputs
 
+      - name: Resolve exact Draft release authority
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            > release-authority-pages.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          pages = json.loads(
+              Path("release-authority-pages.json").read_text(encoding="utf-8")
+          )
+          releases = [release for page in pages for release in page]
+          matches = [
+              release
+              for release in releases
+              if release.get("tag_name") == os.environ["RELEASE_TAG"]
+          ]
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected exactly one release authority for {os.environ['RELEASE_TAG']}, found {len(matches)}"
+              )
+          release = matches[0]
+          if not release.get("draft") or release.get("prerelease"):
+              raise SystemExit("software release must be a non-prerelease Draft")
+          Path("release-authority.json").write_text(
+              json.dumps(release, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+          )
+          with Path(os.environ["GITHUB_ENV"]).open("a", encoding="utf-8") as stream:
+              stream.write(f"RELEASE_ID={release['id']}\n")
+          PY
+
       - name: Upload only missing candidate assets without replacement
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-before.json
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-before.json
           python - <<'PY'
           from __future__ import annotations
 
@@ -608,7 +644,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-cas.json
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-cas.json
           tag_object_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}")"
           tag_commit_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{commit}")"
           tag_tree_sha="$(git -C trusted-writer rev-parse "${RELEASE_TAG}^{tree}")"
@@ -722,7 +758,7 @@ jobs:
             --caller-run-id "${{ github.run_id }}" \
             --caller-run-attempt "${{ github.run_attempt }}"
 
-          existing_proof="$(gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" --jq '.assets[] | select(.name == "release-satisfaction-proof.json") | .digest')"
+          existing_proof="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.assets[] | select(.name == "release-satisfaction-proof.json") | .digest')"
           expected_proof="sha256:$(sha256sum release-satisfaction-proof.json | awk '{print $1}')"
           if [[ -z "${existing_proof}" ]]; then
             gh release upload "${RELEASE_TAG}" release-satisfaction-proof.json
@@ -732,7 +768,7 @@ jobs:
           fi
 
           gh api --include \
-            "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
             > release-before-publish.http
           uv run --project trusted-writer python - <<'PY'
           from __future__ import annotations
@@ -844,7 +880,7 @@ jobs:
           verified=false
           for attempt in $(seq 1 20); do
             if gh release verify "${RELEASE_TAG}" --format json > release-attestation.json 2>release-attestation.err; then
-              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > release-published.json
+              gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-published.json
               immutable="$(jq -r '.immutable // false' release-published.json)"
               if [[ "${immutable}" == "true" ]]; then
                 verified=true
@@ -988,7 +1024,44 @@ jobs:
           CERTIFICATE_BODY="Permanent generation-0 release certificate for ${RELEASE_TAG}."
           export certificate_tag certificate_target
           export CERTIFICATE_DIGEST CERTIFICATE_TITLE CERTIFICATE_BODY
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null; then
+          resolve_certificate_release() {
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              > certificate-authority-pages.json
+            python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          pages = json.loads(
+              Path("certificate-authority-pages.json").read_text(encoding="utf-8")
+          )
+          matches = [
+              release
+              for page in pages
+              for release in page
+              if release.get("tag_name") == os.environ["certificate_tag"]
+          ]
+          if not matches:
+              raise SystemExit(3)
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected one Certificate release authority, found {len(matches)}"
+              )
+          Path("certificate-release.json").write_text(
+              json.dumps(matches[0], ensure_ascii=False, sort_keys=True),
+              encoding="utf-8",
+          )
+          PY
+          }
+          if resolve_certificate_release; then
+            :
+          else
+            resolve_status=$?
+            if [[ "${resolve_status}" != "3" ]]; then
+              exit "${resolve_status}"
+            fi
             if ! gh release create "${certificate_tag}" \
               release-certificate.json#release-certificate.json \
               --target "${certificate_target}" \
@@ -1000,7 +1073,7 @@ jobs:
               echo "Certificate draft create returned non-zero; resolving GitHub authority."
             fi
           fi
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null; then
+          if ! resolve_certificate_release; then
             echo "Certificate draft was not recoverable after create." >&2
             exit 1
           fi
@@ -1042,7 +1115,7 @@ jobs:
             if [[ "$(jq '.assets | length' certificate-release.json)" == "0" ]]; then
               gh release upload "${certificate_tag}" \
                 release-certificate.json#release-certificate.json
-              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json
+              gh api "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json
             fi
             existing_digest="$(jq -r '.assets[] | select(.name == "release-certificate.json") | .digest' certificate-release.json)"
             if [[ "${existing_digest}" != "${CERTIFICATE_DIGEST}" ]] \
@@ -1070,7 +1143,7 @@ jobs:
 
           evidence_ready=false
           for attempt in $(seq 1 20); do
-            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${certificate_tag}" > certificate-release.json 2>/dev/null \
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json 2>/dev/null \
               && gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
               immutable="$(jq -r '.immutable // false' certificate-release.json)"
               if [[ "${immutable}" == "true" ]]; then

@@ -435,6 +435,8 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     )
     assert 'gh release create "${receipt_tag}"' in workflow_text
     assert "--draft" in workflow_text
+    assert "receipt-authority-pages.json" in workflow_text
+    assert 'releases/tags/${receipt_tag}' not in workflow_text
     assert 'gh release upload "${receipt_tag}"' in workflow_text
     assert "receipt-publish-request.json" in workflow_text
     assert "receipt-publish-response.json" in workflow_text
@@ -592,6 +594,19 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "github.run_attempt" in workflow_text
     assert "actions/download-artifact@v7" in workflow_text
     assert "--clobber" not in workflow_text
+    assert (
+        'gh api --paginate --slurp '
+        '"repos/${GITHUB_REPOSITORY}/releases?per_page=100"'
+        in workflow_text
+    )
+    assert "release-authority-pages.json" in workflow_text
+    assert 'releases/tags/${RELEASE_TAG}' not in workflow_text
+    assert (
+        'git -C trusted-writer merge-base --is-ancestor '
+        '"${tag_commit}" "${GITHUB_SHA}"'
+        in workflow_text
+    )
+    assert 'if [[ "${tag_commit}" != "${GITHUB_SHA}" ]]' not in workflow_text
 
     upload_index = workflow_text.index("gh release upload")
     cas_index = workflow_text.index("scripts/release_truth.py publish-check")
@@ -624,6 +639,8 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "--latest=false" in workflow_text
     assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
     assert 'gh release upload "${certificate_tag}"' in workflow_text
+    assert "certificate-authority-pages.json" in workflow_text
+    assert 'releases/tags/${certificate_tag}' not in workflow_text
     assert "certificate-publish-request.json" in workflow_text
     assert "certificate-publish-response.json" in workflow_text
     assert (
