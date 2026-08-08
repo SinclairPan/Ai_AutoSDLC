@@ -126,6 +126,7 @@ def _upload_asset(args: argparse.Namespace) -> dict[str, Any]:
         connection.putrequest("POST", request_target)
         connection.putheader("Accept", "application/vnd.github+json")
         connection.putheader("Authorization", f"Bearer {token}")
+        connection.putheader("User-Agent", "Ai-AutoSDLC-release-truth-writer")
         connection.putheader("X-GitHub-Api-Version", "2022-11-28")
         connection.putheader("Content-Type", "application/octet-stream")
         connection.putheader("Content-Length", str(asset_size))

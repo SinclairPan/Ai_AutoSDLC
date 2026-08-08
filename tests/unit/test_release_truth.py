@@ -726,6 +726,7 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
             "headers": {
                 "Accept": "application/vnd.github+json",
                 "Authorization": "Bearer test-token",
+                "User-Agent": "Ai-AutoSDLC-release-truth-writer",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/octet-stream",
                 "Content-Length": "9",
