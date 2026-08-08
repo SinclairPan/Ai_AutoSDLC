@@ -792,7 +792,6 @@ jobs:
               exit "${resolve_status}"
             fi
             if ! gh release create "${receipt_tag}" \
-              release-revocation-receipt.json#release-revocation-receipt.json \
               --target "${TARGET_COMMIT}" \
               --title "${EXPECTED_TITLE}" \
               --notes "${EXPECTED_BODY}" \
@@ -842,8 +841,11 @@ jobs:
           draft="$(jq -r '.draft' receipt-release.json)"
           if [[ "${draft}" == "true" ]]; then
             if [[ "$(jq '.assets | length' receipt-release.json)" == "0" ]]; then
-              gh release upload "${receipt_tag}" \
-                release-revocation-receipt.json#release-revocation-receipt.json
+              uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
+                --authority receipt-release.json \
+                --asset release-revocation-receipt.json \
+                --label release-revocation-receipt.json \
+                --repository "${GITHUB_REPOSITORY}"
               gh api "repos/${GITHUB_REPOSITORY}/releases/${receipt_release_id}" > receipt-release.json
             fi
             actual_digest="$(jq -r '.assets[] | select(.name == "release-revocation-receipt.json") | .digest' receipt-release.json)"

@@ -437,7 +437,10 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert "--draft" in workflow_text
     assert "receipt-authority-pages.json" in workflow_text
     assert 'releases/tags/${receipt_tag}' not in workflow_text
-    assert 'gh release upload "${receipt_tag}"' in workflow_text
+    assert "scripts/release_truth.py upload-asset" in workflow_text
+    assert "--authority receipt-release.json" in workflow_text
+    assert 'gh release upload "${receipt_tag}"' not in workflow_text
+    assert "release-revocation-receipt.json#release-revocation-receipt.json" not in workflow_text
     assert "receipt-publish-request.json" in workflow_text
     assert "receipt-publish-response.json" in workflow_text
     assert (
@@ -608,7 +611,10 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     )
     assert 'if [[ "${tag_commit}" != "${GITHUB_SHA}" ]]' not in workflow_text
 
-    upload_index = workflow_text.index("gh release upload")
+    assert workflow_text.count("scripts/release_truth.py upload-asset") == 3
+    assert "gh release upload" not in workflow_text
+    assert "release-certificate.json#release-certificate.json" not in workflow_text
+    upload_index = workflow_text.index("scripts/release_truth.py upload-asset")
     cas_index = workflow_text.index("scripts/release_truth.py publish-check")
     publish_index = workflow_text.index("gh api --method PATCH")
     verify_index = workflow_text.index(
@@ -638,7 +644,7 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "--prerelease" in workflow_text
     assert "--latest=false" in workflow_text
     assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
-    assert 'gh release upload "${certificate_tag}"' in workflow_text
+    assert "--authority certificate-release.json" in workflow_text
     assert "certificate-authority-pages.json" in workflow_text
     assert 'releases/tags/${certificate_tag}' not in workflow_text
     assert "certificate-publish-request.json" in workflow_text

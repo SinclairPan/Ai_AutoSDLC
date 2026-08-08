@@ -637,7 +637,10 @@ jobs:
           PY
           while IFS= read -r asset_name; do
             [[ -z "${asset_name}" ]] && continue
-            gh release upload "${RELEASE_TAG}" "release-proof-inputs/candidates/${asset_name}"
+            uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
+              --authority release-authority.json \
+              --asset "release-proof-inputs/candidates/${asset_name}" \
+              --repository "${GITHUB_REPOSITORY}"
           done < assets-to-upload.txt
 
       - name: Build canonical Proof from live Draft authority
@@ -761,7 +764,10 @@ jobs:
           existing_proof="$(gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" --jq '.assets[] | select(.name == "release-satisfaction-proof.json") | .digest')"
           expected_proof="sha256:$(sha256sum release-satisfaction-proof.json | awk '{print $1}')"
           if [[ -z "${existing_proof}" ]]; then
-            gh release upload "${RELEASE_TAG}" release-satisfaction-proof.json
+            uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
+              --authority release-authority.json \
+              --asset release-satisfaction-proof.json \
+              --repository "${GITHUB_REPOSITORY}"
           elif [[ "${existing_proof}" != "${expected_proof}" ]]; then
             echo "Existing Release Satisfaction Proof differs and cannot be replaced." >&2
             exit 1
@@ -1063,7 +1069,6 @@ jobs:
               exit "${resolve_status}"
             fi
             if ! gh release create "${certificate_tag}" \
-              release-certificate.json#release-certificate.json \
               --target "${certificate_target}" \
               --title "${CERTIFICATE_TITLE}" \
               --notes "${CERTIFICATE_BODY}" \
@@ -1113,8 +1118,11 @@ jobs:
           certificate_release_id="$(jq -r '.id' certificate-release.json)"
           if [[ "$(jq -r '.draft' certificate-release.json)" == "true" ]]; then
             if [[ "$(jq '.assets | length' certificate-release.json)" == "0" ]]; then
-              gh release upload "${certificate_tag}" \
-                release-certificate.json#release-certificate.json
+              uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
+                --authority certificate-release.json \
+                --asset release-certificate.json \
+                --label release-certificate.json \
+                --repository "${GITHUB_REPOSITORY}"
               gh api "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json
             fi
             existing_digest="$(jq -r '.assets[] | select(.name == "release-certificate.json") | .digest' certificate-release.json)"
