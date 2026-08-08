@@ -2401,6 +2401,30 @@ def test_beginner_guide_blocks_old_source_and_upgrade_paths(tmp_path: Path) -> N
     )
 
 
+def test_beginner_guide_blocks_unpublished_v1_0_3_asset_path(
+    tmp_path: Path,
+) -> None:
+    mem = tmp_path / ".ai-sdlc" / "memory"
+    mem.mkdir(parents=True)
+    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
+    _copy_release_contract_surfaces(tmp_path)
+    guide = tmp_path / "USER_GUIDE.zh-CN.md"
+    guide.write_text(
+        guide.read_text(encoding="utf-8")
+        + "\nhttps://github.com/SinclairPan/Ai_AutoSDLC/"
+        "releases/download/v1.0.3/ai-sdlc-offline-1.0.3-linux-amd64.tar.gz\n",
+        encoding="utf-8",
+    )
+
+    blockers = collect_constraint_blockers(tmp_path)
+
+    assert any(
+        "beginner guide CLI path contains out-of-scope content" in item
+        and "releases/download/v1.0.3/" in item
+        for item in blockers
+    )
+
+
 def test_readme_blocks_missing_codex_init_path(tmp_path: Path) -> None:
     mem = tmp_path / ".ai-sdlc" / "memory"
     mem.mkdir(parents=True)

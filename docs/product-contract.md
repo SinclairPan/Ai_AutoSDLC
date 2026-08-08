@@ -62,14 +62,14 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 不默认向远程模型发送代码；
 - 不在项目文件中保存密钥或令牌值。
 
-## 1.0.3 发布真值
+## 1.0.3 源码候选真值（未发布）
 
-- Python 包版本：`1.0.3`；
+- Python 源码候选版本：`1.0.3`；
 - Git 仓库：`https://github.com/SinclairPan/Ai_AutoSDLC`；
-- Windows 包：`ai-sdlc-offline-1.0.3-windows-amd64.zip`；
-- macOS 包：`ai-sdlc-offline-1.0.3-macos-arm64.tar.gz`；
-- Linux 包：`ai-sdlc-offline-1.0.3-linux-amd64.tar.gz`；
-- 每个压缩包均带同名 `.sha256` 文件，包内包含 `SHA256SUMS`。
+- `ai-sdlc-offline-1.0.3-windows-amd64.zip`、`ai-sdlc-offline-1.0.3-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.3-linux-amd64.tar.gz` 是该候选预期产物名，不是已发布发行集合；
+- `v1.0.3` GitHub Release 未发布，不能用于离线安装或声明 Permanent Release Truth；
+- 当前公开可安装且保持原样的离线版本是 `v1.0.2`，其下载与校验入口见 `USER_GUIDE.zh-CN.md`；
+- 发行恢复必须走独立 WorkItem 008，生成全新的 `v1.0.4` 代际，不得继承 `v1.0.3` 的资产或证据。
 
 ## 验收接口
 
