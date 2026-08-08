@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
 import json
+import runpy
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -563,10 +565,15 @@ def _run_release_truth_script(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-def test_internal_script_proof_and_publish_check_are_cas_bound(tmp_path: Path) -> None:
+def test_internal_script_proof_and_publish_check_are_cas_bound(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """捕获内部命令覆盖异内容 Proof 或放行漂移候选。"""
     snapshot_path = tmp_path / "candidate.json"
     proof_path = tmp_path / "release-satisfaction-proof.json"
+    authority_path = tmp_path / "release-authority.json"
+    asset_path = tmp_path / "candidate.zip"
     snapshot_path.write_text(
         json.dumps(_candidate().model_dump(mode="json")), encoding="utf-8"
     )
@@ -607,12 +614,131 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(tmp_path: Path) -
         "--caller-run-attempt",
         str(_candidate().workflow_run_attempt),
     )
+    authority_path.write_text(
+        json.dumps(
+            {
+                "id": 1234,
+                "upload_url": (
+                    "https://uploads.github.com/repos/SinclairPan/Ai_AutoSDLC/"
+                    "releases/9999/assets{?name,label}"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    asset_path.write_bytes(b"candidate")
+    rejected_upload = _run_release_truth_script(
+        "upload-asset",
+        "--authority",
+        str(authority_path),
+        "--asset",
+        str(asset_path),
+        "--repository",
+        "SinclairPan/Ai_AutoSDLC",
+    )
+
+    authority_path.write_text(
+        json.dumps(
+            {
+                "id": 1234,
+                "upload_url": (
+                    "https://uploads.github.com/repos/SinclairPan/Ai_AutoSDLC/"
+                    "releases/1234/assets{?name,label}"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    sent_requests: list[dict[str, object]] = []
+
+    class FakeResponse:
+        status = 201
+
+        def read(self) -> bytes:
+            return json.dumps(
+                {"id": 88, "name": "candidate.zip", "size": 9}
+            ).encode()
+
+    class FakeConnection:
+        def __init__(self, host: str, port: int | None, timeout: int) -> None:
+            self.request: dict[str, object] = {
+                "host": host,
+                "port": port,
+                "timeout": timeout,
+                "headers": {},
+                "body": bytearray(),
+            }
+            sent_requests.append(self.request)
+
+        def putrequest(self, method: str, target: str) -> None:
+            self.request["method"] = method
+            self.request["target"] = target
+
+        def putheader(self, name: str, value: str) -> None:
+            headers = self.request["headers"]
+            assert isinstance(headers, dict)
+            headers[name] = value
+
+        def endheaders(self) -> None:
+            return None
+
+        def send(self, chunk: bytes) -> None:
+            body = self.request["body"]
+            assert isinstance(body, bytearray)
+            body.extend(chunk)
+
+        def getresponse(self) -> FakeResponse:
+            return FakeResponse()
+
+        def close(self) -> None:
+            return None
+
+    script_globals = runpy.run_path(str(_RELEASE_TRUTH_SCRIPT))
+    monkeypatch.setenv("GH_TOKEN", "test-token")
+    monkeypatch.setattr(
+        script_globals["http"].client,
+        "HTTPSConnection",
+        FakeConnection,
+    )
+    uploaded = script_globals["_upload_asset"](
+        argparse.Namespace(
+            authority=authority_path,
+            asset=asset_path,
+            repository="SinclairPan/Ai_AutoSDLC",
+            name="candidate.zip",
+            label="Candidate bundle",
+        )
+    )
 
     assert first.returncode == 0, first.stderr
     assert replay.returncode == 0, replay.stderr
     assert publish_check.returncode == 0, publish_check.stderr
     assert rejected.returncode != 0
     assert "proof identity" in rejected.stderr
+    assert rejected_upload.returncode == 2
+    assert "frozen release ID" in rejected_upload.stderr
+    assert uploaded["release_id"] == 1234
+    assert sent_requests == [
+        {
+            "host": "uploads.github.com",
+            "port": None,
+            "timeout": 600,
+            "headers": {
+                "Accept": "application/vnd.github+json",
+                "Authorization": "Bearer test-token",
+                "User-Agent": "Ai-AutoSDLC-release-truth-writer",
+                "X-GitHub-Api-Version": "2022-11-28",
+                "Content-Type": "application/octet-stream",
+                "Content-Length": "9",
+            },
+            "body": bytearray(b"candidate"),
+            "method": "POST",
+            "target": (
+                "/repos/SinclairPan/Ai_AutoSDLC/releases/1234/assets"
+                "?name=candidate.zip&label=Candidate+bundle"
+            ),
+        }
+    ]
 
 
 def test_internal_script_certificate_is_idempotent_and_fork_safe(

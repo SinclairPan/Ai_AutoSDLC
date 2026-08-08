@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import http.client
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlencode, urlsplit
 
 from pydantic import BaseModel, ValidationError
 
@@ -81,6 +84,78 @@ def _certificate(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _upload_asset(args: argparse.Namespace) -> dict[str, Any]:
+    authority = read_json_object(args.authority)
+    release_id = authority.get("id")
+    if isinstance(release_id, bool) or not isinstance(release_id, int) or release_id <= 0:
+        raise ReleaseTruthError("release authority does not contain a numeric release ID")
+
+    repository_parts = args.repository.split("/")
+    if len(repository_parts) != 2 or not all(repository_parts):
+        raise ReleaseTruthError("repository must use the OWNER/REPO form")
+    expected_upload_url = (
+        f"https://uploads.github.com/repos/{args.repository}/releases/"
+        f"{release_id}/assets{{?name,label}}"
+    )
+    if authority.get("upload_url") != expected_upload_url:
+        raise ReleaseTruthError(
+            f"release upload_url is not bound to frozen release ID {release_id}"
+        )
+
+    asset_path = args.asset
+    asset_name = args.name or asset_path.name
+    if not asset_name:
+        raise ReleaseTruthError("release asset name must not be empty")
+    token = os.environ.get("GH_TOKEN")
+    if not token:
+        raise ReleaseTruthError("GH_TOKEN is required to upload a release asset")
+
+    asset_size = asset_path.stat().st_size
+    query = {"name": asset_name}
+    if args.label is not None:
+        query["label"] = args.label
+    endpoint = expected_upload_url.removesuffix("{?name,label}")
+    parsed = urlsplit(endpoint)
+    request_target = f"{parsed.path}?{urlencode(query)}"
+    connection = http.client.HTTPSConnection(
+        parsed.hostname,
+        parsed.port,
+        timeout=600,
+    )
+    try:
+        connection.putrequest("POST", request_target)
+        connection.putheader("Accept", "application/vnd.github+json")
+        connection.putheader("Authorization", f"Bearer {token}")
+        connection.putheader("User-Agent", "Ai-AutoSDLC-release-truth-writer")
+        connection.putheader("X-GitHub-Api-Version", "2022-11-28")
+        connection.putheader("Content-Type", "application/octet-stream")
+        connection.putheader("Content-Length", str(asset_size))
+        connection.endheaders()
+        with asset_path.open("rb") as stream:
+            while chunk := stream.read(1024 * 1024):
+                connection.send(chunk)
+        response = connection.getresponse()
+        response_body = response.read()
+    finally:
+        connection.close()
+
+    if response.status != 201:
+        detail = response_body.decode("utf-8", errors="replace")[:500]
+        raise ReleaseTruthError(
+            f"release asset upload failed with HTTP {response.status}: {detail}"
+        )
+    uploaded = json.loads(response_body)
+    if uploaded.get("name") != asset_name or uploaded.get("size") != asset_size:
+        raise ReleaseTruthError("uploaded asset response differs from requested asset")
+    return {
+        "status": "success",
+        "release_id": release_id,
+        "asset_id": uploaded.get("id"),
+        "asset_name": asset_name,
+        "size_bytes": asset_size,
+    }
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Internal protected Release Truth workflow adapter."
@@ -104,6 +179,13 @@ def _build_parser() -> argparse.ArgumentParser:
     certificate.add_argument("--attestation-digest", required=True)
     certificate.add_argument("--issued-at", required=True)
     certificate.add_argument("--output", type=Path, required=True)
+
+    upload_asset = subparsers.add_parser("upload-asset")
+    upload_asset.add_argument("--authority", type=Path, required=True)
+    upload_asset.add_argument("--asset", type=Path, required=True)
+    upload_asset.add_argument("--repository", required=True)
+    upload_asset.add_argument("--name")
+    upload_asset.add_argument("--label")
     return parser
 
 
@@ -113,6 +195,7 @@ def main(argv: list[str] | None = None) -> int:
         "proof": _proof,
         "publish-check": _publish_check,
         "certificate": _certificate,
+        "upload-asset": _upload_asset,
     }
     try:
         result = handlers[args.command](args)

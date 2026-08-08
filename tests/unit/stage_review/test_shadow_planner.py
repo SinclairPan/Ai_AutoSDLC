@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from ai_sdlc.core.stage_review.activation import baseline_activation_policy
@@ -116,10 +117,14 @@ def test_held_panel_keeps_final_reservation_until_execution_finishes(
         activation_policy=baseline_activation_policy(),
     )
 
+    hold_started_at = datetime.now(UTC)
     held = hold_shadow_panel_plan(tmp_path, proposal)
 
     current = held.governor.get_reservation(held.plan.final_reservation_id)
     assert current.state == "final"
+    assert datetime.fromisoformat(current.lease_expires_at) >= hold_started_at + timedelta(
+        seconds=proposal.budget_policy.hard_wall_clock
+    )
     release_shadow_panel_plan(held)
     assert held.governor.get_reservation(current.reservation_id).state == "released"
 

@@ -18,6 +18,8 @@ from ai_sdlc.core.stage_review.resource_ledger_models import ResourceReservation
 from ai_sdlc.core.stage_review.resources import ResourceGovernor
 from ai_sdlc.core.stage_review.shadow_planner import ShadowPanelProposal
 
+_RESOURCE_LEASE_GRACE_SECONDS = 60
+
 
 @dataclass(frozen=True, slots=True)
 class HeldShadowPanelPlan:
@@ -56,7 +58,9 @@ def _hold_shadow_panel_plan(
         budget_policy=value.budget_policy,
         lease_owner=lease_owner,
         operation_id=f"operation.admission.{value.candidate.review_session_id}",
-        lease_seconds=60,
+        lease_seconds=(
+            value.budget_policy.hard_wall_clock + _RESOURCE_LEASE_GRACE_SECONDS
+        ),
     )
     if admission.reservation is None:
         raise ValueError(f"shadow planner admission failed: {admission.result_code}")

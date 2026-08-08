@@ -752,9 +752,46 @@ jobs:
           EXPECTED_TITLE="Release Truth ${RELEASE_TAG} Revocation g${{ steps.receipt.outputs.next_generation }}"
           EXPECTED_BODY="Append-only revocation receipt for failed post-publish smoke."
           export EXPECTED_DIGEST EXPECTED_TITLE EXPECTED_BODY
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
+          resolve_receipt_release() {
+            gh api --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+              > receipt-authority-pages.json
+            uv run --project trusted-writer python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from pathlib import Path
+
+          pages = json.loads(
+              Path("receipt-authority-pages.json").read_text(encoding="utf-8")
+          )
+          matches = [
+              release
+              for page in pages
+              for release in page
+              if release.get("tag_name") == os.environ["RECEIPT_TAG"]
+          ]
+          if not matches:
+              raise SystemExit(3)
+          if len(matches) != 1:
+              raise SystemExit(
+                  f"expected one Receipt release authority, found {len(matches)}"
+              )
+          Path("receipt-release.json").write_text(
+              json.dumps(matches[0], ensure_ascii=False, sort_keys=True),
+              encoding="utf-8",
+          )
+          PY
+          }
+          if resolve_receipt_release; then
+            :
+          else
+            resolve_status=$?
+            if [[ "${resolve_status}" != "3" ]]; then
+              exit "${resolve_status}"
+            fi
             if ! gh release create "${receipt_tag}" \
-              release-revocation-receipt.json#release-revocation-receipt.json \
               --target "${TARGET_COMMIT}" \
               --title "${EXPECTED_TITLE}" \
               --notes "${EXPECTED_BODY}" \
@@ -764,7 +801,7 @@ jobs:
               echo "Receipt draft create returned non-zero; resolving GitHub authority."
             fi
           fi
-          if ! gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
+          if ! resolve_receipt_release; then
             echo "Receipt draft was not recoverable after create." >&2
             exit 1
           fi
@@ -804,9 +841,12 @@ jobs:
           draft="$(jq -r '.draft' receipt-release.json)"
           if [[ "${draft}" == "true" ]]; then
             if [[ "$(jq '.assets | length' receipt-release.json)" == "0" ]]; then
-              gh release upload "${receipt_tag}" \
-                release-revocation-receipt.json#release-revocation-receipt.json
-              gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json
+              uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
+                --authority receipt-release.json \
+                --asset release-revocation-receipt.json \
+                --label release-revocation-receipt.json \
+                --repository "${GITHUB_REPOSITORY}"
+              gh api "repos/${GITHUB_REPOSITORY}/releases/${receipt_release_id}" > receipt-release.json
             fi
             actual_digest="$(jq -r '.assets[] | select(.name == "release-revocation-receipt.json") | .digest' receipt-release.json)"
             if [[ "${actual_digest}" != "${EXPECTED_DIGEST}" ]] \
@@ -834,7 +874,7 @@ jobs:
 
           receipt_ready=false
           for attempt in $(seq 1 20); do
-            if gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${receipt_tag}" > receipt-release.json 2>/dev/null; then
+            if gh api "repos/${GITHUB_REPOSITORY}/releases/${receipt_release_id}" > receipt-release.json 2>/dev/null; then
               actual_digest="$(jq -r '.assets[] | select(.name == "release-revocation-receipt.json") | .digest' receipt-release.json)"
               immutable="$(jq -r '.immutable // false' receipt-release.json)"
               if [[ "${actual_digest}" != "${EXPECTED_DIGEST}" ]]; then
