@@ -1,0 +1,115 @@
+schema_version: '2'
+program:
+  goal: Freeze the failed v1.0.3 generation as terminal NO-GO and deliver v1.0.4 as
+    a fresh, proof-bound, immutable release without evidence reuse.
+specs:
+- id: 008-v1-0-4-permanent-release-truth
+  path: specs/008-v1-0-4-permanent-release-truth
+  depends_on: []
+source_registry:
+- path: docs/framework-defect-backlog.zh-CN.md
+  source_type: defect_backlog
+  truth_layer: defect
+- path: docs/releases/v1.0.3-bootstrap-no-go.md
+  source_type: release_doc
+  truth_layer: release
+truth_snapshot:
+  generated_at: '2026-08-08T23:12:13Z'
+  generated_by: ai-sdlc program truth sync
+  generator_version: program_truth_snapshot_v2
+  repo_revision: 433973f
+  authoring_hash: e3165b1e378affcf905ddfc99760bb45b15597197351f59e8298ebfe2d92bfba
+  source_hashes: {}
+  snapshot_hash: e6632ab13fb86f7d8b7bd6f8a2535a8a0c52c87a6dd235e482419527bdd61ea7
+  computed_capabilities: []
+  source_inventory:
+    state: complete
+    total_sources: 7
+    mapped_sources: 7
+    unmapped_sources: 0
+    missing_sources: 1
+    phase_signal_count: 3
+    deferred_signal_count: 4
+    non_goal_signal_count: 1
+    layer_totals:
+      spec: 1
+      plan: 1
+      tasks: 1
+      execution: 1
+      close: 1
+      defect: 1
+      release: 1
+    layer_materialized:
+      spec: 1
+      plan: 1
+      tasks: 1
+      execution: 1
+      close: 0
+      defect: 1
+      release: 1
+    entries:
+    - path: specs/008-v1-0-4-permanent-release-truth/spec.md
+      source_type: spec_doc
+      truth_layer: spec
+      mapped: true
+      exists: true
+      mapping_ref: 008-v1-0-4-permanent-release-truth
+      phase_signal_count: 0
+      deferred_signal_count: 0
+      non_goal_signal_count: 1
+    - path: specs/008-v1-0-4-permanent-release-truth/plan.md
+      source_type: plan_doc
+      truth_layer: plan
+      mapped: true
+      exists: true
+      mapping_ref: 008-v1-0-4-permanent-release-truth
+      phase_signal_count: 2
+      deferred_signal_count: 2
+      non_goal_signal_count: 0
+    - path: specs/008-v1-0-4-permanent-release-truth/tasks.md
+      source_type: tasks_doc
+      truth_layer: tasks
+      mapped: true
+      exists: true
+      mapping_ref: 008-v1-0-4-permanent-release-truth
+      phase_signal_count: 1
+      deferred_signal_count: 1
+      non_goal_signal_count: 0
+    - path: specs/008-v1-0-4-permanent-release-truth/task-execution-log.md
+      source_type: execution_log
+      truth_layer: execution
+      mapped: true
+      exists: true
+      mapping_ref: 008-v1-0-4-permanent-release-truth
+      phase_signal_count: 0
+      deferred_signal_count: 1
+      non_goal_signal_count: 0
+    - path: specs/008-v1-0-4-permanent-release-truth/development-summary.md
+      source_type: development_summary
+      truth_layer: close
+      mapped: true
+      exists: false
+      mapping_ref: 008-v1-0-4-permanent-release-truth
+      phase_signal_count: 0
+      deferred_signal_count: 0
+      non_goal_signal_count: 0
+    - path: docs/framework-defect-backlog.zh-CN.md
+      source_type: defect_backlog
+      truth_layer: defect
+      mapped: true
+      exists: true
+      mapping_ref: docs/framework-defect-backlog.zh-CN.md
+      phase_signal_count: 0
+      deferred_signal_count: 0
+      non_goal_signal_count: 0
+    - path: docs/releases/v1.0.3-bootstrap-no-go.md
+      source_type: release_doc
+      truth_layer: release
+      mapped: true
+      exists: true
+      mapping_ref: docs/releases/v1.0.3-bootstrap-no-go.md
+      phase_signal_count: 0
+      deferred_signal_count: 0
+      non_goal_signal_count: 0
+    unmapped_paths: []
+  state: ready
