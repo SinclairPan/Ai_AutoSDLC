@@ -4,6 +4,10 @@
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
+发布状态：`v1.0.4 terminal NO-GO / not released`。最后已发布的离线版本仍为 `v1.0.2`；`only future WorkItem 010 may migrate to v1.0.5`。不得 redispatch、rerun、上传或发布 v1.0.4。
+
+下列 1.0.4 命令与制品名称仅记录被冻结源码候选的结构和验证方法，不构成重新构建发布代际、上传或发布的授权。
+
 ## 包内容
 
 每个离线包包含：
@@ -130,7 +134,7 @@ cd smoke-project
 - `.github/workflows/windows-offline-smoke.yml`：验证 Windows 构建、安装、Codex 初始化和 dry-run；
 - `.github/workflows/posix-offline-smoke.yml`：验证 macOS 与 Linux 安装路径。
 
-工作流默认发布标识为 `v1.0.4`。上传动作必须由有权限的维护者明确触发。
+工作流中的 `v1.0.4` 仅是被冻结候选的历史标识；其发布通道已终止，禁止继续触发或写入发布权威。
 
 ## 交付要求
 

@@ -89,6 +89,18 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
             "active no-bypass tag ruleset protects software and Certificate tags"
             in markers
         )
+    terminal_release_surfaces = {
+        "packaging/offline/README.md": "上传动作必须由有权限的维护者明确触发",
+        "packaging/offline/RELEASE_CHECKLIST.md": "上传动作由有权限维护者明确执行",
+        "docs/pull-request-checklist.zh.md": "当前发布版本为 `1.0.4`",
+    }
+    for path, obsolete_marker in terminal_release_surfaces.items():
+        markers = REQUIRED_SURFACES[path]
+        assert PUBLISHED_VERSION in markers
+        assert "v1.0.4 terminal NO-GO / not released" in markers
+        assert "only future WorkItem 010 may migrate to v1.0.5" in markers
+        assert "不得 redispatch、rerun、上传或发布 v1.0.4" in markers
+        assert obsolete_marker in FORBIDDEN_SURFACE_MARKERS[path]
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",

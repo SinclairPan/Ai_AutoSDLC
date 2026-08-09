@@ -71,11 +71,26 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
+        PUBLISHED_VERSION,
         STABLE_SOURCE_CLONE,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "不得 redispatch、rerun、上传或发布 v1.0.4",
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
+        PUBLISHED_VERSION,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "不得 redispatch、rerun、上传或发布 v1.0.4",
+    ),
+    "docs/pull-request-checklist.zh.md": (
+        CURRENT_VERSION,
+        PUBLISHED_VERSION,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "不得 redispatch、rerun、上传或发布 v1.0.4",
     ),
     "docs/框架自迭代开发与发布约定.md": (
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
@@ -102,6 +117,13 @@ FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
     "README.md": ("WorkItem 008",),
     "USER_GUIDE.zh-CN.md": ("WorkItem 008",),
     "docs/product-contract.md": ("WorkItem 008",),
+    "packaging/offline/README.md": (
+        "上传动作必须由有权限的维护者明确触发",
+    ),
+    "packaging/offline/RELEASE_CHECKLIST.md": (
+        "上传动作由有权限维护者明确执行",
+    ),
+    "docs/pull-request-checklist.zh.md": ("当前发布版本为 `1.0.4`",),
 }
 
 PUBLIC_ROOT_MARKDOWN = {
