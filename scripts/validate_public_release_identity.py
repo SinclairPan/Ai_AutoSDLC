@@ -27,7 +27,13 @@ PUBLIC_DOC_PATHS = {
 }
 
 REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
-    "README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION, STABLE_SOURCE_CLONE),
+    "README.md": (
+        CURRENT_REPOSITORY_URL,
+        CURRENT_VERSION,
+        STABLE_SOURCE_CLONE,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+    ),
     "USER_GUIDE.zh-CN.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
@@ -35,6 +41,8 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "v1.0.4 未发布",
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-windows-amd64.zip",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
@@ -51,7 +59,12 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "当前结果 / Result",
         "下一步 / Next",
     ),
-    "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
+    "docs/product-contract.md": (
+        CURRENT_REPOSITORY_URL,
+        CURRENT_VERSION,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+    ),
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
@@ -79,6 +92,12 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "WorkItem 009",
         "WorkItem 010",
     ),
+}
+
+FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
+    "README.md": ("WorkItem 008",),
+    "USER_GUIDE.zh-CN.md": ("WorkItem 008",),
+    "docs/product-contract.md": ("WorkItem 008",),
 }
 
 PUBLIC_ROOT_MARKDOWN = {
@@ -219,6 +238,11 @@ def validate_required_surfaces(files: Mapping[str, str]) -> list[Finding]:
             if marker not in text:
                 findings.append(
                     Finding(path, None, "required-identity-marker-missing", marker)
+                )
+        for marker in FORBIDDEN_SURFACE_MARKERS.get(path, ()):
+            if marker in text:
+                findings.append(
+                    Finding(path, None, "obsolete-release-authorization", marker)
                 )
     return findings
 

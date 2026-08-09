@@ -4,7 +4,7 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 发布状态：仓库源码候选版本为 `1.0.4`，但对应的 `v1.0.4` GitHub Release 未发布，不能使用任何 `releases/download/v1.0.4/` 路径。普通用户需要离线安装时，请按[中文用户指南](USER_GUIDE.zh-CN.md)使用最后一个已发布且保持原样的 `v1.0.2`；WorkItem 008 正在以全新 `v1.0.4` 代际完成独立恢复发布。
+> 发布状态：`v1.0.4 terminal NO-GO / not released`。该源码候选已终止，不能使用任何 `releases/download/v1.0.4/` 路径，也不得以 009 恢复或启用。普通用户需要离线安装时，请按[中文用户指南](USER_GUIDE.zh-CN.md)使用最后一个实际发布且保持原样的 `v1.0.2`；`only future WorkItem 010 may migrate to v1.0.5`，且必须先满足受保护发布环境的外部 GO 前置条件。
 
 ## 核心特性
 

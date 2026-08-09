@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import runpy
 import subprocess
@@ -77,7 +78,14 @@ def _candidate(**changes: object):
     )
     values: dict[str, object] = {
         "repository": "SinclairPan/Ai_AutoSDLC",
+        "admission_id": "release-admission/v1.0.3/run-9001-attempt-2/release-1234",
+        "admission_digest": "sha256:" + "9" * 64,
         "draft_release_id": 1234,
+        "upload_url": (
+            "https://uploads.github.com/repos/SinclairPan/Ai_AutoSDLC/"
+            "releases/1234/assets{?name,label}"
+        ),
+        "release_user_agent": "ai-sdlc-release-writer/1.0",
         "draft_release_updated_at": "2026-08-05T20:02:00Z",
         "draft": True,
         "tag_name": "v1.0.3",
@@ -219,6 +227,7 @@ def test_publish_claim_rejects_candidate_drift(
             caller_workflow_ref=candidate.publish_workflow_ref,
             caller_run_id=candidate.workflow_run_id,
             caller_run_attempt=candidate.workflow_run_attempt,
+            observed_at="2026-08-05T20:06:00Z",
         )
 
 
@@ -235,6 +244,35 @@ def test_publish_claim_rejects_unbound_caller() -> None:
             caller_workflow_ref="attacker/fork/.github/workflows/release.yml@main",
             caller_run_id=candidate.workflow_run_id,
             caller_run_attempt=candidate.workflow_run_attempt,
+            observed_at="2026-08-05T20:06:00Z",
+        )
+
+    with pytest.raises(release_truth.ReleaseTruthError, match="expired"):
+        release_truth.validate_publish_claim(
+            proof,
+            candidate,
+            caller_workflow_ref=candidate.publish_workflow_ref,
+            caller_run_id=candidate.workflow_run_id,
+            caller_run_attempt=candidate.workflow_run_attempt,
+            observed_at="2026-08-05T21:00:01Z",
+        )
+    with pytest.raises(release_truth.ReleaseTruthError, match="predates"):
+        release_truth.validate_publish_claim(
+            proof,
+            candidate,
+            caller_workflow_ref=candidate.publish_workflow_ref,
+            caller_run_id=candidate.workflow_run_id,
+            caller_run_attempt=candidate.workflow_run_attempt,
+            observed_at="2026-08-05T19:59:59Z",
+        )
+    with pytest.raises(release_truth.ReleaseTruthError, match="canonical UTC"):
+        release_truth.validate_publish_claim(
+            proof,
+            candidate,
+            caller_workflow_ref=candidate.publish_workflow_ref,
+            caller_run_id=candidate.workflow_run_id,
+            caller_run_attempt=candidate.workflow_run_attempt,
+            observed_at="2026-08-05T20:06:00+00:00",
         )
 
 
@@ -274,7 +312,7 @@ def _published(**changes: object):
     candidate = _candidate()
     values: dict[str, object] = {
         "repository": candidate.repository,
-        "github_release_id": 5678,
+        "github_release_id": candidate.draft_release_id,
         "github_release_url": "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v1.0.3",
         "tag_name": candidate.tag_name,
         "commit_sha": candidate.commit_sha,
@@ -364,8 +402,14 @@ def test_certificate_replay_is_deterministic_and_tamper_evident() -> None:
     second = _certificate()
 
     assert first == second
+    assert first.admission_id == _candidate().admission_id
+    assert first.admission_digest == _candidate().admission_digest
+    assert first.github_release_id == _candidate().draft_release_id
+    assert first.upload_url == _candidate().upload_url
+    assert first.tag_object_sha == _candidate().tag_object_sha
+    assert first.release_user_agent == _candidate().release_user_agent
     payload = first.model_dump(mode="json")
-    payload["tree_sha"] = "9" * 40
+    payload["admission_digest"] = "sha256:" + "8" * 64
     with pytest.raises(ValueError, match="certificate_digest"):
         certificate_type.model_validate(payload)
 
@@ -589,6 +633,10 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     snapshot_path = tmp_path / "candidate.json"
     proof_path = tmp_path / "release-satisfaction-proof.json"
     authority_path = tmp_path / "release-authority.json"
+    admission_path = tmp_path / "release-admission.json"
+    ref_path = tmp_path / "release-ref.json"
+    tag_path = tmp_path / "release-tag.json"
+    commit_path = tmp_path / "release-commit.json"
     asset_path = tmp_path / "candidate.zip"
     snapshot_path.write_text(
         json.dumps(_candidate().model_dump(mode="json")), encoding="utf-8"
@@ -612,6 +660,8 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         str(_candidate().workflow_run_id),
         "--caller-run-attempt",
         str(_candidate().workflow_run_attempt),
+        "--observed-at",
+        "2026-08-05T20:06:00Z",
     )
     drifted = _candidate(
         release_settings_digest="sha256:" + "0" * 64
@@ -629,6 +679,8 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         str(_candidate().workflow_run_id),
         "--caller-run-attempt",
         str(_candidate().workflow_run_attempt),
+        "--observed-at",
+        "2026-08-05T20:06:00Z",
     )
     authority_path.write_text(
         json.dumps(
@@ -651,6 +703,8 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         str(asset_path),
         "--repository",
         "SinclairPan/Ai_AutoSDLC",
+        "--user-agent",
+        "ai-sdlc-release-writer/1.0",
     )
 
     authority_path.write_text(
@@ -723,7 +777,74 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
             repository="SinclairPan/Ai_AutoSDLC",
             name="candidate.zip",
             label="Candidate bundle",
+            user_agent="ai-sdlc-release-writer/1.0",
         )
+    )
+
+    admission = {
+        "admission_id": "9001:2:" + "2" * 40 + ":1234",
+        "numeric_release_id": 1234,
+        "upload_url": _candidate().upload_url,
+        "tag_object_sha": "2" * 40,
+        "commit_sha": "1" * 40,
+        "tree_sha": "3" * 40,
+        "workflow_ref": _candidate().publish_workflow_ref,
+        "workflow_run_id": 9001,
+        "workflow_run_attempt": 2,
+        "user_agent": "ai-sdlc-release-writer/1.0",
+        "failure_policy": "terminal-generation-burn",
+    }
+    admission["admission_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(
+            admission, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode()
+    ).hexdigest()
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
+    ref_path.write_text(
+        json.dumps({"ref": "refs/tags/v1.0.3", "object": {"sha": "2" * 40}}),
+        encoding="utf-8",
+    )
+    tag_path.write_text(
+        json.dumps({"sha": "2" * 40, "object": {"type": "commit", "sha": "1" * 40}}),
+        encoding="utf-8",
+    )
+    commit_path.write_text(
+        json.dumps({"sha": "1" * 40, "tree": {"sha": "3" * 40}}),
+        encoding="utf-8",
+    )
+    authority_path.write_text(
+        json.dumps(
+            {
+                "id": 1234,
+                "tag_name": "v1.0.3",
+                "target_commitish": "1" * 40,
+                "upload_url": _candidate().upload_url,
+                "draft": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+    authority_check = _run_release_truth_script(
+        "authority-check",
+        "--admission", str(admission_path),
+        "--ref", str(ref_path),
+        "--tag", str(tag_path),
+        "--commit", str(commit_path),
+        "--release", str(authority_path),
+        "--release-tag", "v1.0.3",
+        "--release-state", "draft",
+    )
+    drifted_ref = {"ref": "refs/tags/v1.0.3", "object": {"sha": "7" * 40}}
+    ref_path.write_text(json.dumps(drifted_ref), encoding="utf-8")
+    rejected_authority = _run_release_truth_script(
+        "authority-check",
+        "--admission", str(admission_path),
+        "--ref", str(ref_path),
+        "--tag", str(tag_path),
+        "--commit", str(commit_path),
+        "--release", str(authority_path),
+        "--release-tag", "v1.0.3",
+        "--release-state", "draft",
     )
 
     assert first.returncode == 0, first.stderr
@@ -734,6 +855,9 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     assert rejected_upload.returncode == 2
     assert "frozen release ID" in rejected_upload.stderr
     assert uploaded["release_id"] == 1234
+    assert authority_check.returncode == 0, authority_check.stderr
+    assert rejected_authority.returncode == 2
+    assert "live release authority differs" in rejected_authority.stderr
     assert sent_requests == [
         {
             "host": "uploads.github.com",
@@ -742,7 +866,7 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
             "headers": {
                 "Accept": "application/vnd.github+json",
                 "Authorization": "Bearer test-token",
-                "User-Agent": "Ai-AutoSDLC-release-truth-writer",
+                "User-Agent": "ai-sdlc-release-writer/1.0",
                 "X-GitHub-Api-Version": "2022-11-28",
                 "Content-Type": "application/octet-stream",
                 "Content-Length": "9",

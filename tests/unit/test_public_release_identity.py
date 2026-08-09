@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
+    FORBIDDEN_SURFACE_MARKERS,
     PUBLIC_DOC_PATHS,
     PUBLISHED_VERSION,
     REQUIRED_SURFACES,
@@ -53,7 +54,9 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
 def test_required_surfaces_enforce_current_release_identity() -> None:
     files = {
         "README.md": (
-            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}"
+            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
+            "v1.0.4 terminal NO-GO / not released\n"
+            "only future WorkItem 010 may migrate to v1.0.5"
         ),
     }
 
@@ -63,6 +66,24 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         finding.marker == "required-public-surface-missing" for finding in findings
     )
     assert not any(finding.path == "README.md" for finding in findings)
+    assert "WorkItem 008" in FORBIDDEN_SURFACE_MARKERS["README.md"]
+    obsolete = validate_required_surfaces(
+        {
+            "README.md": (
+                f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
+                "WorkItem 008 正在恢复 v1.0.4"
+            )
+        }
+    )
+    assert any(
+        finding.path == "README.md"
+        and finding.marker == "obsolete-release-authorization"
+        for finding in obsolete
+    )
+    for path in ("README.md", "USER_GUIDE.zh-CN.md", "docs/product-contract.md"):
+        markers = REQUIRED_SURFACES[path]
+        assert "v1.0.4 terminal NO-GO / not released" in markers
+        assert "only future WorkItem 010 may migrate to v1.0.5" in markers
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",

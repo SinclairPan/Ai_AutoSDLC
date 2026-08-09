@@ -14,6 +14,8 @@ permissions:
 env:
   CURRENT_RELEASE_TAG: v1.0.4
   RELEASE_BOOTSTRAP_ENABLED: "false"
+  RELEASE_PUBLISH_ENVIRONMENT: release-publish
+  RELEASE_ENVIRONMENT_PROTECTION_VERIFIED: "false"
   RELEASE_USER_AGENT: ai-sdlc-release-writer/1.0
 
 concurrency:
@@ -39,7 +41,7 @@ jobs:
           fi
 
       - name: Checkout exact protected candidate
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -91,9 +93,9 @@ jobs:
           set -euo pipefail
           certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
           export certificate_tag
-          gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/" \
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/" \
             > prequalification-tag-refs.json
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
             > prequalification-release-pages.json
           python - <<'PY'
           from __future__ import annotations
@@ -128,6 +130,14 @@ jobs:
           set -euo pipefail
           if [[ "${RELEASE_BOOTSTRAP_ENABLED}" != "true" ]]; then
             echo "Release bootstrap is disabled for the frozen ${CURRENT_RELEASE_TAG} generation." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_RUN_ATTEMPT}" != "1" ]]; then
+            echo "Release rerun is forbidden by terminal-generation-burn." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true" ]]; then
+            echo "release-publish historical writer runs remain blocked until remote protection is independently verified." >&2
             exit 1
           fi
 
@@ -172,7 +182,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -194,12 +204,12 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
@@ -439,14 +449,14 @@ jobs:
 
       - name: Upload build smoke evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-build-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.archive }}-evidence
           path: ${{ runner.temp }}/ai-sdlc-release-build-evidence
           if-no-files-found: error
 
       - name: Upload smoke-passed candidate asset
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.asset_os }}-${{ matrix.asset_machine }}
           path: |
@@ -485,7 +495,7 @@ jobs:
       contents: read
     steps:
       - name: Checkout exact protected verifier revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -493,7 +503,7 @@ jobs:
           path: trusted-writer
 
       - name: Download exact run-attempt candidates
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}-*
           path: release-proof-inputs/candidates
@@ -516,7 +526,7 @@ jobs:
             echo "Proof input checkout ${head_commit} does not match exact workflow SHA ${GITHUB_SHA}." >&2
             exit 1
           fi
-          gh api --paginate --slurp \
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp \
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100" \
             > release-qualification-jobs.json
           python - <<'PY'
@@ -610,7 +620,7 @@ jobs:
           PY
 
       - name: Upload immutable run-attempt proof inputs
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: release-proof-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-proof-inputs
@@ -639,7 +649,7 @@ jobs:
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout exact protected writer revision
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ github.sha }}
           fetch-depth: 0
@@ -647,17 +657,24 @@ jobs:
           path: trusted-writer
 
       - name: Set up protected writer Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
       - name: Install protected writer runtime
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
+      - name: Revalidate protected candidate after action setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C trusted-writer rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -z "$(git -C trusted-writer status --porcelain --untracked-files=no)"
+
       - name: Download exact proof inputs
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           name: release-proof-inputs-${{ github.run_id }}-${{ github.run_attempt }}
           path: release-proof-inputs
@@ -670,12 +687,20 @@ jobs:
             echo "Release bootstrap is disabled for the frozen ${CURRENT_RELEASE_TAG} generation." >&2
             exit 1
           fi
+          if [[ "${GITHUB_RUN_ATTEMPT}" != "1" ]]; then
+            echo "Release rerun is forbidden by terminal-generation-burn." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true" ]]; then
+            echo "release-publish historical writer runs remain blocked until remote protection is independently verified." >&2
+            exit 1
+          fi
           certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
           export certificate_tag
           git -C trusted-writer show-ref --tags > local-tag-refs.txt || true
-          gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/" \
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/" \
             > remote-tag-refs.json
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
             > release-admission-pages.json
           python - <<'PY'
           from __future__ import annotations
@@ -716,6 +741,24 @@ jobs:
               raise SystemExit("certificate namespace already exists")
           PY
 
+      - name: Validate current gate freshness before admission mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project trusted-writer python - <<'PY'
+          import json
+          from datetime import UTC, datetime
+          from pathlib import Path
+          from ai_sdlc.core.release_truth import RELEASE_TRUTH_FRESHNESS_TTL
+
+          now = datetime.now(UTC)
+          inputs = json.loads(Path("release-proof-inputs/release-proof-inputs.json").read_text(encoding="utf-8"))
+          for gate in inputs["gates"]:
+              completed = datetime.fromisoformat(gate["completed_at"].removesuffix("Z") + "+00:00")
+              if now < completed or now > completed + RELEASE_TRUTH_FRESHNESS_TTL:
+                  raise SystemExit("required gate is not fresh at admission mutation")
+          PY
+
       - name: Create exact annotated release tag
         shell: bash
         run: |
@@ -729,7 +772,15 @@ jobs:
 
           request = {
               "tag": os.environ["RELEASE_TAG"],
-              "message": f"AI-SDLC {os.environ['RELEASE_TAG']}",
+              "message": (
+                  f"AI-SDLC {os.environ['RELEASE_TAG']}\n\n"
+                  f"run_id={os.environ['GITHUB_RUN_ID']} "
+                  f"run_attempt={os.environ['GITHUB_RUN_ATTEMPT']} "
+                  f"workflow_ref={os.environ['GITHUB_WORKFLOW_REF']} "
+                  f"commit={os.environ['GITHUB_SHA']} "
+                  "failure_policy=terminal-generation-burn; "
+                  "no cleanup, edit, reuse, or rerun"
+              ),
               "object": os.environ["GITHUB_SHA"],
               "type": "commit",
           }
@@ -777,7 +828,15 @@ jobs:
               "tag_name": os.environ["RELEASE_TAG"],
               "target_commitish": os.environ["GITHUB_SHA"],
               "name": f"AI-SDLC {os.environ['RELEASE_TAG']}",
-              "body": f"Qualified protected-main release {os.environ['RELEASE_TAG']}.",
+              "body": (
+                  f"Qualified protected-main release {os.environ['RELEASE_TAG']}.\n\n"
+                  f"run_id={os.environ['GITHUB_RUN_ID']} "
+                  f"run_attempt={os.environ['GITHUB_RUN_ATTEMPT']} "
+                  f"workflow_ref={os.environ['GITHUB_WORKFLOW_REF']} "
+                  f"commit={os.environ['GITHUB_SHA']} "
+                  "failure_policy=terminal-generation-burn; "
+                  "no cleanup, edit, reuse, or rerun"
+              ),
               "draft": True,
               "prerelease": False,
               "make_latest": "false",
@@ -795,6 +854,7 @@ jobs:
           python - <<'PY'
           from __future__ import annotations
 
+          import hashlib
           import json
           import os
           from pathlib import Path
@@ -826,7 +886,13 @@ jobs:
               "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
               "user_agent": os.environ["RELEASE_USER_AGENT"],
+              "failure_policy": "terminal-generation-burn",
           }
+          encoded = json.dumps(
+              admission, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+          ).encode()
+          admission_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+          admission["admission_digest"] = admission_digest
           Path("release-admission.json").write_text(
               json.dumps(admission, ensure_ascii=False, sort_keys=True), encoding="utf-8"
           )
@@ -834,11 +900,44 @@ jobs:
               stream.write(f"RELEASE_ID={release['id']}\n")
           PY
 
+      - name: Validate live frozen admission authority before candidate upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state draft
+
+      - name: Validate current gate freshness before candidate upload
+        shell: bash
+        run: |
+          set -euo pipefail
+          uv run --project trusted-writer python - <<'PY'
+          import json
+          from datetime import UTC, datetime
+          from pathlib import Path
+          from ai_sdlc.core.release_truth import RELEASE_TRUTH_FRESHNESS_TTL
+
+          now = datetime.now(UTC)
+          inputs = json.loads(Path("release-proof-inputs/release-proof-inputs.json").read_text(encoding="utf-8"))
+          for gate in inputs["gates"]:
+              completed = datetime.fromisoformat(gate["completed_at"].removesuffix("Z") + "+00:00")
+              if now < completed or now > completed + RELEASE_TRUTH_FRESHNESS_TTL:
+                  raise SystemExit("required gate is not fresh before candidate upload")
+          PY
+
       - name: Upload exact candidate assets to fresh zero-asset Draft
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-before.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-before.json
           python - <<'PY'
           from __future__ import annotations
 
@@ -863,9 +962,10 @@ jobs:
             uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
               --authority release-authority.json \
               --asset "release-proof-inputs/candidates/${asset_name}" \
-              --repository "${GITHUB_REPOSITORY}"
+              --repository "${GITHUB_REPOSITORY}" \
+              --user-agent "${RELEASE_USER_AGENT}"
           done < assets-to-upload.txt
-          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-after-upload.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-after-upload.json
           python - <<'PY'
           import json
           from pathlib import Path
@@ -892,11 +992,26 @@ jobs:
               )
           PY
 
+      - name: Validate live frozen admission authority before Proof
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state draft
+
       - name: Build canonical Proof from live Draft authority
         shell: bash
         run: |
           set -euo pipefail
-          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-cas.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-cas.json
           uv run --project trusted-writer python - <<'PY'
           from __future__ import annotations
 
@@ -979,7 +1094,11 @@ jobs:
           }
           snapshot = {
               "repository": inputs["repository"],
+              "admission_id": admission["admission_id"],
+              "admission_digest": admission["admission_digest"],
               "draft_release_id": release["id"],
+              "upload_url": admission["upload_url"],
+              "release_user_agent": admission["user_agent"],
               "draft_release_updated_at": release["updated_at"],
               "draft": release["draft"],
               "tag_name": release["tag_name"],
@@ -1007,23 +1126,46 @@ jobs:
             --snapshot release-candidate-snapshot.json \
             --output release-satisfaction-proof.json
 
-      - name: Linearize Publish with Proof CAS
+      - name: Validate live frozen admission authority before Proof attachment and publish
         shell: bash
         run: |
           set -euo pipefail
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state draft
+
+      - name: Validate current gate freshness before Proof attachment and publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
             --proof release-satisfaction-proof.json \
             --snapshot release-candidate-snapshot.json \
             --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
             --caller-run-id "${{ github.run_id }}" \
-            --caller-run-attempt "${{ github.run_attempt }}"
+            --caller-run-attempt "${{ github.run_attempt }}" \
+            --observed-at "${publish_observed_at}"
 
+      - name: Linearize Publish with Proof CAS
+        shell: bash
+        run: |
+          set -euo pipefail
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
             --authority release-authority.json \
             --asset release-satisfaction-proof.json \
-            --repository "${GITHUB_REPOSITORY}"
+            --repository "${GITHUB_REPOSITORY}" \
+            --user-agent "${RELEASE_USER_AGENT}"
 
           gh api --include \
+            -H "User-Agent: ${RELEASE_USER_AGENT}" \
             "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" \
             > release-before-publish.http
           uv run --project trusted-writer python - <<'PY'
@@ -1098,9 +1240,28 @@ jobs:
           )
           PY
 
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state draft
+          publish_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
+            --proof release-satisfaction-proof.json \
+            --snapshot release-candidate-snapshot.json \
+            --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --caller-run-id "${{ github.run_id }}" \
+            --caller-run-attempt "${{ github.run_attempt }}" \
+            --observed-at "${publish_observed_at}"
           release_id="$(jq -er '.id' release-before-publish.json)"
           release_etag="$(cat release-publish-etag.txt)"
           gh api --method PATCH \
+            -H "User-Agent: ${RELEASE_USER_AGENT}" \
             -H "If-Match: ${release_etag}" \
             "repos/${GITHUB_REPOSITORY}/releases/${release_id}" \
             --input release-publish-request.json > release-publish-response.json
@@ -1136,7 +1297,7 @@ jobs:
           verified=false
           for attempt in $(seq 1 20); do
             if gh release verify "${RELEASE_TAG}" --format json > release-attestation.json 2>release-attestation.err; then
-              gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-published.json
+              gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-published.json
               immutable="$(jq -r '.immutable // false' release-published.json)"
               if [[ "${immutable}" == "true" ]]; then
                 verified=true
@@ -1153,7 +1314,9 @@ jobs:
           uv run --project trusted-writer python - <<'PY'
           from __future__ import annotations
 
+          import base64
           import json
+          import os
           from pathlib import Path
 
           expected = json.loads(
@@ -1172,6 +1335,35 @@ jobs:
               or published.get("immutable") is not True
           ):
               raise SystemExit("Immutable release differs from Proof-bound transition")
+          verified = json.loads(
+              Path("release-attestation.json").read_text(encoding="utf-8")
+          )
+          try:
+              payload = verified["attestation"]["bundle"]["dsseEnvelope"]["payload"]
+              statement = json.loads(base64.b64decode(payload, validate=True))
+          except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+              raise SystemExit("Release Attestation JSON payload is invalid") from exc
+          predicate = statement.get("predicate", {})
+          subjects = statement.get("subject", [])
+          release_subjects = [subject for subject in subjects if "uri" in subject]
+          asset_subjects = {
+              subject.get("name"): "sha256:" + subject.get("digest", {}).get("sha256", "")
+              for subject in subjects
+              if subject.get("name")
+          }
+          expected_assets = {
+              asset["name"]: asset.get("digest") for asset in published["assets"]
+          }
+          admission = json.loads(Path("release-admission.json").read_text(encoding="utf-8"))
+          if (
+              predicate.get("repository") != os.environ["GITHUB_REPOSITORY"]
+              or predicate.get("tag") != os.environ["RELEASE_TAG"]
+              or predicate.get("releaseId") != str(published["id"])
+              or len(release_subjects) != 1
+              or release_subjects[0].get("digest") != {"sha1": admission["tag_object_sha"]}
+              or asset_subjects != expected_assets
+          ):
+              raise SystemExit("Release Attestation content differs from frozen admission")
           PY
           tag_commit_sha="$(jq -er '.commit_sha' release-admission.json)"
           tag_tree_sha="$(jq -er '.tree_sha' release-admission.json)"
@@ -1208,6 +1400,34 @@ jobs:
           PY
           release_attestation_digest="sha256:$(sha256sum release-attestation-binding.json | awk '{print $1}')"
           echo "RELEASE_ATTESTATION_DIGEST=${release_attestation_digest}" >> "${GITHUB_ENV}"
+
+      - name: Validate live frozen admission authority after immutable publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state published
+
+      - name: Validate current gate freshness before Certificate
+        shell: bash
+        run: |
+          set -euo pipefail
+          publish_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
+            --proof release-satisfaction-proof.json \
+            --snapshot release-candidate-snapshot.json \
+            --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --caller-run-id "${{ github.run_id }}" \
+            --caller-run-attempt "${{ github.run_attempt }}" \
+            --observed-at "${publish_observed_at}"
 
       - name: Build generation-0 Release Certificate
         shell: bash
@@ -1265,7 +1485,7 @@ jobs:
             --output release-certificate.json
 
       - name: Attest generation-0 Release Certificate
-        uses: actions/attest@v4
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
         with:
           subject-path: release-certificate.json
 
@@ -1273,6 +1493,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state published
+          publish_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
+            --proof release-satisfaction-proof.json \
+            --snapshot release-candidate-snapshot.json \
+            --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --caller-run-id "${{ github.run_id }}" \
+            --caller-run-attempt "${{ github.run_attempt }}" \
+            --observed-at "${publish_observed_at}"
           certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
           certificate_target="$(jq -er '.commit_sha' release-admission.json)"
           CERTIFICATE_DIGEST="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
@@ -1339,37 +1577,79 @@ jobs:
           PY
 
           certificate_release_id="$(jq -er '.id' certificate-release.json)"
+          export certificate_release_id
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
             --authority certificate-release.json \
             --asset release-certificate.json \
             --label release-certificate.json \
-            --repository "${GITHUB_REPOSITORY}"
-          gh api "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json
-          if [[ "$(jq -r '.assets[0].digest' certificate-release.json)" != "${CERTIFICATE_DIGEST}" ]] \
-            || [[ "$(jq '.assets | length' certificate-release.json)" != "1" ]]; then
-            echo "Fresh Certificate draft asset differs from current-run evidence." >&2
-            exit 1
-          fi
+            --repository "${GITHUB_REPOSITORY}" \
+            --user-agent "${RELEASE_USER_AGENT}"
+          gh api --include \
+            -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" \
+            > certificate-before-publish.http
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          response = Path("certificate-before-publish.http").read_bytes()
+          separator = b"\r\n\r\n" if b"\r\n\r\n" in response else b"\n\n"
+          raw_headers, found, body = response.partition(separator)
+          if not found:
+              raise SystemExit("Certificate Draft response did not include HTTP headers")
+          etag = next(
+              (line.partition(":")[2].strip() for line in raw_headers.decode("iso-8859-1").splitlines() if line.partition(":")[0].lower() == "etag"),
+              "",
+          )
+          if not etag:
+              raise SystemExit("Certificate Draft response did not include an ETag")
+          Path("certificate-publish-etag.txt").write_text(etag, encoding="ascii")
+          Path("certificate-before-publish.json").write_bytes(body)
+          release = json.loads(body)
+          if (
+              release.get("id") != int(os.environ["certificate_release_id"])
+              or release.get("tag_name") != os.environ["certificate_tag"]
+              or release.get("target_commitish") != os.environ["certificate_target"]
+              or release.get("name") != os.environ["CERTIFICATE_TITLE"]
+              or release.get("body") != os.environ["CERTIFICATE_BODY"]
+              or release.get("draft") is not True
+              or release.get("prerelease") is not True
+              or len(release.get("assets", [])) != 1
+              or release["assets"][0].get("name") != "release-certificate.json"
+              or release["assets"][0].get("digest") != os.environ["CERTIFICATE_DIGEST"]
+              or release["assets"][0].get("size") != Path("release-certificate.json").stat().st_size
+          ):
+              raise SystemExit("Fresh Certificate Draft differs before CAS publish")
+          PY
           jq -n \
             --arg target_commitish "${certificate_target}" \
             --arg name "${CERTIFICATE_TITLE}" \
             --arg body "${CERTIFICATE_BODY}" \
             '{target_commitish:$target_commitish,name:$name,body:$body,draft:false,prerelease:true,make_latest:"false"}' \
             > certificate-publish-request.json
+          certificate_etag="$(cat certificate-publish-etag.txt)"
           gh api --method PATCH \
+            -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            -H "If-Match: ${certificate_etag}" \
             "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" \
             --input certificate-publish-request.json \
             > certificate-publish-response.json
           if [[ "$(jq -r '.id' certificate-publish-response.json)" != "${certificate_release_id}" ]] \
             || [[ "$(jq -r '.draft' certificate-publish-response.json)" != "false" ]] \
-            || [[ "$(jq -r '.prerelease' certificate-publish-response.json)" != "true" ]]; then
+            || [[ "$(jq -r '.prerelease' certificate-publish-response.json)" != "true" ]] \
+            || [[ "$(jq -r '.target_commitish' certificate-publish-response.json)" != "${certificate_target}" ]] \
+            || [[ "$(jq -r '.name' certificate-publish-response.json)" != "${CERTIFICATE_TITLE}" ]] \
+            || [[ "$(jq -r '.body' certificate-publish-response.json)" != "${CERTIFICATE_BODY}" ]] \
+            || [[ "$(jq -r '.assets[0].digest' certificate-publish-response.json)" != "${CERTIFICATE_DIGEST}" ]] \
+            || [[ "$(jq '.assets | length' certificate-publish-response.json)" != "1" ]]; then
             echo "Certificate publish response differs from current-run identity." >&2
             exit 1
           fi
 
           evidence_ready=false
           for attempt in $(seq 1 20); do
-            if gh api "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json 2>/dev/null \
+            if gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json 2>/dev/null \
               && gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
               immutable="$(jq -r '.immutable // false' certificate-release.json)"
               if [[ "${immutable}" == "true" ]]; then

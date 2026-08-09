@@ -69,7 +69,8 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - `ai-sdlc-offline-1.0.4-windows-amd64.zip`、`ai-sdlc-offline-1.0.4-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.4-linux-amd64.tar.gz` 是该候选预期产物名，不是已发布发行集合；
 - `v1.0.4` GitHub Release 未发布，不能用于离线安装或声明 Permanent Release Truth；
 - 当前公开可安装且保持原样的离线版本是 `v1.0.2`，其下载与校验入口见 `USER_GUIDE.zh-CN.md`；
-- 发行恢复必须走独立 WorkItem 008，生成全新的 `v1.0.4` 代际，不得继承 `v1.0.3` 的 tag、Draft authority、资产或证据。
+- `v1.0.4 terminal NO-GO / not released`：该候选代际已终止，009 不得恢复、启用或发布它；公开安装真值继续是最后一个实际发布且保持原样的 `v1.0.2`。
+- `only future WorkItem 010 may migrate to v1.0.5`：必须先由外部确认 `release-publish` 环境能拦截历史 writer run，且新代际不得继承旧 tag、Draft authority、资产或证据。
 
 ## 验收接口
 

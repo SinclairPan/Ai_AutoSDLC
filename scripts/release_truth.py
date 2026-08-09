@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import http.client
 import json
 import os
@@ -62,6 +63,7 @@ def _publish_check(args: argparse.Namespace) -> dict[str, Any]:
         caller_workflow_ref=args.caller_workflow_ref,
         caller_run_id=args.caller_run_id,
         caller_run_attempt=args.caller_run_attempt,
+        observed_at=args.observed_at,
     )
     return {"status": "success", "proof_digest": proof.proof_digest}
 
@@ -126,7 +128,7 @@ def _upload_asset(args: argparse.Namespace) -> dict[str, Any]:
         connection.putrequest("POST", request_target)
         connection.putheader("Accept", "application/vnd.github+json")
         connection.putheader("Authorization", f"Bearer {token}")
-        connection.putheader("User-Agent", "Ai-AutoSDLC-release-truth-writer")
+        connection.putheader("User-Agent", args.user_agent)
         connection.putheader("X-GitHub-Api-Version", "2022-11-28")
         connection.putheader("Content-Type", "application/octet-stream")
         connection.putheader("Content-Length", str(asset_size))
@@ -156,6 +158,40 @@ def _upload_asset(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def _authority_check(args: argparse.Namespace) -> dict[str, Any]:
+    admission = read_json_object(args.admission)
+    ref = read_json_object(args.ref)
+    tag = read_json_object(args.tag)
+    commit = read_json_object(args.commit)
+    release = read_json_object(args.release)
+    frozen = {key: value for key, value in admission.items() if key != "admission_digest"}
+    encoded = json.dumps(
+        frozen, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    expected_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    expected_draft = args.release_state == "draft"
+    if admission.get("admission_digest") != expected_digest:
+        raise ReleaseTruthError("frozen release admission digest differs")
+    if (
+        ref.get("ref") != f"refs/tags/{args.release_tag}"
+        or ref.get("object", {}).get("sha") != admission.get("tag_object_sha")
+        or tag.get("sha") != admission.get("tag_object_sha")
+        or tag.get("object", {}).get("type") != "commit"
+        or tag.get("object", {}).get("sha") != admission.get("commit_sha")
+        or commit.get("sha") != admission.get("commit_sha")
+        or commit.get("tree", {}).get("sha") != admission.get("tree_sha")
+        or release.get("id") != admission.get("numeric_release_id")
+        or release.get("tag_name") != args.release_tag
+        or release.get("target_commitish") != admission.get("commit_sha")
+        or release.get("upload_url") != admission.get("upload_url")
+        or release.get("draft") is not expected_draft
+    ):
+        raise ReleaseTruthError("live release authority differs from frozen admission")
+    if args.release_state == "published" and release.get("immutable") is not True:
+        raise ReleaseTruthError("published release authority is not immutable")
+    return {"status": "success", "admission_digest": expected_digest}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Internal protected Release Truth workflow adapter."
@@ -172,6 +208,7 @@ def _build_parser() -> argparse.ArgumentParser:
     publish_check.add_argument("--caller-workflow-ref", required=True)
     publish_check.add_argument("--caller-run-id", type=int, required=True)
     publish_check.add_argument("--caller-run-attempt", type=int, required=True)
+    publish_check.add_argument("--observed-at", required=True)
 
     certificate = subparsers.add_parser("certificate")
     certificate.add_argument("--proof", type=Path, required=True)
@@ -186,6 +223,18 @@ def _build_parser() -> argparse.ArgumentParser:
     upload_asset.add_argument("--repository", required=True)
     upload_asset.add_argument("--name")
     upload_asset.add_argument("--label")
+    upload_asset.add_argument("--user-agent", required=True)
+
+    authority_check = subparsers.add_parser("authority-check")
+    authority_check.add_argument("--admission", type=Path, required=True)
+    authority_check.add_argument("--ref", type=Path, required=True)
+    authority_check.add_argument("--tag", type=Path, required=True)
+    authority_check.add_argument("--commit", type=Path, required=True)
+    authority_check.add_argument("--release", type=Path, required=True)
+    authority_check.add_argument("--release-tag", required=True)
+    authority_check.add_argument(
+        "--release-state", choices=("draft", "published"), required=True
+    )
     return parser
 
 
@@ -196,6 +245,7 @@ def main(argv: list[str] | None = None) -> int:
         "publish-check": _publish_check,
         "certificate": _certificate,
         "upload-asset": _upload_asset,
+        "authority-check": _authority_check,
     }
     try:
         result = handlers[args.command](args)

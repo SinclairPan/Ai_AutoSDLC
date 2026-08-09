@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import re
 import runpy
 import shutil
 import subprocess
@@ -271,14 +272,13 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     workflow = yaml.safe_load(workflow_text)
     revocation_job = workflow["jobs"]["record-revocation"]
     assert revocation_job["permissions"] == {
-        "attestations": "write",
-        "contents": "write",
-        "id-token": "write",
+        "contents": "read",
     }
+    assert revocation_job["if"].startswith("false &&")
     attestation_steps = [
         step
         for step in revocation_job["steps"]
-        if step.get("uses") == "actions/attest@v4"
+        if step.get("uses", "").startswith("actions/attest@")
     ]
     assert len(attestation_steps) == 1
     assert attestation_steps[0]["with"]["subject-path"] == (
@@ -298,7 +298,7 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
         for job_id, job in jobs.items()
         if job.get("permissions", {}).get("contents") == "write"
     ]
-    assert writer_jobs == ["record-revocation"]
+    assert writer_jobs == []
     assert (
         "startsWith(github.event.release.tag_name || inputs.tag, 'v')"
         in jobs["windows-zip"]["if"]
@@ -312,9 +312,7 @@ def test_release_artifact_smoke_records_receipt_before_incident_projection() -> 
     assert writer["needs"] == ["windows-zip", "posix-smoke-verdicts"]
     assert writer["environment"] == "release-publish"
     assert writer["permissions"] == {
-        "attestations": "write",
-        "contents": "write",
-        "id-token": "write",
+        "contents": "read",
     }
     assert writer["env"]["GH_REPO"] == "${{ github.repository }}"
     assert writer["concurrency"] == {
@@ -494,18 +492,20 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert workflow_data["env"] == {
         "CURRENT_RELEASE_TAG": "v1.0.4",
         "RELEASE_BOOTSTRAP_ENABLED": "false",
+        "RELEASE_PUBLISH_ENVIRONMENT": "release-publish",
+        "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED": "false",
         "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
     }
     assert "ref: ${{ inputs.tag }}" not in workflow
     policy_checkout = next(
         step
         for step in jobs["release-assurance-policy"]["steps"]
-        if step.get("uses") == "actions/checkout@v6"
+        if step.get("uses", "").startswith("actions/checkout@")
     )
     build_checkout = next(
         step
         for step in jobs["build-smoke-candidate"]["steps"]
-        if step.get("uses") == "actions/checkout@v6"
+        if step.get("uses", "").startswith("actions/checkout@")
     )
     assert policy_checkout["with"]["ref"] == "${{ github.sha }}"
     assert build_checkout["with"]["ref"] == "${{ github.sha }}"
@@ -531,7 +531,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert "verify_offline_bundle.py failed with exit code" in workflow
     assert "adapter status" in workflow
     assert "run --dry-run" in workflow
-    assert "actions/upload-artifact@v7" in workflow
+    assert "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow
     assert (
         "name: release-candidate-${{ github.run_id }}-${{ github.run_attempt }}"
         in workflow
@@ -735,7 +735,8 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     env = {
         **os.environ,
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
-        "RELEASE_ID": "123456",
+            "RELEASE_ID": "123456",
+            "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
         "UPLOAD_LOG": str(upload_log),
         "GH_CALL_COUNT": str(gh_call_count),
         "PYTHON_EXE": sys.executable,
@@ -846,7 +847,7 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         for job in jobs.values()
         if isinstance(job, dict)
         for step in job.get("steps", [])
-        if step.get("uses") == "actions/checkout@v6"
+        if step.get("uses", "").startswith("actions/checkout@")
     ]
     assert checkout_refs == ["${{ github.sha }}"] * 4
     assert "ref: ${{ github.event.repository.default_branch }}" not in workflow_text
@@ -855,12 +856,12 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "scripts/release_truth.py proof" in workflow_text
     assert "scripts/release_truth.py publish-check" in workflow_text
     assert "scripts/release_truth.py certificate" in workflow_text
-    assert "actions/attest@v4" in workflow_text
+    assert "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6" in workflow_text
     assert "subject-path: release-certificate.json" in workflow_text
     assert "GITHUB_WORKFLOW_REF" in workflow_text
     assert "github.run_id" in workflow_text
     assert "github.run_attempt" in workflow_text
-    assert "actions/download-artifact@v7" in workflow_text
+    assert "actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131" in workflow_text
     assert "--clobber" not in workflow_text
     assert (
         '"repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100"'
@@ -904,6 +905,17 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "workflow_run_id" in workflow_text
     assert "workflow_run_attempt" in workflow_text
     assert "RELEASE_USER_AGENT" in workflow_text
+    assert workflow["env"]["RELEASE_PUBLISH_ENVIRONMENT"] == "release-publish"
+    assert workflow["env"]["RELEASE_ENVIRONMENT_PROTECTION_VERIFIED"] == "false"
+    assert '"${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true"' in workflow_text
+    assert "historical writer runs remain blocked" in workflow_text
+    assert "terminal-generation-burn" in workflow_text
+    assert "no cleanup, edit, reuse, or rerun" in workflow_text
+    assert workflow_text.count('"${GITHUB_RUN_ATTEMPT}" != "1"') == 2
+    assert "rerun is forbidden by terminal-generation-burn" in workflow_text
+    assert 'admission["admission_digest"] = admission_digest' in workflow_text
+    assert '"upload_url": admission["upload_url"]' in workflow_text
+    assert '"release_user_agent": admission["user_agent"]' in workflow_text
 
     assert workflow_text.count("scripts/release_truth.py upload-asset") == 3
     assert "gh release upload" not in workflow_text
@@ -915,7 +927,9 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     )
     certificate_index = workflow_text.index("scripts/release_truth.py certificate")
     evidence_release_index = workflow_text.index("certificate-create-request.json")
-    certificate_attestation_index = workflow_text.index("actions/attest@v4")
+    certificate_attestation_index = workflow_text.index(
+        "actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6"
+    )
     assert upload_index < cas_index < publish_index < verify_index
     assert (
         verify_index
@@ -935,6 +949,18 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "--input release-publish-request.json" in workflow_text
     assert "release-publish-response.json" in workflow_text
     assert "Published release differs from Proof-bound transition" in workflow_text
+    assert workflow_text.count("Validate live frozen admission authority") >= 4
+    assert workflow_text.count("Validate current gate freshness") >= 3
+    assert '--observed-at "${publish_observed_at}"' in workflow_text
+    assert workflow_text.count("gh api") == workflow_text.count(
+        'User-Agent: ${RELEASE_USER_AGENT}'
+    )
+    assert workflow_text.count("scripts/release_truth.py upload-asset") == (
+        workflow_text.count('--user-agent "${RELEASE_USER_AGENT}"')
+    )
+    assert "base64.b64decode(payload, validate=True)" in workflow_text
+    assert 'predicate.get("releaseId") != str(published["id"])' in workflow_text
+    assert "asset_subjects != expected_assets" in workflow_text
     assert "publish_exit" not in workflow_text
     assert '"prerelease": True' in workflow_text
     assert '"make_latest": "false"' in workflow_text
@@ -944,6 +970,14 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "certificate-create-request.json" in workflow_text
     assert "certificate-publish-request.json" in workflow_text
     assert "certificate-publish-response.json" in workflow_text
+    assert "certificate-before-publish.http" in workflow_text
+    assert "certificate-publish-etag.txt" in workflow_text
+    certificate_cas_index = workflow_text.index("certificate-before-publish.http")
+    certificate_if_match_index = workflow_text.index(
+        '-H "If-Match: ${certificate_etag}"', certificate_cas_index
+    )
+    certificate_wait_index = workflow_text.index("evidence_ready=false")
+    assert certificate_cas_index < certificate_if_match_index < certificate_wait_index
     assert (
         '"repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}"'
         in workflow_text
@@ -1825,3 +1859,16 @@ def test_github_workflows_use_node24_compatible_core_actions() -> None:
             assert legacy_action not in workflow, (
                 f"{workflow_path.relative_to(_REPO_ROOT)} still uses {legacy_action}"
             )
+
+    release_build = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    audited_pins = {
+        "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
+        "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
+        "astral-sh/setup-uv": "37802adc94f370d6bfd71619e3f0bf239e1f3b78",
+        "actions/upload-artifact": "043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+        "actions/download-artifact": "37930b1c2abaa49bbe596cd826c3c89aef350131",
+        "actions/attest": "1e69f48acb82d1966a394da916b4c1698aa569d6",
+    }
+    for action, commit_sha in audited_pins.items():
+        assert f"uses: {action}@{commit_sha}" in release_build
+        assert not re.search(rf"uses: {re.escape(action)}@v\\d+", release_build)

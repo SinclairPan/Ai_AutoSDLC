@@ -92,7 +92,11 @@ class ReleaseCandidateSnapshot(BaseModel):
     model_config = _MODEL_CONFIG
 
     repository: str
+    admission_id: str
+    admission_digest: str
     draft_release_id: int = Field(ge=1)
+    upload_url: str
+    release_user_agent: str
     draft_release_updated_at: str
     draft: bool
     tag_name: str
@@ -110,15 +114,20 @@ class ReleaseCandidateSnapshot(BaseModel):
     publish_workflow_ref: str
     evidence_cutoff_at: str
 
-    _identity = field_validator("repository", "tag_name", "publish_workflow_ref")(
-        _require_identity
-    )
+    _identity = field_validator(
+        "repository",
+        "admission_id",
+        "upload_url",
+        "release_user_agent",
+        "tag_name",
+        "publish_workflow_ref",
+    )(_require_identity)
     _shas = field_validator("tag_object_sha", "commit_sha", "tree_sha")(
         _require_git_sha
     )
-    _digests = field_validator("required_policy_digest", "release_settings_digest")(
-        _require_digest
-    )
+    _digests = field_validator(
+        "admission_digest", "required_policy_digest", "release_settings_digest"
+    )(_require_digest)
     _timestamps = field_validator("draft_release_updated_at", "evidence_cutoff_at")(
         _require_utc_timestamp
     )
@@ -133,7 +142,11 @@ class ReleaseSatisfactionProof(ArtifactCompatibility):
         "release-satisfaction-proof.v1"
     )
     repository: str
+    admission_id: str
+    admission_digest: str
     draft_release_id: int = Field(ge=1)
+    upload_url: str
+    release_user_agent: str
     draft_release_updated_at: str
     tag_name: str
     tag_object_sha: str
@@ -149,15 +162,20 @@ class ReleaseSatisfactionProof(ArtifactCompatibility):
     evidence_cutoff_at: str
     proof_digest: str = ""
 
-    _identity = field_validator("repository", "tag_name", "publish_workflow_ref")(
-        _require_identity
-    )
+    _identity = field_validator(
+        "repository",
+        "admission_id",
+        "upload_url",
+        "release_user_agent",
+        "tag_name",
+        "publish_workflow_ref",
+    )(_require_identity)
     _shas = field_validator("tag_object_sha", "commit_sha", "tree_sha")(
         _require_git_sha
     )
-    _digests = field_validator("required_policy_digest", "release_settings_digest")(
-        _require_digest
-    )
+    _digests = field_validator(
+        "admission_digest", "required_policy_digest", "release_settings_digest"
+    )(_require_digest)
     _timestamps = field_validator("draft_release_updated_at", "evidence_cutoff_at")(
         _require_utc_timestamp
     )
@@ -200,11 +218,18 @@ class ReleaseCertificate(ArtifactCompatibility):
 
     schema_version: Literal["release-certificate.v1"] = "release-certificate.v1"
     repository: str
+    admission_id: str
+    admission_digest: str
     github_release_id: int = Field(ge=1)
+    upload_url: str
+    release_user_agent: str
     github_release_url: str
     tag_name: str
+    tag_object_sha: str
     commit_sha: str
     tree_sha: str
+    workflow_run_id: int = Field(ge=1)
+    workflow_run_attempt: int = Field(ge=1)
     proof_digest: str
     release_attestation_digest: str
     assets: tuple[ReleaseAssetBinding, ...]
@@ -214,12 +239,19 @@ class ReleaseCertificate(ArtifactCompatibility):
     certificate_digest: str = ""
 
     _identity = field_validator(
-        "repository", "github_release_url", "tag_name"
+        "repository",
+        "admission_id",
+        "upload_url",
+        "release_user_agent",
+        "github_release_url",
+        "tag_name",
     )(_require_identity)
-    _shas = field_validator("commit_sha", "tree_sha")(_require_git_sha)
-    _digests = field_validator("proof_digest", "release_attestation_digest")(
-        _require_digest
+    _shas = field_validator("tag_object_sha", "commit_sha", "tree_sha")(
+        _require_git_sha
     )
+    _digests = field_validator(
+        "admission_digest", "proof_digest", "release_attestation_digest"
+    )(_require_digest)
     _timestamp = field_validator("issued_at")(_require_utc_timestamp)
 
     @model_validator(mode="after")
