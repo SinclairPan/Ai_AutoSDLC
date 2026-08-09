@@ -10,6 +10,25 @@ from pathlib import Path
 
 SENTINEL_NODE = "tests/unit/test_lean_code_pr_review.py::test_closed_scope_blocks_risk_disposition_tamper[True--False]"
 SENTINEL_ROUNDS = 5
+RUNNER_ERROR_EXIT_CODE = 1
+
+
+def _report(
+    *,
+    attempts: list[dict[str, object]],
+    exit_code: int,
+    success: bool,
+    runner_error: dict[str, str] | None = None,
+) -> dict[str, object]:
+    return {
+        "attempts": attempts,
+        "declared_rounds": SENTINEL_ROUNDS,
+        "executed_rounds": len(attempts),
+        "exit_code": exit_code,
+        "node": SENTINEL_NODE,
+        "runner_error": runner_error,
+        "success": success,
+    }
 
 
 def run_snapshot_control_sentinel(runner=subprocess.run) -> dict[str, object]:
@@ -18,7 +37,18 @@ def run_snapshot_control_sentinel(runner=subprocess.run) -> dict[str, object]:
     attempts: list[dict[str, object]] = []
 
     for attempt in range(1, SENTINEL_ROUNDS + 1):
-        result = runner(command)
+        try:
+            result = runner(command)
+        except Exception as error:
+            return _report(
+                attempts=attempts,
+                exit_code=RUNNER_ERROR_EXIT_CODE,
+                success=False,
+                runner_error={
+                    "reason": "runner_exception",
+                    "type": type(error).__name__,
+                },
+            )
         returncode = int(result.returncode)
         attempts.append(
             {
@@ -28,29 +58,17 @@ def run_snapshot_control_sentinel(runner=subprocess.run) -> dict[str, object]:
             }
         )
         if returncode != 0:
-            return {
-                "attempts": attempts,
-                "exit_code": returncode,
-                "node": SENTINEL_NODE,
-                "rounds": SENTINEL_ROUNDS,
-                "success": False,
-            }
+            return _report(attempts=attempts, exit_code=returncode, success=False)
 
-    return {
-        "attempts": attempts,
-        "exit_code": 0,
-        "node": SENTINEL_NODE,
-        "rounds": SENTINEL_ROUNDS,
-        "success": True,
-    }
+    return _report(attempts=attempts, exit_code=0, success=True)
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: list[str] | None = None, runner=subprocess.run) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args(argv)
 
-    report = run_snapshot_control_sentinel()
+    report = run_snapshot_control_sentinel(runner)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(report, ensure_ascii=False, separators=(",", ":"), sort_keys=True)

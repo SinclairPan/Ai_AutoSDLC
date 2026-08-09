@@ -1382,7 +1382,9 @@ def test_draft_short_circuits_before_legacy_protected_authority_decision() -> No
     assert decision.index(authority_fallback) < decision.index(legacy_authority_call)
 
 
-def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() -> None:
+def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts(
+    tmp_path: Path,
+) -> None:
     workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
 
     assert "Checkout protected base authority" in workflow
@@ -1474,6 +1476,8 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     success = sentinel["run_snapshot_control_sentinel"](successful_runner)
     assert success["success"] is True
     assert success["exit_code"] == 0
+    assert success["declared_rounds"] == sentinel["SENTINEL_ROUNDS"]
+    assert success["executed_rounds"] == sentinel["SENTINEL_ROUNDS"]
     assert len(success_calls) == sentinel["SENTINEL_ROUNDS"]
     assert all(command == expected_command for command in success_calls)
     assert [attempt["command"] for attempt in success["attempts"]] == [
@@ -1490,8 +1494,64 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     failure = sentinel["run_snapshot_control_sentinel"](failing_runner)
     assert failure["success"] is False
     assert failure["exit_code"] == 17
+    assert failure["declared_rounds"] == sentinel["SENTINEL_ROUNDS"]
+    assert failure["executed_rounds"] == 2
     assert failure_calls == [expected_command, expected_command]
     assert [attempt["returncode"] for attempt in failure["attempts"]] == [0, 17]
+
+    cli_success_output = tmp_path / "nested" / "success.json"
+    assert sentinel["main"](["--output", str(cli_success_output)], successful_runner) == 0
+    cli_success_text = cli_success_output.read_text(encoding="utf-8")
+    cli_success = json.loads(cli_success_text)
+    assert cli_success_output.parent.is_dir()
+    assert cli_success["success"] is True
+    assert cli_success["exit_code"] == 0
+    assert cli_success["declared_rounds"] == 5
+    assert cli_success["executed_rounds"] == 5
+    assert cli_success_text == (
+        json.dumps(
+            cli_success,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    )
+
+    cli_failure_calls: list[list[str]] = []
+
+    def cli_failing_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        cli_failure_calls.append(command)
+        return subprocess.CompletedProcess(command, 23 if len(cli_failure_calls) == 2 else 0)
+
+    cli_failure_output = tmp_path / "nested" / "failure.json"
+    assert sentinel["main"](["--output", str(cli_failure_output)], cli_failing_runner) == 23
+    cli_failure = json.loads(cli_failure_output.read_text(encoding="utf-8"))
+    assert cli_failure_calls == [expected_command, expected_command]
+    assert cli_failure["success"] is False
+    assert cli_failure["exit_code"] == 23
+    assert cli_failure["declared_rounds"] == 5
+    assert cli_failure["executed_rounds"] == 2
+    assert [attempt["returncode"] for attempt in cli_failure["attempts"]] == [0, 23]
+
+    def unavailable_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        raise OSError("secret-token=/private/ci/runner")
+
+    runner_error_output = tmp_path / "nested" / "runner-error.json"
+    assert sentinel["main"](["--output", str(runner_error_output)], unavailable_runner) == 1
+    runner_error_text = runner_error_output.read_text(encoding="utf-8")
+    runner_error = json.loads(runner_error_text)
+    assert runner_error["success"] is False
+    assert runner_error["exit_code"] == 1
+    assert runner_error["declared_rounds"] == 5
+    assert runner_error["executed_rounds"] == 0
+    assert runner_error["attempts"] == []
+    assert runner_error["runner_error"] == {
+        "reason": "runner_exception",
+        "type": "OSError",
+    }
+    assert "secret-token" not in runner_error_text
+    assert "/private/ci/runner" not in runner_error_text
 
     sentinel_step = next(
         step
