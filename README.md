@@ -4,6 +4,8 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
+> 发布状态：仓库源码候选版本为 `1.0.3`，但对应的 `v1.0.3` GitHub Release 未发布，不能使用任何 `releases/download/v1.0.3/` 路径。普通用户需要离线安装时，请按[中文用户指南](USER_GUIDE.zh-CN.md)使用最后一个已发布且保持原样的 `v1.0.2`；独立恢复工作将发布全新的 `v1.0.4`。
+
 ## 核心特性
 
 | 能力 | 说明 |
@@ -250,11 +252,13 @@ ai-sdlc enterprise configure --help
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。默认产物名称：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.3` 源码候选预期生成的产物名称；它们没有形成已发布、可安装的正式集合：
 
 - `ai-sdlc-offline-1.0.3-windows-amd64.zip`
 - `ai-sdlc-offline-1.0.3-macos-arm64.tar.gz`
 - `ai-sdlc-offline-1.0.3-linux-amd64.tar.gz`
+
+当前公开可安装的离线版本仍是 `v1.0.2`，具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
 
 构建入口：
 

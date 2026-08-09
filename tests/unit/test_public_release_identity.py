@@ -3,6 +3,7 @@ from pathlib import Path
 from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
     PUBLIC_DOC_PATHS,
+    PUBLISHED_VERSION,
     REQUIRED_SURFACES,
     STABLE_SOURCE_CLONE,
     scan_paths,
@@ -93,3 +94,7 @@ def test_user_guide_identity_requires_new_user_release_paths() -> None:
     assert "ai-sdlc init ." in markers
     assert "ai-sdlc adopt ." in markers
     assert STABLE_SOURCE_CLONE not in markers
+    assert PUBLISHED_VERSION == "1.0.2"
+    assert any("releases/download/v1.0.2/" in marker for marker in markers)
+    assert not any("releases/download/v1.0.3/" in marker for marker in markers)
+    assert "v1.0.3 未发布" in markers

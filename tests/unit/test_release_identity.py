@@ -58,12 +58,14 @@ def test_user_guide_pins_published_assets_and_integrity_commands() -> None:
     text = (REPO_ROOT / "USER_GUIDE.zh-CN.md").read_text(encoding="utf-8")
 
     for asset in (
-        "ai-sdlc-offline-1.0.3-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.3-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.3-linux-amd64.tar.gz",
+        "ai-sdlc-offline-1.0.2-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
     ):
-        assert f"releases/download/v1.0.3/{asset}" in text
+        assert f"releases/download/v1.0.2/{asset}" in text
         assert f"{asset}.sha256" in text
+    assert "releases/download/v1.0.3/" not in text
+    assert "v1.0.3 未发布" in text
     for marker in (
         "Get-FileHash -Algorithm SHA256",
         "shasum -a 256 -c",

@@ -2387,7 +2387,9 @@ def test_beginner_guide_blocks_old_source_and_upgrade_paths(tmp_path: Path) -> N
     guide = tmp_path / "USER_GUIDE.zh-CN.md"
     guide.write_text(
         guide.read_text(encoding="utf-8")
-        + "\n## 老版本升级\n\n从源码运行：`uv sync` 后使用 `@main`。\n",
+        + "\n## 老版本升级\n\n从源码运行：`uv sync` 后使用 `@main`。\n"
+        + "https://github.com/SinclairPan/Ai_AutoSDLC/"
+        "releases/download/v1.0.3/ai-sdlc-offline-1.0.3-linux-amd64.tar.gz\n",
         encoding="utf-8",
     )
 
@@ -2397,6 +2399,7 @@ def test_beginner_guide_blocks_old_source_and_upgrade_paths(tmp_path: Path) -> N
         "beginner guide CLI path contains out-of-scope content" in item
         and "老版本升级" in item
         and "从源码运行" in item
+        and "releases/download/v1.0.3/" in item
         for item in blockers
     )
 
