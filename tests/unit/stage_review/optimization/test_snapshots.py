@@ -39,6 +39,9 @@ from ai_sdlc.core.stage_review.optimization.snapshot_models import (
     SnapshotControlEvent,
     SnapshotSelectionToken,
 )
+from ai_sdlc.core.stage_review.optimization.snapshot_retry import (
+    SnapshotControlBusyError,
+)
 from ai_sdlc.core.stage_review.optimization.snapshots import SnapshotControlService
 from ai_sdlc.core.stage_review.optimization.storage_models import (
     OptimizationStoragePolicy,
@@ -46,6 +49,9 @@ from ai_sdlc.core.stage_review.optimization.storage_models import (
     StoragePressureError,
 )
 from ai_sdlc.core.stage_review.resource_models import ResourceAmounts
+from ai_sdlc.core.stage_review.resource_storage_bundles import (
+    StorageBundleUnavailableError,
+)
 from ai_sdlc.core.stage_review.resources import ResourceGovernor
 
 
@@ -557,6 +563,21 @@ def test_session_binding_retries_an_expired_commit_lease_without_duplicates(
     binding_operations = service.store.binding_operations()
     assert len(binding_operations) == 1
     assert binding_operations[0].session_id == operation.session_id
+
+    storage_failure = StorageBundleUnavailableError("storage bundle is unavailable")
+
+    def raise_storage_bundle(
+        _: SessionSnapshotBindingOperation,
+    ) -> SnapshotControlEvent:
+        raise storage_failure
+
+    monkeypatch.setattr(service, "_bind_session_attempt", raise_storage_bundle)
+
+    with pytest.raises(SnapshotControlBusyError, match="snapshot_control_busy") as caught:
+        service.bind_session(_binding("session.storage-bundle", token), token)
+
+    assert str(caught.value) == "snapshot_control_busy"
+    assert caught.value.__cause__ is storage_failure
 
 
 def test_visible_revocation_is_recovered_before_new_session_and_rolls_back(

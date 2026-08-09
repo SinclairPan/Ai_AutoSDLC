@@ -34,7 +34,9 @@
 ## 发布相关变更
 
 - [ ] `README.md`、`USER_GUIDE.zh-CN.md` 与 `packaging/offline/README.md` 描述一致；
-- [ ] 当前发布版本为 `1.0.4`；
+- [ ] 源码候选版本为 `1.0.4`，最后已发布的离线版本仍为 `1.0.2`；
+- [ ] `v1.0.4 terminal NO-GO / not released`，`only future WorkItem 010 may migrate to v1.0.5`；
+- [ ] 不得 redispatch、rerun、上传或发布 v1.0.4；
 - [ ] 包版本、源码版本、锁文件和工作流一致；
 - [ ] README、用户指南和打包说明一致；
 - [ ] 离线包名称与 manifest 一致；

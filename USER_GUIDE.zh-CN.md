@@ -4,7 +4,9 @@ AI-SDLC 会把项目规则、需求澄清、技术方案、任务执行、质量
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 发布可用性：当前源码候选版本为 `1.0.4`，但 `v1.0.4 未发布`，不能使用任何 `releases/download/v1.0.4` 路径。本指南继续安装最后一个已发布且保持原样的离线版本 `v1.0.2`；只有 WorkItem 008 生成并验证全新的 `v1.0.4` Permanent Release Truth 后，才会迁移公开安装入口。
+> 发布可用性：`v1.0.4 terminal NO-GO / not released`，即 `v1.0.4 未发布`且该源码候选已经终止，不能使用任何 `releases/download/v1.0.4` 路径，也不得由 009 恢复或启用。本指南继续安装最后一个实际发布且保持原样的离线版本 `v1.0.2`；`only future WorkItem 010 may migrate to v1.0.5`，并且必须先满足受保护发布环境的外部 GO 前置条件。
+
+未来 010 只有在两项远端保护均经独立验证后才可启用：`release-publish` environment 以 required reviewers 阻断未审历史 writer，且禁止自批与管理员 bypass；`active no-bypass tag ruleset protects software and Certificate tags`，精确覆盖软件 tag 和 generation-0 Certificate tag，并拒绝更新、删除及非快进变更。009 中两个验证开关均为字符串 `false`；任何部分创建或保护失败都属于 terminal generation burn，禁止清理、恢复或重跑。
 
 本指南只包含两条完整路径：
 

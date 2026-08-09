@@ -27,7 +27,14 @@ PUBLIC_DOC_PATHS = {
 }
 
 REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
-    "README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION, STABLE_SOURCE_CLONE),
+    "README.md": (
+        CURRENT_REPOSITORY_URL,
+        CURRENT_VERSION,
+        STABLE_SOURCE_CLONE,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "active no-bypass tag ruleset protects software and Certificate tags",
+    ),
     "USER_GUIDE.zh-CN.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
@@ -35,6 +42,9 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "v1.0.4 未发布",
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "active no-bypass tag ruleset protects software and Certificate tags",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-windows-amd64.zip",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
@@ -51,16 +61,69 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "当前结果 / Result",
         "下一步 / Next",
     ),
-    "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
+    "docs/product-contract.md": (
+        CURRENT_REPOSITORY_URL,
+        CURRENT_VERSION,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "active no-bypass tag ruleset protects software and Certificate tags",
+    ),
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
+        PUBLISHED_VERSION,
         STABLE_SOURCE_CLONE,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "不得 redispatch、rerun、上传或发布 v1.0.4",
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
+        PUBLISHED_VERSION,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "不得 redispatch、rerun、上传或发布 v1.0.4",
     ),
+    "docs/pull-request-checklist.zh.md": (
+        CURRENT_VERSION,
+        PUBLISHED_VERSION,
+        "v1.0.4 terminal NO-GO / not released",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "不得 redispatch、rerun、上传或发布 v1.0.4",
+    ),
+    "docs/框架自迭代开发与发布约定.md": (
+        "## v1.0.4 bootstrap 终止记录（2026-08-09）",
+        "terminal NO-GO / not released / bootstrap budget exhausted",
+        "0776885aeb6299bad3c13fd6c47658ad17dad5e1",
+        "6125d7e80b1a66eead4ddf5654a578ec2a1e856e",
+        "a6a1f2ac463d9ca2dc1ea68af73271e679449015",
+        "367380686",
+        "31295426083",
+        "93199662116",
+        "93211087289",
+        "93211087697",
+        "1 failed / 6219 passed / 16 skipped",
+        "zero assets",
+        "UNKNOWN",
+        "pre-tag qualification",
+        "WorkItem 009",
+        "WorkItem 010",
+        "active no-bypass tag ruleset protects software and Certificate tags",
+    ),
+}
+
+FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
+    "README.md": ("WorkItem 008",),
+    "USER_GUIDE.zh-CN.md": ("WorkItem 008",),
+    "docs/product-contract.md": ("WorkItem 008",),
+    "packaging/offline/README.md": (
+        "上传动作必须由有权限的维护者明确触发",
+    ),
+    "packaging/offline/RELEASE_CHECKLIST.md": (
+        "上传动作由有权限维护者明确执行",
+    ),
+    "docs/pull-request-checklist.zh.md": ("当前发布版本为 `1.0.4`",),
 }
 
 PUBLIC_ROOT_MARKDOWN = {
@@ -201,6 +264,11 @@ def validate_required_surfaces(files: Mapping[str, str]) -> list[Finding]:
             if marker not in text:
                 findings.append(
                     Finding(path, None, "required-identity-marker-missing", marker)
+                )
+        for marker in FORBIDDEN_SURFACE_MARKERS.get(path, ()):
+            if marker in text:
+                findings.append(
+                    Finding(path, None, "obsolete-release-authorization", marker)
                 )
     return findings
 

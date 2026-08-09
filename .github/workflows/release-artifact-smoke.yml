@@ -442,6 +442,7 @@ jobs:
     name: Record Receipt before incident projection
     needs: [windows-zip, posix-smoke-verdicts]
     if: >-
+      false &&
       always() &&
       github.event_name == 'release' &&
       startsWith(github.event.release.tag_name || inputs.tag, 'v') &&
@@ -454,9 +455,7 @@ jobs:
     timeout-minutes: 30
     environment: release-publish
     permissions:
-      attestations: write
-      contents: write
-      id-token: write
+      contents: read
     concurrency:
       group: release-revocation-${{ github.event.release.tag_name || inputs.tag }}
       cancel-in-progress: false

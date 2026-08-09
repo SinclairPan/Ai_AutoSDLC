@@ -54,13 +54,13 @@ jobs:
       reason: ${{ steps.decision.outputs.reason }}
     steps:
       - name: Checkout candidate
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
           fetch-depth: 0
 
       - name: Checkout protected base authority
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.authority_ref || github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.before || 'main' }}
           path: trusted-base
@@ -149,17 +149,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - name: Checkout candidate
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
@@ -186,7 +186,7 @@ jobs:
 
       - name: Upload fast gate evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: fast-gate-${{ github.run_id }}-${{ github.run_attempt }}
           path: fast-gate-results.xml
@@ -200,24 +200,24 @@ jobs:
     timeout-minutes: 15
     steps:
       - name: Checkout candidate
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Checkout protected base authority
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.authority-check.outputs.base-sha }}
           path: trusted-base
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
@@ -279,24 +279,24 @@ jobs:
       CANDIDATE_SHA: ${{ needs.authority-check.outputs.candidate-sha }}
     steps:
       - name: Checkout candidate
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Checkout protected base authority
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.authority-check.outputs.base-sha }}
           path: trusted-base
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python-version }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v7
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
         with:
           enable-cache: true
 
@@ -330,6 +330,12 @@ jobs:
           uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
             --junitxml=ci-evidence/${CELL}/compatibility-results.xml
 
+      - name: Run fixed SnapshotControl stability sentinel
+        if: matrix.os == 'windows-latest' && matrix.python-version == '3.14'
+        run: >-
+          uv run python scripts/ci_snapshot_control_sentinel.py
+          --output ci-evidence/${{ env.CELL }}/snapshot-control-sentinel.json
+
       - name: Record raw cell completion
         if: always()
         shell: bash
@@ -339,7 +345,7 @@ jobs:
 
       - name: Upload compatibility evidence
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: compatibility-${{ matrix.os }}-py${{ matrix.python-version }}
           path: ci-evidence/${{ env.CELL }}
@@ -357,12 +363,12 @@ jobs:
         shell: [pwsh, cmd]
     steps:
       - name: Checkout candidate
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: "3.11"
 
@@ -419,20 +425,20 @@ jobs:
 
       - name: Checkout candidate
         if: needs.authority-check.outputs.full-assurance-required == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ inputs.candidate_ref || github.sha }}
 
       - name: Checkout protected base authority
         if: needs.authority-check.outputs.full-assurance-required == 'true'
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           ref: ${{ needs.authority-check.outputs.base-sha }}
           path: trusted-base
 
       - name: Download full assurance evidence
         if: needs.authority-check.outputs.full-assurance-required == 'true'
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           pattern: compatibility-*
           path: downloaded-evidence

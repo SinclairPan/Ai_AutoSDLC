@@ -112,12 +112,18 @@ def build_release_satisfaction_proof(
     _validate_assets(snapshot.expected_assets, snapshot.assets)
     return ReleaseSatisfactionProof(
         repository=snapshot.repository,
+        admission_id=snapshot.admission_id,
+        admission_digest=snapshot.admission_digest,
         draft_release_id=snapshot.draft_release_id,
+        upload_url=snapshot.upload_url,
+        release_user_agent=snapshot.release_user_agent,
         draft_release_updated_at=snapshot.draft_release_updated_at,
         tag_name=snapshot.tag_name,
         tag_object_sha=snapshot.tag_object_sha,
         commit_sha=snapshot.commit_sha,
         tree_sha=snapshot.tree_sha,
+        tag_ruleset_id=snapshot.tag_ruleset_id,
+        tag_ruleset_digest=snapshot.tag_ruleset_digest,
         required_policy_digest=snapshot.required_policy_digest,
         required_gates=snapshot.required_gates,
         workflow_run_id=snapshot.workflow_run_id,
@@ -136,6 +142,7 @@ def validate_publish_claim(
     caller_workflow_ref: str,
     caller_run_id: int,
     caller_run_attempt: int,
+    observed_at: str,
 ) -> None:
     """在 Publish 线性化点前重建 Proof，并拒绝任一身份或调用者漂移。"""
 
@@ -147,6 +154,16 @@ def validate_publish_claim(
     )
     if caller != expected_caller:
         raise ReleaseTruthError("publish caller is not bound to proof")
+    if not observed_at.endswith("Z"):
+        raise ReleaseTruthError("publish observation must use canonical UTC")
+    observation = _parse_utc(observed_at)
+    if observation < _parse_utc(proof.evidence_cutoff_at):
+        raise ReleaseTruthError("publish observation predates frozen evidence cutoff")
+    for gate in proof.required_gates:
+        if observation < _parse_utc(gate.completed_at):
+            raise ReleaseTruthError("publish observation predates required gate")
+        if observation > _parse_utc(gate.valid_until):
+            raise ReleaseTruthError("required gate expired before publish")
     rebuilt = build_release_satisfaction_proof(current)
     if rebuilt != proof:
         raise ReleaseTruthError("release proof identity differs from current candidate")
@@ -178,12 +195,14 @@ def build_release_certificate(
         raise ReleaseTruthError("certificate generation condition differs")
     proof_identity = (
         proof.repository,
+        proof.draft_release_id,
         proof.tag_name,
         proof.commit_sha,
         proof.tree_sha,
     )
     published_identity = (
         published.repository,
+        published.github_release_id,
         published.tag_name,
         published.commit_sha,
         published.tree_sha,
@@ -193,11 +212,20 @@ def build_release_certificate(
     _validate_assets(proof.assets, published.assets)
     return ReleaseCertificate(
         repository=published.repository,
+        admission_id=proof.admission_id,
+        admission_digest=proof.admission_digest,
         github_release_id=published.github_release_id,
+        upload_url=proof.upload_url,
+        release_user_agent=proof.release_user_agent,
         github_release_url=published.github_release_url,
         tag_name=published.tag_name,
+        tag_object_sha=proof.tag_object_sha,
         commit_sha=published.commit_sha,
         tree_sha=published.tree_sha,
+        tag_ruleset_id=proof.tag_ruleset_id,
+        tag_ruleset_digest=proof.tag_ruleset_digest,
+        workflow_run_id=proof.workflow_run_id,
+        workflow_run_attempt=proof.workflow_run_attempt,
         proof_digest=proof.proof_digest,
         release_attestation_digest=release_attestation_digest,
         assets=published.assets,

@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
+    FORBIDDEN_SURFACE_MARKERS,
     PUBLIC_DOC_PATHS,
     PUBLISHED_VERSION,
     REQUIRED_SURFACES,
@@ -53,7 +54,10 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
 def test_required_surfaces_enforce_current_release_identity() -> None:
     files = {
         "README.md": (
-            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}"
+            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
+            "v1.0.4 terminal NO-GO / not released\n"
+            "only future WorkItem 010 may migrate to v1.0.5\n"
+            "active no-bypass tag ruleset protects software and Certificate tags"
         ),
     }
 
@@ -63,6 +67,60 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         finding.marker == "required-public-surface-missing" for finding in findings
     )
     assert not any(finding.path == "README.md" for finding in findings)
+    assert "WorkItem 008" in FORBIDDEN_SURFACE_MARKERS["README.md"]
+    obsolete = validate_required_surfaces(
+        {
+            "README.md": (
+                f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
+                "WorkItem 008 正在恢复 v1.0.4"
+            )
+        }
+    )
+    assert any(
+        finding.path == "README.md"
+        and finding.marker == "obsolete-release-authorization"
+        for finding in obsolete
+    )
+    for path in ("README.md", "USER_GUIDE.zh-CN.md", "docs/product-contract.md"):
+        markers = REQUIRED_SURFACES[path]
+        assert "v1.0.4 terminal NO-GO / not released" in markers
+        assert "only future WorkItem 010 may migrate to v1.0.5" in markers
+        assert (
+            "active no-bypass tag ruleset protects software and Certificate tags"
+            in markers
+        )
+    terminal_release_surfaces = {
+        "packaging/offline/README.md": "上传动作必须由有权限的维护者明确触发",
+        "packaging/offline/RELEASE_CHECKLIST.md": "上传动作由有权限维护者明确执行",
+        "docs/pull-request-checklist.zh.md": "当前发布版本为 `1.0.4`",
+    }
+    for path, obsolete_marker in terminal_release_surfaces.items():
+        markers = REQUIRED_SURFACES[path]
+        assert PUBLISHED_VERSION in markers
+        assert "v1.0.4 terminal NO-GO / not released" in markers
+        assert "only future WorkItem 010 may migrate to v1.0.5" in markers
+        assert "不得 redispatch、rerun、上传或发布 v1.0.4" in markers
+        assert obsolete_marker in FORBIDDEN_SURFACE_MARKERS[path]
+    release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
+    assert {
+        "## v1.0.4 bootstrap 终止记录（2026-08-09）",
+        "terminal NO-GO / not released / bootstrap budget exhausted",
+        "0776885aeb6299bad3c13fd6c47658ad17dad5e1",
+        "6125d7e80b1a66eead4ddf5654a578ec2a1e856e",
+        "a6a1f2ac463d9ca2dc1ea68af73271e679449015",
+        "367380686",
+        "31295426083",
+        "93199662116",
+        "93211087289",
+        "93211087697",
+        "1 failed / 6219 passed / 16 skipped",
+        "zero assets",
+        "UNKNOWN",
+        "pre-tag qualification",
+        "WorkItem 009",
+        "WorkItem 010",
+        "active no-bypass tag ruleset protects software and Certificate tags",
+    } <= set(release_convention)
 
 
 def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:

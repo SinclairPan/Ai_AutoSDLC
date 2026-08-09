@@ -31,6 +31,26 @@ _RETRYABLE_INTEGRITY_MARKERS = (
 class SnapshotControlBusyError(SharedStateIntegrityError):
     """SnapshotControl 在有界竞争窗口内未能取得提交权。"""
 
+    def __init__(
+        self,
+        message: str = "snapshot_control_busy",
+        *,
+        operation_id: str | None = None,
+        attempts: int = 0,
+        elapsed_active_seconds: float = 0.0,
+        last_error: Exception | None = None,
+        lease_recovery_used: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.operation_id = operation_id
+        self.attempts = attempts
+        self.elapsed_active_seconds = max(0.0, elapsed_active_seconds)
+        self.last_error_type = (
+            type(last_error).__name__ if last_error is not None else None
+        )
+        self.last_error_message = _public_error_reason(last_error)
+        self.lease_recovery_used = lease_recovery_used
+
 
 @dataclass(frozen=True)
 class SnapshotControlRetryPolicy:
@@ -59,25 +79,40 @@ class SnapshotControlRetryExecutor:
     def run(self, operation_id: str, action: Callable[[int], T]) -> T:
         started = self.monotonic()
         lease_recovery_available = True
+        lease_recovery_used = False
+        elapsed_active_seconds = 0.0
+        last_attempt = 0
+        last_error: Exception | None = None
         for attempt in range(1, self.policy.maximum_attempts + 1):
             try:
                 return action(attempt)
             except (ResourceLockUnavailableError, SharedStateIntegrityError) as exc:
+                last_attempt = attempt
+                last_error = exc
                 if not _is_retryable(exc):
                     raise
                 if attempt == self.policy.maximum_attempts:
                     break
                 if _is_expired_commit_lease(exc) and lease_recovery_available:
                     lease_recovery_available = False
+                    lease_recovery_used = True
                     continue
-                remaining = self.policy.maximum_active_seconds - (
-                    self.monotonic() - started
-                )
+                elapsed_active_seconds = self.monotonic() - started
+                remaining = self.policy.maximum_active_seconds - elapsed_active_seconds
                 delay = _deterministic_backoff(operation_id, attempt)
                 if remaining <= 0 or delay > remaining:
                     break
                 self.sleeper(delay)
-        raise SnapshotControlBusyError("snapshot_control_busy")
+        assert last_error is not None
+        elapsed_active_seconds = self.monotonic() - started
+        error = SnapshotControlBusyError(
+            operation_id=operation_id,
+            attempts=last_attempt,
+            elapsed_active_seconds=elapsed_active_seconds,
+            last_error=last_error,
+            lease_recovery_used=lease_recovery_used,
+        )
+        raise error from last_error
 
 
 def _deterministic_backoff(operation_id: str, attempt: int) -> float:
@@ -96,3 +131,18 @@ def _is_retryable(exc: BaseException) -> bool:
 
 def _is_expired_commit_lease(exc: BaseException) -> bool:
     return "optimization commit lease expired" in str(exc)
+
+
+def _public_error_reason(exc: Exception | None) -> str | None:
+    if exc is None:
+        return None
+    if isinstance(exc, ResourceLockUnavailableError):
+        return "resource_lock_unavailable"
+    return next(
+        (
+            marker
+            for marker in _RETRYABLE_INTEGRITY_MARKERS
+            if marker in str(exc)
+        ),
+        "retryable_shared_state_integrity_error",
+    )
