@@ -70,6 +70,7 @@ class RequiredGateBinding(BaseModel):
     workflow_ref: str
     workflow_run_id: int = Field(ge=1)
     workflow_run_attempt: int = Field(ge=1)
+    workflow_job_id: int = Field(ge=1)
     head_sha: str
     completed_at: str
     valid_until: str

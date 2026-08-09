@@ -98,6 +98,7 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
         ),
         workflow_run_id=100,
         workflow_run_attempt=1,
+        workflow_job_id=1001,
         head_sha=commit,
         completed_at="2026-05-01T11:59:00Z",
         valid_until="2026-05-01T12:14:00Z",

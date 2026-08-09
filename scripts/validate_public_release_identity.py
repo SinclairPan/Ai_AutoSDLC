@@ -61,6 +61,24 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
     ),
+    "docs/框架自迭代开发与发布约定.md": (
+        "## v1.0.4 bootstrap 终止记录（2026-08-09）",
+        "terminal NO-GO / not released / bootstrap budget exhausted",
+        "0776885aeb6299bad3c13fd6c47658ad17dad5e1",
+        "6125d7e80b1a66eead4ddf5654a578ec2a1e856e",
+        "a6a1f2ac463d9ca2dc1ea68af73271e679449015",
+        "367380686",
+        "31295426083",
+        "93199662116",
+        "93211087289",
+        "93211087697",
+        "1 failed / 6219 passed / 16 skipped",
+        "zero assets",
+        "UNKNOWN",
+        "pre-tag qualification",
+        "WorkItem 009",
+        "WorkItem 010",
+    ),
 }
 
 PUBLIC_ROOT_MARKDOWN = {

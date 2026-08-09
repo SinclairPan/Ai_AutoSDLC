@@ -53,6 +53,7 @@ def _candidate(**changes: object):
             workflow_ref="SinclairPan/Ai_AutoSDLC/.github/workflows/compatibility-gate.yml@refs/heads/main",
             workflow_run_id=9001,
             workflow_run_attempt=2,
+            workflow_job_id=91001,
             head_sha="1" * 40,
             completed_at="2026-08-05T20:00:00Z",
             valid_until="2026-08-05T21:00:00Z",
@@ -67,6 +68,7 @@ def _candidate(**changes: object):
             workflow_ref="SinclairPan/Ai_AutoSDLC/.github/workflows/fast-gate.yml@refs/heads/main",
             workflow_run_id=9001,
             workflow_run_attempt=2,
+            workflow_job_id=91002,
             head_sha="1" * 40,
             completed_at="2026-08-05T20:01:00Z",
             valid_until="2026-08-05T21:00:00Z",
@@ -108,6 +110,20 @@ def test_proof_replay_is_deterministic() -> None:
     assert first == second
     assert first.proof_digest.startswith("sha256:")
     assert len(first.proof_digest) == 71
+    assert all(gate.workflow_job_id > 0 for gate in first.required_gates)
+
+    gates = list(candidate.required_gates)
+    gates[0] = gates[0].model_copy(update={"workflow_job_id": 91003})
+    changed = release_truth.build_release_satisfaction_proof(
+        candidate.model_copy(update={"required_gates": tuple(gates)})
+    )
+
+    assert changed.proof_digest != first.proof_digest
+    _, _, _, gate_type = _api()
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        gate_type.model_validate(
+            {**candidate.required_gates[0].model_dump(), "workflow_job_id": 0}
+        )
 
 
 @pytest.mark.parametrize(

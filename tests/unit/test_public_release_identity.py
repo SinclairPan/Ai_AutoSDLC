@@ -63,6 +63,25 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         finding.marker == "required-public-surface-missing" for finding in findings
     )
     assert not any(finding.path == "README.md" for finding in findings)
+    release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
+    assert {
+        "## v1.0.4 bootstrap 终止记录（2026-08-09）",
+        "terminal NO-GO / not released / bootstrap budget exhausted",
+        "0776885aeb6299bad3c13fd6c47658ad17dad5e1",
+        "6125d7e80b1a66eead4ddf5654a578ec2a1e856e",
+        "a6a1f2ac463d9ca2dc1ea68af73271e679449015",
+        "367380686",
+        "31295426083",
+        "93199662116",
+        "93211087289",
+        "93211087697",
+        "1 failed / 6219 passed / 16 skipped",
+        "zero assets",
+        "UNKNOWN",
+        "pre-tag qualification",
+        "WorkItem 009",
+        "WorkItem 010",
+    } <= set(release_convention)
 
 
 def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:

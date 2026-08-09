@@ -486,11 +486,32 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert workflow_path.is_file()
 
     workflow = workflow_path.read_text(encoding="utf-8")
+    workflow_data = yaml.safe_load(workflow)
+    jobs = workflow_data["jobs"]
 
     assert "workflow_dispatch:" in workflow
     assert "default: v1.0.4" in workflow
-    assert "ref: ${{ inputs.tag }}" in workflow
-    assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
+    assert workflow_data["env"] == {
+        "CURRENT_RELEASE_TAG": "v1.0.4",
+        "RELEASE_BOOTSTRAP_ENABLED": "false",
+        "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
+    }
+    assert "ref: ${{ inputs.tag }}" not in workflow
+    policy_checkout = next(
+        step
+        for step in jobs["release-assurance-policy"]["steps"]
+        if step.get("uses") == "actions/checkout@v6"
+    )
+    build_checkout = next(
+        step
+        for step in jobs["build-smoke-candidate"]["steps"]
+        if step.get("uses") == "actions/checkout@v6"
+    )
+    assert policy_checkout["with"]["ref"] == "${{ github.sha }}"
+    assert build_checkout["with"]["ref"] == "${{ github.sha }}"
+    assert 'git rev-parse "${RELEASE_TAG}^{commit}"' not in workflow
+    assert 'head_commit="$(git rev-parse HEAD)"' in workflow
+    assert '"${head_commit}" != "${GITHUB_SHA}"' in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
@@ -621,7 +642,6 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     fake_gh.chmod(0o755)
     fake_uv.chmod(0o755)
 
-    workflow_data = yaml.safe_load(workflow)
     current_release_tag = workflow_data["env"]["CURRENT_RELEASE_TAG"]
     generation_step = next(
         step
@@ -653,6 +673,53 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert accepted_generation.returncode == 0, accepted_generation.stderr
     assert rejected_generation.returncode != 0
     assert "does not match current release generation" in rejected_generation.stderr
+
+    bootstrap_step = next(
+        step
+        for step in jobs["release-assurance-policy"]["steps"]
+        if step.get("name") == "Require future release generation enablement"
+    )
+    disabled_bootstrap = subprocess.run(
+        [bash, "-c", bootstrap_step["run"]],
+        env={
+            **os.environ,
+            "CURRENT_RELEASE_TAG": current_release_tag,
+            "RELEASE_BOOTSTRAP_ENABLED": "false",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert disabled_bootstrap.returncode != 0
+    assert "release bootstrap is disabled" in disabled_bootstrap.stderr.lower()
+
+    pre_admission = json.dumps(
+        {
+            job_id: jobs[job_id]
+            for job_id in (
+                "release-assurance-policy",
+                "release-assurance",
+                "build-smoke-candidate",
+                "release-qualification",
+            )
+        },
+        sort_keys=True,
+    )
+    assert "--method POST" not in pre_admission
+    assert "--method PATCH" not in pre_admission
+    assert "upload-asset" not in pre_admission
+    assert "zero-asset Draft" not in pre_admission
+    prequalification_step = next(
+        step
+        for step in jobs["release-assurance-policy"]["steps"]
+        if step.get("name") == "Require admission namespaces absent before qualification"
+    )
+    assert "release namespace already exists before qualification" in (
+        prequalification_step["run"]
+    )
+    assert "certificate namespace already exists before qualification" in (
+        prequalification_step["run"]
+    )
 
     upload_step = next(
         step
@@ -720,7 +787,8 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         nonempty_draft.stderr
     )
     assert not upload_log.exists()
-    assert workflow.count("fresh release generation requires a zero-asset Draft") == 2
+    assert workflow.count("fresh release generation requires a zero-asset Draft") == 1
+    assert "created release differs from exact zero-asset Draft admission" in workflow
 
 
 def test_release_build_emergency_freeze_removes_release_write_authority() -> None:
@@ -732,7 +800,7 @@ def test_release_build_emergency_freeze_removes_release_write_authority() -> Non
 
 
 def test_release_build_has_one_proof_bound_protected_writer() -> None:
-    """捕获第二个写入者、候选 verifier 自证或缺少 Proof/CAS 即发布。"""
+    """捕获第二个写入者、伪造 Gate 权威或资格前创建发行身份。"""
     workflow_path = _WORKFLOWS_DIR / "release-build.yml"
     workflow_text = workflow_path.read_text(encoding="utf-8")
     workflow = yaml.safe_load(workflow_text)
@@ -746,17 +814,19 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         and job.get("permissions", {}).get("contents") == "write"
     ]
     assert writers == ["publish-release"]
+    qualification_job = jobs["release-qualification"]
     proof_job = jobs["build-release-proof"]
     publish_job = jobs["publish-release"]
-    assert proof_job["needs"] == [
+    assert qualification_job["name"] == "Release Qualification"
+    assert qualification_job["needs"] == [
         "release-assurance-policy",
         "release-assurance",
         "build-smoke-candidate",
     ]
-    assert (
-        "needs.release-assurance-policy.outputs.assurance_required == 'true'"
-        in proof_job["if"]
-    )
+    assert "needs.release-assurance.result == 'success'" in qualification_job["if"]
+    assert "needs.build-smoke-candidate.result == 'success'" in qualification_job["if"]
+    assert proof_job["needs"] == ["release-qualification"]
+    assert proof_job["permissions"] == {"actions": "read", "contents": "read"}
     assert publish_job["needs"] == ["build-release-proof"]
     assert publish_job["environment"] == "release-publish"
     assert publish_job["permissions"] == {
@@ -771,7 +841,14 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         "group": "release-publish-${{ inputs.tag }}",
         "cancel-in-progress": False,
     }
-    assert workflow_text.count("ref: ${{ github.sha }}") == 2
+    checkout_refs = [
+        step["with"]["ref"]
+        for job in jobs.values()
+        if isinstance(job, dict)
+        for step in job.get("steps", [])
+        if step.get("uses") == "actions/checkout@v6"
+    ]
+    assert checkout_refs == ["${{ github.sha }}"] * 4
     assert "ref: ${{ github.event.repository.default_branch }}" not in workflow_text
     assert "path: trusted-writer" in workflow_text
     assert "persist-credentials: false" in workflow_text
@@ -786,32 +863,58 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "actions/download-artifact@v7" in workflow_text
     assert "--clobber" not in workflow_text
     assert (
-        'gh api --paginate --slurp '
-        '"repos/${GITHUB_REPOSITORY}/releases?per_page=100"'
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}/jobs?per_page=100"'
         in workflow_text
     )
-    assert "release-authority-pages.json" in workflow_text
-    assert 'releases/tags/${RELEASE_TAG}' not in workflow_text
-    assert (
-        'git -C trusted-writer merge-base --is-ancestor '
-        '"${tag_commit}" "${GITHUB_SHA}"'
-        in workflow_text
+    assert "expected exactly one successful completed Release Qualification job" in workflow_text
+    assert '"workflow_job_id": qualification["id"]' in workflow_text
+    assert '"completed_at": qualification["completed_at"]' in workflow_text
+    assert 'job.get("run_attempt") == int(os.environ["GITHUB_RUN_ATTEMPT"])' in (
+        workflow_text
     )
-    assert 'if [[ "${tag_commit}" != "${GITHUB_SHA}" ]]' not in workflow_text
+    assert "datetime.fromisoformat(gate[\"completed_at\"]" in workflow_text
+    assert "from ai_sdlc.core.release_truth import RELEASE_TRUTH_FRESHNESS_TTL" in (
+        workflow_text
+    )
+    assert "completed_at + RELEASE_TRUTH_FRESHNESS_TTL" in workflow_text
+    assert "cutoff = datetime.now(UTC).replace(microsecond=0)" in workflow_text
+    assert '"evidence_cutoff_at": cutoff.isoformat()' in workflow_text
+
+    namespace_index = workflow_text.index("Require all release admission namespaces absent")
+    create_tag_index = workflow_text.index("Create exact annotated release tag")
+    create_draft_index = workflow_text.index("Create fresh zero-asset Draft admission")
+    upload_index = workflow_text.index("scripts/release_truth.py upload-asset")
+    assert namespace_index < create_tag_index < create_draft_index < upload_index
+    namespace_step = next(
+        step
+        for step in publish_job["steps"]
+        if step.get("name") == "Require all release admission namespaces absent"
+    )
+    namespace_contract = namespace_step["run"]
+    assert 'target_ref = f"refs/tags/{os.environ[\'RELEASE_TAG\']}"' in namespace_contract
+    assert "release-truth/${RELEASE_TAG}/certificate/g0" in namespace_contract
+    assert "release namespace already exists" in namespace_contract
+    assert "certificate namespace already exists" in namespace_contract
+    assert "admission_id" in workflow_text
+    assert "tag_object_sha" in workflow_text
+    assert "numeric_release_id" in workflow_text
+    assert "upload_url" in workflow_text
+    assert "commit_sha" in workflow_text
+    assert "tree_sha" in workflow_text
+    assert "workflow_run_id" in workflow_text
+    assert "workflow_run_attempt" in workflow_text
+    assert "RELEASE_USER_AGENT" in workflow_text
 
     assert workflow_text.count("scripts/release_truth.py upload-asset") == 3
     assert "gh release upload" not in workflow_text
     assert "release-certificate.json#release-certificate.json" not in workflow_text
-    upload_index = workflow_text.index("scripts/release_truth.py upload-asset")
     cas_index = workflow_text.index("scripts/release_truth.py publish-check")
     publish_index = workflow_text.index("gh api --method PATCH")
     verify_index = workflow_text.index(
         'gh release verify "${RELEASE_TAG}" --format json'
     )
     certificate_index = workflow_text.index("scripts/release_truth.py certificate")
-    evidence_release_index = workflow_text.index(
-        'gh release create "${certificate_tag}"'
-    )
+    evidence_release_index = workflow_text.index("certificate-create-request.json")
     certificate_attestation_index = workflow_text.index("actions/attest@v4")
     assert upload_index < cas_index < publish_index < verify_index
     assert (
@@ -821,6 +924,10 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         < evidence_release_index
     )
     assert 'gh release edit "${RELEASE_TAG}" --draft=false' not in workflow_text
+    assert "gh release edit" not in workflow_text
+    assert "--force" not in workflow_text
+    assert "existing_proof" not in workflow_text
+    assert "resolve_certificate_release" not in workflow_text
     assert '"repos/${GITHUB_REPOSITORY}/releases/${release_id}"' in workflow_text
     assert "release-before-publish.http" in workflow_text
     assert "release-publish-etag.txt" in workflow_text
@@ -829,12 +936,12 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "release-publish-response.json" in workflow_text
     assert "Published release differs from Proof-bound transition" in workflow_text
     assert "publish_exit" not in workflow_text
-    assert "--prerelease" in workflow_text
-    assert "--latest=false" in workflow_text
+    assert '"prerelease": True' in workflow_text
+    assert '"make_latest": "false"' in workflow_text
     assert "release-truth/${RELEASE_TAG}/certificate/g0" in workflow_text
     assert "--authority certificate-release.json" in workflow_text
-    assert "certificate-authority-pages.json" in workflow_text
-    assert 'releases/tags/${certificate_tag}' not in workflow_text
+    assert "certificate-tag-ref-request.json" in workflow_text
+    assert "certificate-create-request.json" in workflow_text
     assert "certificate-publish-request.json" in workflow_text
     assert "certificate-publish-response.json" in workflow_text
     assert (
@@ -842,7 +949,7 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
         in workflow_text
     )
     assert (
-        "Certificate release differs from expected recovery identity" in workflow_text
+        "Certificate release differs from fresh current-run identity" in workflow_text
     )
     assert "immutable" in workflow_text
     assert "release-satisfaction-proof.json" in workflow_text
@@ -1594,17 +1701,18 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     workflow = yaml.safe_load(workflow_text)
     jobs = workflow["jobs"]
 
-    assert "v1.0.1 v1.0.2" in workflow_text
+    assert workflow["env"]["CURRENT_RELEASE_TAG"] == "v1.0.4"
+    assert workflow["env"]["RELEASE_BOOTSTRAP_ENABLED"] == "false"
+    assert "v1.0.5" not in workflow_text
+    assert "v1.0.1 v1.0.2" not in workflow_text
     assert jobs["release-assurance-policy"]["outputs"] == {
-        "assurance_required": "${{ steps.policy.outputs.assurance_required }}",
         "authority_ref": "${{ steps.policy.outputs.authority_ref }}",
     }
     assert jobs["release-assurance"] == {
         "needs": "release-assurance-policy",
-        "if": "needs.release-assurance-policy.outputs.assurance_required == 'true'",
         "uses": "./.github/workflows/compatibility-gate.yml",
         "with": {
-            "candidate_ref": "${{ inputs.tag }}",
+            "candidate_ref": "${{ github.sha }}",
             "authority_ref": "${{ needs.release-assurance-policy.outputs.authority_ref }}",
             "force_full": True,
         },
@@ -1618,6 +1726,19 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     assert "always()" in build_job["if"]
     assert "needs.release-assurance-policy.result == 'success'" in build_job["if"]
     assert "needs.release-assurance.result == 'success'" in build_job["if"]
+    assert jobs["release-qualification"]["needs"] == [
+        "release-assurance-policy",
+        "release-assurance",
+        "build-smoke-candidate",
+    ]
+    assert jobs["build-release-proof"]["needs"] == ["release-qualification"]
+    assert jobs["publish-release"]["needs"] == ["build-release-proof"]
+    policy_steps = [
+        step.get("name") for step in jobs["release-assurance-policy"]["steps"]
+    ]
+    assert policy_steps.index(
+        "Require admission namespaces absent before qualification"
+    ) < policy_steps.index("Require future release generation enablement")
 
 
 def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:
