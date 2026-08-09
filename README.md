@@ -1,10 +1,10 @@
-# AI-SDLC 1.0.3
+# AI-SDLC 1.0.4
 
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 发布状态：仓库源码候选版本为 `1.0.3`，但对应的 `v1.0.3` GitHub Release 未发布，不能使用任何 `releases/download/v1.0.3/` 路径。普通用户需要离线安装时，请按[中文用户指南](USER_GUIDE.zh-CN.md)使用最后一个已发布且保持原样的 `v1.0.2`；独立恢复工作将发布全新的 `v1.0.4`。
+> 发布状态：仓库源码候选版本为 `1.0.4`，但对应的 `v1.0.4` GitHub Release 未发布，不能使用任何 `releases/download/v1.0.4/` 路径。普通用户需要离线安装时，请按[中文用户指南](USER_GUIDE.zh-CN.md)使用最后一个已发布且保持原样的 `v1.0.2`；WorkItem 008 正在以全新 `v1.0.4` 代际完成独立恢复发布。
 
 ## 核心特性
 
@@ -29,18 +29,18 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 ### 从 Git 安装
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.3"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.4"
 ai-sdlc --version
 ```
 
-版本输出应为 `1.0.3`。
+版本输出应为 `1.0.4`。
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
 ### 从源码运行
 
 ```powershell
-git clone --branch v1.0.3 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v1.0.4 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -252,11 +252,11 @@ ai-sdlc enterprise configure --help
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.3` 源码候选预期生成的产物名称；它们没有形成已发布、可安装的正式集合：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.4` 源码候选预期生成的产物名称；它们没有形成已发布、可安装的正式集合：
 
-- `ai-sdlc-offline-1.0.3-windows-amd64.zip`
-- `ai-sdlc-offline-1.0.3-macos-arm64.tar.gz`
-- `ai-sdlc-offline-1.0.3-linux-amd64.tar.gz`
+- `ai-sdlc-offline-1.0.4-windows-amd64.zip`
+- `ai-sdlc-offline-1.0.4-macos-arm64.tar.gz`
+- `ai-sdlc-offline-1.0.4-linux-amd64.tar.gz`
 
 当前公开可安装的离线版本仍是 `v1.0.2`，具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
 

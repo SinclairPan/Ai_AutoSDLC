@@ -53,7 +53,7 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
 def test_required_surfaces_enforce_current_release_identity() -> None:
     files = {
         "README.md": (
-            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.3\n{STABLE_SOURCE_CLONE}"
+            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}"
         ),
     }
 
@@ -67,7 +67,7 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
 
 def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:
     files = {
-        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.3",
+        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4",
         "uv.lock": 'name = "example"\nversion = "3.4.2"',
         "managed/frontend/package-lock.json": '{"version":"3.3.0"}',
         "src/provider.py": 'release_ref = "refs/tags/rust-v0.138.0"',
@@ -96,5 +96,5 @@ def test_user_guide_identity_requires_new_user_release_paths() -> None:
     assert STABLE_SOURCE_CLONE not in markers
     assert PUBLISHED_VERSION == "1.0.2"
     assert any("releases/download/v1.0.2/" in marker for marker in markers)
-    assert not any("releases/download/v1.0.3/" in marker for marker in markers)
-    assert "v1.0.3 未发布" in markers
+    assert not any("releases/download/v1.0.4/" in marker for marker in markers)
+    assert "v1.0.4 未发布" in markers

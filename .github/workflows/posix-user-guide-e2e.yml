@@ -6,7 +6,7 @@ on:
       tag:
         description: Published release tag described by the user guide.
         required: true
-        default: "v1.0.3"
+        default: "v1.0.4"
   pull_request:
     paths:
       - "src/**"
@@ -45,7 +45,7 @@ jobs:
             runner: ubuntu-latest
             project_shell: bash
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v1.0.3' }}
+      RELEASE_TAG: ${{ inputs.tag || 'v1.0.4' }}
       ASSET_OS: ${{ matrix.asset_os }}
       ASSET_MACHINE: ${{ matrix.asset_machine }}
       PROJECT_SHELL: ${{ matrix.project_shell }}
@@ -105,7 +105,7 @@ jobs:
 
           evidence_root="${RUNNER_TEMP}/posix-user-guide-e2e-evidence"
           export HOME="${RUNNER_TEMP}/guide-home"
-          download_root="${RUNNER_TEMP}/ai-sdlc-v1.0.3-download"
+          download_root="${RUNNER_TEMP}/ai-sdlc-v1.0.4-download"
           if [[ "${ASSET_OS}" == "macos" ]]; then
             install_root="${HOME}/Applications/AI-SDLC"
           else
@@ -113,7 +113,7 @@ jobs:
           fi
           new_project_root="${HOME}/projects/my-new-project"
           existing_project_root="${HOME}/projects/my-existing-project"
-          bundle_name="ai-sdlc-offline-1.0.3-${ASSET_OS}-${ASSET_MACHINE}"
+          bundle_name="ai-sdlc-offline-1.0.4-${ASSET_OS}-${ASSET_MACHINE}"
           PACKAGE_NAME="${bundle_name}.tar.gz"
           package_source="published_release"
 
@@ -156,7 +156,7 @@ jobs:
 
           DIRECT_CLI="${bundle_root}/.venv/bin/ai-sdlc"
           "$DIRECT_CLI" --version | tee "${evidence_root}/version.txt"
-          grep -Fx "1.0.3" "${evidence_root}/version.txt"
+          grep -Fx "1.0.4" "${evidence_root}/version.txt"
           grep -F "Offline installation completed" "${evidence_root}/install.txt"
 
           python3 scripts/posix_clean_user_e2e.py \
