@@ -109,12 +109,27 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         assert "不得上传、发布或下载 v1.0.5 候选" in markers
         assert obsolete_marker in FORBIDDEN_SURFACE_MARKERS[path]
     assert REQUIRED_SURFACES["packaging/install_online.sh"] == (
-        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.2",
+        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
     )
     assert (
         "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5"
         in FORBIDDEN_SURFACE_MARKERS["packaging/install_online.sh"]
     )
+    assert (
+        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc}"'
+        in FORBIDDEN_SURFACE_MARKERS["packaging/install_online.sh"]
+    )
+    installer = (
+        Path(__file__).resolve().parents[2] / "packaging" / "install_online.sh"
+    ).read_text(encoding="utf-8")
+    installer_findings = [
+        finding
+        for finding in validate_required_surfaces(
+            {"packaging/install_online.sh": installer}
+        )
+        if finding.path == "packaging/install_online.sh"
+    ]
+    assert installer_findings == []
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",

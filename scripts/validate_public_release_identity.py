@@ -108,7 +108,7 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "不得上传、发布或下载 v1.0.5 候选",
     ),
     "packaging/install_online.sh": (
-        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.2",
+        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
     ),
     "docs/框架自迭代开发与发布约定.md": (
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
@@ -176,6 +176,7 @@ FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
     ),
     "packaging/install_online.sh": (
         "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5",
+        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc}"',
     ),
 }
 

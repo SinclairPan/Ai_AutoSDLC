@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc}"
+PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"
 ADD_TO_PATH=0
 POSITIONAL_VENV_TARGET=""
 while [[ $# -gt 0 ]]; do
