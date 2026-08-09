@@ -103,6 +103,8 @@ class ReleaseCandidateSnapshot(BaseModel):
     tag_object_sha: str
     commit_sha: str
     tree_sha: str
+    tag_ruleset_id: int = Field(ge=1)
+    tag_ruleset_digest: str
     required_policy_digest: str
     required_gate_names: tuple[str, ...]
     required_gates: tuple[RequiredGateBinding, ...]
@@ -126,7 +128,10 @@ class ReleaseCandidateSnapshot(BaseModel):
         _require_git_sha
     )
     _digests = field_validator(
-        "admission_digest", "required_policy_digest", "release_settings_digest"
+        "admission_digest",
+        "tag_ruleset_digest",
+        "required_policy_digest",
+        "release_settings_digest",
     )(_require_digest)
     _timestamps = field_validator("draft_release_updated_at", "evidence_cutoff_at")(
         _require_utc_timestamp
@@ -152,6 +157,8 @@ class ReleaseSatisfactionProof(ArtifactCompatibility):
     tag_object_sha: str
     commit_sha: str
     tree_sha: str
+    tag_ruleset_id: int = Field(ge=1)
+    tag_ruleset_digest: str
     required_policy_digest: str
     required_gates: tuple[RequiredGateBinding, ...]
     workflow_run_id: int = Field(ge=1)
@@ -174,7 +181,10 @@ class ReleaseSatisfactionProof(ArtifactCompatibility):
         _require_git_sha
     )
     _digests = field_validator(
-        "admission_digest", "required_policy_digest", "release_settings_digest"
+        "admission_digest",
+        "tag_ruleset_digest",
+        "required_policy_digest",
+        "release_settings_digest",
     )(_require_digest)
     _timestamps = field_validator("draft_release_updated_at", "evidence_cutoff_at")(
         _require_utc_timestamp
@@ -228,6 +238,8 @@ class ReleaseCertificate(ArtifactCompatibility):
     tag_object_sha: str
     commit_sha: str
     tree_sha: str
+    tag_ruleset_id: int = Field(ge=1)
+    tag_ruleset_digest: str
     workflow_run_id: int = Field(ge=1)
     workflow_run_attempt: int = Field(ge=1)
     proof_digest: str
@@ -250,7 +262,10 @@ class ReleaseCertificate(ArtifactCompatibility):
         _require_git_sha
     )
     _digests = field_validator(
-        "admission_digest", "proof_digest", "release_attestation_digest"
+        "admission_digest",
+        "tag_ruleset_digest",
+        "proof_digest",
+        "release_attestation_digest",
     )(_require_digest)
     _timestamp = field_validator("issued_at")(_require_utc_timestamp)
 

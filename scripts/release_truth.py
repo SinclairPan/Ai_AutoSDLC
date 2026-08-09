@@ -31,6 +31,12 @@ from ai_sdlc.core.stage_review.artifacts import (
     read_json_object,
 )
 
+_PROTECTED_TAG_PATTERNS = (
+    "refs/tags/release-truth/v*/certificate/g0",
+    "refs/tags/v*",
+)
+_PROTECTED_TAG_RULES = ("deletion", "non_fast_forward", "update")
+
 
 def _read_model(path: Path, model_type: type[BaseModel]) -> BaseModel:
     return model_type.model_validate(read_json_object(path))
@@ -187,9 +193,95 @@ def _authority_check(args: argparse.Namespace) -> dict[str, Any]:
         or release.get("draft") is not expected_draft
     ):
         raise ReleaseTruthError("live release authority differs from frozen admission")
-    if args.release_state == "published" and release.get("immutable") is not True:
-        raise ReleaseTruthError("published release authority is not immutable")
+    if args.release_state == "immutable" and release.get("immutable") is not True:
+        raise ReleaseTruthError("immutable release authority is not immutable")
     return {"status": "success", "admission_digest": expected_digest}
+
+
+def _ruleset_check(args: argparse.Namespace) -> dict[str, Any]:
+    rulesets = json.loads(args.rulesets.read_text(encoding="utf-8"))
+    if not isinstance(rulesets, list):
+        raise ReleaseTruthError("protective tag ruleset response is not a list")
+    matches: list[dict[str, Any]] = []
+    for ruleset in rulesets:
+        if not isinstance(ruleset, dict):
+            continue
+        ref_name = ruleset.get("conditions", {}).get("ref_name", {})
+        rule_types = tuple(
+            sorted(
+                rule.get("type")
+                for rule in ruleset.get("rules", [])
+                if isinstance(rule, dict) and isinstance(rule.get("type"), str)
+            )
+        )
+        ruleset_id = ruleset.get("id")
+        if (
+            isinstance(ruleset_id, int)
+            and not isinstance(ruleset_id, bool)
+            and ruleset_id > 0
+            and ruleset.get("target") == "tag"
+            and ruleset.get("source") == args.repository
+            and ruleset.get("source_type") == "Repository"
+            and ruleset.get("enforcement") == "active"
+            and tuple(sorted(ref_name.get("include", [])))
+            == _PROTECTED_TAG_PATTERNS
+            and ref_name.get("exclude") == []
+            and rule_types == _PROTECTED_TAG_RULES
+            and ruleset.get("bypass_actors") == []
+            and ruleset.get("current_user_can_bypass") == "never"
+        ):
+            matches.append(ruleset)
+    if len(matches) != 1:
+        raise ReleaseTruthError(
+            "expected exactly one active no-bypass protective tag ruleset"
+        )
+    match = matches[0]
+    authority = {
+        "repository": args.repository,
+        "ruleset_id": match["id"],
+        "ruleset_name": match.get("name"),
+        "target": "tag",
+        "enforcement": "active",
+        "include": list(_PROTECTED_TAG_PATTERNS),
+        "exclude": [],
+        "rules": list(_PROTECTED_TAG_RULES),
+        "bypass_actors": [],
+        "current_user_can_bypass": "never",
+    }
+    encoded = json.dumps(
+        authority, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+    ).encode()
+    authority["ruleset_digest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    if (
+        not create_json_exclusive(args.output, authority)
+        and read_json_object(args.output) != authority
+    ):
+        raise ReleaseTruthError("protective tag ruleset authority changed")
+    return {
+        "status": "success",
+        "ruleset_id": authority["ruleset_id"],
+        "ruleset_digest": authority["ruleset_digest"],
+    }
+
+
+def _tag_authority_check(args: argparse.Namespace) -> dict[str, Any]:
+    admission = read_json_object(args.admission)
+    ref = read_json_object(args.ref)
+    tag = read_json_object(args.tag)
+    commit = read_json_object(args.commit)
+    certificate_tag = admission.get("certificate_tag")
+    if (
+        not isinstance(certificate_tag, str)
+        or ref.get("ref") != f"refs/tags/{certificate_tag}"
+        or ref.get("object", {}).get("sha") != admission.get("tag_object_sha")
+        or tag.get("sha") != admission.get("tag_object_sha")
+        or tag.get("object", {}).get("type") != "commit"
+        or tag.get("object", {}).get("sha") != admission.get("commit_sha")
+        or commit.get("sha") != admission.get("commit_sha")
+        or commit.get("tree", {}).get("sha") != admission.get("tree_sha")
+    ):
+        raise ReleaseTruthError("live Certificate tag authority differs")
+    return {"status": "success", "certificate_tag": certificate_tag}
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -233,8 +325,19 @@ def _build_parser() -> argparse.ArgumentParser:
     authority_check.add_argument("--release", type=Path, required=True)
     authority_check.add_argument("--release-tag", required=True)
     authority_check.add_argument(
-        "--release-state", choices=("draft", "published"), required=True
+        "--release-state", choices=("draft", "published", "immutable"), required=True
     )
+
+    ruleset_check = subparsers.add_parser("ruleset-check")
+    ruleset_check.add_argument("--rulesets", type=Path, required=True)
+    ruleset_check.add_argument("--repository", required=True)
+    ruleset_check.add_argument("--output", type=Path, required=True)
+
+    tag_authority_check = subparsers.add_parser("tag-authority-check")
+    tag_authority_check.add_argument("--admission", type=Path, required=True)
+    tag_authority_check.add_argument("--ref", type=Path, required=True)
+    tag_authority_check.add_argument("--tag", type=Path, required=True)
+    tag_authority_check.add_argument("--commit", type=Path, required=True)
     return parser
 
 
@@ -246,6 +349,8 @@ def main(argv: list[str] | None = None) -> int:
         "certificate": _certificate,
         "upload-asset": _upload_asset,
         "authority-check": _authority_check,
+        "ruleset-check": _ruleset_check,
+        "tag-authority-check": _tag_authority_check,
     }
     try:
         result = handlers[args.command](args)

@@ -16,6 +16,7 @@ env:
   RELEASE_BOOTSTRAP_ENABLED: "false"
   RELEASE_PUBLISH_ENVIRONMENT: release-publish
   RELEASE_ENVIRONMENT_PROTECTION_VERIFIED: "false"
+  RELEASE_TAG_RULESET_PROTECTION_VERIFIED: "false"
   RELEASE_USER_AGENT: ai-sdlc-release-writer/1.0
 
 concurrency:
@@ -124,6 +125,35 @@ jobs:
               raise SystemExit("certificate namespace already exists before qualification")
           PY
 
+      - name: Set up policy authority Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install policy authority runtime
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Query live no-bypass tag ruleset authority before qualification
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # 精确保护 refs/tags/v* 与 refs/tags/release-truth/v*/certificate/g0；创建仅由单一 writer 执行。
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > policy-ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' policy-ruleset-list.json > policy-tag-ruleset-ids.txt
+          : > policy-tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> policy-tag-rulesets.jsonl
+          done < policy-tag-ruleset-ids.txt
+          jq -s '.' policy-tag-rulesets.jsonl > policy-tag-rulesets.json
+          uv run python scripts/release_truth.py ruleset-check \
+            --rulesets policy-tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output policy-tag-ruleset-authority.json
+
       - name: Require future release generation enablement
         shell: bash
         run: |
@@ -138,6 +168,10 @@ jobs:
           fi
           if [[ "${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true" ]]; then
             echo "release-publish historical writer runs remain blocked until remote protection is independently verified." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_TAG_RULESET_PROTECTION_VERIFIED}" != "true" ]]; then
+            echo "software and Certificate tags remain blocked until the live no-bypass tag ruleset is independently verified." >&2
             exit 1
           fi
 
@@ -645,6 +679,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
       GH_TOKEN: ${{ github.token }}
+      GH_HTTP_USER_AGENT: ai-sdlc-release-writer/1.0
       GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
@@ -695,6 +730,10 @@ jobs:
             echo "release-publish historical writer runs remain blocked until remote protection is independently verified." >&2
             exit 1
           fi
+          if [[ "${RELEASE_TAG_RULESET_PROTECTION_VERIFIED}" != "true" ]]; then
+            echo "software and Certificate tags remain blocked until the live no-bypass tag ruleset is independently verified." >&2
+            exit 1
+          fi
           certificate_tag="release-truth/${RELEASE_TAG}/certificate/g0"
           export certificate_tag
           git -C trusted-writer show-ref --tags > local-tag-refs.txt || true
@@ -740,6 +779,24 @@ jobs:
           ):
               raise SystemExit("certificate namespace already exists")
           PY
+
+      - name: Freeze live no-bypass tag ruleset authority for admission
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
 
       - name: Validate current gate freshness before admission mutation
         shell: bash
@@ -861,6 +918,9 @@ jobs:
 
           release = json.loads(Path("release-authority.json").read_text(encoding="utf-8"))
           tag = json.loads(Path("annotated-tag.json").read_text(encoding="utf-8"))
+          ruleset = json.loads(
+              Path("release-tag-ruleset-authority.json").read_text(encoding="utf-8")
+          )
           if (
               release.get("tag_name") != os.environ["RELEASE_TAG"]
               or release.get("target_commitish") != os.environ["GITHUB_SHA"]
@@ -882,6 +942,8 @@ jobs:
               "tag_object_sha": tag["sha"],
               "commit_sha": os.environ["GITHUB_SHA"],
               "tree_sha": os.environ["tag_tree_sha"],
+              "tag_ruleset_id": ruleset["ruleset_id"],
+              "tag_ruleset_digest": ruleset["ruleset_digest"],
               "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
               "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
@@ -1105,6 +1167,8 @@ jobs:
               "tag_object_sha": admission["tag_object_sha"],
               "commit_sha": admission["commit_sha"],
               "tree_sha": admission["tree_sha"],
+              "tag_ruleset_id": admission["tag_ruleset_id"],
+              "tag_ruleset_digest": admission["tag_ruleset_digest"],
               "required_policy_digest": digest(
                   {"required_gate_names": gate_names, "workflow_ref": inputs["workflow_ref"]}
               ),
@@ -1250,6 +1314,20 @@ jobs:
             --admission release-admission.json --ref live-ref.json --tag live-tag.json \
             --commit live-commit.json --release live-release.json \
             --release-tag "${RELEASE_TAG}" --release-state draft
+          # Release ETag does not protect Git refs; live no-bypass ruleset is the linearization authority.
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
           publish_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
             --proof release-satisfaction-proof.json \
@@ -1289,6 +1367,34 @@ jobs:
           ):
               raise SystemExit("Published release differs from Proof-bound transition")
           PY
+
+      - name: Validate live software authority immediately after publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_object_sha="$(jq -er '.tag_object_sha' release-admission.json)"
+          commit_sha="$(jq -er '.commit_sha' release-admission.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" > live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${tag_object_sha}" > live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${commit_sha}" > live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > live-release.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
+            --admission release-admission.json --ref live-ref.json --tag live-tag.json \
+            --commit live-commit.json --release live-release.json \
+            --release-tag "${RELEASE_TAG}" --release-state published
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
 
       - name: Verify immutable Release Attestation
         shell: bash
@@ -1414,7 +1520,20 @@ jobs:
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
             --admission release-admission.json --ref live-ref.json --tag live-tag.json \
             --commit live-commit.json --release live-release.json \
-            --release-tag "${RELEASE_TAG}" --release-state published
+            --release-tag "${RELEASE_TAG}" --release-state immutable
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
 
       - name: Validate current gate freshness before Certificate
         shell: bash
@@ -1502,7 +1621,7 @@ jobs:
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py authority-check \
             --admission release-admission.json --ref live-ref.json --tag live-tag.json \
             --commit live-commit.json --release live-release.json \
-            --release-tag "${RELEASE_TAG}" --release-state published
+            --release-tag "${RELEASE_TAG}" --release-state immutable
           publish_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
             --proof release-satisfaction-proof.json \
@@ -1515,22 +1634,119 @@ jobs:
           certificate_target="$(jq -er '.commit_sha' release-admission.json)"
           CERTIFICATE_DIGEST="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
           CERTIFICATE_TITLE="Release Truth ${RELEASE_TAG} Certificate g0"
-          CERTIFICATE_BODY="Permanent generation-0 release certificate for ${RELEASE_TAG}."
+          software_admission_digest="$(jq -er '.admission_digest' release-admission.json)"
+          software_proof_digest="$(jq -er '.proof_digest' release-satisfaction-proof.json)"
+          CERTIFICATE_BODY="$(printf '%s\n\nrun_id=%s run_attempt=%s workflow_ref=%s commit=%s software_admission_digest=%s software_proof_digest=%s failure_policy=terminal-generation-burn; no cleanup, edit, reuse, or rerun' \
+            "Permanent generation-0 release certificate for ${RELEASE_TAG}." \
+            "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_WORKFLOW_REF}" \
+            "${certificate_target}" "${software_admission_digest}" "${software_proof_digest}")"
           export certificate_tag certificate_target
           export CERTIFICATE_DIGEST CERTIFICATE_TITLE CERTIFICATE_BODY
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/matching-refs/tags/release-truth/${RELEASE_TAG}/certificate/g0" > certificate-existing-refs.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > certificate-existing-release-pages.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          refs = json.loads(Path("certificate-existing-refs.json").read_text(encoding="utf-8"))
+          pages = json.loads(Path("certificate-existing-release-pages.json").read_text(encoding="utf-8"))
+          if refs or any(
+              release.get("tag_name") == os.environ["certificate_tag"]
+              for page in pages
+              for release in page
+          ):
+              raise SystemExit(
+                  "Certificate namespace is already partially occupied; terminal generation burn, no cleanup or recovery"
+              )
+          PY
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          admission = json.loads(Path("release-admission.json").read_text(encoding="utf-8"))
+          proof = json.loads(Path("release-satisfaction-proof.json").read_text(encoding="utf-8"))
+          request = {
+              "tag": os.environ["certificate_tag"],
+              "message": (
+                  f"Permanent Certificate for {os.environ['RELEASE_TAG']}\n\n"
+                  f"software_admission_digest={admission['admission_digest']} "
+                  f"software_proof_digest={proof['proof_digest']} "
+                  "failure_policy=terminal-generation-burn; no cleanup, edit, reuse, or rerun"
+              ),
+              "object": os.environ["certificate_target"],
+              "type": "commit",
+          }
+          Path("certificate-annotated-tag-request.json").write_text(
+              json.dumps(request, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+          )
+          PY
+          gh api --method POST \
+            -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/git/tags" \
+            --input certificate-annotated-tag-request.json > certificate-annotated-tag.json
+          certificate_tag_object_sha="$(jq -er '.sha' certificate-annotated-tag.json)"
+          if [[ "$(jq -r '.tag' certificate-annotated-tag.json)" != "${certificate_tag}" ]] \
+            || [[ "$(jq -r '.object.type' certificate-annotated-tag.json)" != "commit" ]] \
+            || [[ "$(jq -r '.object.sha' certificate-annotated-tag.json)" != "${certificate_target}" ]]; then
+            echo "Created Certificate annotated tag differs from current admission authority." >&2
+            exit 1
+          fi
           jq -n \
             --arg ref "refs/tags/${certificate_tag}" \
-            --arg sha "${certificate_target}" \
+            --arg sha "${certificate_tag_object_sha}" \
             '{ref:$ref,sha:$sha}' > certificate-tag-ref-request.json
           gh api --method POST \
             -H "User-Agent: ${RELEASE_USER_AGENT}" \
             "repos/${GITHUB_REPOSITORY}/git/refs" \
             --input certificate-tag-ref-request.json > certificate-tag-ref.json
           if [[ "$(jq -r '.ref' certificate-tag-ref.json)" != "refs/tags/${certificate_tag}" ]] \
-            || [[ "$(jq -r '.object.sha' certificate-tag-ref.json)" != "${certificate_target}" ]]; then
+            || [[ "$(jq -r '.object.sha' certificate-tag-ref.json)" != "${certificate_tag_object_sha}" ]]; then
             echo "Created Certificate Git ref differs from current admission authority." >&2
             exit 1
           fi
+          certificate_tree_sha="$(jq -er '.tree_sha' release-admission.json)"
+          export certificate_tag_object_sha certificate_tree_sha
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          software = json.loads(Path("release-admission.json").read_text(encoding="utf-8"))
+          proof = json.loads(Path("release-satisfaction-proof.json").read_text(encoding="utf-8"))
+          admission = {
+              "certificate_tag": os.environ["certificate_tag"],
+              "tag_object_sha": os.environ["certificate_tag_object_sha"],
+              "commit_sha": os.environ["certificate_target"],
+              "tree_sha": os.environ["certificate_tree_sha"],
+              "software_admission_digest": software["admission_digest"],
+              "software_proof_digest": proof["proof_digest"],
+              "failure_policy": "terminal-generation-burn",
+          }
+          Path("certificate-tag-admission.json").write_text(
+              json.dumps(admission, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+          )
+          PY
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${certificate_tag}" > certificate-live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${certificate_tag_object_sha}" > certificate-live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${certificate_target}" > certificate-live-commit.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py tag-authority-check \
+            --admission certificate-tag-admission.json --ref certificate-live-ref.json \
+            --tag certificate-live-tag.json --commit certificate-live-commit.json
           python - <<'PY'
           from __future__ import annotations
 
@@ -1558,6 +1774,7 @@ jobs:
           python - <<'PY'
           from __future__ import annotations
 
+          import hashlib
           import json
           import os
           from pathlib import Path
@@ -1574,6 +1791,23 @@ jobs:
               or not isinstance(release.get("id"), int)
           ):
               raise SystemExit("Certificate release differs from fresh current-run identity")
+          admission = json.loads(
+              Path("certificate-tag-admission.json").read_text(encoding="utf-8")
+          )
+          admission.update(
+              {
+                  "numeric_release_id": release["id"],
+                  "upload_url": release["upload_url"],
+                  "release_user_agent": os.environ["RELEASE_USER_AGENT"],
+              }
+          )
+          encoded = json.dumps(
+              admission, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+          ).encode()
+          admission["admission_digest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
+          Path("certificate-admission.json").write_text(
+              json.dumps(admission, ensure_ascii=False, sort_keys=True), encoding="utf-8"
+          )
           PY
 
           certificate_release_id="$(jq -er '.id' certificate-release.json)"
@@ -1584,6 +1818,31 @@ jobs:
             --label release-certificate.json \
             --repository "${GITHUB_REPOSITORY}" \
             --user-agent "${RELEASE_USER_AGENT}"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${certificate_tag}" > certificate-live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${certificate_tag_object_sha}" > certificate-live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${certificate_target}" > certificate-live-commit.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py tag-authority-check \
+            --admission certificate-admission.json --ref certificate-live-ref.json \
+            --tag certificate-live-tag.json --commit certificate-live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
+          certificate_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
+            --proof release-satisfaction-proof.json --snapshot release-candidate-snapshot.json \
+            --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --caller-run-id "${{ github.run_id }}" --caller-run-attempt "${{ github.run_attempt }}" \
+            --observed-at "${certificate_observed_at}"
           gh api --include \
             -H "User-Agent: ${RELEASE_USER_AGENT}" \
             "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" \
@@ -1629,6 +1888,31 @@ jobs:
             '{target_commitish:$target_commitish,name:$name,body:$body,draft:false,prerelease:true,make_latest:"false"}' \
             > certificate-publish-request.json
           certificate_etag="$(cat certificate-publish-etag.txt)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${certificate_tag}" > certificate-live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${certificate_tag_object_sha}" > certificate-live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${certificate_target}" > certificate-live-commit.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py tag-authority-check \
+            --admission certificate-admission.json --ref certificate-live-ref.json \
+            --tag certificate-live-tag.json --commit certificate-live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
+          certificate_observed_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py publish-check \
+            --proof release-satisfaction-proof.json --snapshot release-candidate-snapshot.json \
+            --caller-workflow-ref "${GITHUB_WORKFLOW_REF}" \
+            --caller-run-id "${{ github.run_id }}" --caller-run-attempt "${{ github.run_attempt }}" \
+            --observed-at "${certificate_observed_at}"
           gh api --method PATCH \
             -H "User-Agent: ${RELEASE_USER_AGENT}" \
             -H "If-Match: ${certificate_etag}" \
@@ -1650,7 +1934,7 @@ jobs:
           evidence_ready=false
           for attempt in $(seq 1 20); do
             if gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/releases/${certificate_release_id}" > certificate-release.json 2>/dev/null \
-              && gh release verify "${certificate_tag}" --format json >/dev/null 2>&1; then
+              && gh release verify "${certificate_tag}" --format json > certificate-attestation.json 2>certificate-attestation.err; then
               immutable="$(jq -r '.immutable // false' certificate-release.json)"
               if [[ "${immutable}" == "true" ]]; then
                 existing_digest="$(jq -r '.assets[] | select(.name == "release-certificate.json") | .digest' certificate-release.json)"
@@ -1671,6 +1955,78 @@ jobs:
             sleep 15
           done
           if [[ "${evidence_ready}" != "true" ]]; then
+            cat certificate-attestation.err >&2 || true
             echo "Certificate evidence release did not become immutable within five minutes." >&2
             exit 1
           fi
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${certificate_tag}" > certificate-live-ref.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${certificate_tag_object_sha}" > certificate-live-tag.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/commits/${certificate_target}" > certificate-live-commit.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py tag-authority-check \
+            --admission certificate-admission.json --ref certificate-live-ref.json \
+            --tag certificate-live-tag.json --commit certificate-live-commit.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" > ruleset-list.json
+          jq -r '.[] | select(.target == "tag") | .id' ruleset-list.json > tag-ruleset-ids.txt
+          : > tag-rulesets.jsonl
+          while IFS= read -r ruleset_id; do
+            [[ -z "${ruleset_id}" ]] && continue
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/rulesets/${ruleset_id}" >> tag-rulesets.jsonl
+          done < tag-ruleset-ids.txt
+          jq -s '.' tag-rulesets.jsonl > tag-rulesets.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py ruleset-check \
+            --rulesets tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
+            --output release-tag-ruleset-authority.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          admission = json.loads(Path("certificate-admission.json").read_text(encoding="utf-8"))
+          certificate = json.loads(Path("release-certificate.json").read_text(encoding="utf-8"))
+          proof = json.loads(Path("release-satisfaction-proof.json").read_text(encoding="utf-8"))
+          software = json.loads(Path("release-published.json").read_text(encoding="utf-8"))
+          evidence = json.loads(Path("certificate-release.json").read_text(encoding="utf-8"))
+          verified = json.loads(Path("certificate-attestation.json").read_text(encoding="utf-8"))
+          try:
+              payload = verified["attestation"]["bundle"]["dsseEnvelope"]["payload"]
+              statement = json.loads(base64.b64decode(payload, validate=True))
+          except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+              raise SystemExit("Certificate Attestation JSON payload is invalid") from exc
+          predicate = statement.get("predicate", {})
+          subjects = statement.get("subject", [])
+          release_subjects = [subject for subject in subjects if "uri" in subject]
+          asset_subjects = {
+              subject.get("name"): "sha256:" + subject.get("digest", {}).get("sha256", "")
+              for subject in subjects
+              if subject.get("name")
+          }
+          live_certificate_assets = {
+              asset["name"]: asset.get("digest") for asset in evidence.get("assets", [])
+          }
+          live_software_assets = {
+              asset["name"]: asset.get("digest")
+              for asset in software.get("assets", [])
+              if asset["name"] != "release-satisfaction-proof.json"
+          }
+          certificate_assets = {
+              asset["name"]: asset["digest"] for asset in certificate.get("assets", [])
+          }
+          if (
+              predicate.get("repository") != os.environ["GITHUB_REPOSITORY"]
+              or predicate.get("tag") != admission["certificate_tag"]
+              or predicate.get("releaseId") != str(admission["numeric_release_id"])
+              or len(release_subjects) != 1
+              or release_subjects[0].get("digest") != {"sha1": admission["tag_object_sha"]}
+              or asset_subjects != live_certificate_assets
+              or certificate.get("admission_digest") != admission["software_admission_digest"]
+              or certificate.get("proof_digest") != admission["software_proof_digest"]
+              or proof.get("proof_digest") != admission["software_proof_digest"]
+              or live_software_assets != certificate_assets
+          ):
+              raise SystemExit("Certificate Attestation content differs from frozen authority")
+          PY

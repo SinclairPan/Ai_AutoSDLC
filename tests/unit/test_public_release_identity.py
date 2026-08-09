@@ -56,7 +56,8 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         "README.md": (
             f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
             "v1.0.4 terminal NO-GO / not released\n"
-            "only future WorkItem 010 may migrate to v1.0.5"
+            "only future WorkItem 010 may migrate to v1.0.5\n"
+            "active no-bypass tag ruleset protects software and Certificate tags"
         ),
     }
 
@@ -84,6 +85,10 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         markers = REQUIRED_SURFACES[path]
         assert "v1.0.4 terminal NO-GO / not released" in markers
         assert "only future WorkItem 010 may migrate to v1.0.5" in markers
+        assert (
+            "active no-bypass tag ruleset protects software and Certificate tags"
+            in markers
+        )
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
@@ -102,6 +107,7 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         "pre-tag qualification",
         "WorkItem 009",
         "WorkItem 010",
+        "active no-bypass tag ruleset protects software and Certificate tags",
     } <= set(release_convention)
 
 

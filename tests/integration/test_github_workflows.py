@@ -494,6 +494,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "RELEASE_BOOTSTRAP_ENABLED": "false",
         "RELEASE_PUBLISH_ENVIRONMENT": "release-publish",
         "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED": "false",
+        "RELEASE_TAG_RULESET_PROTECTION_VERIFIED": "false",
         "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
     }
     assert "ref: ${{ inputs.tag }}" not in workflow
@@ -905,14 +906,21 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "workflow_run_id" in workflow_text
     assert "workflow_run_attempt" in workflow_text
     assert "RELEASE_USER_AGENT" in workflow_text
+    assert publish_job["env"]["GH_HTTP_USER_AGENT"] == "ai-sdlc-release-writer/1.0"
     assert workflow["env"]["RELEASE_PUBLISH_ENVIRONMENT"] == "release-publish"
     assert workflow["env"]["RELEASE_ENVIRONMENT_PROTECTION_VERIFIED"] == "false"
+    assert workflow["env"]["RELEASE_TAG_RULESET_PROTECTION_VERIFIED"] == "false"
     assert '"${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true"' in workflow_text
     assert "historical writer runs remain blocked" in workflow_text
     assert "terminal-generation-burn" in workflow_text
     assert "no cleanup, edit, reuse, or rerun" in workflow_text
     assert workflow_text.count('"${GITHUB_RUN_ATTEMPT}" != "1"') == 2
     assert "rerun is forbidden by terminal-generation-burn" in workflow_text
+    assert workflow_text.count("scripts/release_truth.py ruleset-check") >= 6
+    assert "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" in workflow_text
+    assert "refs/tags/v*" in workflow_text
+    assert "refs/tags/release-truth/v*/certificate/g0" in workflow_text
+    assert "Release ETag does not protect Git refs" in workflow_text
     assert 'admission["admission_digest"] = admission_digest' in workflow_text
     assert '"upload_url": admission["upload_url"]' in workflow_text
     assert '"release_user_agent": admission["user_agent"]' in workflow_text
@@ -961,6 +969,8 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "base64.b64decode(payload, validate=True)" in workflow_text
     assert 'predicate.get("releaseId") != str(published["id"])' in workflow_text
     assert "asset_subjects != expected_assets" in workflow_text
+    assert "Validate live software authority immediately after publish" in workflow_text
+    assert "--release-state immutable" in workflow_text
     assert "publish_exit" not in workflow_text
     assert '"prerelease": True' in workflow_text
     assert '"make_latest": "false"' in workflow_text
@@ -970,6 +980,14 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "certificate-create-request.json" in workflow_text
     assert "certificate-publish-request.json" in workflow_text
     assert "certificate-publish-response.json" in workflow_text
+    assert "certificate-annotated-tag-request.json" in workflow_text
+    assert workflow_text.count("scripts/release_truth.py tag-authority-check") >= 3
+    assert "certificate-attestation.json" in workflow_text
+    assert "Certificate Attestation content differs from frozen authority" in workflow_text
+    cert_ref_index = workflow_text.index("certificate-tag-ref-request.json")
+    cert_live_index = workflow_text.index("tag-authority-check", cert_ref_index)
+    cert_create_index = workflow_text.index("certificate-create-request.json")
+    assert cert_ref_index < cert_live_index < cert_create_index
     assert "certificate-before-publish.http" in workflow_text
     assert "certificate-publish-etag.txt" in workflow_text
     certificate_cas_index = workflow_text.index("certificate-before-publish.http")
@@ -1546,7 +1564,10 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts(
     assert "--ignore=tests/e2e/stage_review" in workflow
     assert '"${assurance_script}" run-pytest' not in workflow
     assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
-    assert "actions/upload-artifact@v7" in workflow
+    assert (
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
+        in workflow
+    )
     assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
     assert "continue-on-error" not in workflow
@@ -1860,7 +1881,11 @@ def test_github_workflows_use_node24_compatible_core_actions() -> None:
                 f"{workflow_path.relative_to(_REPO_ROOT)} still uses {legacy_action}"
             )
 
-    release_build = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    closure_paths = (
+        _WORKFLOWS_DIR / "release-build.yml",
+        _WORKFLOWS_DIR / "compatibility-gate.yml",
+    )
+    release_build = closure_paths[0].read_text(encoding="utf-8")
     audited_pins = {
         "actions/checkout": "d23441a48e516b6c34aea4fa41551a30e30af803",
         "actions/setup-python": "ece7cb06caefa5fff74198d8649806c4678c61a1",
@@ -1872,3 +1897,16 @@ def test_github_workflows_use_node24_compatible_core_actions() -> None:
     for action, commit_sha in audited_pins.items():
         assert f"uses: {action}@{commit_sha}" in release_build
         assert not re.search(rf"uses: {re.escape(action)}@v\\d+", release_build)
+    for workflow_path in closure_paths:
+        workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+        external_uses = [
+            step["uses"]
+            for job in workflow["jobs"].values()
+            if isinstance(job, dict)
+            for step in job.get("steps", [])
+            if isinstance(step, dict)
+            and isinstance(step.get("uses"), str)
+            and not step["uses"].startswith("./")
+        ]
+        assert external_uses
+        assert all(re.fullmatch(r"[^@]+@[0-9a-f]{40}", use) for use in external_uses)

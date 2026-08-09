@@ -33,6 +33,7 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         STABLE_SOURCE_CLONE,
         "v1.0.4 terminal NO-GO / not released",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "active no-bypass tag ruleset protects software and Certificate tags",
     ),
     "USER_GUIDE.zh-CN.md": (
         CURRENT_REPOSITORY_URL,
@@ -43,6 +44,7 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "v1.0.4 未发布",
         "v1.0.4 terminal NO-GO / not released",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "active no-bypass tag ruleset protects software and Certificate tags",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-windows-amd64.zip",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
@@ -64,6 +66,7 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_VERSION,
         "v1.0.4 terminal NO-GO / not released",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "active no-bypass tag ruleset protects software and Certificate tags",
     ),
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
@@ -91,6 +94,7 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "pre-tag qualification",
         "WorkItem 009",
         "WorkItem 010",
+        "active no-bypass tag ruleset protects software and Certificate tags",
     ),
 }
 

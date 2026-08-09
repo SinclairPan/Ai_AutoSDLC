@@ -92,6 +92,8 @@ def _candidate(**changes: object):
         "tag_object_sha": "2" * 40,
         "commit_sha": "1" * 40,
         "tree_sha": "3" * 40,
+        "tag_ruleset_id": 77,
+        "tag_ruleset_digest": "sha256:" + "a" * 64,
         "required_policy_digest": "sha256:" + "e" * 64,
         "required_gate_names": ("Compatibility Gate Result", "Fast Gate"),
         "required_gates": gates,
@@ -408,6 +410,8 @@ def test_certificate_replay_is_deterministic_and_tamper_evident() -> None:
     assert first.upload_url == _candidate().upload_url
     assert first.tag_object_sha == _candidate().tag_object_sha
     assert first.release_user_agent == _candidate().release_user_agent
+    assert first.tag_ruleset_id == _candidate().tag_ruleset_id
+    assert first.tag_ruleset_digest == _candidate().tag_ruleset_digest
     payload = first.model_dump(mode="json")
     payload["admission_digest"] = "sha256:" + "8" * 64
     with pytest.raises(ValueError, match="certificate_digest"):
@@ -637,6 +641,9 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     ref_path = tmp_path / "release-ref.json"
     tag_path = tmp_path / "release-tag.json"
     commit_path = tmp_path / "release-commit.json"
+    rulesets_path = tmp_path / "tag-rulesets.json"
+    ruleset_authority_path = tmp_path / "tag-ruleset-authority.json"
+    certificate_admission_path = tmp_path / "certificate-admission.json"
     asset_path = tmp_path / "candidate.zip"
     snapshot_path.write_text(
         json.dumps(_candidate().model_dump(mode="json")), encoding="utf-8"
@@ -846,6 +853,90 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         "--release-tag", "v1.0.3",
         "--release-state", "draft",
     )
+    ruleset = {
+        "id": 77,
+        "name": "immutable-release-tags",
+        "target": "tag",
+        "source": "SinclairPan/Ai_AutoSDLC",
+        "source_type": "Repository",
+        "enforcement": "active",
+        "conditions": {
+            "ref_name": {
+                "include": [
+                    "refs/tags/release-truth/v*/certificate/g0",
+                    "refs/tags/v*",
+                ],
+                "exclude": [],
+            }
+        },
+        "rules": [
+            {"type": "deletion"},
+            {"type": "non_fast_forward"},
+            {"type": "update"},
+        ],
+        "bypass_actors": [],
+        "current_user_can_bypass": "never",
+    }
+    rulesets_path.write_text(json.dumps([ruleset]), encoding="utf-8")
+    ruleset_check = _run_release_truth_script(
+        "ruleset-check",
+        "--rulesets", str(rulesets_path),
+        "--repository", "SinclairPan/Ai_AutoSDLC",
+        "--output", str(ruleset_authority_path),
+    )
+    ruleset["rules"].append({"type": "creation"})
+    rulesets_path.write_text(json.dumps([ruleset]), encoding="utf-8")
+    rejected_ruleset = _run_release_truth_script(
+        "ruleset-check",
+        "--rulesets", str(rulesets_path),
+        "--repository", "SinclairPan/Ai_AutoSDLC",
+        "--output", str(ruleset_authority_path),
+    )
+    ruleset["rules"].pop()
+    ruleset["bypass_actors"] = [{"actor_id": 1, "actor_type": "Team"}]
+    rulesets_path.write_text(json.dumps([ruleset]), encoding="utf-8")
+    rejected_bypass = _run_release_truth_script(
+        "ruleset-check",
+        "--rulesets", str(rulesets_path),
+        "--repository", "SinclairPan/Ai_AutoSDLC",
+        "--output", str(ruleset_authority_path),
+    )
+    ruleset["bypass_actors"] = []
+    ruleset["conditions"]["ref_name"]["include"] = ["refs/tags/v*"]
+    rulesets_path.write_text(json.dumps([ruleset]), encoding="utf-8")
+    rejected_coverage = _run_release_truth_script(
+        "ruleset-check",
+        "--rulesets", str(rulesets_path),
+        "--repository", "SinclairPan/Ai_AutoSDLC",
+        "--output", str(ruleset_authority_path),
+    )
+    certificate_admission = {
+        "certificate_tag": "release-truth/v1.0.3/certificate/g0",
+        "tag_object_sha": "2" * 40,
+        "commit_sha": "1" * 40,
+        "tree_sha": "3" * 40,
+        "software_admission_digest": admission["admission_digest"],
+        "software_proof_digest": "sha256:" + "4" * 64,
+    }
+    certificate_admission_path.write_text(
+        json.dumps(certificate_admission), encoding="utf-8"
+    )
+    ref_path.write_text(
+        json.dumps(
+            {
+                "ref": "refs/tags/release-truth/v1.0.3/certificate/g0",
+                "object": {"sha": "2" * 40},
+            }
+        ),
+        encoding="utf-8",
+    )
+    tag_authority_check = _run_release_truth_script(
+        "tag-authority-check",
+        "--admission", str(certificate_admission_path),
+        "--ref", str(ref_path),
+        "--tag", str(tag_path),
+        "--commit", str(commit_path),
+    )
 
     assert first.returncode == 0, first.stderr
     assert replay.returncode == 0, replay.stderr
@@ -858,6 +949,14 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     assert authority_check.returncode == 0, authority_check.stderr
     assert rejected_authority.returncode == 2
     assert "live release authority differs" in rejected_authority.stderr
+    assert ruleset_check.returncode == 0, ruleset_check.stderr
+    assert rejected_ruleset.returncode == 2
+    assert "protective tag ruleset" in rejected_ruleset.stderr
+    assert rejected_bypass.returncode == 2
+    assert "protective tag ruleset" in rejected_bypass.stderr
+    assert rejected_coverage.returncode == 2
+    assert "protective tag ruleset" in rejected_coverage.stderr
+    assert tag_authority_check.returncode == 0, tag_authority_check.stderr
     assert sent_requests == [
         {
             "host": "uploads.github.com",

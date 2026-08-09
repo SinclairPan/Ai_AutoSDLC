@@ -106,13 +106,22 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
     )
     candidate = ReleaseCandidateSnapshot(
         repository=repository,
+        admission_id="release-admission/v1.0.1/run-100-attempt-1/release-10",
+        admission_digest="sha256:" + "7" * 64,
         draft_release_id=10,
+        upload_url=(
+            "https://uploads.github.com/repos/SinclairPan/Ai_AutoSDLC/"
+            "releases/10/assets{?name,label}"
+        ),
+        release_user_agent="ai-sdlc-release-writer/1.0",
         draft_release_updated_at="2026-05-01T11:58:00Z",
         draft=True,
         tag_name=tag,
         tag_object_sha=commit,
         commit_sha=commit,
         tree_sha=tree,
+        tag_ruleset_id=77,
+        tag_ruleset_digest="sha256:" + "8" * 64,
         required_policy_digest="sha256:" + "4" * 64,
         required_gate_names=(gate.name,),
         required_gates=(gate,),
@@ -127,13 +136,22 @@ def _public_truth_fixture(*, receipt_generation: int = 0):
     proof = build_release_satisfaction_proof(candidate)
     certificate = ReleaseCertificate(
         repository=repository,
+        admission_id=candidate.admission_id,
+        admission_digest=candidate.admission_digest,
         github_release_id=10,
+        upload_url=candidate.upload_url,
+        release_user_agent=candidate.release_user_agent,
         github_release_url=(
             "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v1.0.1"
         ),
         tag_name=tag,
+        tag_object_sha=commit,
         commit_sha=commit,
         tree_sha=tree,
+        tag_ruleset_id=candidate.tag_ruleset_id,
+        tag_ruleset_digest=candidate.tag_ruleset_digest,
+        workflow_run_id=100,
+        workflow_run_attempt=1,
         proof_digest=proof.proof_digest,
         release_attestation_digest="sha256:" + "6" * 64,
         assets=(software_asset,),
