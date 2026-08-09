@@ -33,19 +33,22 @@ class SnapshotControlBusyError(SharedStateIntegrityError):
 
     def __init__(
         self,
+        message: str = "snapshot_control_busy",
         *,
-        operation_id: str,
-        attempts: int,
-        elapsed_active_seconds: float,
-        last_error: Exception,
-        lease_recovery_used: bool,
+        operation_id: str | None = None,
+        attempts: int = 0,
+        elapsed_active_seconds: float = 0.0,
+        last_error: Exception | None = None,
+        lease_recovery_used: bool = False,
     ) -> None:
-        super().__init__("snapshot_control_busy")
+        super().__init__(message)
         self.operation_id = operation_id
         self.attempts = attempts
         self.elapsed_active_seconds = max(0.0, elapsed_active_seconds)
-        self.last_error_type = type(last_error).__name__
-        self.last_error_message = str(last_error)
+        self.last_error_type = (
+            type(last_error).__name__ if last_error is not None else None
+        )
+        self.last_error_message = _public_error_reason(last_error)
         self.lease_recovery_used = lease_recovery_used
 
 
@@ -101,6 +104,7 @@ class SnapshotControlRetryExecutor:
                     break
                 self.sleeper(delay)
         assert last_error is not None
+        elapsed_active_seconds = self.monotonic() - started
         error = SnapshotControlBusyError(
             operation_id=operation_id,
             attempts=last_attempt,
@@ -127,3 +131,18 @@ def _is_retryable(exc: BaseException) -> bool:
 
 def _is_expired_commit_lease(exc: BaseException) -> bool:
     return "optimization commit lease expired" in str(exc)
+
+
+def _public_error_reason(exc: Exception | None) -> str | None:
+    if exc is None:
+        return None
+    if isinstance(exc, ResourceLockUnavailableError):
+        return "resource_lock_unavailable"
+    return next(
+        (
+            marker
+            for marker in _RETRYABLE_INTEGRITY_MARKERS
+            if marker in str(exc)
+        ),
+        "retryable_shared_state_integrity_error",
+    )
