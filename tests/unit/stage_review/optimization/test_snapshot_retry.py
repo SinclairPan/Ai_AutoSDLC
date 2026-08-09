@@ -71,12 +71,19 @@ def test_retry_is_bounded_by_attempts_and_active_wall_clock() -> None:
         sleeper=sleep,
     )
 
-    with pytest.raises(SnapshotControlBusyError, match="snapshot_control_busy"):
+    with pytest.raises(SnapshotControlBusyError, match="snapshot_control_busy") as caught:
         retry.run(
             "operation.busy",
             lambda _: (_ for _ in ()).throw(ResourceLockUnavailableError("busy")),
         )
 
+    error = caught.value
+    assert error.operation_id == "operation.busy"
+    assert error.attempts == 2
+    assert error.last_error_type == "ResourceLockUnavailableError"
+    assert error.last_error_message == "busy"
+    assert error.elapsed_active_seconds >= 0.0
+    assert isinstance(error.__cause__, ResourceLockUnavailableError)
     assert len(sleeps) <= 2
     assert sum(sleeps) <= 0.025
 
@@ -134,3 +141,24 @@ def test_expired_commit_lease_gets_one_recovery_after_contention_window() -> Non
 
     assert result == "committed"
     assert attempts == [1, 2]
+
+    exhausted_clock = iter((0.0, 2.001))
+
+    def expire_twice(attempt: int) -> None:
+        if attempt <= 2:
+            raise SharedStateIntegrityError("optimization commit lease expired")
+        raise AssertionError("unexpected third lease-expiry attempt")
+
+    with pytest.raises(SnapshotControlBusyError) as caught:
+        SnapshotControlRetryExecutor(
+            monotonic=lambda: next(exhausted_clock),
+            sleeper=lambda _delay: None,
+        ).run("operation.double-lease-expiry", expire_twice)
+
+    error = caught.value
+    assert error.operation_id == "operation.double-lease-expiry"
+    assert error.attempts == 2
+    assert error.last_error_type == "SharedStateIntegrityError"
+    assert error.last_error_message == "optimization commit lease expired"
+    assert error.lease_recovery_used is True
+    assert isinstance(error.__cause__, SharedStateIntegrityError)

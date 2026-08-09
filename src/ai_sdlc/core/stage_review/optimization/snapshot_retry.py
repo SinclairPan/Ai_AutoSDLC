@@ -31,6 +31,23 @@ _RETRYABLE_INTEGRITY_MARKERS = (
 class SnapshotControlBusyError(SharedStateIntegrityError):
     """SnapshotControl 在有界竞争窗口内未能取得提交权。"""
 
+    def __init__(
+        self,
+        *,
+        operation_id: str,
+        attempts: int,
+        elapsed_active_seconds: float,
+        last_error: Exception,
+        lease_recovery_used: bool,
+    ) -> None:
+        super().__init__("snapshot_control_busy")
+        self.operation_id = operation_id
+        self.attempts = attempts
+        self.elapsed_active_seconds = max(0.0, elapsed_active_seconds)
+        self.last_error_type = type(last_error).__name__
+        self.last_error_message = str(last_error)
+        self.lease_recovery_used = lease_recovery_used
+
 
 @dataclass(frozen=True)
 class SnapshotControlRetryPolicy:
@@ -59,25 +76,39 @@ class SnapshotControlRetryExecutor:
     def run(self, operation_id: str, action: Callable[[int], T]) -> T:
         started = self.monotonic()
         lease_recovery_available = True
+        lease_recovery_used = False
+        elapsed_active_seconds = 0.0
+        last_attempt = 0
+        last_error: Exception | None = None
         for attempt in range(1, self.policy.maximum_attempts + 1):
             try:
                 return action(attempt)
             except (ResourceLockUnavailableError, SharedStateIntegrityError) as exc:
+                last_attempt = attempt
+                last_error = exc
                 if not _is_retryable(exc):
                     raise
                 if attempt == self.policy.maximum_attempts:
                     break
                 if _is_expired_commit_lease(exc) and lease_recovery_available:
                     lease_recovery_available = False
+                    lease_recovery_used = True
                     continue
-                remaining = self.policy.maximum_active_seconds - (
-                    self.monotonic() - started
-                )
+                elapsed_active_seconds = self.monotonic() - started
+                remaining = self.policy.maximum_active_seconds - elapsed_active_seconds
                 delay = _deterministic_backoff(operation_id, attempt)
                 if remaining <= 0 or delay > remaining:
                     break
                 self.sleeper(delay)
-        raise SnapshotControlBusyError("snapshot_control_busy")
+        assert last_error is not None
+        error = SnapshotControlBusyError(
+            operation_id=operation_id,
+            attempts=last_attempt,
+            elapsed_active_seconds=elapsed_active_seconds,
+            last_error=last_error,
+            lease_recovery_used=lease_recovery_used,
+        )
+        raise error from last_error
 
 
 def _deterministic_backoff(operation_id: str, attempt: int) -> float:
