@@ -4,6 +4,10 @@ from __future__ import annotations
 
 import ast
 import json
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 import yaml
@@ -203,7 +207,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v1.0.3" in workflow
+    assert "default: v1.0.4" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -473,7 +477,9 @@ def test_installed_runtime_declares_embedded_sigstore_verifier() -> None:
     assert '"sigstore==4.5.0"' in pyproject
 
 
-def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> None:
+def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
+    tmp_path: Path,
+) -> None:
     workflow_path = _WORKFLOWS_DIR / "release-build.yml"
 
     assert workflow_path.is_file()
@@ -481,7 +487,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v1.0.3" in workflow
+    assert "default: v1.0.4" in workflow
     assert "ref: ${{ inputs.tag }}" in workflow
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert "windows-latest" in workflow
@@ -533,6 +539,187 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets() -> Non
     posix_verify = workflow.index("--require-checksums", posix_extract)
     posix_install = workflow.index("./install_offline.sh --add-to-path", posix_extract)
     assert posix_hash < posix_extract < posix_verify < posix_install
+
+    if os.name == "nt":
+        return
+    bash = shutil.which("bash")
+    assert bash is not None
+
+    expected_assets = (
+        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz",
+        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz.sha256",
+        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz.sha256",
+        "ai-sdlc-offline-1.0.4-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.4-windows-amd64.zip.sha256",
+    )
+    proof_inputs = tmp_path / "release-proof-inputs"
+    candidates = proof_inputs / "candidates"
+    candidates.mkdir(parents=True)
+    for asset_name in expected_assets:
+        (candidates / asset_name).write_text(asset_name, encoding="utf-8")
+    (proof_inputs / "release-proof-inputs.json").write_text(
+        json.dumps(
+            {
+                "assets": [
+                    {"name": name, "digest": "sha256:" + "0" * 64, "size_bytes": 1}
+                    for name in expected_assets
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "[[ \"${1:-}\" == api ]]\n"
+        "call_count=0\n"
+        "[[ ! -f \"${GH_CALL_COUNT}\" ]] || call_count=\"$(<\"${GH_CALL_COUNT}\")\"\n"
+        "call_count=$((call_count + 1))\n"
+        "printf '%s' \"${call_count}\" > \"${GH_CALL_COUNT}\"\n"
+        "if [[ \"${call_count}\" == 1 ]]; then\n"
+        "  \"${PYTHON_EXE}\" - \"${INITIAL_ASSET_NAMES_JSON:-[]}\" <<'PY'\n"
+        "import json\n"
+        "import sys\n"
+        "names = json.loads(sys.argv[1])\n"
+        "print(json.dumps({'draft': True, 'prerelease': False, 'assets': [\n"
+        "    {'name': name} for name in names\n"
+        "]}))\n"
+        "PY\n"
+        "  exit 0\n"
+        "fi\n"
+        "\"${PYTHON_EXE}\" - \"${UPLOAD_LOG}\" \"${FORCE_TAMPERED_LIVE:-0}\" <<'PY'\n"
+        "import json\n"
+        "import sys\n"
+        "names = open(sys.argv[1], encoding='utf-8').read().splitlines()\n"
+        "if sys.argv[2] == '1':\n"
+        "    names = names[:-1]\n"
+        "print(json.dumps({'draft': True, 'prerelease': False, 'assets': [\n"
+        "    {'name': name} for name in names\n"
+        "]}))\n"
+        "PY\n",
+        encoding="utf-8",
+    )
+    fake_uv = fake_bin / "uv"
+    fake_uv.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "asset=''\n"
+        "while (($#)); do\n"
+        "  if [[ \"$1\" == --asset ]]; then asset=\"$2\"; break; fi\n"
+        "  shift\n"
+        "done\n"
+        "[[ -n \"${asset}\" ]]\n"
+        "printf '%s\\n' \"${asset##*/}\" >> \"${UPLOAD_LOG}\"\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    fake_uv.chmod(0o755)
+
+    workflow_data = yaml.safe_load(workflow)
+    current_release_tag = workflow_data["env"]["CURRENT_RELEASE_TAG"]
+    generation_step = next(
+        step
+        for step in workflow_data["jobs"]["release-assurance-policy"]["steps"]
+        if step.get("name") == "Require current release generation"
+    )
+    accepted_generation = subprocess.run(
+        [bash, "-c", generation_step["run"]],
+        env={
+            **os.environ,
+            "CURRENT_RELEASE_TAG": current_release_tag,
+            "RELEASE_TAG": current_release_tag,
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    rejected_generation = subprocess.run(
+        [bash, "-c", generation_step["run"]],
+        env={
+            **os.environ,
+            "CURRENT_RELEASE_TAG": current_release_tag,
+            "RELEASE_TAG": "v1.0.3",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert accepted_generation.returncode == 0, accepted_generation.stderr
+    assert rejected_generation.returncode != 0
+    assert "does not match current release generation" in rejected_generation.stderr
+
+    upload_step = next(
+        step
+        for step in workflow_data["jobs"]["publish-release"]["steps"]
+        if step.get("name")
+        == "Upload exact candidate assets to fresh zero-asset Draft"
+    )
+    assert 'while IFS= read -r asset_name || [[ -n "${asset_name}" ]]; do' in (
+        upload_step["run"]
+    )
+    upload_log = tmp_path / "uploaded-assets.txt"
+    gh_call_count = tmp_path / "gh-call-count.txt"
+    env = {
+        **os.environ,
+        "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+        "RELEASE_ID": "123456",
+        "UPLOAD_LOG": str(upload_log),
+        "GH_CALL_COUNT": str(gh_call_count),
+        "PYTHON_EXE": sys.executable,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+    }
+    completed = subprocess.run(
+        [bash, "-c", upload_step["run"]],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert tuple(upload_log.read_text(encoding="utf-8").splitlines()) == expected_assets
+    assert (tmp_path / "assets-to-upload.txt").read_bytes().endswith(b"\n")
+
+    upload_log.unlink()
+    gh_call_count.unlink()
+    tampered = subprocess.run(
+        [bash, "-c", upload_step["run"]],
+        cwd=tmp_path,
+        env={**env, "FORCE_TAMPERED_LIVE": "1"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert tampered.returncode != 0
+    assert "Draft candidate asset set must contain exactly six expected assets" in (
+        tampered.stderr
+    )
+
+    upload_log.unlink()
+    gh_call_count.unlink()
+    nonempty_draft = subprocess.run(
+        [bash, "-c", upload_step["run"]],
+        cwd=tmp_path,
+        env={
+            **env,
+            "INITIAL_ASSET_NAMES_JSON": json.dumps([expected_assets[0]]),
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert nonempty_draft.returncode != 0
+    assert "fresh release generation requires a zero-asset Draft" in (
+        nonempty_draft.stderr
+    )
+    assert not upload_log.exists()
+    assert workflow.count("fresh release generation requires a zero-asset Draft") == 2
 
 
 def test_release_build_emergency_freeze_removes_release_write_authority() -> None:
@@ -674,15 +861,15 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v1.0.3" in workflow
+    assert "default: v1.0.4" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "ai-sdlc-offline-1.0.3-windows-amd64" in workflow
-    assert "releases/download/v1.0.3" in workflow
+    assert "ai-sdlc-offline-1.0.4-windows-amd64" in workflow
+    assert "releases/download/v1.0.4" in workflow
     assert "Invoke-WebRequest" in workflow
     assert ".sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
@@ -721,7 +908,7 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v1.0.3"' in workflow
+    assert 'default: "v1.0.4"' in workflow
     for path_filter in (
         '      - "src/**"',
         '      - "pyproject.toml"',

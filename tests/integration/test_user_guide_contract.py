@@ -40,8 +40,8 @@ def test_guide_pins_published_assets_and_stable_output_contract() -> None:
         assert asset in text
         assert f"releases/download/v1.0.2/{asset}" in text
         assert f"{asset}.sha256" in text
-    assert "releases/download/v1.0.3/" not in text
-    assert "v1.0.3 未发布" in text
+    assert "releases/download/v1.0.4/" not in text
+    assert "v1.0.4 未发布" in text
     for anchor in (
         "Offline installation completed",
         "1.0.2",

@@ -34,7 +34,7 @@
 ## 发布相关变更
 
 - [ ] `README.md`、`USER_GUIDE.zh-CN.md` 与 `packaging/offline/README.md` 描述一致；
-- [ ] 当前发布版本为 `1.0.3`；
+- [ ] 当前发布版本为 `1.0.4`；
 - [ ] 包版本、源码版本、锁文件和工作流一致；
 - [ ] README、用户指南和打包说明一致；
 - [ ] 离线包名称与 manifest 一致；

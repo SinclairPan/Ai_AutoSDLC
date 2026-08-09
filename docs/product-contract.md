@@ -1,4 +1,4 @@
-# AI-SDLC 1.0.3 产品能力契约
+# AI-SDLC 1.0.4 产品能力契约
 
 ## 产品定位
 
@@ -62,14 +62,14 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 不默认向远程模型发送代码；
 - 不在项目文件中保存密钥或令牌值。
 
-## 1.0.3 源码候选真值（未发布）
+## 1.0.4 源码候选真值（未发布）
 
-- Python 源码候选版本：`1.0.3`；
+- Python 源码候选版本：`1.0.4`；
 - Git 仓库：`https://github.com/SinclairPan/Ai_AutoSDLC`；
-- `ai-sdlc-offline-1.0.3-windows-amd64.zip`、`ai-sdlc-offline-1.0.3-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.3-linux-amd64.tar.gz` 是该候选预期产物名，不是已发布发行集合；
-- `v1.0.3` GitHub Release 未发布，不能用于离线安装或声明 Permanent Release Truth；
+- `ai-sdlc-offline-1.0.4-windows-amd64.zip`、`ai-sdlc-offline-1.0.4-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.4-linux-amd64.tar.gz` 是该候选预期产物名，不是已发布发行集合；
+- `v1.0.4` GitHub Release 未发布，不能用于离线安装或声明 Permanent Release Truth；
 - 当前公开可安装且保持原样的离线版本是 `v1.0.2`，其下载与校验入口见 `USER_GUIDE.zh-CN.md`；
-- 发行恢复必须走独立 WorkItem 008，生成全新的 `v1.0.4` 代际，不得继承 `v1.0.3` 的资产或证据。
+- 发行恢复必须走独立 WorkItem 008，生成全新的 `v1.0.4` 代际，不得继承 `v1.0.3` 的 tag、Draft authority、资产或证据。
 
 ## 验收接口
 

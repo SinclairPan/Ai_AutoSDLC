@@ -6,10 +6,13 @@ on:
       tag:
         description: Release tag used to build the platform candidates.
         required: true
-        default: v1.0.3
+        default: v1.0.4
 
 permissions:
   contents: read
+
+env:
+  CURRENT_RELEASE_TAG: v1.0.4
 
 concurrency:
   group: release-build-${{ inputs.tag }}
@@ -23,6 +26,17 @@ jobs:
       assurance_required: ${{ steps.policy.outputs.assurance_required }}
       authority_ref: ${{ steps.policy.outputs.authority_ref }}
     steps:
+      - name: Require current release generation
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_TAG}" != "${CURRENT_RELEASE_TAG}" ]]; then
+            echo "Release tag ${RELEASE_TAG} does not match current release generation ${CURRENT_RELEASE_TAG}." >&2
+            exit 1
+          fi
+
       - name: Checkout exact release tag
         uses: actions/checkout@v6
         with:
@@ -593,6 +607,8 @@ jobs:
           release = matches[0]
           if not release.get("draft") or release.get("prerelease"):
               raise SystemExit("software release must be a non-prerelease Draft")
+          if release.get("assets"):
+              raise SystemExit("fresh release generation requires a zero-asset Draft")
           Path("release-authority.json").write_text(
               json.dumps(release, ensure_ascii=False, sort_keys=True), encoding="utf-8"
           )
@@ -600,7 +616,7 @@ jobs:
               stream.write(f"RELEASE_ID={release['id']}\n")
           PY
 
-      - name: Upload only missing candidate assets without replacement
+      - name: Upload exact candidate assets to fresh zero-asset Draft
         shell: bash
         run: |
           set -euo pipefail
@@ -608,7 +624,6 @@ jobs:
           python - <<'PY'
           from __future__ import annotations
 
-          import hashlib
           import json
           from pathlib import Path
 
@@ -618,30 +633,46 @@ jobs:
           )
           if not release["draft"] or release["prerelease"]:
               raise SystemExit("software release must be a non-prerelease Draft")
+          if release["assets"]:
+              raise SystemExit("fresh release generation requires a zero-asset Draft")
           expected = {asset["name"]: asset for asset in proof_inputs["assets"]}
-          existing = {asset["name"]: asset for asset in release["assets"]}
-          unexpected = sorted(set(existing).difference(expected, {"release-satisfaction-proof.json"}))
-          if unexpected:
-              raise SystemExit(f"Draft contains unexpected assets: {unexpected}")
-          upload = []
-          for name, binding in expected.items():
-              current = existing.get(name)
-              if current is None:
-                  upload.append(name)
-                  continue
-              path = Path("release-proof-inputs/candidates") / name
-              digest = "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
-              if digest != binding["digest"] or current.get("digest") != digest or current["size"] != binding["size_bytes"]:
-                  raise SystemExit(f"existing Draft asset differs and cannot be replaced: {name}")
-          Path("assets-to-upload.txt").write_text("\n".join(upload), encoding="utf-8")
+          Path("assets-to-upload.txt").write_text(
+              "\n".join(expected) + ("\n" if expected else ""), encoding="utf-8"
+          )
           PY
-          while IFS= read -r asset_name; do
+          while IFS= read -r asset_name || [[ -n "${asset_name}" ]]; do
             [[ -z "${asset_name}" ]] && continue
             uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
               --authority release-authority.json \
               --asset "release-proof-inputs/candidates/${asset_name}" \
               --repository "${GITHUB_REPOSITORY}"
           done < assets-to-upload.txt
+          gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}" > release-after-upload.json
+          python - <<'PY'
+          import json
+          from pathlib import Path
+
+          release = json.loads(
+              Path("release-after-upload.json").read_text(encoding="utf-8")
+          )
+          proof_inputs = json.loads(
+              Path("release-proof-inputs/release-proof-inputs.json").read_text(
+                  encoding="utf-8"
+              )
+          )
+          expected_names = [asset["name"] for asset in proof_inputs["assets"]]
+          live_names = [
+              asset["name"]
+              for asset in release["assets"]
+              if asset["name"] != "release-satisfaction-proof.json"
+          ]
+          if len(expected_names) != 6 or len(set(expected_names)) != 6:
+              raise SystemExit("Proof inputs must contain exactly six unique candidate assets")
+          if len(live_names) != 6 or set(live_names) != set(expected_names):
+              raise SystemExit(
+                  "Draft candidate asset set must contain exactly six expected assets"
+              )
+          PY
 
       - name: Build canonical Proof from live Draft authority
         shell: bash

@@ -1,4 +1,4 @@
-"""随 AI-SDLC 1.0.3 分发的最小 Reviewer Registry 基线。"""
+"""随 AI-SDLC 1.0.4 分发的最小 Reviewer Registry 基线。"""
 
 from __future__ import annotations
 

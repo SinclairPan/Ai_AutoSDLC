@@ -2289,7 +2289,7 @@ def test_release_docs_consistency_blocks_when_current_identity_is_missing(
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any("release docs consistency drift" in item for item in blockers)
-    assert any("README.md" in item and "1.0.3" in item for item in blockers)
+    assert any("README.md" in item and "1.0.4" in item for item in blockers)
 
 
 def test_release_docs_consistency_passes_when_current_surfaces_align(
@@ -2338,7 +2338,7 @@ def test_beginner_guide_blocks_missing_current_sections(tmp_path: Path) -> None:
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
     (tmp_path / "USER_GUIDE.zh-CN.md").write_text(
-        "# AI-SDLC 1.0.3 中文用户指南\n",
+        "# AI-SDLC 1.0.4 中文用户指南\n",
         encoding="utf-8",
     )
 
@@ -2389,7 +2389,7 @@ def test_beginner_guide_blocks_old_source_and_upgrade_paths(tmp_path: Path) -> N
         guide.read_text(encoding="utf-8")
         + "\n## 老版本升级\n\n从源码运行：`uv sync` 后使用 `@main`。\n"
         + "https://github.com/SinclairPan/Ai_AutoSDLC/"
-        "releases/download/v1.0.3/ai-sdlc-offline-1.0.3-linux-amd64.tar.gz\n",
+        "releases/download/v1.0.4/ai-sdlc-offline-1.0.4-linux-amd64.tar.gz\n",
         encoding="utf-8",
     )
 
@@ -2399,7 +2399,7 @@ def test_beginner_guide_blocks_old_source_and_upgrade_paths(tmp_path: Path) -> N
         "beginner guide CLI path contains out-of-scope content" in item
         and "老版本升级" in item
         and "从源码运行" in item
-        and "releases/download/v1.0.3/" in item
+        and "releases/download/v1.0.4/" in item
         for item in blockers
     )
 
@@ -2409,7 +2409,7 @@ def test_readme_blocks_missing_codex_init_path(tmp_path: Path) -> None:
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
     (tmp_path / "README.md").write_text(
-        "# AI-SDLC 1.0.3\n\n## 快速开始\n",
+        "# AI-SDLC 1.0.4\n\n## 快速开始\n",
         encoding="utf-8",
     )
 
