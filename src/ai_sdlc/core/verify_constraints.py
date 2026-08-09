@@ -253,13 +253,13 @@ RECONCILE_SMOKE_CONTRACT_SURFACES: dict[Path, tuple[str, ...]] = {
 }
 RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     README_REL: (
-        "# AI-SDLC 1.0.4",
+        "# AI-SDLC 1.0.5",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.4",
-        "git clone --branch v1.0.4 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
-        "ai-sdlc-offline-1.0.4-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz",
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.2",
+        "git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
         "ai-sdlc init . --agent-target codex --shell powershell",
         "uv run python scripts/validate_public_release_identity.py .",
     ),
@@ -267,6 +267,7 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "# AI-SDLC 1.0.2 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
         "v1.0.4 未发布",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "Windows",
@@ -283,12 +284,12 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "下一步 / Next",
     ),
     OFFLINE_README_REL: (
-        "# AI-SDLC 1.0.4 离线打包说明",
+        "# AI-SDLC 1.0.5 离线打包说明",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "git clone --branch v1.0.4 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
-        "ai-sdlc-offline-1.0.4-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz",
+        "git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
         "SHA256SUMS",
         ".sha256",
         "-AddToPath",
@@ -301,9 +302,9 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "packaging/offline/README.md",
         "docs/pull-request-checklist.zh.md",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "ai-sdlc-offline-1.0.4-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz",
+        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
         "SHA256SUMS",
         ".sha256",
     ),
@@ -311,11 +312,11 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "README.md",
         "USER_GUIDE.zh-CN.md",
         "packaging/offline/README.md",
-        "1.0.4",
+        "1.0.5",
         "python scripts/validate_public_release_identity.py .",
     ),
-    RELEASE_BUILD_WORKFLOW_REL: ("default: v1.0.4",),
-    RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v1.0.4",),
+    RELEASE_BUILD_WORKFLOW_REL: ("default: v1.0.5",),
+    RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v1.0.5",),
     WINDOWS_OFFLINE_SMOKE_WORKFLOW_REL: (
         "build_offline_bundle.sh",
         "install_offline.ps1 -AddToPath",
@@ -370,6 +371,7 @@ BEGINNER_GUIDE_FORBIDDEN_TOKENS = (
     "开发版",
     "Codex + PowerShell 为默认组合",
     "releases/download/v1.0.4/",
+    "releases/download/v1.0.5/",
 )
 README_CLI_PATH_REQUIRED_TOKENS = (
     "## 快速开始",
@@ -4536,7 +4538,7 @@ def _package_init_fallback_version(root: Path) -> str | None:
 
 
 def _release_version_truth_blockers(root: Path) -> list[str]:
-    expected_version = "1.0.4"
+    expected_version = "1.0.5"
     blockers: list[str] = []
     pyproject_version = _pyproject_version(root)
     if pyproject_version and pyproject_version != expected_version:

@@ -3,16 +3,30 @@ name: Release Build
 on:
   workflow_dispatch:
     inputs:
+      mode:
+        description: Read-only load probe or the one-shot release generation.
+        required: true
+        type: choice
+        default: load_probe
+        options:
+          - load_probe
+          - release
       tag:
         description: Release tag used to build the platform candidates.
         required: true
-        default: v1.0.4
+        default: v1.0.5
+      expected_candidate_sha:
+        description: Exact approved protected-main candidate merge SHA.
+        required: true
+        type: string
+
+run-name: ${{ inputs.mode == 'release' && format('release-admission|{0}|g0', inputs.tag) || format('release-load-probe|{0}|{1}', inputs.tag, inputs.expected_candidate_sha) }}
 
 permissions:
   contents: read
 
 env:
-  CURRENT_RELEASE_TAG: v1.0.4
+  CURRENT_RELEASE_TAG: v1.0.5
   RELEASE_BOOTSTRAP_ENABLED: "false"
   RELEASE_PUBLISH_ENVIRONMENT: release-publish
   RELEASE_ENVIRONMENT_PROTECTION_VERIFIED: "false"
@@ -20,16 +34,78 @@ env:
   RELEASE_USER_AGENT: ai-sdlc-release-writer/1.0
 
 concurrency:
-  group: release-build-${{ inputs.tag }}
+  group: release-build-${{ inputs.mode }}-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
+  release-load-probe:
+    name: Read-only Release Workflow Load Probe
+    if: inputs.mode == 'load_probe'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Prove exact protected-main workflow loadability
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${EXPECTED_CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Expected candidate SHA must be exactly 40 lowercase hexadecimal characters." >&2
+            exit 1
+          fi
+          if [[ "${EXPECTED_CANDIDATE_SHA}" != "${GITHUB_SHA}" ]]; then
+            echo "Load probe candidate does not match exact approved candidate." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_WORKFLOW_REF}" != "${GITHUB_REPOSITORY}/.github/workflows/release-build.yml@refs/heads/main" ]]; then
+            echo "Load probe must come from protected main." >&2
+            exit 1
+          fi
+          live_main_sha="$(gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "${live_main_sha}" != "${EXPECTED_CANDIDATE_SHA}" ]]; then
+            echo "Protected main advanced beyond the approved load-probe candidate." >&2
+            exit 1
+          fi
+
   release-assurance-policy:
     name: Resolve Pre-tag Release Qualification Policy
+    if: inputs.mode == 'release'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     outputs:
       authority_ref: ${{ steps.policy.outputs.authority_ref }}
     steps:
+      - name: Require exact reviewed candidate
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${EXPECTED_CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Expected candidate SHA must be exactly 40 lowercase hexadecimal characters." >&2
+            exit 1
+          fi
+          if [[ "${EXPECTED_CANDIDATE_SHA}" != "${GITHUB_SHA}" ]]; then
+            echo "Workflow SHA ${GITHUB_SHA} does not match exact approved candidate ${EXPECTED_CANDIDATE_SHA}." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_WORKFLOW_REF}" != "${GITHUB_REPOSITORY}/.github/workflows/release-build.yml@refs/heads/main" ]]; then
+            echo "Release candidate authority must come from protected main." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_RUN_ATTEMPT}" != "1" ]]; then
+            echo "Release rerun is forbidden by terminal-generation-burn." >&2
+            exit 1
+          fi
+
       - name: Require current release generation
         shell: bash
         env:
@@ -132,6 +208,43 @@ jobs:
 
       - name: Install policy authority runtime
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
+
+      - name: Reserve the only actual release dispatch
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          workflow_path=".github/workflows/release-build.yml"
+          accepted="false"
+          for query_attempt in 1 2 3 4 5; do
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+              > "policy-current-run-${query_attempt}.json"
+            workflow_id="$(jq -er '.workflow_id | select(type == "number" and . > 0)' \
+              "policy-current-run-${query_attempt}.json")"
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp \
+              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?event=workflow_dispatch&per_page=100" \
+              > "policy-run-pages-${query_attempt}.json"
+            if uv run python scripts/release_truth.py run-authority-check \
+              --current-run "policy-current-run-${query_attempt}.json" \
+              --run-pages "policy-run-pages-${query_attempt}.json" \
+              --release-tag "${RELEASE_TAG}" --generation g0 \
+              --expected-candidate-sha "${EXPECTED_CANDIDATE_SHA}" \
+              --current-run-id "${GITHUB_RUN_ID}" --workflow-path "${workflow_path}" \
+              --output "policy-run-authority-${query_attempt}.json"; then
+              cp "policy-run-authority-${query_attempt}.json" release-run-authority.json
+              accepted="true"
+              break
+            fi
+            sleep 2
+          done
+          if [[ "${accepted}" != "true" ]]; then
+            echo "Actual release dispatch authority did not become uniquely observable." >&2
+            exit 1
+          fi
 
       - name: Query live no-bypass tag ruleset authority before qualification
         shell: bash
@@ -663,7 +776,7 @@ jobs:
   publish-release:
     name: Publish Proof-bound Release
     needs: [build-release-proof]
-    if: needs.build-release-proof.result == 'success'
+    if: inputs.mode == 'release' && needs.build-release-proof.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     environment: release-publish
@@ -681,6 +794,7 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       GH_HTTP_USER_AGENT: ai-sdlc-release-writer/1.0
       GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+      EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout exact protected writer revision
@@ -816,6 +930,33 @@ jobs:
                   raise SystemExit("required gate is not fresh at admission mutation")
           PY
 
+      - name: Revalidate the only actual release dispatch before mutation
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+        run: |
+          set -euo pipefail
+          workflow_path=".github/workflows/release-build.yml"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > writer-current-run.json
+          workflow_id="$(jq -er '.workflow_id | select(type == "number" and . > 0)' writer-current-run.json)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?event=workflow_dispatch&per_page=100" \
+            > writer-run-pages.json
+          uv run --project trusted-writer python trusted-writer/scripts/release_truth.py run-authority-check \
+            --current-run writer-current-run.json --run-pages writer-run-pages.json \
+            --release-tag "${RELEASE_TAG}" --generation g0 \
+            --expected-candidate-sha "${EXPECTED_CANDIDATE_SHA}" \
+            --current-run-id "${GITHUB_RUN_ID}" --workflow-path "${workflow_path}" \
+            --output writer-run-authority.json
+          live_main_sha="$(gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          if [[ "${live_main_sha}" != "${EXPECTED_CANDIDATE_SHA}" ]]; then
+            echo "Protected main advanced beyond the exact approved release candidate." >&2
+            exit 1
+          fi
+
       - name: Create exact annotated release tag
         shell: bash
         run: |
@@ -941,6 +1082,7 @@ jobs:
               "upload_url": release["upload_url"],
               "tag_object_sha": tag["sha"],
               "commit_sha": os.environ["GITHUB_SHA"],
+              "expected_candidate_sha": os.environ["EXPECTED_CANDIDATE_SHA"],
               "tree_sha": os.environ["tag_tree_sha"],
               "tag_ruleset_id": ruleset["ruleset_id"],
               "tag_ruleset_digest": ruleset["ruleset_digest"],
@@ -1608,7 +1750,7 @@ jobs:
         with:
           subject-path: release-certificate.json
 
-      - name: Publish immutable Certificate evidence release
+      - name: Claim generation-0 Certificate namespace
         shell: bash
         run: |
           set -euo pipefail
@@ -1810,6 +1952,23 @@ jobs:
           )
           PY
 
+      - name: Bind generation-0 Certificate asset and CAS input
+        shell: bash
+        run: |
+          set -euo pipefail
+          certificate_tag="$(jq -er '.certificate_tag' certificate-admission.json)"
+          certificate_target="$(jq -er '.commit_sha' certificate-admission.json)"
+          certificate_tag_object_sha="$(jq -er '.tag_object_sha' certificate-admission.json)"
+          CERTIFICATE_DIGEST="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
+          CERTIFICATE_TITLE="Release Truth ${RELEASE_TAG} Certificate g0"
+          software_admission_digest="$(jq -er '.admission_digest' release-admission.json)"
+          software_proof_digest="$(jq -er '.proof_digest' release-satisfaction-proof.json)"
+          CERTIFICATE_BODY="$(printf '%s\n\nrun_id=%s run_attempt=%s workflow_ref=%s commit=%s software_admission_digest=%s software_proof_digest=%s failure_policy=terminal-generation-burn; no cleanup, edit, reuse, or rerun' \
+            "Permanent generation-0 release certificate for ${RELEASE_TAG}." \
+            "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_WORKFLOW_REF}" \
+            "${certificate_target}" "${software_admission_digest}" "${software_proof_digest}")"
+          export certificate_tag certificate_target certificate_tag_object_sha
+          export CERTIFICATE_DIGEST CERTIFICATE_TITLE CERTIFICATE_BODY
           certificate_release_id="$(jq -er '.id' certificate-release.json)"
           export certificate_release_id
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py upload-asset \
@@ -1887,6 +2046,24 @@ jobs:
             --arg body "${CERTIFICATE_BODY}" \
             '{target_commitish:$target_commitish,name:$name,body:$body,draft:false,prerelease:true,make_latest:"false"}' \
             > certificate-publish-request.json
+      - name: Publish and verify immutable generation-0 Certificate evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          certificate_tag="$(jq -er '.certificate_tag' certificate-admission.json)"
+          certificate_target="$(jq -er '.commit_sha' certificate-admission.json)"
+          certificate_tag_object_sha="$(jq -er '.tag_object_sha' certificate-admission.json)"
+          certificate_release_id="$(jq -er '.numeric_release_id' certificate-admission.json)"
+          CERTIFICATE_DIGEST="sha256:$(sha256sum release-certificate.json | awk '{print $1}')"
+          CERTIFICATE_TITLE="Release Truth ${RELEASE_TAG} Certificate g0"
+          software_admission_digest="$(jq -er '.admission_digest' release-admission.json)"
+          software_proof_digest="$(jq -er '.proof_digest' release-satisfaction-proof.json)"
+          CERTIFICATE_BODY="$(printf '%s\n\nrun_id=%s run_attempt=%s workflow_ref=%s commit=%s software_admission_digest=%s software_proof_digest=%s failure_policy=terminal-generation-burn; no cleanup, edit, reuse, or rerun' \
+            "Permanent generation-0 release certificate for ${RELEASE_TAG}." \
+            "${GITHUB_RUN_ID}" "${GITHUB_RUN_ATTEMPT}" "${GITHUB_WORKFLOW_REF}" \
+            "${certificate_target}" "${software_admission_digest}" "${software_proof_digest}")"
+          export certificate_tag certificate_target certificate_tag_object_sha
+          export certificate_release_id CERTIFICATE_DIGEST CERTIFICATE_TITLE CERTIFICATE_BODY
           certificate_etag="$(cat certificate-publish-etag.txt)"
           gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/ref/tags/${certificate_tag}" > certificate-live-ref.json
           gh api -H "User-Agent: ${RELEASE_USER_AGENT}" "repos/${GITHUB_REPOSITORY}/git/tags/${certificate_tag_object_sha}" > certificate-live-tag.json

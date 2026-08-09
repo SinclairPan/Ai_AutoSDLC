@@ -1,18 +1,18 @@
-# AI-SDLC 1.0.4 离线打包说明
+# AI-SDLC 1.0.5 离线打包说明
 
 离线打包用于在可联网构建机准备完整制品，再交付到无法访问软件源的 Windows、macOS 或 Linux 环境。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-发布状态：`v1.0.4 terminal NO-GO / not released`。最后已发布的离线版本仍为 `v1.0.2`；`only future WorkItem 010 may migrate to v1.0.5`。不得 redispatch、rerun、上传或发布 v1.0.4。
+候选状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 的 PR1 只验证候选，三个发布开关保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`。`v1.0.4 terminal NO-GO / not released` 永久冻结，不得 redispatch、rerun、上传或发布 v1.0.4。
 
-下列 1.0.4 命令与制品名称仅记录被冻结源码候选的结构和验证方法，不构成重新构建发布代际、上传或发布的授权。
+下列 1.0.5 命令与制品名称只用于已审查 PR 的本地候选验证，不构成上传或发布授权。
 
 ## 包内容
 
 每个离线包包含：
 
-- AI-SDLC 1.0.4 wheel；
+- AI-SDLC 1.0.5 wheel；
 - 运行依赖 wheelhouse；
 - `install_offline.ps1`、`install_offline.bat`、`install_offline.sh`；
 - `bundle-manifest.json`；
@@ -22,17 +22,22 @@
 
 平台制品名称：
 
-- `ai-sdlc-offline-1.0.4-windows-amd64.zip`
-- `ai-sdlc-offline-1.0.4-macos-arm64.tar.gz`
-- `ai-sdlc-offline-1.0.4-linux-amd64.tar.gz`
+- `ai-sdlc-offline-1.0.5-windows-amd64.zip`
+- `ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`
+- `ai-sdlc-offline-1.0.5-linux-amd64.tar.gz`
 
 ## 通用构建
 
-在仓库根目录执行：
+公开稳定源码仍固定为已发布的 `v1.0.2`：
 
 ```bash
-git clone --branch v1.0.4 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 cd Ai_AutoSDLC
+```
+
+1.0.5 候选构建只能在已审查 PR 的当前工作树根目录执行：
+
+```bash
 uv sync
 bash packaging/offline/build_offline_bundle.sh
 ```
@@ -79,13 +84,13 @@ bash packaging/offline/build_offline_bundle.sh
 先使用压缩包旁的同名 `.sha256` 文件校验下载结果，再解压制品。解压后执行：
 
 ```powershell
-python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --require-checksums --expected-package-version 1.0.4 --archive-checksum <archive> <archive>.sha256
+python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --require-checksums --expected-package-version 1.0.5 --archive-checksum <archive> <archive>.sha256
 ```
 
 安装 smoke 后补充安装日志：
 
 ```powershell
-python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --expected-package-version 1.0.4 --archive-checksum <archive> <archive>.sha256 --install-log <install-log>
+python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled-runtime --expected-package-version 1.0.5 --archive-checksum <archive> <archive>.sha256 --install-log <install-log>
 ```
 
 安装前命令会检查 tag 对应版本、目录名、manifest、wheel、包内文件摘要、压缩包摘要、Python 运行时、平台一致性和逃逸符号链接。安装会新增 `.venv/`，因此安装后命令不再要求原始文件集合完全相等，只复验版本、归档摘要、运行时和安装回执。
@@ -93,7 +98,7 @@ python packaging/offline/verify_offline_bundle.py <bundle-dir> --require-bundled
 ## Windows 安装 smoke
 
 ```powershell
-$Bundle = "ai-sdlc-offline-1.0.4-windows-amd64"
+$Bundle = "ai-sdlc-offline-1.0.5-windows-amd64"
 Set-Location $Bundle
 powershell -NoProfile -ExecutionPolicy Bypass -File .\install_offline.ps1 -AddToPath
 .\.venv\Scripts\ai-sdlc.exe --version
@@ -113,7 +118,7 @@ Set-Location smoke-project
 ## macOS / Linux 安装 smoke
 
 ```bash
-cd ai-sdlc-offline-1.0.4-<platform>
+cd ai-sdlc-offline-1.0.5-<platform>
 ./install_offline.sh --add-to-path
 ./.venv/bin/ai-sdlc --version
 ./.venv/bin/ai-sdlc --help
@@ -134,11 +139,11 @@ cd smoke-project
 - `.github/workflows/windows-offline-smoke.yml`：验证 Windows 构建、安装、Codex 初始化和 dry-run；
 - `.github/workflows/posix-offline-smoke.yml`：验证 macOS 与 Linux 安装路径。
 
-工作流中的 `v1.0.4` 仅是被冻结候选的历史标识；其发布通道已终止，禁止继续触发或写入发布权威。
+工作流当前候选标识是 prepared-disabled 的 `v1.0.5`，PR1 只能运行只读 load-probe；`v1.0.4` 仅是被冻结候选的历史标识，其发布通道已终止。
 
 ## 交付要求
 
-- 包版本、目录名、manifest 和 wheel 版本均为 `1.0.4`；
+- 包版本、目录名、manifest 和 wheel 版本均为 `1.0.5`；
 - 使用目标操作系统和 CPU 架构完成 smoke；
 - `--version`、`--help`、Codex 初始化、adapter status 与 dry-run 均成功；
 - 完整性验证通过；

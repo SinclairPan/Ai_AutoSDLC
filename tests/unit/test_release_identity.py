@@ -1,4 +1,4 @@
-"""Repository release identity must expose one current 1.0.4 truth."""
+"""Repository release identity separates the 1.0.5 candidate from 1.0.2 public truth."""
 
 from __future__ import annotations
 
@@ -13,40 +13,44 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 def test_package_and_source_fallback_versions_are_1_0_2() -> None:
     metadata = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
 
-    assert metadata["project"]["version"] == "1.0.4"
-    assert '__version__ = "1.0.4"' in (
+    assert metadata["project"]["version"] == "1.0.5"
+    assert '__version__ = "1.0.5"' in (
         REPO_ROOT / "src" / "ai_sdlc" / "__init__.py"
     ).read_text(encoding="utf-8")
-    assert '__version__ = "1.0.4"' in (
+    assert '__version__ = "1.0.5"' in (
         REPO_ROOT / "ai_sdlc" / "__init__.py"
     ).read_text(encoding="utf-8")
 
 
 def test_release_workflow_defaults_target_v1_0_2() -> None:
-    workflows = (
-        "release-artifact-smoke.yml",
-        "release-build.yml",
-        "posix-user-guide-e2e.yml",
-        "windows-user-guide-e2e.yml",
+    release_build = (REPO_ROOT / ".github/workflows/release-build.yml").read_text(
+        encoding="utf-8"
     )
-
-    for name in workflows:
+    release_smoke = (
+        REPO_ROOT / ".github/workflows/release-artifact-smoke.yml"
+    ).read_text(encoding="utf-8")
+    assert "default: v1.0.5" in release_build
+    assert "CURRENT_RELEASE_TAG: v1.0.5" in release_build
+    assert "default: v1.0.5" in release_smoke
+    for name in ("posix-user-guide-e2e.yml", "windows-user-guide-e2e.yml"):
         text = (REPO_ROOT / ".github" / "workflows" / name).read_text(
             encoding="utf-8"
         )
-        assert "v1.0.4" in text, name
+        assert "v1.0.5" in text, name
+        assert "v1.0.2" in text, name
 
 
 def test_stable_git_install_examples_pin_v1_0_2() -> None:
     text = (REPO_ROOT / "README.md").read_text(encoding="utf-8")
-    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.4" in text
+    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.2" in text
+    assert "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.5" not in text
     assert "@main" in text
     assert "开发版" in text
 
 
 def test_stable_source_checkout_examples_pin_v1_0_2() -> None:
     stable_clone = (
-        "git clone --branch v1.0.4 --depth 1 "
+        "git clone --branch v1.0.2 --depth 1 "
         "https://github.com/SinclairPan/Ai_AutoSDLC.git"
     )
     for name in ("README.md", "packaging/offline/README.md"):
@@ -92,7 +96,7 @@ def test_post_install_offline_example_allows_installer_created_files() -> None:
     assert match is not None
     command = match.group("command")
     assert "--install-log" in command
-    assert "--expected-package-version 1.0.4" in command
+    assert "--expected-package-version 1.0.5" in command
     assert "--archive-checksum" in command
     assert "--require-checksums" not in command
 
@@ -102,5 +106,5 @@ def test_offline_readme_smoke_projects_reference_parent_bundle_venv() -> None:
 
     assert r"..\.venv\Scripts\ai-sdlc.exe init ." in text
     assert "../.venv/bin/ai-sdlc init ." in text
-    assert r"..\ai-sdlc-offline-1.0.4-windows-amd64\.venv" not in text
-    assert "../ai-sdlc-offline-1.0.4-<platform>/.venv" not in text
+    assert r"..\ai-sdlc-offline-1.0.5-windows-amd64\.venv" not in text
+    assert "../ai-sdlc-offline-1.0.5-<platform>/.venv" not in text

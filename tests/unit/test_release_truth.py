@@ -644,6 +644,9 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     rulesets_path = tmp_path / "tag-rulesets.json"
     ruleset_authority_path = tmp_path / "tag-ruleset-authority.json"
     certificate_admission_path = tmp_path / "certificate-admission.json"
+    current_run_path = tmp_path / "current-release-run.json"
+    run_pages_path = tmp_path / "release-run-pages.json"
+    run_authority_path = tmp_path / "release-run-authority.json"
     asset_path = tmp_path / "candidate.zip"
     snapshot_path.write_text(
         json.dumps(_candidate().model_dump(mode="json")), encoding="utf-8"
@@ -713,6 +716,132 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         "--user-agent",
         "ai-sdlc-release-writer/1.0",
     )
+
+    actual_run = {
+        "id": 9001,
+        "event": "workflow_dispatch",
+        "run_attempt": 1,
+        "head_sha": "a" * 40,
+        "head_branch": "main",
+        "display_title": "release-admission|v1.0.5|g0",
+        "workflow_id": 314982030,
+        "path": ".github/workflows/release-build.yml",
+    }
+    current_run_path.write_text(json.dumps(actual_run), encoding="utf-8")
+    run_pages_path.write_text(
+        json.dumps([{"total_count": 1, "workflow_runs": [actual_run]}]),
+        encoding="utf-8",
+    )
+    accepted_run_authority = _run_release_truth_script(
+        "run-authority-check",
+        "--current-run",
+        str(current_run_path),
+        "--run-pages",
+        str(run_pages_path),
+        "--release-tag",
+        "v1.0.5",
+        "--generation",
+        "g0",
+        "--expected-candidate-sha",
+        "a" * 40,
+        "--current-run-id",
+        "9001",
+        "--workflow-path",
+        ".github/workflows/release-build.yml",
+        "--output",
+        str(run_authority_path),
+    )
+    duplicate_run = {**actual_run, "id": 9002, "head_sha": "b" * 40}
+    run_pages_path.write_text(
+        json.dumps(
+            [
+                {
+                    "total_count": 2,
+                    "workflow_runs": [actual_run, duplicate_run],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    rejected_duplicate_run = _run_release_truth_script(
+        "run-authority-check",
+        "--current-run",
+        str(current_run_path),
+        "--run-pages",
+        str(run_pages_path),
+        "--release-tag",
+        "v1.0.5",
+        "--generation",
+        "g0",
+        "--expected-candidate-sha",
+        "a" * 40,
+        "--current-run-id",
+        "9001",
+        "--workflow-path",
+        ".github/workflows/release-build.yml",
+        "--output",
+        str(tmp_path / "duplicate-run-authority.json"),
+    )
+    assert accepted_run_authority.returncode == 0, accepted_run_authority.stderr
+    assert json.loads(run_authority_path.read_text(encoding="utf-8")) == {
+        "candidate_sha": "a" * 40,
+        "generation": "g0",
+        "release_tag": "v1.0.5",
+        "run_id": 9001,
+        "run_name": "release-admission|v1.0.5|g0",
+        "workflow_id": 314982030,
+        "workflow_path": ".github/workflows/release-build.yml",
+    }
+    assert rejected_duplicate_run.returncode != 0
+    assert "actual release generation has already been dispatched" in (
+        rejected_duplicate_run.stderr
+    )
+    malformed_run_cases = (
+        (
+            {**actual_run, "run_attempt": 2},
+            [{"total_count": 1, "workflow_runs": [actual_run]}],
+            "current release run authority differs",
+        ),
+        (
+            {**actual_run, "head_branch": "feature/unreviewed"},
+            [{"total_count": 1, "workflow_runs": [actual_run]}],
+            "current release run authority differs",
+        ),
+        (
+            actual_run,
+            [{"total_count": 2, "workflow_runs": [actual_run]}],
+            "release run history is incomplete",
+        ),
+        (
+            actual_run,
+            [{"total_count": 2, "workflow_runs": [actual_run, actual_run]}],
+            "release run history contains invalid identities",
+        ),
+    )
+    for index, (current_run, pages, message) in enumerate(malformed_run_cases):
+        current_run_path.write_text(json.dumps(current_run), encoding="utf-8")
+        run_pages_path.write_text(json.dumps(pages), encoding="utf-8")
+        rejected_malformed = _run_release_truth_script(
+            "run-authority-check",
+            "--current-run",
+            str(current_run_path),
+            "--run-pages",
+            str(run_pages_path),
+            "--release-tag",
+            "v1.0.5",
+            "--generation",
+            "g0",
+            "--expected-candidate-sha",
+            "a" * 40,
+            "--current-run-id",
+            "9001",
+            "--workflow-path",
+            ".github/workflows/release-build.yml",
+            "--output",
+            str(tmp_path / f"malformed-run-authority-{index}.json"),
+        )
+        assert rejected_malformed.returncode != 0
+        assert message in rejected_malformed.stderr
 
     authority_path.write_text(
         json.dumps(
@@ -794,6 +923,7 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         "upload_url": _candidate().upload_url,
         "tag_object_sha": "2" * 40,
         "commit_sha": "1" * 40,
+        "expected_candidate_sha": "1" * 40,
         "tree_sha": "3" * 40,
         "workflow_ref": _candidate().publish_workflow_ref,
         "workflow_run_id": 9001,
@@ -841,6 +971,31 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         "--release-tag", "v1.0.3",
         "--release-state", "draft",
     )
+    drifted_candidate_admission = dict(admission)
+    drifted_candidate_admission["expected_candidate_sha"] = "9" * 40
+    drifted_candidate_admission.pop("admission_digest")
+    drifted_candidate_admission["admission_digest"] = "sha256:" + hashlib.sha256(
+        json.dumps(
+            drifted_candidate_admission,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode()
+    ).hexdigest()
+    admission_path.write_text(
+        json.dumps(drifted_candidate_admission), encoding="utf-8"
+    )
+    rejected_candidate_admission = _run_release_truth_script(
+        "authority-check",
+        "--admission", str(admission_path),
+        "--ref", str(ref_path),
+        "--tag", str(tag_path),
+        "--commit", str(commit_path),
+        "--release", str(authority_path),
+        "--release-tag", "v1.0.3",
+        "--release-state", "draft",
+    )
+    admission_path.write_text(json.dumps(admission), encoding="utf-8")
     drifted_ref = {"ref": "refs/tags/v1.0.3", "object": {"sha": "7" * 40}}
     ref_path.write_text(json.dumps(drifted_ref), encoding="utf-8")
     rejected_authority = _run_release_truth_script(
@@ -947,6 +1102,8 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     assert "frozen release ID" in rejected_upload.stderr
     assert uploaded["release_id"] == 1234
     assert authority_check.returncode == 0, authority_check.stderr
+    assert rejected_candidate_admission.returncode == 2
+    assert "expected candidate" in rejected_candidate_admission.stderr
     assert rejected_authority.returncode == 2
     assert "live release authority differs" in rejected_authority.stderr
     assert ruleset_check.returncode == 0, ruleset_check.stderr

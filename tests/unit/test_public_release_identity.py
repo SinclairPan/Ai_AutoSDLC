@@ -2,6 +2,7 @@ from pathlib import Path
 
 from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
+    CURRENT_VERSION,
     FORBIDDEN_SURFACE_MARKERS,
     PUBLIC_DOC_PATHS,
     PUBLISHED_VERSION,
@@ -54,9 +55,11 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
 def test_required_surfaces_enforce_current_release_identity() -> None:
     files = {
         "README.md": (
-            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
+            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC {CURRENT_VERSION}\n{STABLE_SOURCE_CLONE}\n"
+            "v1.0.5 release candidate / not published / prepared-disabled\n"
+            "last published version is v1.0.2\n"
             "v1.0.4 terminal NO-GO / not released\n"
-            "only future WorkItem 010 may migrate to v1.0.5\n"
+            "WorkItem 010 three-PR release migration\n"
             "active no-bypass tag ruleset protects software and Certificate tags"
         ),
     }
@@ -71,7 +74,7 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
     obsolete = validate_required_surfaces(
         {
             "README.md": (
-                f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4\n{STABLE_SOURCE_CLONE}\n"
+                f"{CURRENT_REPOSITORY_URL}\nAI-SDLC {CURRENT_VERSION}\n{STABLE_SOURCE_CLONE}\n"
                 "WorkItem 008 正在恢复 v1.0.4"
             )
         }
@@ -83,8 +86,10 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
     )
     for path in ("README.md", "USER_GUIDE.zh-CN.md", "docs/product-contract.md"):
         markers = REQUIRED_SURFACES[path]
+        assert "v1.0.5 release candidate / not published / prepared-disabled" in markers
+        assert "last published version is v1.0.2" in markers
         assert "v1.0.4 terminal NO-GO / not released" in markers
-        assert "only future WorkItem 010 may migrate to v1.0.5" in markers
+        assert "WorkItem 010 three-PR release migration" in markers
         assert (
             "active no-bypass tag ruleset protects software and Certificate tags"
             in markers
@@ -97,9 +102,11 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
     for path, obsolete_marker in terminal_release_surfaces.items():
         markers = REQUIRED_SURFACES[path]
         assert PUBLISHED_VERSION in markers
+        assert "v1.0.5 release candidate / not published / prepared-disabled" in markers
         assert "v1.0.4 terminal NO-GO / not released" in markers
-        assert "only future WorkItem 010 may migrate to v1.0.5" in markers
+        assert "WorkItem 010 three-PR release migration" in markers
         assert "不得 redispatch、rerun、上传或发布 v1.0.4" in markers
+        assert "不得上传、发布或下载 v1.0.5 候选" in markers
         assert obsolete_marker in FORBIDDEN_SURFACE_MARKERS[path]
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
@@ -125,7 +132,7 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
 
 def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:
     files = {
-        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 1.0.4",
+        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC {CURRENT_VERSION}",
         "uv.lock": 'name = "example"\nversion = "3.4.2"',
         "managed/frontend/package-lock.json": '{"version":"3.3.0"}',
         "src/provider.py": 'release_ref = "refs/tags/rust-v0.138.0"',
@@ -153,6 +160,9 @@ def test_user_guide_identity_requires_new_user_release_paths() -> None:
     assert "ai-sdlc adopt ." in markers
     assert STABLE_SOURCE_CLONE not in markers
     assert PUBLISHED_VERSION == "1.0.2"
+    assert CURRENT_VERSION == "1.0.5"
     assert any("releases/download/v1.0.2/" in marker for marker in markers)
     assert not any("releases/download/v1.0.4/" in marker for marker in markers)
+    assert not any("releases/download/v1.0.5/" in marker for marker in markers)
     assert "v1.0.4 未发布" in markers
+    assert "v1.0.5 release candidate / not published / prepared-disabled" in markers

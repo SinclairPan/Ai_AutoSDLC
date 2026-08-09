@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -36,6 +37,9 @@ _PROTECTED_TAG_PATTERNS = (
     "refs/tags/v*",
 )
 _PROTECTED_TAG_RULES = ("deletion", "non_fast_forward", "update")
+_RELEASE_TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+_CANDIDATE_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
+_GENERATION_PATTERN = re.compile(r"g(?:0|[1-9][0-9]*)")
 
 
 def _read_model(path: Path, model_type: type[BaseModel]) -> BaseModel:
@@ -179,6 +183,16 @@ def _authority_check(args: argparse.Namespace) -> dict[str, Any]:
     if admission.get("admission_digest") != expected_digest:
         raise ReleaseTruthError("frozen release admission digest differs")
     if (
+        _CANDIDATE_SHA_PATTERN.fullmatch(
+            str(admission.get("expected_candidate_sha", ""))
+        )
+        is None
+        or admission.get("expected_candidate_sha") != admission.get("commit_sha")
+    ):
+        raise ReleaseTruthError(
+            "expected candidate differs from frozen release admission commit"
+        )
+    if (
         ref.get("ref") != f"refs/tags/{args.release_tag}"
         or ref.get("object", {}).get("sha") != admission.get("tag_object_sha")
         or tag.get("sha") != admission.get("tag_object_sha")
@@ -196,6 +210,98 @@ def _authority_check(args: argparse.Namespace) -> dict[str, Any]:
     if args.release_state == "immutable" and release.get("immutable") is not True:
         raise ReleaseTruthError("immutable release authority is not immutable")
     return {"status": "success", "admission_digest": expected_digest}
+
+
+def _run_authority_check(args: argparse.Namespace) -> dict[str, Any]:
+    """冻结本次实际发布 dispatch 的唯一、完整候选身份。"""
+
+    if _RELEASE_TAG_PATTERN.fullmatch(args.release_tag) is None:
+        raise ReleaseTruthError("release tag is not canonical")
+    if _GENERATION_PATTERN.fullmatch(args.generation) is None:
+        raise ReleaseTruthError("release generation is not canonical")
+    if _CANDIDATE_SHA_PATTERN.fullmatch(args.expected_candidate_sha) is None:
+        raise ReleaseTruthError("expected candidate SHA is not canonical")
+    if args.current_run_id <= 0:
+        raise ReleaseTruthError("current workflow run ID must be positive")
+
+    current_run = read_json_object(args.current_run)
+    expected_run_name = (
+        f"release-admission|{args.release_tag}|{args.generation}"
+    )
+    workflow_id = current_run.get("workflow_id")
+    if (
+        isinstance(workflow_id, bool)
+        or not isinstance(workflow_id, int)
+        or workflow_id <= 0
+        or current_run.get("id") != args.current_run_id
+        or current_run.get("event") != "workflow_dispatch"
+        or current_run.get("run_attempt") != 1
+        or current_run.get("head_sha") != args.expected_candidate_sha
+        or current_run.get("head_branch") != "main"
+        or current_run.get("display_title") != expected_run_name
+        or current_run.get("path") != args.workflow_path
+    ):
+        raise ReleaseTruthError("current release run authority differs")
+
+    pages = json.loads(args.run_pages.read_text(encoding="utf-8"))
+    if not isinstance(pages, list) or not pages:
+        raise ReleaseTruthError("release run history is incomplete")
+    expected_total: int | None = None
+    runs: list[dict[str, Any]] = []
+    for page in pages:
+        if not isinstance(page, dict):
+            raise ReleaseTruthError("release run history page is invalid")
+        total_count = page.get("total_count")
+        page_runs = page.get("workflow_runs")
+        if (
+            isinstance(total_count, bool)
+            or not isinstance(total_count, int)
+            or total_count < 0
+            or not isinstance(page_runs, list)
+            or not all(isinstance(run, dict) for run in page_runs)
+        ):
+            raise ReleaseTruthError("release run history page is invalid")
+        if expected_total is None:
+            expected_total = total_count
+        elif total_count != expected_total:
+            raise ReleaseTruthError("release run history changed during pagination")
+        runs.extend(page_runs)
+    if expected_total is None or len(runs) != expected_total:
+        raise ReleaseTruthError("release run history is incomplete")
+    run_ids = [run.get("id") for run in runs]
+    if any(
+        isinstance(run_id, bool) or not isinstance(run_id, int) or run_id <= 0
+        for run_id in run_ids
+    ) or len(set(run_ids)) != len(run_ids):
+        raise ReleaseTruthError("release run history contains invalid identities")
+
+    matches = [
+        run
+        for run in runs
+        if run.get("path") == args.workflow_path
+        and run.get("event") == "workflow_dispatch"
+        and run.get("display_title") == expected_run_name
+    ]
+    if len(matches) != 1 or matches[0].get("id") != args.current_run_id:
+        raise ReleaseTruthError(
+            "actual release generation has already been dispatched"
+        )
+
+    authority = {
+        "candidate_sha": args.expected_candidate_sha,
+        "generation": args.generation,
+        "release_tag": args.release_tag,
+        "run_id": args.current_run_id,
+        "run_name": expected_run_name,
+        "workflow_id": workflow_id,
+        "workflow_path": args.workflow_path,
+    }
+    if (
+        not create_json_exclusive(args.output, authority)
+        and read_json_object(args.output) != authority
+    ):
+        raise ReleaseTruthError("release run authority changed")
+    return {"status": "success", **authority}
 
 
 def _ruleset_check(args: argparse.Namespace) -> dict[str, Any]:
@@ -328,6 +434,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--release-state", choices=("draft", "published", "immutable"), required=True
     )
 
+    run_authority_check = subparsers.add_parser("run-authority-check")
+    run_authority_check.add_argument("--current-run", type=Path, required=True)
+    run_authority_check.add_argument("--run-pages", type=Path, required=True)
+    run_authority_check.add_argument("--release-tag", required=True)
+    run_authority_check.add_argument("--generation", required=True)
+    run_authority_check.add_argument("--expected-candidate-sha", required=True)
+    run_authority_check.add_argument("--current-run-id", type=int, required=True)
+    run_authority_check.add_argument("--workflow-path", required=True)
+    run_authority_check.add_argument("--output", type=Path, required=True)
+
     ruleset_check = subparsers.add_parser("ruleset-check")
     ruleset_check.add_argument("--rulesets", type=Path, required=True)
     ruleset_check.add_argument("--repository", required=True)
@@ -349,6 +465,7 @@ def main(argv: list[str] | None = None) -> int:
         "certificate": _certificate,
         "upload-asset": _upload_asset,
         "authority-check": _authority_check,
+        "run-authority-check": _run_authority_check,
         "ruleset-check": _ruleset_check,
         "tag-authority-check": _tag_authority_check,
     }

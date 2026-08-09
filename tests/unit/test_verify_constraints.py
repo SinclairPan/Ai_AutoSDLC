@@ -2289,7 +2289,7 @@ def test_release_docs_consistency_blocks_when_current_identity_is_missing(
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any("release docs consistency drift" in item for item in blockers)
-    assert any("README.md" in item and "1.0.4" in item for item in blockers)
+    assert any("README.md" in item and "1.0.5" in item for item in blockers)
 
 
 def test_release_docs_consistency_passes_when_current_surfaces_align(
