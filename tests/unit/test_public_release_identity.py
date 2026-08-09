@@ -130,6 +130,24 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         if finding.path == "packaging/install_online.sh"
     ]
     assert installer_findings == []
+    assert REQUIRED_SURFACES["packaging/install_online.ps1"] == (
+        '[string]$PackageSpec = "ai-sdlc==1.0.2",',
+    )
+    assert (
+        '[string]$PackageSpec = "ai-sdlc",'
+        in FORBIDDEN_SURFACE_MARKERS["packaging/install_online.ps1"]
+    )
+    powershell_installer = (
+        Path(__file__).resolve().parents[2] / "packaging" / "install_online.ps1"
+    ).read_text(encoding="utf-8")
+    powershell_findings = [
+        finding
+        for finding in validate_required_surfaces(
+            {"packaging/install_online.ps1": powershell_installer}
+        )
+        if finding.path == "packaging/install_online.ps1"
+    ]
+    assert powershell_findings == []
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",

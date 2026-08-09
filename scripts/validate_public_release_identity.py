@@ -110,6 +110,9 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
     "packaging/install_online.sh": (
         'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
     ),
+    "packaging/install_online.ps1": (
+        '[string]$PackageSpec = "ai-sdlc==1.0.2",',
+    ),
     "docs/框架自迭代开发与发布约定.md": (
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
         "terminal NO-GO / not released / bootstrap budget exhausted",
@@ -177,6 +180,10 @@ FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
     "packaging/install_online.sh": (
         "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5",
         'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc}"',
+    ),
+    "packaging/install_online.ps1": (
+        '[string]$PackageSpec = "ai-sdlc",',
+        '[string]$PackageSpec = "ai-sdlc==1.0.5",',
     ),
 }
 
