@@ -1,6 +1,6 @@
 param(
   [string]$VenvPath = ".venv",
-  [string]$PackageSpec = "ai-sdlc",
+  [string]$PackageSpec = "ai-sdlc==1.0.2",
   [switch]$AddToPath
 )
 

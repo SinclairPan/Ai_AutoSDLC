@@ -1,14 +1,14 @@
-# AI-SDLC 1.0.4 离线发布检查清单
+# AI-SDLC 1.0.5 离线发布检查清单
 
-状态：`v1.0.4 terminal NO-GO / not released`。最后已发布的离线版本仍为 `v1.0.2`；`only future WorkItem 010 may migrate to v1.0.5`。不得 redispatch、rerun、上传或发布 v1.0.4。
+状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 的 PR1 只准备候选，三个发布开关保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`。`v1.0.4 terminal NO-GO / not released` 永久冻结，不得 redispatch、rerun、上传或发布 v1.0.4。
 
-以下条目仅用于审计冻结候选及其既有证据，不授权重新执行构建、发布或上传步骤。
+以下条目只用于 PR1 候选验证；它不授权实际 generation、发布或上传步骤。
 
 ## 版本与源码
 
-- [ ] `pyproject.toml` 为 `1.0.4`；
-- [ ] 两个 `ai_sdlc/__init__.py` 回退版本均为 `1.0.4`；
-- [ ] `uv.lock` 中本项目版本为 `1.0.4`；
+- [ ] `pyproject.toml` 为 `1.0.5`；
+- [ ] 两个 `ai_sdlc/__init__.py` 回退版本均为 `1.0.5`；
+- [ ] `uv.lock` 中本项目版本为 `1.0.5`；
 - [ ] Git 地址为 `https://github.com/SinclairPan/Ai_AutoSDLC`；
 - [ ] 工作树只包含本次授权变更。
 
@@ -44,7 +44,7 @@
 - [ ] Windows 解压与 `install_offline.ps1 -AddToPath` 成功；
 - [ ] macOS 解压与 `install_offline.sh --add-to-path` 成功；
 - [ ] Linux 解压与 `install_offline.sh --add-to-path` 成功；
-- [ ] 三个平台 `ai-sdlc --version` 输出 `1.0.4`；
+- [ ] 三个平台 `ai-sdlc --version` 输出 `1.0.5`；
 - [ ] 三个平台 `ai-sdlc --help` 成功；
 - [ ] Codex + PowerShell 初始化成功；
 - [ ] `ai-sdlc adapter status` 成功；
@@ -53,7 +53,7 @@
 ## 发布与复验
 
 - [ ] README、用户指南和打包说明中的包名一致；
-- [ ] GitHub Actions 默认发布标识为 `v1.0.4`；
+- [ ] GitHub Actions 默认候选标识为 `v1.0.5`，且 PR1 的三个发布开关均为字符串 `false`；
 - [ ] 平台工作流 artifact 完整；
 - [x] v1.0.4 上传与发布动作保持禁止，未补传、替换或复用制品；
 - [ ] 从全新目录安装正式制品并重复 smoke；

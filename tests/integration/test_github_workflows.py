@@ -209,7 +209,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v1.0.4" in workflow
+    assert "default: v1.0.5" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -487,10 +487,61 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     workflow_data = yaml.safe_load(workflow)
     jobs = workflow_data["jobs"]
 
+    # 单个 run 标量超过表达式限制时，GitHub 会在创建任何 job 前拒绝工作流。
+    # 保留安全余量，确保受保护 writer 不只是在本地 YAML 解析器中可用。
+    for job in jobs.values():
+        for step in job.get("steps", []):
+            run = step.get("run")
+            if not isinstance(run, str):
+                continue
+            assert len(run) <= 18_000, step.get("name")
+            assert len(run.encode("utf-8")) <= 18_000, step.get("name")
+
+    dispatch_inputs = workflow_data[True]["workflow_dispatch"]["inputs"]
+    assert dispatch_inputs["mode"] == {
+        "description": "Read-only load probe or the one-shot release generation.",
+        "required": True,
+        "type": "choice",
+        "default": "load_probe",
+        "options": ["load_probe", "release"],
+    }
+    assert dispatch_inputs["expected_candidate_sha"] == {
+        "description": "Exact approved protected-main candidate merge SHA.",
+        "required": True,
+        "type": "string",
+    }
+    assert workflow_data["run-name"] == (
+        "${{ inputs.mode == 'release' && "
+        "format('release-admission|{0}|g0', inputs.tag) || "
+        "format('release-load-probe|{0}|{1}', inputs.tag, "
+        "inputs.expected_candidate_sha) }}"
+    )
+
+    probe_job = jobs["release-load-probe"]
+    assert probe_job["if"] == "inputs.mode == 'load_probe'"
+    assert probe_job["permissions"] == {"contents": "read"}
+    assert "environment" not in probe_job
+    probe_contract = json.dumps(probe_job, sort_keys=True)
+    assert "--method POST" not in probe_contract
+    assert "--method PATCH" not in probe_contract
+    assert "contents: write" not in probe_contract
+    assert "release-publish" not in probe_contract
+    assert jobs["release-assurance-policy"]["if"] == "inputs.mode == 'release'"
+    assert jobs["release-assurance-policy"]["permissions"] == {
+        "actions": "read",
+        "contents": "read",
+    }
+    assert "inputs.mode == 'release'" in jobs["publish-release"]["if"]
+    for job in jobs.values():
+        if job.get("permissions", {}).get("contents") != "write":
+            continue
+        assert job.get("environment") == "release-publish"
+        assert "inputs.mode == 'release'" in job.get("if", "")
+
     assert "workflow_dispatch:" in workflow
-    assert "default: v1.0.4" in workflow
+    assert "default: v1.0.5" in workflow
     assert workflow_data["env"] == {
-        "CURRENT_RELEASE_TAG": "v1.0.4",
+        "CURRENT_RELEASE_TAG": "v1.0.5",
         "RELEASE_BOOTSTRAP_ENABLED": "false",
         "RELEASE_PUBLISH_ENVIRONMENT": "release-publish",
         "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED": "false",
@@ -513,6 +564,79 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' not in workflow
     assert 'head_commit="$(git rev-parse HEAD)"' in workflow
     assert '"${head_commit}" != "${GITHUB_SHA}"' in workflow
+    assert workflow.count("run-authority-check") == 2
+    assert workflow.count(
+        "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100"
+    ) == 2
+    assert "actions/workflows/${workflow_id}/runs" not in workflow
+    assert workflow.count(
+        'repos/${GITHUB_REPOSITORY}/contents/${workflow_path}?ref=${run_sha}'
+    ) == 2
+    assert workflow.count("--workflow-snapshots") == 2
+    assert workflow.count("--paginate --slurp") >= 2
+    assert "status=" not in workflow
+    writer_generation_check = workflow.index(
+        "Revalidate trusted Actions duplicate-run detector before mutation"
+    )
+    first_tag_mutation = workflow.index(
+        '"repos/${GITHUB_REPOSITORY}/git/tags"', writer_generation_check
+    )
+    assert writer_generation_check < first_tag_mutation
+    candidate_step = next(
+        (
+            step
+            for step in jobs["release-assurance-policy"]["steps"]
+            if step.get("name") == "Require exact reviewed candidate"
+        ),
+        None,
+    )
+    assert candidate_step is not None
+    assert candidate_step["env"] == {
+        "EXPECTED_CANDIDATE_SHA": "${{ inputs.expected_candidate_sha }}",
+        "GITHUB_WORKFLOW_REF": "${{ github.workflow_ref }}",
+    }
+    if os.name != "nt":
+        candidate_bash = shutil.which("bash")
+        assert candidate_bash is not None
+        valid_candidate = subprocess.run(
+            [candidate_bash, "-c", candidate_step["run"]],
+            env={
+                **os.environ,
+                "EXPECTED_CANDIDATE_SHA": "a" * 40,
+                "GITHUB_SHA": "a" * 40,
+                "GITHUB_WORKFLOW_REF": (
+                    "SinclairPan/Ai_AutoSDLC/.github/workflows/"
+                    "release-build.yml@refs/heads/main"
+                ),
+                "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+                "GITHUB_RUN_ATTEMPT": "1",
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        mismatched_candidate = subprocess.run(
+            [candidate_bash, "-c", candidate_step["run"]],
+            env={
+                **os.environ,
+                "EXPECTED_CANDIDATE_SHA": "a" * 40,
+                "GITHUB_SHA": "b" * 40,
+                "GITHUB_WORKFLOW_REF": (
+                    "SinclairPan/Ai_AutoSDLC/.github/workflows/"
+                    "release-build.yml@refs/heads/main"
+                ),
+                "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+                "GITHUB_RUN_ATTEMPT": "1",
+            },
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert valid_candidate.returncode == 0, valid_candidate.stderr
+        assert mismatched_candidate.returncode != 0
+        assert "does not match exact approved candidate" in (
+            mismatched_candidate.stderr
+        )
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
@@ -569,12 +693,12 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert bash is not None
 
     expected_assets = (
-        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz",
-        "ai-sdlc-offline-1.0.4-linux-amd64.tar.gz.sha256",
-        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.4-macos-arm64.tar.gz.sha256",
-        "ai-sdlc-offline-1.0.4-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.4-windows-amd64.zip.sha256",
+        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
+        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz.sha256",
+        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
+        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz.sha256",
+        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
+        "ai-sdlc-offline-1.0.5-windows-amd64.zip.sha256",
     )
     proof_inputs = tmp_path / "release-proof-inputs"
     candidates = proof_inputs / "candidates"
@@ -905,6 +1029,12 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "tree_sha" in workflow_text
     assert "workflow_run_id" in workflow_text
     assert "workflow_run_attempt" in workflow_text
+    assert publish_job["env"]["EXPECTED_CANDIDATE_SHA"] == (
+        "${{ inputs.expected_candidate_sha }}"
+    )
+    assert '"expected_candidate_sha": os.environ["EXPECTED_CANDIDATE_SHA"]' in (
+        workflow_text
+    )
     assert "RELEASE_USER_AGENT" in workflow_text
     assert publish_job["env"]["GH_HTTP_USER_AGENT"] == "ai-sdlc-release-writer/1.0"
     assert workflow["env"]["RELEASE_PUBLISH_ENVIRONMENT"] == "release-publish"
@@ -914,7 +1044,7 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "historical writer runs remain blocked" in workflow_text
     assert "terminal-generation-burn" in workflow_text
     assert "no cleanup, edit, reuse, or rerun" in workflow_text
-    assert workflow_text.count('"${GITHUB_RUN_ATTEMPT}" != "1"') == 2
+    assert workflow_text.count('"${GITHUB_RUN_ATTEMPT}" != "1"') == 3
     assert "rerun is forbidden by terminal-generation-burn" in workflow_text
     assert workflow_text.count("scripts/release_truth.py ruleset-check") >= 6
     assert "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" in workflow_text
@@ -1021,15 +1151,16 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v1.0.4" in workflow
+    assert "default: v1.0.2" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "ai-sdlc-offline-1.0.4-windows-amd64" in workflow
-    assert "releases/download/v1.0.4" in workflow
+    assert "v1.0.5" in workflow
+    assert "ai-sdlc-offline-$releaseVersion-windows-amd64" in workflow
+    assert "releases/download/$env:RELEASE_TAG" in workflow
     assert "Invoke-WebRequest" in workflow
     assert ".sha256" in workflow
     assert "Get-FileHash -Algorithm SHA256" in workflow
@@ -1068,7 +1199,8 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v1.0.4"' in workflow
+    assert 'default: "v1.0.2"' in workflow
+    assert "v1.0.5" in workflow
     for path_filter in (
         '      - "src/**"',
         '      - "pyproject.toml"',
@@ -1756,9 +1888,9 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     workflow = yaml.safe_load(workflow_text)
     jobs = workflow["jobs"]
 
-    assert workflow["env"]["CURRENT_RELEASE_TAG"] == "v1.0.4"
+    assert workflow["env"]["CURRENT_RELEASE_TAG"] == "v1.0.5"
     assert workflow["env"]["RELEASE_BOOTSTRAP_ENABLED"] == "false"
-    assert "v1.0.5" not in workflow_text
+    assert "default: v1.0.5" in workflow_text
     assert "v1.0.1 v1.0.2" not in workflow_text
     assert jobs["release-assurance-policy"]["outputs"] == {
         "authority_ref": "${{ steps.policy.outputs.authority_ref }}",
@@ -1791,9 +1923,21 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     policy_steps = [
         step.get("name") for step in jobs["release-assurance-policy"]["steps"]
     ]
-    assert policy_steps.index(
+    enablement_index = policy_steps.index("Require future release generation enablement")
+    namespace_index = policy_steps.index(
         "Require admission namespaces absent before qualification"
-    ) < policy_steps.index("Require future release generation enablement")
+    )
+    detector_index = policy_steps.index(
+        "Detect duplicate actual release dispatch in trusted Actions history"
+    )
+    assert enablement_index < namespace_index < detector_index
+    convention = (
+        _REPO_ROOT / "docs" / "框架自迭代开发与发布约定.md"
+    ).read_text(encoding="utf-8")
+    assert "Actions history duplicate-run detector" in convention
+    assert "retention and no-delete trust boundary" in convention
+    assert "not an immutable authority" in convention
+    assert "protected tag namespace becomes the durable burn authority" in convention
 
 
 def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:

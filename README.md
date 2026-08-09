@@ -1,12 +1,14 @@
-# AI-SDLC 1.0.4
+# AI-SDLC 1.0.5
 
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 发布状态：`v1.0.4 terminal NO-GO / not released`。该源码候选已终止，不能使用任何 `releases/download/v1.0.4/` 路径，也不得以 009 恢复或启用。普通用户需要离线安装时，请按[中文用户指南](USER_GUIDE.zh-CN.md)使用最后一个实际发布且保持原样的 `v1.0.2`；`only future WorkItem 010 may migrate to v1.0.5`，且必须先满足受保护发布环境的外部 GO 前置条件。
+> 候选状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 当前只准备候选，三个发布开关均保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`，普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装该版本。
 
-未来 010 的 GO 同时依赖两个已经独立验证的远端保护：`release-publish` environment 必须以 required reviewers 阻断未审历史 writer（禁止自批与管理员 bypass）；`active no-bypass tag ruleset protects software and Certificate tags`，其精确覆盖软件 tag 与 generation-0 Certificate tag，允许新建但拒绝更新、删除和非快进变更。009 中两个验证开关均保持字符串 `false`，任一部分 namespace、环境或 ruleset 失败都永久烧毁该代际，不清理、不恢复、不重跑。
+`v1.0.4 terminal NO-GO / not released` 继续作为冻结审计事实：不能使用任何 `releases/download/v1.0.4/` 路径，不得 redispatch、rerun、上传或发布 v1.0.4，也不得以 010 清理或复用它的 tag、Draft、资产或证据。
+
+010 的 GO 同时依赖两个已经独立验证的远端保护：`release-publish` environment 必须以 required reviewers 阻断未审 writer（禁止自批与管理员 bypass）；`active no-bypass tag ruleset protects software and Certificate tags`，其精确覆盖软件 tag 与 generation-0 Certificate tag，允许新建但拒绝更新、删除和非快进变更。PR1 保持三个验证/发布开关为字符串 `false`；只有独立的 PR2 可以启用一次实际 generation，任一失败都永久烧毁该代际，不清理、不恢复、不重跑。
 
 ## 核心特性
 
@@ -31,18 +33,18 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 ### 从 Git 安装
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.4"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.2"
 ai-sdlc --version
 ```
 
-版本输出应为 `1.0.4`。
+版本输出应为 `1.0.2`。
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
 ### 从源码运行
 
 ```powershell
-git clone --branch v1.0.4 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -254,11 +256,11 @@ ai-sdlc enterprise configure --help
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.4` 源码候选预期生成的产物名称；它们没有形成已发布、可安装的正式集合：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.5` 源码候选预期生成的产物名称；它们尚未形成已发布、可安装的正式集合：
 
-- `ai-sdlc-offline-1.0.4-windows-amd64.zip`
-- `ai-sdlc-offline-1.0.4-macos-arm64.tar.gz`
-- `ai-sdlc-offline-1.0.4-linux-amd64.tar.gz`
+- `ai-sdlc-offline-1.0.5-windows-amd64.zip`
+- `ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`
+- `ai-sdlc-offline-1.0.5-linux-amd64.tar.gz`
 
 当前公开可安装的离线版本仍是 `v1.0.2`，具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
 

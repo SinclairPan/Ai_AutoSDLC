@@ -6,7 +6,7 @@ on:
       tag:
         description: Published release tag to verify against the user guide.
         required: true
-        default: v1.0.4
+        default: v1.0.2
   pull_request:
     paths:
       - ".github/workflows/windows-user-guide-e2e.yml"
@@ -37,7 +37,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v1.0.4' }}
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v1.0.5' || inputs.tag }}
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
 
@@ -126,13 +126,15 @@ jobs:
           # USER_GUIDE.zh-CN.md Chapter 2: existing project online download from Release.
           Push-Location $projectRoot
           cd ..
-          $BundleName = "ai-sdlc-offline-1.0.4-windows-amd64"
+          $releaseVersion = $env:RELEASE_TAG.TrimStart("v")
+          $BundleName = "ai-sdlc-offline-$releaseVersion-windows-amd64"
           $PackageName = "$BundleName.zip"
           $ChecksumName = "$PackageName.sha256"
           $PackageDir = (Get-Location).Path
           $ExtractRoot = Join-Path $PackageDir ".ai-sdlc-install"
-          if ($env:RELEASE_TAG -ne "v1.0.4") {
-            throw "This guide replay intentionally follows the current USER_GUIDE.zh-CN.md v1.0.4 Windows commands."
+          $expectedTag = if ($env:GITHUB_EVENT_NAME -eq "pull_request") { "v1.0.5" } else { "v1.0.2" }
+          if ($env:RELEASE_TAG -ne $expectedTag) {
+            throw "Guide replay tag $env:RELEASE_TAG differs from the expected candidate/published split $expectedTag."
           }
           $packagePath = Join-Path $PackageDir $PackageName
           $checksumPath = Join-Path $PackageDir $ChecksumName
@@ -149,8 +151,8 @@ jobs:
             }
             Copy-Item -LiteralPath $localChecksum.FullName -Destination $checksumPath -Force
           } else {
-            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.4/$PackageName" -OutFile $packagePath
-            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v1.0.4/$ChecksumName" -OutFile $checksumPath
+            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$env:RELEASE_TAG/$PackageName" -OutFile $packagePath
+            Invoke-WebRequest -Uri "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/$env:RELEASE_TAG/$ChecksumName" -OutFile $checksumPath
           }
           $checksumParts = (Get-Content -LiteralPath $checksumPath -Raw).Trim() -split '\s+', 2
           if ($checksumParts.Count -ne 2 -or $checksumParts[1] -ne $PackageName) {
@@ -326,7 +328,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
-      RELEASE_TAG: ${{ inputs.tag || 'v1.0.4' }}
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v1.0.5' || inputs.tag }}
       PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
 
@@ -462,8 +464,9 @@ jobs:
             throw "The newly opened ordinary-user command failed."
           }
           $versionText = Get-Content -LiteralPath (Join-Path $evidenceRoot "ai-sdlc-version.txt") -Raw
-          if ($versionText.Trim() -ne "1.0.4") {
-            throw "Remote online install produced version '$($versionText.Trim())', expected 1.0.4."
+          $expectedVersion = $env:RELEASE_TAG.TrimStart("v")
+          if ($versionText.Trim() -ne $expectedVersion) {
+            throw "Remote online install produced version '$($versionText.Trim())', expected $expectedVersion."
           }
 
           $directUrlPath = Get-ChildItem `

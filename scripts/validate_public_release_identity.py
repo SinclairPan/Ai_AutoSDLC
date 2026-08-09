@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the public 1.0.4 source and 1.0.2 offline release identity."""
+"""Validate the prepared-disabled 1.0.5 candidate and 1.0.2 public truth."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CURRENT_REPOSITORY_URL = "https://github.com/SinclairPan/Ai_AutoSDLC"
-CURRENT_VERSION = "1.0.4"
+CURRENT_VERSION = "1.0.5"
 PUBLISHED_VERSION = "1.0.2"
 STABLE_SOURCE_CLONE = (
-    "git clone --branch v1.0.4 --depth 1 "
+    "git clone --branch v1.0.2 --depth 1 "
     "https://github.com/SinclairPan/Ai_AutoSDLC.git"
 )
 
@@ -31,19 +31,23 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         STABLE_SOURCE_CLONE,
+        "v1.0.5 release candidate / not published / prepared-disabled",
+        "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
-        "only future WorkItem 010 may migrate to v1.0.5",
+        "WorkItem 010 three-PR release migration",
         "active no-bypass tag ruleset protects software and Certificate tags",
     ),
     "USER_GUIDE.zh-CN.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         PUBLISHED_VERSION,
+        "v1.0.5 release candidate / not published / prepared-disabled",
+        "last published version is v1.0.2",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "v1.0.4 未发布",
         "v1.0.4 terminal NO-GO / not released",
-        "only future WorkItem 010 may migrate to v1.0.5",
+        "WorkItem 010 three-PR release migration",
         "active no-bypass tag ruleset protects software and Certificate tags",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-windows-amd64.zip",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
@@ -64,8 +68,10 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
     "docs/product-contract.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
+        "v1.0.5 release candidate / not published / prepared-disabled",
+        "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
-        "only future WorkItem 010 may migrate to v1.0.5",
+        "WorkItem 010 three-PR release migration",
         "active no-bypass tag ruleset protects software and Certificate tags",
     ),
     "packaging/offline/README.md": (
@@ -73,24 +79,39 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_VERSION,
         PUBLISHED_VERSION,
         STABLE_SOURCE_CLONE,
+        "v1.0.5 release candidate / not published / prepared-disabled",
+        "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
-        "only future WorkItem 010 may migrate to v1.0.5",
+        "WorkItem 010 three-PR release migration",
         "不得 redispatch、rerun、上传或发布 v1.0.4",
+        "不得上传、发布或下载 v1.0.5 候选",
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         PUBLISHED_VERSION,
+        "v1.0.5 release candidate / not published / prepared-disabled",
+        "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
-        "only future WorkItem 010 may migrate to v1.0.5",
+        "WorkItem 010 three-PR release migration",
         "不得 redispatch、rerun、上传或发布 v1.0.4",
+        "不得上传、发布或下载 v1.0.5 候选",
     ),
     "docs/pull-request-checklist.zh.md": (
         CURRENT_VERSION,
         PUBLISHED_VERSION,
+        "v1.0.5 release candidate / not published / prepared-disabled",
+        "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
-        "only future WorkItem 010 may migrate to v1.0.5",
+        "WorkItem 010 three-PR release migration",
         "不得 redispatch、rerun、上传或发布 v1.0.4",
+        "不得上传、发布或下载 v1.0.5 候选",
+    ),
+    "packaging/install_online.sh": (
+        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
+    ),
+    "packaging/install_online.ps1": (
+        '[string]$PackageSpec = "ai-sdlc==1.0.2",',
     ),
     "docs/框架自迭代开发与发布约定.md": (
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
@@ -110,20 +131,60 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "WorkItem 009",
         "WorkItem 010",
         "active no-bypass tag ruleset protects software and Certificate tags",
+        "## v1.0.5 prepared-disabled 候选记录",
+        "WorkItem 010 three-PR release migration",
+        "Actions history duplicate-run detector",
+        "retention and no-delete trust boundary",
+        "not an immutable authority",
+        "protected tag namespace becomes the durable burn authority",
     ),
 }
 
 FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
-    "README.md": ("WorkItem 008",),
-    "USER_GUIDE.zh-CN.md": ("WorkItem 008",),
-    "docs/product-contract.md": ("WorkItem 008",),
+    "README.md": (
+        "WorkItem 008",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "releases/download/v1.0.5/",
+        "v1.0.5 已发布",
+    ),
+    "USER_GUIDE.zh-CN.md": (
+        "WorkItem 008",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "releases/download/v1.0.5/",
+        "v1.0.5 已发布",
+    ),
+    "docs/product-contract.md": (
+        "WorkItem 008",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "releases/download/v1.0.5/",
+        "v1.0.5 已发布",
+    ),
     "packaging/offline/README.md": (
         "上传动作必须由有权限的维护者明确触发",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "releases/download/v1.0.5/",
+        "v1.0.5 已发布",
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         "上传动作由有权限维护者明确执行",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "releases/download/v1.0.5/",
+        "v1.0.5 已发布",
     ),
-    "docs/pull-request-checklist.zh.md": ("当前发布版本为 `1.0.4`",),
+    "docs/pull-request-checklist.zh.md": (
+        "当前发布版本为 `1.0.4`",
+        "only future WorkItem 010 may migrate to v1.0.5",
+        "releases/download/v1.0.5/",
+        "v1.0.5 已发布",
+    ),
+    "packaging/install_online.sh": (
+        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5",
+        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc}"',
+    ),
+    "packaging/install_online.ps1": (
+        '[string]$PackageSpec = "ai-sdlc",',
+        '[string]$PackageSpec = "ai-sdlc==1.0.5",',
+    ),
 }
 
 PUBLIC_ROOT_MARKDOWN = {
