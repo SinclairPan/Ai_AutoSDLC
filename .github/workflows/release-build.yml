@@ -117,6 +117,27 @@ jobs:
             exit 1
           fi
 
+      - name: Require future release generation enablement
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_BOOTSTRAP_ENABLED}" != "true" ]]; then
+            echo "Release bootstrap is disabled for the frozen ${CURRENT_RELEASE_TAG} generation." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_RUN_ATTEMPT}" != "1" ]]; then
+            echo "Release rerun is forbidden by terminal-generation-burn." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true" ]]; then
+            echo "release-publish historical writer runs remain blocked until remote protection is independently verified." >&2
+            exit 1
+          fi
+          if [[ "${RELEASE_TAG_RULESET_PROTECTION_VERIFIED}" != "true" ]]; then
+            echo "software and Certificate tags remain blocked until the live no-bypass tag ruleset is independently verified." >&2
+            exit 1
+          fi
+
       - name: Checkout exact protected candidate
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -209,7 +230,7 @@ jobs:
       - name: Install policy authority runtime
         uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7
 
-      - name: Reserve the only actual release dispatch
+      - name: Detect duplicate actual release dispatch in trusted Actions history
         shell: bash
         env:
           EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
@@ -226,11 +247,27 @@ jobs:
             workflow_id="$(jq -er '.workflow_id | select(type == "number" and . > 0)' \
               "policy-current-run-${query_attempt}.json")"
             gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp \
-              "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?event=workflow_dispatch&per_page=100" \
+              "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100" \
               > "policy-run-pages-${query_attempt}.json"
+            workflow_snapshots="policy-run-workflows-${query_attempt}"
+            mkdir -p "${workflow_snapshots}"
+            jq -r --arg path "${workflow_path}" --arg title "release-admission|${RELEASE_TAG}|g0" \
+              '.[] | .workflow_runs[]? | select(.path == $path and .event == "workflow_dispatch" and .display_title == $title) | .head_sha' \
+              "policy-run-pages-${query_attempt}.json" | sort -u > "policy-run-shas-${query_attempt}.txt"
+            while IFS= read -r run_sha; do
+              [[ -z "${run_sha}" ]] && continue
+              if [[ ! "${run_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+                echo "Release run history contains a non-canonical candidate SHA." >&2
+                exit 1
+              fi
+              gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+                "repos/${GITHUB_REPOSITORY}/contents/${workflow_path}?ref=${run_sha}" \
+                --jq '.content' | base64 --decode > "${workflow_snapshots}/${run_sha}.yml"
+            done < "policy-run-shas-${query_attempt}.txt"
             if uv run python scripts/release_truth.py run-authority-check \
               --current-run "policy-current-run-${query_attempt}.json" \
               --run-pages "policy-run-pages-${query_attempt}.json" \
+              --workflow-snapshots "${workflow_snapshots}" \
               --release-tag "${RELEASE_TAG}" --generation g0 \
               --expected-candidate-sha "${EXPECTED_CANDIDATE_SHA}" \
               --current-run-id "${GITHUB_RUN_ID}" --workflow-path "${workflow_path}" \
@@ -266,27 +303,6 @@ jobs:
           uv run python scripts/release_truth.py ruleset-check \
             --rulesets policy-tag-rulesets.json --repository "${GITHUB_REPOSITORY}" \
             --output policy-tag-ruleset-authority.json
-
-      - name: Require future release generation enablement
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [[ "${RELEASE_BOOTSTRAP_ENABLED}" != "true" ]]; then
-            echo "Release bootstrap is disabled for the frozen ${CURRENT_RELEASE_TAG} generation." >&2
-            exit 1
-          fi
-          if [[ "${GITHUB_RUN_ATTEMPT}" != "1" ]]; then
-            echo "Release rerun is forbidden by terminal-generation-burn." >&2
-            exit 1
-          fi
-          if [[ "${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true" ]]; then
-            echo "release-publish historical writer runs remain blocked until remote protection is independently verified." >&2
-            exit 1
-          fi
-          if [[ "${RELEASE_TAG_RULESET_PROTECTION_VERIFIED}" != "true" ]]; then
-            echo "software and Certificate tags remain blocked until the live no-bypass tag ruleset is independently verified." >&2
-            exit 1
-          fi
 
   release-assurance:
     needs: release-assurance-policy
@@ -930,7 +946,7 @@ jobs:
                   raise SystemExit("required gate is not fresh at admission mutation")
           PY
 
-      - name: Revalidate the only actual release dispatch before mutation
+      - name: Revalidate trusted Actions duplicate-run detector before mutation
         shell: bash
         env:
           EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
@@ -942,10 +958,26 @@ jobs:
             > writer-current-run.json
           workflow_id="$(jq -er '.workflow_id | select(type == "number" and . > 0)' writer-current-run.json)"
           gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp \
-            "repos/${GITHUB_REPOSITORY}/actions/workflows/${workflow_id}/runs?event=workflow_dispatch&per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100" \
             > writer-run-pages.json
+          workflow_snapshots="writer-run-workflows"
+          mkdir -p "${workflow_snapshots}"
+          jq -r --arg path "${workflow_path}" --arg title "release-admission|${RELEASE_TAG}|g0" \
+            '.[] | .workflow_runs[]? | select(.path == $path and .event == "workflow_dispatch" and .display_title == $title) | .head_sha' \
+            writer-run-pages.json | sort -u > writer-run-shas.txt
+          while IFS= read -r run_sha; do
+            [[ -z "${run_sha}" ]] && continue
+            if [[ ! "${run_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Release run history contains a non-canonical candidate SHA." >&2
+              exit 1
+            fi
+            gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+              "repos/${GITHUB_REPOSITORY}/contents/${workflow_path}?ref=${run_sha}" \
+              --jq '.content' | base64 --decode > "${workflow_snapshots}/${run_sha}.yml"
+          done < writer-run-shas.txt
           uv run --project trusted-writer python trusted-writer/scripts/release_truth.py run-authority-check \
             --current-run writer-current-run.json --run-pages writer-run-pages.json \
+            --workflow-snapshots "${workflow_snapshots}" \
             --release-tag "${RELEASE_TAG}" --generation g0 \
             --expected-candidate-sha "${EXPECTED_CANDIDATE_SHA}" \
             --current-run-id "${GITHUB_RUN_ID}" --workflow-path "${workflow_path}" \

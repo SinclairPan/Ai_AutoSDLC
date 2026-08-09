@@ -565,11 +565,18 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert 'head_commit="$(git rev-parse HEAD)"' in workflow
     assert '"${head_commit}" != "${GITHUB_SHA}"' in workflow
     assert workflow.count("run-authority-check") == 2
-    assert workflow.count("?event=workflow_dispatch&per_page=100") == 2
+    assert workflow.count(
+        "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100"
+    ) == 2
+    assert "actions/workflows/${workflow_id}/runs" not in workflow
+    assert workflow.count(
+        'repos/${GITHUB_REPOSITORY}/contents/${workflow_path}?ref=${run_sha}'
+    ) == 2
+    assert workflow.count("--workflow-snapshots") == 2
     assert workflow.count("--paginate --slurp") >= 2
     assert "status=" not in workflow
     writer_generation_check = workflow.index(
-        "Revalidate the only actual release dispatch before mutation"
+        "Revalidate trusted Actions duplicate-run detector before mutation"
     )
     first_tag_mutation = workflow.index(
         '"repos/${GITHUB_REPOSITORY}/git/tags"', writer_generation_check
@@ -1916,9 +1923,21 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     policy_steps = [
         step.get("name") for step in jobs["release-assurance-policy"]["steps"]
     ]
-    assert policy_steps.index(
+    enablement_index = policy_steps.index("Require future release generation enablement")
+    namespace_index = policy_steps.index(
         "Require admission namespaces absent before qualification"
-    ) < policy_steps.index("Require future release generation enablement")
+    )
+    detector_index = policy_steps.index(
+        "Detect duplicate actual release dispatch in trusted Actions history"
+    )
+    assert enablement_index < namespace_index < detector_index
+    convention = (
+        _REPO_ROOT / "docs" / "框架自迭代开发与发布约定.md"
+    ).read_text(encoding="utf-8")
+    assert "Actions history duplicate-run detector" in convention
+    assert "retention and no-delete trust boundary" in convention
+    assert "not an immutable authority" in convention
+    assert "protected tag namespace becomes the durable burn authority" in convention
 
 
 def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:

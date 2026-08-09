@@ -40,6 +40,11 @@ _PROTECTED_TAG_RULES = ("deletion", "non_fast_forward", "update")
 _RELEASE_TAG_PATTERN = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
 _CANDIDATE_SHA_PATTERN = re.compile(r"[0-9a-f]{40}")
 _GENERATION_PATTERN = re.compile(r"g(?:0|[1-9][0-9]*)")
+_RELEASE_ENABLEMENT_FLAGS = (
+    "RELEASE_BOOTSTRAP_ENABLED",
+    "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED",
+    "RELEASE_TAG_RULESET_PROTECTION_VERIFIED",
+)
 
 
 def _read_model(path: Path, model_type: type[BaseModel]) -> BaseModel:
@@ -212,8 +217,30 @@ def _authority_check(args: argparse.Namespace) -> dict[str, Any]:
     return {"status": "success", "admission_digest": expected_digest}
 
 
+def _release_generation_enabled(workflow_snapshot: Path) -> bool:
+    """只接受三个发布开关均为规范字符串值的精确 workflow 快照。"""
+
+    lines = workflow_snapshot.read_text(encoding="utf-8").splitlines()
+    enabled: list[bool] = []
+    for flag in _RELEASE_ENABLEMENT_FLAGS:
+        candidates = [line for line in lines if line.startswith(f"  {flag}:")]
+        if len(candidates) != 1:
+            raise ReleaseTruthError(
+                f"release workflow snapshot has invalid {flag} authority"
+            )
+        if candidates[0] == f'  {flag}: "true"':
+            enabled.append(True)
+        elif candidates[0] == f'  {flag}: "false"':
+            enabled.append(False)
+        else:
+            raise ReleaseTruthError(
+                f"release workflow snapshot has non-canonical {flag} authority"
+            )
+    return all(enabled)
+
+
 def _run_authority_check(args: argparse.Namespace) -> dict[str, Any]:
-    """冻结本次实际发布 dispatch 的唯一、完整候选身份。"""
+    """在受信 Actions 历史内拒绝重复的已启用实际发布 dispatch。"""
 
     if _RELEASE_TAG_PATTERN.fullmatch(args.release_tag) is None:
         raise ReleaseTruthError("release tag is not canonical")
@@ -275,14 +302,38 @@ def _run_authority_check(args: argparse.Namespace) -> dict[str, Any]:
     ) or len(set(run_ids)) != len(run_ids):
         raise ReleaseTruthError("release run history contains invalid identities")
 
-    matches = [
+    observed_matches = [
         run
         for run in runs
         if run.get("path") == args.workflow_path
         and run.get("event") == "workflow_dispatch"
         and run.get("display_title") == expected_run_name
     ]
-    if len(matches) != 1 or matches[0].get("id") != args.current_run_id:
+    enabled_matches: list[dict[str, Any]] = []
+    current_enabled = False
+    for run in observed_matches:
+        run_sha = run.get("head_sha")
+        if (
+            not isinstance(run_sha, str)
+            or _CANDIDATE_SHA_PATTERN.fullmatch(run_sha) is None
+        ):
+            raise ReleaseTruthError(
+                "release run history contains non-canonical candidate SHA"
+            )
+        snapshot = args.workflow_snapshots / f"{run_sha}.yml"
+        if not snapshot.is_file():
+            raise ReleaseTruthError("release workflow snapshot history is incomplete")
+        is_enabled = _release_generation_enabled(snapshot)
+        if run.get("id") == args.current_run_id:
+            current_enabled = is_enabled
+        if is_enabled:
+            enabled_matches.append(run)
+    if not current_enabled:
+        raise ReleaseTruthError("current release workflow is not enabled")
+    if (
+        len(enabled_matches) != 1
+        or enabled_matches[0].get("id") != args.current_run_id
+    ):
         raise ReleaseTruthError(
             "actual release generation has already been dispatched"
         )
@@ -437,6 +488,9 @@ def _build_parser() -> argparse.ArgumentParser:
     run_authority_check = subparsers.add_parser("run-authority-check")
     run_authority_check.add_argument("--current-run", type=Path, required=True)
     run_authority_check.add_argument("--run-pages", type=Path, required=True)
+    run_authority_check.add_argument(
+        "--workflow-snapshots", type=Path, required=True
+    )
     run_authority_check.add_argument("--release-tag", required=True)
     run_authority_check.add_argument("--generation", required=True)
     run_authority_check.add_argument("--expected-candidate-sha", required=True)

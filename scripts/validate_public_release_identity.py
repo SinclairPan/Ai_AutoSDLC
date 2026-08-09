@@ -107,6 +107,9 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "不得 redispatch、rerun、上传或发布 v1.0.4",
         "不得上传、发布或下载 v1.0.5 候选",
     ),
+    "packaging/install_online.sh": (
+        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.2",
+    ),
     "docs/框架自迭代开发与发布约定.md": (
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
         "terminal NO-GO / not released / bootstrap budget exhausted",
@@ -127,6 +130,10 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "active no-bypass tag ruleset protects software and Certificate tags",
         "## v1.0.5 prepared-disabled 候选记录",
         "WorkItem 010 three-PR release migration",
+        "Actions history duplicate-run detector",
+        "retention and no-delete trust boundary",
+        "not an immutable authority",
+        "protected tag namespace becomes the durable burn authority",
     ),
 }
 
@@ -166,6 +173,9 @@ FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
         "only future WorkItem 010 may migrate to v1.0.5",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
+    ),
+    "packaging/install_online.sh": (
+        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5",
     ),
 }
 

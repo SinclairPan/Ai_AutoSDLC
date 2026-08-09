@@ -647,7 +647,22 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     current_run_path = tmp_path / "current-release-run.json"
     run_pages_path = tmp_path / "release-run-pages.json"
     run_authority_path = tmp_path / "release-run-authority.json"
+    run_workflow_snapshots = tmp_path / "release-run-workflows"
     asset_path = tmp_path / "candidate.zip"
+    run_workflow_snapshots.mkdir()
+    enabled_workflow = """env:
+  RELEASE_BOOTSTRAP_ENABLED: \"true\"
+  RELEASE_ENVIRONMENT_PROTECTION_VERIFIED: \"true\"
+  RELEASE_TAG_RULESET_PROTECTION_VERIFIED: \"true\"
+"""
+    prepared_disabled_workflow = """env:
+  RELEASE_BOOTSTRAP_ENABLED: \"false\"
+  RELEASE_ENVIRONMENT_PROTECTION_VERIFIED: \"false\"
+  RELEASE_TAG_RULESET_PROTECTION_VERIFIED: \"false\"
+"""
+    (run_workflow_snapshots / f"{'a' * 40}.yml").write_text(
+        enabled_workflow, encoding="utf-8"
+    )
     snapshot_path.write_text(
         json.dumps(_candidate().model_dump(mode="json")), encoding="utf-8"
     )
@@ -738,6 +753,8 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         str(current_run_path),
         "--run-pages",
         str(run_pages_path),
+        "--workflow-snapshots",
+        str(run_workflow_snapshots),
         "--release-tag",
         "v1.0.5",
         "--generation",
@@ -751,7 +768,15 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         "--output",
         str(run_authority_path),
     )
-    duplicate_run = {**actual_run, "id": 9002, "head_sha": "b" * 40}
+    duplicate_run = {
+        **actual_run,
+        "id": 9002,
+        "head_sha": "b" * 40,
+        "workflow_id": 271828182,
+    }
+    (run_workflow_snapshots / f"{'b' * 40}.yml").write_text(
+        prepared_disabled_workflow, encoding="utf-8"
+    )
     run_pages_path.write_text(
         json.dumps(
             [
@@ -763,12 +788,38 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         ),
         encoding="utf-8",
     )
+    accepted_after_prepared_disabled_run = _run_release_truth_script(
+        "run-authority-check",
+        "--current-run",
+        str(current_run_path),
+        "--run-pages",
+        str(run_pages_path),
+        "--workflow-snapshots",
+        str(run_workflow_snapshots),
+        "--release-tag",
+        "v1.0.5",
+        "--generation",
+        "g0",
+        "--expected-candidate-sha",
+        "a" * 40,
+        "--current-run-id",
+        "9001",
+        "--workflow-path",
+        ".github/workflows/release-build.yml",
+        "--output",
+        str(tmp_path / "prepared-disabled-run-authority.json"),
+    )
+    (run_workflow_snapshots / f"{'b' * 40}.yml").write_text(
+        enabled_workflow, encoding="utf-8"
+    )
     rejected_duplicate_run = _run_release_truth_script(
         "run-authority-check",
         "--current-run",
         str(current_run_path),
         "--run-pages",
         str(run_pages_path),
+        "--workflow-snapshots",
+        str(run_workflow_snapshots),
         "--release-tag",
         "v1.0.5",
         "--generation",
@@ -783,6 +834,9 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
         str(tmp_path / "duplicate-run-authority.json"),
     )
     assert accepted_run_authority.returncode == 0, accepted_run_authority.stderr
+    assert accepted_after_prepared_disabled_run.returncode == 0, (
+        accepted_after_prepared_disabled_run.stderr
+    )
     assert json.loads(run_authority_path.read_text(encoding="utf-8")) == {
         "candidate_sha": "a" * 40,
         "generation": "g0",
@@ -795,6 +849,38 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
     assert rejected_duplicate_run.returncode != 0
     assert "actual release generation has already been dispatched" in (
         rejected_duplicate_run.stderr
+    )
+    (run_workflow_snapshots / f"{'b' * 40}.yml").write_text(
+        prepared_disabled_workflow, encoding="utf-8"
+    )
+    (run_workflow_snapshots / f"{'a' * 40}.yml").write_text(
+        prepared_disabled_workflow, encoding="utf-8"
+    )
+    rejected_disabled_current = _run_release_truth_script(
+        "run-authority-check",
+        "--current-run",
+        str(current_run_path),
+        "--run-pages",
+        str(run_pages_path),
+        "--workflow-snapshots",
+        str(run_workflow_snapshots),
+        "--release-tag",
+        "v1.0.5",
+        "--generation",
+        "g0",
+        "--expected-candidate-sha",
+        "a" * 40,
+        "--current-run-id",
+        "9001",
+        "--workflow-path",
+        ".github/workflows/release-build.yml",
+        "--output",
+        str(tmp_path / "disabled-current-run-authority.json"),
+    )
+    assert rejected_disabled_current.returncode != 0
+    assert "current release workflow is not enabled" in rejected_disabled_current.stderr
+    (run_workflow_snapshots / f"{'a' * 40}.yml").write_text(
+        enabled_workflow, encoding="utf-8"
     )
     malformed_run_cases = (
         (
@@ -827,6 +913,8 @@ def test_internal_script_proof_and_publish_check_are_cas_bound(
             str(current_run_path),
             "--run-pages",
             str(run_pages_path),
+            "--workflow-snapshots",
+            str(run_workflow_snapshots),
             "--release-tag",
             "v1.0.5",
             "--generation",

@@ -108,6 +108,13 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         assert "不得 redispatch、rerun、上传或发布 v1.0.4" in markers
         assert "不得上传、发布或下载 v1.0.5 候选" in markers
         assert obsolete_marker in FORBIDDEN_SURFACE_MARKERS[path]
+    assert REQUIRED_SURFACES["packaging/install_online.sh"] == (
+        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.2",
+    )
+    assert (
+        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5"
+        in FORBIDDEN_SURFACE_MARKERS["packaging/install_online.sh"]
+    )
     release_convention = REQUIRED_SURFACES["docs/框架自迭代开发与发布约定.md"]
     assert {
         "## v1.0.4 bootstrap 终止记录（2026-08-09）",
@@ -127,6 +134,10 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         "WorkItem 009",
         "WorkItem 010",
         "active no-bypass tag ruleset protects software and Certificate tags",
+        "Actions history duplicate-run detector",
+        "retention and no-delete trust boundary",
+        "not an immutable authority",
+        "protected tag namespace becomes the durable burn authority",
     } <= set(release_convention)
 
 
