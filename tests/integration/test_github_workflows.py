@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import os
+import runpy
 import shutil
 import subprocess
 import sys
@@ -1449,6 +1450,68 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts() 
     assert "started-at.txt" in aggregate_script
     assert "finished-at.txt" in aggregate_script
     assert "--baseline .github/ci/test-baseline.json" in aggregate_script
+
+    sentinel = runpy.run_path(
+        _REPO_ROOT / "scripts" / "ci_snapshot_control_sentinel.py"
+    )
+    expected_command = [
+        sys.executable,
+        "-m",
+        "pytest",
+        "-q",
+        "--no-cov",
+        "tests/unit/test_lean_code_pr_review.py::test_closed_scope_blocks_risk_disposition_tamper[True--False]",
+    ]
+    assert sentinel["SENTINEL_NODE"] == expected_command[-1]
+    assert sentinel["SENTINEL_ROUNDS"] == 5
+
+    success_calls: list[list[str]] = []
+
+    def successful_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        success_calls.append(command)
+        return subprocess.CompletedProcess(command, 0)
+
+    success = sentinel["run_snapshot_control_sentinel"](successful_runner)
+    assert success["success"] is True
+    assert success["exit_code"] == 0
+    assert len(success_calls) == sentinel["SENTINEL_ROUNDS"]
+    assert all(command == expected_command for command in success_calls)
+    assert [attempt["command"] for attempt in success["attempts"]] == [
+        expected_command
+    ] * sentinel["SENTINEL_ROUNDS"]
+    assert [attempt["returncode"] for attempt in success["attempts"]] == [0] * 5
+
+    failure_calls: list[list[str]] = []
+
+    def failing_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+        failure_calls.append(command)
+        return subprocess.CompletedProcess(command, 17 if len(failure_calls) == 2 else 0)
+
+    failure = sentinel["run_snapshot_control_sentinel"](failing_runner)
+    assert failure["success"] is False
+    assert failure["exit_code"] == 17
+    assert failure_calls == [expected_command, expected_command]
+    assert [attempt["returncode"] for attempt in failure["attempts"]] == [0, 17]
+
+    sentinel_step = next(
+        step
+        for step in matrix_steps
+        if step.get("name") == "Run fixed SnapshotControl stability sentinel"
+    )
+    assert sentinel_step["if"] == (
+        "matrix.os == 'windows-latest' && matrix.python-version == '3.14'"
+    )
+    assert sentinel_step["run"] == (
+        "uv run python scripts/ci_snapshot_control_sentinel.py "
+        "--output ci-evidence/${{ env.CELL }}/snapshot-control-sentinel.json"
+    )
+    assert step_names.index("Run full pytest suite") < step_names.index(
+        "Run fixed SnapshotControl stability sentinel"
+    ) < step_names.index("Record raw cell completion")
+    evidence_upload = next(
+        step for step in matrix_steps if step.get("name") == "Upload compatibility evidence"
+    )
+    assert evidence_upload["if"] == "always()"
 
 
 def test_compatibility_gate_push_uses_pre_push_authority() -> None:

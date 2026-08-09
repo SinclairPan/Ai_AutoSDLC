@@ -330,6 +330,12 @@ jobs:
           uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
             --junitxml=ci-evidence/${CELL}/compatibility-results.xml
 
+      - name: Run fixed SnapshotControl stability sentinel
+        if: matrix.os == 'windows-latest' && matrix.python-version == '3.14'
+        run: >-
+          uv run python scripts/ci_snapshot_control_sentinel.py
+          --output ci-evidence/${{ env.CELL }}/snapshot-control-sentinel.json
+
       - name: Record raw cell completion
         if: always()
         shell: bash
