@@ -40,13 +40,13 @@ env:
 
 concurrency:
   group: release-build-${{ inputs.mode }}-${{ inputs.expected_candidate_sha }}
-  # Probe 与 release 分组，避免后发只读 probe 替换 pending generation；同 mode
-  # 仍按 exact SHA 串行。Release 显式绑定 run ID，并在两道门按主键重验。
+  # Probe 与 release 分组，避免后发只读 probe 替换 pending generation；
+  # 同 mode 仍按 exact SHA 串行。
   cancel-in-progress: false
 
 jobs:
   # Probe 刻意保持无状态且零副作用；多个等价成功结果不会获得写权限。
-  # 只有 release 显式选择并在 policy 与首个 mutation 前双重主键验证的 run ID 才是 authority。
+  # Release 显式绑定不可变的第一次执行快照。
   release-load-probe:
     name: Read-only Release Workflow Load Probe
     if: inputs.mode == 'load_probe'
@@ -149,7 +149,7 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             > load-probe-current-run.json
           gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1" \
             > load-probe-authority-run.json
           export EXPECTED_LOAD_PROBE_TITLE="release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"
           python - <<'PY'
@@ -204,7 +204,7 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/artifacts?per_page=100" \
             > load-probe-artifacts.json
           gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/jobs?filter=latest&per_page=100" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/attempts/1/jobs?per_page=100" \
             > load-probe-jobs.json
           python - <<'PY'
           from __future__ import annotations
@@ -1143,7 +1143,7 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             > writer-probe-current-run.json
           gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
-            "repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1" \
             > writer-probe-authority-run.json
           export EXPECTED_LOAD_PROBE_TITLE="release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"
           python - <<'PY'

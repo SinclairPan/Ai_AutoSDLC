@@ -574,9 +574,12 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         '"repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"'
         in load_probe_gate
     )
-    assert '"repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}"' in (
-        load_probe_gate
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1"'
+        in load_probe_gate
     )
+    assert 'actions/runs/${LOAD_PROBE_RUN_ID}"' not in load_probe_gate
+    assert "filter=latest" not in load_probe_gate
     assert '"release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"' in (
         load_probe_gate
     )
@@ -596,7 +599,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         load_probe_gate
     )
     assert 'actions/runs/${probe_run_id}/artifacts?per_page=100' in load_probe_gate
-    assert 'actions/runs/${probe_run_id}/jobs?filter=latest&per_page=100' in (
+    assert 'actions/runs/${probe_run_id}/attempts/1/jobs?per_page=100' in (
         load_probe_gate
     )
     assert 'artifacts.get("total_count") != 0' in load_probe_gate
@@ -625,9 +628,11 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert writer_probe_step_index == writer_duplicate_step_index + 1
     assert writer_tag_step_index == writer_probe_step_index + 1
     writer_probe_gate = writer_steps[writer_probe_step_index]["run"]
-    assert '"repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}"' in (
-        writer_probe_gate
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1"'
+        in writer_probe_gate
     )
+    assert 'actions/runs/${LOAD_PROBE_RUN_ID}"' not in writer_probe_gate
     assert 'probe_run.get("id") != int(os.environ["LOAD_PROBE_RUN_ID"])' in (
         writer_probe_gate
     )
@@ -863,7 +868,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert probe_before_release.returncode == 0, probe_before_release.stderr
 
     # 只读探测不具备可消费状态；重复 dispatch 必须仍是零副作用探测，
-    # 实际 release 只信任操作者显式绑定并经主键重验的一个成功 run ID。
+    # 实际 release 只信任操作者显式绑定的一个成功 run ID。
     duplicate_probe_dispatch = subprocess.run(
         [bash, "-c", probe_seal_step["run"]],
         cwd=tmp_path,
@@ -1190,8 +1195,8 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "case \"${request}\" in\n"
         "  *\"/actions/runs/${GITHUB_RUN_ID}\"*) cat \"${FAKE_CURRENT_RUN}\" ;;\n"
         "  *\"/actions/runs/11/artifacts\"*) cat \"${FAKE_ARTIFACTS}\" ;;\n"
-        "  *\"/actions/runs/11/jobs\"*) cat \"${FAKE_JOBS}\" ;;\n"
-        "  *\"/actions/runs/${LOAD_PROBE_RUN_ID}\"*) cat \"${FAKE_AUTHORITY_RUN}\" ;;\n"
+        "  *\"/actions/runs/11/attempts/1/jobs\"*) cat \"${FAKE_JOBS}\" ;;\n"
+        "  *\"/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1\"*) cat \"${FAKE_AUTHORITY_RUN}\" ;;\n"
         "  *) echo \"unexpected gh request: ${request}\" >&2; exit 2 ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -1256,7 +1261,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     # 由历史列表重复项矩阵改为按不可变 run ID 验证每个身份字段。
     # queued、failure、rerun 与错误身份都不能成为绑定的 release authority。
     # 删除连续 run-number 账本：只读 probe 无法消费一次性状态，列表延迟、删除或截断
-    # 反而会烧毁合法 generation；唯一性由显式绑定的 run ID 与唯一 writer 保证。
+    # 反而会烧毁合法 generation。
     invalid_authorities = (
         {**probe_run, "id": 12},
         {**probe_run, "workflow_id": 999},
