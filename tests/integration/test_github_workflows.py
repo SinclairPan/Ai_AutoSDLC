@@ -525,7 +525,10 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "inputs.expected_candidate_sha) }}"
     )
     assert workflow_data["concurrency"] == {
-        "group": "release-build-${{ inputs.expected_candidate_sha }}",
+        "group": (
+            "release-build-${{ inputs.mode }}-"
+            "${{ inputs.expected_candidate_sha }}"
+        ),
         "cancel-in-progress": False,
     }
 
@@ -858,6 +861,22 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         text=True,
     )
     assert probe_before_release.returncode == 0, probe_before_release.stderr
+
+    # 只读探测不具备可消费状态；重复 dispatch 必须仍是零副作用探测，
+    # 实际 release 只信任操作者显式绑定并经主键重验的一个成功 run ID。
+    duplicate_probe_dispatch = subprocess.run(
+        [bash, "-c", probe_seal_step["run"]],
+        cwd=tmp_path,
+        env={
+            **probe_env,
+            "GITHUB_RUN_ID": "11",
+        },
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert duplicate_probe_dispatch.returncode == 0, duplicate_probe_dispatch.stderr
+    assert "load_probe_run_id=11" in duplicate_probe_dispatch.stdout
 
     probe_rerun = subprocess.run(
         [bash, "-c", probe_seal_step["run"]],
@@ -1236,6 +1255,8 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
 
     # 由历史列表重复项矩阵改为按不可变 run ID 验证每个身份字段。
     # queued、failure、rerun 与错误身份都不能成为绑定的 release authority。
+    # 删除连续 run-number 账本：只读 probe 无法消费一次性状态，列表延迟、删除或截断
+    # 反而会烧毁合法 generation；唯一性由显式绑定的 run ID 与唯一 writer 保证。
     invalid_authorities = (
         {**probe_run, "id": 12},
         {**probe_run, "workflow_id": 999},

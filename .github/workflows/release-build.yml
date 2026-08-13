@@ -39,12 +39,14 @@ env:
   RELEASE_USER_AGENT: ai-sdlc-release-writer/1.0
 
 concurrency:
-  group: release-build-${{ inputs.expected_candidate_sha }}
-  # 不依赖 cancellation 或最终历史快照推断 probe authority；release 显式绑定
-  # 不可变的 load_probe_run_id，并在 policy 与首个 mutation 前按主键重验。
+  group: release-build-${{ inputs.mode }}-${{ inputs.expected_candidate_sha }}
+  # Probe 与 release 分组，避免后发只读 probe 替换 pending generation；同 mode
+  # 仍按 exact SHA 串行。Release 显式绑定 run ID，并在两道门按主键重验。
   cancel-in-progress: false
 
 jobs:
+  # Probe 刻意保持无状态且零副作用；多个等价成功结果不会获得写权限。
+  # 只有 release 显式选择并在 policy 与首个 mutation 前双重主键验证的 run ID 才是 authority。
   release-load-probe:
     name: Read-only Release Workflow Load Probe
     if: inputs.mode == 'load_probe'
