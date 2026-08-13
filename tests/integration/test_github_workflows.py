@@ -969,20 +969,11 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert workflow.count("fresh release generation requires a zero-asset Draft") == 1
     assert "created release differs from exact zero-asset Draft admission" in workflow
 
-
-def test_release_generation_requires_exact_load_probe_evidence(tmp_path: Path) -> None:
-    workflow = yaml.safe_load(
-        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
-    )
     step = next(
         item
-        for item in workflow["jobs"]["release-assurance-policy"]["steps"]
+        for item in workflow_data["jobs"]["release-assurance-policy"]["steps"]
         if item.get("name") == "Require unique successful read-only load probe"
     )
-    if os.name == "nt":
-        return
-    bash = shutil.which("bash")
-    assert bash is not None
 
     candidate_sha = "a" * 40
     probe_run = {
@@ -1037,10 +1028,10 @@ def test_release_generation_requires_exact_load_probe_evidence(tmp_path: Path) -
         json.dumps({"total_count": 7, "jobs": jobs}), encoding="utf-8"
     )
 
-    fake_bin = tmp_path / "fake-bin"
-    fake_bin.mkdir()
-    fake_gh = fake_bin / "gh"
-    fake_gh.write_text(
+    probe_fake_bin = tmp_path / "load-probe-fake-bin"
+    probe_fake_bin.mkdir()
+    probe_fake_gh = probe_fake_bin / "gh"
+    probe_fake_gh.write_text(
         "#!/usr/bin/env bash\n"
         "set -euo pipefail\n"
         "request=\"$*\"\n"
@@ -1053,7 +1044,7 @@ def test_release_generation_requires_exact_load_probe_evidence(tmp_path: Path) -
         "esac\n",
         encoding="utf-8",
     )
-    fake_gh.chmod(0o755)
+    probe_fake_gh.chmod(0o755)
     env = {
         **os.environ,
         "EXPECTED_CANDIDATE_SHA": candidate_sha,
@@ -1064,7 +1055,7 @@ def test_release_generation_requires_exact_load_probe_evidence(tmp_path: Path) -
         "GH_TOKEN": "read-only-test-token",
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
         "GITHUB_RUN_ID": "99",
-        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "PATH": f"{probe_fake_bin}{os.pathsep}{os.environ['PATH']}",
         "RELEASE_TAG": "v1.0.5",
         "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
     }
