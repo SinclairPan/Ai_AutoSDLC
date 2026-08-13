@@ -106,6 +106,127 @@ jobs:
             exit 1
           fi
 
+      - name: Require unique successful read-only load probe
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          workflow_path=".github/workflows/release-build.yml"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > load-probe-current-run.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" --paginate --slurp \
+            "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100" \
+            > load-probe-run-pages.json
+          export EXPECTED_LOAD_PROBE_TITLE="release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+
+          current_run = json.loads(
+              Path("load-probe-current-run.json").read_text(encoding="utf-8")
+          )
+          pages = json.loads(
+              Path("load-probe-run-pages.json").read_text(encoding="utf-8")
+          )
+          expected_sha = os.environ["EXPECTED_CANDIDATE_SHA"]
+          expected_title = os.environ["EXPECTED_LOAD_PROBE_TITLE"]
+          workflow_id = current_run.get("workflow_id")
+          current_created_at = datetime.fromisoformat(
+              current_run["created_at"].replace("Z", "+00:00")
+          )
+          matching_runs = []
+          for page in pages:
+              for run in page.get("workflow_runs", []):
+                  if (
+                      run.get("workflow_id") == workflow_id
+                      and run.get("path") == ".github/workflows/release-build.yml"
+                      and run.get("event") == "workflow_dispatch"
+                      and run.get("display_title") == expected_title
+                      and run.get("head_sha") == expected_sha
+                      and run.get("head_branch") == "main"
+                  ):
+                      matching_runs.append(run)
+          if len(matching_runs) != 1:
+              raise SystemExit(
+                  "release generation requires exactly one read-only load probe "
+                  "dispatch for the same workflow and candidate SHA"
+              )
+          probe_run = matching_runs[0]
+          if (
+              probe_run.get("status") != "completed"
+              or probe_run.get("conclusion") != "success"
+              or probe_run.get("run_attempt") != 1
+              or datetime.fromisoformat(
+                  probe_run["updated_at"].replace("Z", "+00:00")
+              )
+              >= current_created_at
+          ):
+              raise SystemExit(
+                  "the unique read-only load probe must complete successfully "
+                  "on its first attempt before release generation"
+              )
+          probe_run_id = probe_run.get("id")
+          if not isinstance(probe_run_id, int) or probe_run_id <= 0:
+              raise SystemExit("load-probe history contains an invalid run id")
+          Path("load-probe-run-id.txt").write_text(
+              f"{probe_run_id}\n", encoding="utf-8"
+          )
+          PY
+          probe_run_id="$(tr -d '\r\n' < load-probe-run-id.txt)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/artifacts?per_page=100" \
+            > load-probe-artifacts.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/jobs?filter=latest&per_page=100" \
+            > load-probe-jobs.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          artifacts = json.loads(
+              Path("load-probe-artifacts.json").read_text(encoding="utf-8")
+          )
+          if artifacts.get("total_count") != 0 or artifacts.get("artifacts") != []:
+              raise SystemExit("read-only load probe must have exactly zero artifacts")
+
+          jobs_document = json.loads(
+              Path("load-probe-jobs.json").read_text(encoding="utf-8")
+          )
+          jobs = jobs_document.get("jobs", [])
+          expected_conclusions = {
+              "Read-only Release Workflow Load Probe": "success",
+              "Resolve Pre-tag Release Qualification Policy": "skipped",
+              "release-assurance": "skipped",
+              "$" + "{{ matrix.asset_os }} $" + "{{ matrix.archive }}": "skipped",
+              "Release Qualification": "skipped",
+              "Build Release Proof Inputs": "skipped",
+              "Publish Proof-bound Release": "skipped",
+          }
+          if jobs_document.get("total_count") != 7 or len(jobs) != 7:
+              raise SystemExit("load probe must expose the exact seven-job topology")
+          if {job.get("name") for job in jobs} != set(expected_conclusions):
+              raise SystemExit("load probe job topology differs from the approved workflow")
+          for job in jobs:
+              if (
+                  job.get("status") != "completed"
+                  or job.get("run_attempt") != 1
+                  or job.get("conclusion") != expected_conclusions[job["name"]]
+              ):
+                  raise SystemExit(
+                      "load probe must succeed once while every release path is skipped"
+                  )
+          PY
+
       - name: Require current release generation
         shell: bash
         env:

@@ -531,6 +531,59 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "actions": "read",
         "contents": "read",
     }
+    policy_steps = jobs["release-assurance-policy"]["steps"]
+    candidate_step_index = next(
+        index
+        for index, step in enumerate(policy_steps)
+        if step.get("name") == "Require exact reviewed candidate"
+    )
+    load_probe_step_index = next(
+        index
+        for index, step in enumerate(policy_steps)
+        if step.get("name")
+        == "Require unique successful read-only load probe"
+    )
+    assert load_probe_step_index == candidate_step_index + 1
+    load_probe_step = policy_steps[load_probe_step_index]
+    assert load_probe_step["env"] == {
+        "EXPECTED_CANDIDATE_SHA": "${{ inputs.expected_candidate_sha }}",
+        "GH_TOKEN": "${{ github.token }}",
+        "RELEASE_TAG": "${{ inputs.tag }}",
+    }
+    load_probe_gate = load_probe_step["run"]
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"'
+        in load_probe_gate
+    )
+    assert (
+        '"repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100"'
+        in load_probe_gate
+    )
+    assert '"release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"' in (
+        load_probe_gate
+    )
+    for required_run_field in (
+        "workflow_id",
+        "head_sha",
+        "head_branch",
+        "path",
+        "display_title",
+        "status",
+        "conclusion",
+        "run_attempt",
+        "updated_at",
+    ):
+        assert required_run_field in load_probe_gate
+    assert "len(matching_runs) != 1" in load_probe_gate
+    assert 'actions/runs/${probe_run_id}/artifacts?per_page=100' in load_probe_gate
+    assert 'actions/runs/${probe_run_id}/jobs?filter=latest&per_page=100' in (
+        load_probe_gate
+    )
+    assert 'artifacts.get("total_count") != 0' in load_probe_gate
+    assert '"Read-only Release Workflow Load Probe"' in load_probe_gate
+    assert '"Read-only Release Workflow Load Probe": "success"' in load_probe_gate
+    assert load_probe_gate.count(': "skipped"') == 6
+    assert 'jobs_document.get("total_count") != 7' in load_probe_gate
     assert "inputs.mode == 'release'" in jobs["publish-release"]["if"]
     for job in jobs.values():
         if job.get("permissions", {}).get("contents") != "write":
@@ -567,7 +620,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert workflow.count("run-authority-check") == 2
     assert workflow.count(
         "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100"
-    ) == 2
+    ) == 3
     assert "actions/workflows/${workflow_id}/runs" not in workflow
     assert workflow.count(
         'repos/${GITHUB_REPOSITORY}/contents/${workflow_path}?ref=${run_sha}'
@@ -915,6 +968,149 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert not upload_log.exists()
     assert workflow.count("fresh release generation requires a zero-asset Draft") == 1
     assert "created release differs from exact zero-asset Draft admission" in workflow
+
+
+def test_release_generation_requires_exact_load_probe_evidence(tmp_path: Path) -> None:
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    )
+    step = next(
+        item
+        for item in workflow["jobs"]["release-assurance-policy"]["steps"]
+        if item.get("name") == "Require unique successful read-only load probe"
+    )
+    if os.name == "nt":
+        return
+    bash = shutil.which("bash")
+    assert bash is not None
+
+    candidate_sha = "a" * 40
+    probe_run = {
+        "id": 11,
+        "workflow_id": 314982030,
+        "path": ".github/workflows/release-build.yml",
+        "event": "workflow_dispatch",
+        "display_title": f"release-load-probe|v1.0.5|{candidate_sha}",
+        "head_sha": candidate_sha,
+        "head_branch": "main",
+        "status": "completed",
+        "conclusion": "success",
+        "run_attempt": 1,
+        "updated_at": "2026-08-13T00:01:00Z",
+    }
+    current_run = {
+        "id": 99,
+        "workflow_id": 314982030,
+        "created_at": "2026-08-13T00:02:00Z",
+    }
+    expected_conclusions = {
+        "Read-only Release Workflow Load Probe": "success",
+        "Resolve Pre-tag Release Qualification Policy": "skipped",
+        "release-assurance": "skipped",
+        "${{ matrix.asset_os }} ${{ matrix.archive }}": "skipped",
+        "Release Qualification": "skipped",
+        "Build Release Proof Inputs": "skipped",
+        "Publish Proof-bound Release": "skipped",
+    }
+
+    current_path = tmp_path / "current.json"
+    runs_path = tmp_path / "runs.json"
+    artifacts_path = tmp_path / "artifacts.json"
+    jobs_path = tmp_path / "jobs.json"
+    current_path.write_text(json.dumps(current_run), encoding="utf-8")
+    runs_path.write_text(
+        json.dumps([{"workflow_runs": [probe_run]}]), encoding="utf-8"
+    )
+    artifacts_path.write_text(
+        json.dumps({"total_count": 0, "artifacts": []}), encoding="utf-8"
+    )
+    jobs = [
+        {
+            "name": name,
+            "status": "completed",
+            "conclusion": conclusion,
+            "run_attempt": 1,
+        }
+        for name, conclusion in expected_conclusions.items()
+    ]
+    jobs_path.write_text(
+        json.dumps({"total_count": 7, "jobs": jobs}), encoding="utf-8"
+    )
+
+    fake_bin = tmp_path / "fake-bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "request=\"$*\"\n"
+        "case \"${request}\" in\n"
+        "  *\"/actions/runs/${GITHUB_RUN_ID}\"*) cat \"${FAKE_CURRENT_RUN}\" ;;\n"
+        "  *\"actions/runs?event=workflow_dispatch\"*) cat \"${FAKE_RUN_PAGES}\" ;;\n"
+        "  *\"/actions/runs/11/artifacts\"*) cat \"${FAKE_ARTIFACTS}\" ;;\n"
+        "  *\"/actions/runs/11/jobs\"*) cat \"${FAKE_JOBS}\" ;;\n"
+        "  *) echo \"unexpected gh request: ${request}\" >&2; exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    env = {
+        **os.environ,
+        "EXPECTED_CANDIDATE_SHA": candidate_sha,
+        "FAKE_ARTIFACTS": str(artifacts_path),
+        "FAKE_CURRENT_RUN": str(current_path),
+        "FAKE_JOBS": str(jobs_path),
+        "FAKE_RUN_PAGES": str(runs_path),
+        "GH_TOKEN": "read-only-test-token",
+        "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+        "GITHUB_RUN_ID": "99",
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "RELEASE_TAG": "v1.0.5",
+        "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
+    }
+
+    def run_gate() -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            [bash, "-c", step["run"]],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+
+    accepted = run_gate()
+    assert accepted.returncode == 0, accepted.stderr
+
+    runs_path.write_text(
+        json.dumps([{"workflow_runs": [probe_run, {**probe_run, "id": 12}]}]),
+        encoding="utf-8",
+    )
+    duplicate = run_gate()
+    assert duplicate.returncode != 0
+    assert "exactly one read-only load probe dispatch" in duplicate.stderr
+
+    runs_path.write_text(
+        json.dumps([{"workflow_runs": [probe_run]}]), encoding="utf-8"
+    )
+    artifacts_path.write_text(
+        json.dumps({"total_count": 1, "artifacts": [{"name": "forbidden"}]}),
+        encoding="utf-8",
+    )
+    artifact_bearing = run_gate()
+    assert artifact_bearing.returncode != 0
+    assert "exactly zero artifacts" in artifact_bearing.stderr
+
+    artifacts_path.write_text(
+        json.dumps({"total_count": 0, "artifacts": []}), encoding="utf-8"
+    )
+    jobs[-1]["conclusion"] = "success"
+    jobs_path.write_text(
+        json.dumps({"total_count": 7, "jobs": jobs}), encoding="utf-8"
+    )
+    release_path_ran = run_gate()
+    assert release_path_ran.returncode != 0
+    assert "every release path is skipped" in release_path_ran.stderr
 
 
 def test_release_build_emergency_freeze_removes_release_write_authority() -> None:
