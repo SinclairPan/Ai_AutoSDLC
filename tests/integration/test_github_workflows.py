@@ -510,12 +510,24 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "required": True,
         "type": "string",
     }
+    assert dispatch_inputs["load_probe_run_id"] == {
+        "description": (
+            "Exact successful read-only load-probe run ID; required only for release mode."
+        ),
+        "required": False,
+        "type": "string",
+        "default": "",
+    }
     assert workflow_data["run-name"] == (
         "${{ inputs.mode == 'release' && "
         "format('release-admission|{0}|g0', inputs.tag) || "
         "format('release-load-probe|{0}|{1}', inputs.tag, "
         "inputs.expected_candidate_sha) }}"
     )
+    assert workflow_data["concurrency"] == {
+        "group": "release-build-${{ inputs.expected_candidate_sha }}",
+        "cancel-in-progress": False,
+    }
 
     probe_job = jobs["release-load-probe"]
     assert probe_job["if"] == "inputs.mode == 'load_probe'"
@@ -526,6 +538,9 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert "--method PATCH" not in probe_contract
     assert "contents: write" not in probe_contract
     assert "release-publish" not in probe_contract
+    assert "Load probe reruns are forbidden" in probe_contract
+    assert "Load probe mode must not receive a prior load-probe run ID" in probe_contract
+    assert "load_probe_run_id=%s" in probe_contract
     assert jobs["release-assurance-policy"]["if"] == "inputs.mode == 'release'"
     assert jobs["release-assurance-policy"]["permissions"] == {
         "actions": "read",
@@ -541,13 +556,14 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         index
         for index, step in enumerate(policy_steps)
         if step.get("name")
-        == "Require unique successful read-only load probe"
+        == "Require exact successful read-only load-probe authority"
     )
     assert load_probe_step_index == candidate_step_index + 1
     load_probe_step = policy_steps[load_probe_step_index]
     assert load_probe_step["env"] == {
         "EXPECTED_CANDIDATE_SHA": "${{ inputs.expected_candidate_sha }}",
         "GH_TOKEN": "${{ github.token }}",
+        "LOAD_PROBE_RUN_ID": "${{ inputs.load_probe_run_id }}",
         "RELEASE_TAG": "${{ inputs.tag }}",
     }
     load_probe_gate = load_probe_step["run"]
@@ -555,9 +571,8 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         '"repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"'
         in load_probe_gate
     )
-    assert (
-        '"repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100"'
-        in load_probe_gate
+    assert '"repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}"' in (
+        load_probe_gate
     )
     assert '"release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"' in (
         load_probe_gate
@@ -574,7 +589,9 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "updated_at",
     ):
         assert required_run_field in load_probe_gate
-    assert "len(matching_runs) != 1" in load_probe_gate
+    assert 'probe_run.get("id") != int(os.environ["LOAD_PROBE_RUN_ID"])' in (
+        load_probe_gate
+    )
     assert 'actions/runs/${probe_run_id}/artifacts?per_page=100' in load_probe_gate
     assert 'actions/runs/${probe_run_id}/jobs?filter=latest&per_page=100' in (
         load_probe_gate
@@ -584,6 +601,33 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert '"Read-only Release Workflow Load Probe": "success"' in load_probe_gate
     assert load_probe_gate.count(': "skipped"') == 6
     assert 'jobs_document.get("total_count") != 7' in load_probe_gate
+    writer_steps = jobs["publish-release"]["steps"]
+    writer_probe_step_index = next(
+        index
+        for index, step in enumerate(writer_steps)
+        if step.get("name")
+        == "Revalidate exact load-probe authority before mutation"
+    )
+    writer_duplicate_step_index = next(
+        index
+        for index, step in enumerate(writer_steps)
+        if step.get("name")
+        == "Revalidate trusted Actions duplicate-run detector before mutation"
+    )
+    writer_tag_step_index = next(
+        index
+        for index, step in enumerate(writer_steps)
+        if step.get("name") == "Create exact annotated release tag"
+    )
+    assert writer_probe_step_index == writer_duplicate_step_index + 1
+    assert writer_tag_step_index == writer_probe_step_index + 1
+    writer_probe_gate = writer_steps[writer_probe_step_index]["run"]
+    assert '"repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}"' in (
+        writer_probe_gate
+    )
+    assert 'probe_run.get("id") != int(os.environ["LOAD_PROBE_RUN_ID"])' in (
+        writer_probe_gate
+    )
     assert "inputs.mode == 'release'" in jobs["publish-release"]["if"]
     for job in jobs.values():
         if job.get("permissions", {}).get("contents") != "write":
@@ -620,7 +664,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert workflow.count("run-authority-check") == 2
     assert workflow.count(
         "repos/${GITHUB_REPOSITORY}/actions/runs?event=workflow_dispatch&per_page=100"
-    ) == 3
+    ) == 2
     assert "actions/workflows/${workflow_id}/runs" not in workflow
     assert workflow.count(
         'repos/${GITHUB_REPOSITORY}/contents/${workflow_path}?ref=${run_sha}'
@@ -647,6 +691,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert candidate_step["env"] == {
         "EXPECTED_CANDIDATE_SHA": "${{ inputs.expected_candidate_sha }}",
         "GITHUB_WORKFLOW_REF": "${{ github.workflow_ref }}",
+        "LOAD_PROBE_RUN_ID": "${{ inputs.load_probe_run_id }}",
     }
     if os.name != "nt":
         candidate_bash = shutil.which("bash")
@@ -663,6 +708,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
                 ),
                 "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
                 "GITHUB_RUN_ATTEMPT": "1",
+                "LOAD_PROBE_RUN_ID": "11",
             },
             check=False,
             capture_output=True,
@@ -680,6 +726,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
                 ),
                 "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
                 "GITHUB_RUN_ATTEMPT": "1",
+                "LOAD_PROBE_RUN_ID": "11",
             },
             check=False,
             capture_output=True,
@@ -690,6 +737,29 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         assert "does not match exact approved candidate" in (
             mismatched_candidate.stderr
         )
+        for invalid_probe_run_id in ("", "0", "abc"):
+            invalid_probe_authority = subprocess.run(
+                [candidate_bash, "-c", candidate_step["run"]],
+                env={
+                    **os.environ,
+                    "EXPECTED_CANDIDATE_SHA": "a" * 40,
+                    "GITHUB_SHA": "a" * 40,
+                    "GITHUB_WORKFLOW_REF": (
+                        "SinclairPan/Ai_AutoSDLC/.github/workflows/"
+                        "release-build.yml@refs/heads/main"
+                    ),
+                    "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+                    "GITHUB_RUN_ATTEMPT": "1",
+                    "LOAD_PROBE_RUN_ID": invalid_probe_run_id,
+                },
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            assert invalid_probe_authority.returncode != 0
+            assert "requires an exact positive load-probe run ID" in (
+                invalid_probe_authority.stderr
+            )
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
     assert "ubuntu-latest" in workflow
@@ -744,6 +814,71 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         return
     bash = shutil.which("bash")
     assert bash is not None
+
+    probe_candidate_sha = "a" * 40
+    probe_fake_bin = tmp_path / "probe-seal-fake-bin"
+    probe_fake_bin.mkdir()
+    probe_fake_gh = probe_fake_bin / "gh"
+    probe_fake_gh.write_text(
+        "#!/usr/bin/env bash\n"
+        "set -euo pipefail\n"
+        "request=\"$*\"\n"
+        "case \"${request}\" in\n"
+        "  *\"git/ref/heads/main\"*) printf '%s\\n' \"${EXPECTED_CANDIDATE_SHA}\" ;;\n"
+        "  *) echo \"unexpected gh request: ${request}\" >&2; exit 2 ;;\n"
+        "esac\n",
+        encoding="utf-8",
+    )
+    probe_fake_gh.chmod(0o755)
+    probe_env = {
+        **os.environ,
+        "CURRENT_RELEASE_TAG": "v1.0.5",
+        "EXPECTED_CANDIDATE_SHA": probe_candidate_sha,
+        "GH_TOKEN": "read-only-test-token",
+        "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+        "GITHUB_RUN_ID": "10",
+        "GITHUB_RUN_ATTEMPT": "1",
+        "GITHUB_SHA": probe_candidate_sha,
+        "GITHUB_WORKFLOW_REF": (
+            "SinclairPan/Ai_AutoSDLC/.github/workflows/"
+            "release-build.yml@refs/heads/main"
+        ),
+        "LOAD_PROBE_RUN_ID": "",
+        "PATH": f"{probe_fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "RELEASE_TAG": "v1.0.5",
+        "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
+    }
+    probe_seal_step = probe_job["steps"][0]
+    probe_before_release = subprocess.run(
+        [bash, "-c", probe_seal_step["run"]],
+        cwd=tmp_path,
+        env=probe_env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe_before_release.returncode == 0, probe_before_release.stderr
+
+    probe_rerun = subprocess.run(
+        [bash, "-c", probe_seal_step["run"]],
+        cwd=tmp_path,
+        env={**probe_env, "GITHUB_RUN_ATTEMPT": "2"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe_rerun.returncode != 0
+    assert "Load probe reruns are forbidden" in probe_rerun.stderr
+    probe_with_prior_id = subprocess.run(
+        [bash, "-c", probe_seal_step["run"]],
+        cwd=tmp_path,
+        env={**probe_env, "LOAD_PROBE_RUN_ID": "9"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert probe_with_prior_id.returncode != 0
+    assert "must not receive a prior load-probe run ID" in probe_with_prior_id.stderr
 
     expected_assets = (
         "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
@@ -972,7 +1107,7 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     step = next(
         item
         for item in workflow_data["jobs"]["release-assurance-policy"]["steps"]
-        if item.get("name") == "Require unique successful read-only load probe"
+        if item.get("name") == "Require exact successful read-only load-probe authority"
     )
 
     candidate_sha = "a" * 40
@@ -1005,13 +1140,11 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     }
 
     current_path = tmp_path / "current.json"
-    runs_path = tmp_path / "runs.json"
+    authority_run_path = tmp_path / "authority-run.json"
     artifacts_path = tmp_path / "artifacts.json"
     jobs_path = tmp_path / "jobs.json"
     current_path.write_text(json.dumps(current_run), encoding="utf-8")
-    runs_path.write_text(
-        json.dumps([{"workflow_runs": [probe_run]}]), encoding="utf-8"
-    )
+    authority_run_path.write_text(json.dumps(probe_run), encoding="utf-8")
     artifacts_path.write_text(
         json.dumps({"total_count": 0, "artifacts": []}), encoding="utf-8"
     )
@@ -1037,9 +1170,9 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         "request=\"$*\"\n"
         "case \"${request}\" in\n"
         "  *\"/actions/runs/${GITHUB_RUN_ID}\"*) cat \"${FAKE_CURRENT_RUN}\" ;;\n"
-        "  *\"actions/runs?event=workflow_dispatch\"*) cat \"${FAKE_RUN_PAGES}\" ;;\n"
         "  *\"/actions/runs/11/artifacts\"*) cat \"${FAKE_ARTIFACTS}\" ;;\n"
         "  *\"/actions/runs/11/jobs\"*) cat \"${FAKE_JOBS}\" ;;\n"
+        "  *\"/actions/runs/${LOAD_PROBE_RUN_ID}\"*) cat \"${FAKE_AUTHORITY_RUN}\" ;;\n"
         "  *) echo \"unexpected gh request: ${request}\" >&2; exit 2 ;;\n"
         "esac\n",
         encoding="utf-8",
@@ -1049,12 +1182,13 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
         **os.environ,
         "EXPECTED_CANDIDATE_SHA": candidate_sha,
         "FAKE_ARTIFACTS": str(artifacts_path),
+        "FAKE_AUTHORITY_RUN": str(authority_run_path),
         "FAKE_CURRENT_RUN": str(current_path),
         "FAKE_JOBS": str(jobs_path),
-        "FAKE_RUN_PAGES": str(runs_path),
         "GH_TOKEN": "read-only-test-token",
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
         "GITHUB_RUN_ID": "99",
+        "LOAD_PROBE_RUN_ID": "11",
         "PATH": f"{probe_fake_bin}{os.pathsep}{os.environ['PATH']}",
         "RELEASE_TAG": "v1.0.5",
         "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
@@ -1073,32 +1207,63 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     accepted = run_gate()
     assert accepted.returncode == 0, accepted.stderr
 
-    runs_path.write_text(
-        json.dumps(
-            [
-                {
-                    "workflow_runs": [
-                        probe_run,
-                        {
-                            **probe_run,
-                            "id": 12,
-                            "display_title": (
-                                f"release-load-probe|v9.9.9|{candidate_sha}"
-                            ),
-                        },
-                    ]
-                }
-            ]
-        ),
+    writer_probe_gate_result = subprocess.run(
+        [bash, "-c", writer_probe_gate],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert writer_probe_gate_result.returncode == 0, writer_probe_gate_result.stderr
+
+    authority_run_path.write_text(
+        json.dumps({**probe_run, "updated_at": current_run["created_at"]}),
         encoding="utf-8",
     )
-    duplicate = run_gate()
-    assert duplicate.returncode != 0
-    assert "exactly one read-only load probe dispatch" in duplicate.stderr
-
-    runs_path.write_text(
-        json.dumps([{"workflow_runs": [probe_run]}]), encoding="utf-8"
+    same_second = run_gate()
+    assert same_second.returncode == 0, same_second.stderr
+    writer_same_second = subprocess.run(
+        [bash, "-c", writer_probe_gate],
+        cwd=tmp_path,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
     )
+    assert writer_same_second.returncode == 0, writer_same_second.stderr
+    authority_run_path.write_text(json.dumps(probe_run), encoding="utf-8")
+
+    # 由历史列表重复项矩阵改为按不可变 run ID 验证每个身份字段。
+    # queued、failure、rerun 与错误身份都不能成为绑定的 release authority。
+    invalid_authorities = (
+        {**probe_run, "id": 12},
+        {**probe_run, "workflow_id": 999},
+        {**probe_run, "display_title": f"release-load-probe|v9.9.9|{candidate_sha}"},
+        {**probe_run, "head_sha": "b" * 40},
+        {**probe_run, "head_branch": "feature"},
+        {**probe_run, "status": "queued", "conclusion": None},
+        {**probe_run, "conclusion": "failure"},
+        {**probe_run, "run_attempt": 2},
+        {**probe_run, "updated_at": "2026-08-13T00:03:00Z"},
+    )
+    for invalid_authority in invalid_authorities:
+        authority_run_path.write_text(json.dumps(invalid_authority), encoding="utf-8")
+        rejected = run_gate()
+        assert rejected.returncode != 0
+        assert "exact load-probe run ID is not" in rejected.stderr
+        writer_rejected = subprocess.run(
+            [bash, "-c", writer_probe_gate],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert writer_rejected.returncode != 0
+        assert "load-probe run ID no longer proves" in writer_rejected.stderr
+
+    authority_run_path.write_text(json.dumps(probe_run), encoding="utf-8")
     artifacts_path.write_text(
         json.dumps({"total_count": 1, "artifacts": [{"name": "forbidden"}]}),
         encoding="utf-8",
@@ -1155,6 +1320,17 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "needs.build-smoke-candidate.result == 'success'" in qualification_job["if"]
     assert proof_job["needs"] == ["release-qualification"]
     assert proof_job["permissions"] == {"actions": "read", "contents": "read"}
+    proof_freeze_step = next(
+        step
+        for step in proof_job["steps"]
+        if step.get("name") == "Freeze protected Gate and candidate inputs"
+    )
+    assert proof_freeze_step["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "GITHUB_WORKFLOW_REF": "${{ github.workflow_ref }}",
+        "LOAD_PROBE_RUN_ID": "${{ inputs.load_probe_run_id }}",
+        "RELEASE_TAG": "${{ inputs.tag }}",
+    }
     assert publish_job["needs"] == ["build-release-proof"]
     assert publish_job["environment"] == "release-publish"
     assert publish_job["permissions"] == {
@@ -1231,6 +1407,9 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "tree_sha" in workflow_text
     assert "workflow_run_id" in workflow_text
     assert "workflow_run_attempt" in workflow_text
+    assert '"load_probe_run_id": int(os.environ["LOAD_PROBE_RUN_ID"])' in (
+        workflow_text
+    )
     assert publish_job["env"]["EXPECTED_CANDIDATE_SHA"] == (
         "${{ inputs.expected_candidate_sha }}"
     )
@@ -1246,7 +1425,7 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "historical writer runs remain blocked" in workflow_text
     assert "terminal-generation-burn" in workflow_text
     assert "no cleanup, edit, reuse, or rerun" in workflow_text
-    assert workflow_text.count('"${GITHUB_RUN_ATTEMPT}" != "1"') == 3
+    assert workflow_text.count('"${GITHUB_RUN_ATTEMPT}" != "1"') == 4
     assert "rerun is forbidden by terminal-generation-burn" in workflow_text
     assert workflow_text.count("scripts/release_truth.py ruleset-check") >= 6
     assert "repos/${GITHUB_REPOSITORY}/rulesets?includes_parents=true" in workflow_text
