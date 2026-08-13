@@ -149,7 +149,9 @@ jobs:
                       run.get("workflow_id") == workflow_id
                       and run.get("path") == ".github/workflows/release-build.yml"
                       and run.get("event") == "workflow_dispatch"
-                      and run.get("display_title") == expected_title
+                      and isinstance(run.get("display_title"), str)
+                      and run["display_title"].startswith("release-load-probe|")
+                      and run["display_title"].endswith(f"|{expected_sha}")
                       and run.get("head_sha") == expected_sha
                       and run.get("head_branch") == "main"
                   ):
@@ -161,7 +163,8 @@ jobs:
               )
           probe_run = matching_runs[0]
           if (
-              probe_run.get("status") != "completed"
+              probe_run.get("display_title") != expected_title
+              or probe_run.get("status") != "completed"
               or probe_run.get("conclusion") != "success"
               or probe_run.get("run_attempt") != 1
               or datetime.fromisoformat(
@@ -170,8 +173,8 @@ jobs:
               >= current_created_at
           ):
               raise SystemExit(
-                  "the unique read-only load probe must complete successfully "
-                  "on its first attempt before release generation"
+                  "the unique read-only load probe must use the release tag and "
+                  "complete successfully on its first attempt before generation"
               )
           probe_run_id = probe_run.get("id")
           if not isinstance(probe_run_id, int) or probe_run_id <= 0:

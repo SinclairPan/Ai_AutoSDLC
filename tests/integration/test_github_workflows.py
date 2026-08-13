@@ -1074,7 +1074,22 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert accepted.returncode == 0, accepted.stderr
 
     runs_path.write_text(
-        json.dumps([{"workflow_runs": [probe_run, {**probe_run, "id": 12}]}]),
+        json.dumps(
+            [
+                {
+                    "workflow_runs": [
+                        probe_run,
+                        {
+                            **probe_run,
+                            "id": 12,
+                            "display_title": (
+                                f"release-load-probe|v9.9.9|{candidate_sha}"
+                            ),
+                        },
+                    ]
+                }
+            ]
+        ),
         encoding="utf-8",
     )
     duplicate = run_gate()
