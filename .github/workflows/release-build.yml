@@ -19,6 +19,11 @@ on:
         description: Exact approved protected-main candidate merge SHA.
         required: true
         type: string
+      load_probe_run_id:
+        description: Exact successful read-only load-probe run ID; required only for release mode.
+        required: false
+        type: string
+        default: ""
 
 run-name: ${{ inputs.mode == 'release' && format('release-admission|{0}|g0', inputs.tag) || format('release-load-probe|{0}|{1}', inputs.tag, inputs.expected_candidate_sha) }}
 
@@ -34,10 +39,14 @@ env:
   RELEASE_USER_AGENT: ai-sdlc-release-writer/1.0
 
 concurrency:
-  group: release-build-${{ inputs.mode }}-${{ inputs.tag }}
+  group: release-build-${{ inputs.mode }}-${{ inputs.expected_candidate_sha }}
+  # Probe 与 release 分组，避免后发只读 probe 替换 pending generation；
+  # 同 mode 仍按 exact SHA 串行。
   cancel-in-progress: false
 
 jobs:
+  # Probe 刻意保持无状态且零副作用；多个等价成功结果不会获得写权限。
+  # Release 显式绑定不可变的第一次执行快照。
   release-load-probe:
     name: Read-only Release Workflow Load Probe
     if: inputs.mode == 'load_probe'
@@ -51,6 +60,8 @@ jobs:
           EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
           GH_TOKEN: ${{ github.token }}
           GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          LOAD_PROBE_RUN_ID: ${{ inputs.load_probe_run_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
           if [[ ! "${EXPECTED_CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -59,6 +70,10 @@ jobs:
           fi
           if [[ "${EXPECTED_CANDIDATE_SHA}" != "${GITHUB_SHA}" ]]; then
             echo "Load probe candidate does not match exact approved candidate." >&2
+            exit 1
+          fi
+          if [[ "${GITHUB_RUN_ATTEMPT}" != "1" ]]; then
+            echo "Load probe reruns are forbidden; only the first attempt may qualify." >&2
             exit 1
           fi
           if [[ "${GITHUB_WORKFLOW_REF}" != "${GITHUB_REPOSITORY}/.github/workflows/release-build.yml@refs/heads/main" ]]; then
@@ -71,6 +86,15 @@ jobs:
             echo "Protected main advanced beyond the approved load-probe candidate." >&2
             exit 1
           fi
+          if [[ "${RELEASE_TAG}" != "${CURRENT_RELEASE_TAG}" ]]; then
+            echo "Load probe tag must match the current release generation." >&2
+            exit 1
+          fi
+          if [[ -n "${LOAD_PROBE_RUN_ID:-}" ]]; then
+            echo "Load probe mode must not receive a prior load-probe run ID." >&2
+            exit 1
+          fi
+          printf 'load_probe_run_id=%s\n' "${GITHUB_RUN_ID}"
 
   release-assurance-policy:
     name: Resolve Pre-tag Release Qualification Policy
@@ -87,6 +111,7 @@ jobs:
         env:
           EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
           GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          LOAD_PROBE_RUN_ID: ${{ inputs.load_probe_run_id }}
         run: |
           set -euo pipefail
           if [[ ! "${EXPECTED_CANDIDATE_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
@@ -105,6 +130,121 @@ jobs:
             echo "Release rerun is forbidden by terminal-generation-burn." >&2
             exit 1
           fi
+          if [[ ! "${LOAD_PROBE_RUN_ID}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Release mode requires an exact positive load-probe run ID." >&2
+            exit 1
+          fi
+
+      - name: Require exact successful read-only load-probe authority
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          GH_TOKEN: ${{ github.token }}
+          LOAD_PROBE_RUN_ID: ${{ inputs.load_probe_run_id }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          workflow_path=".github/workflows/release-build.yml"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > load-probe-current-run.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1" \
+            > load-probe-authority-run.json
+          export EXPECTED_LOAD_PROBE_TITLE="release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+
+          current_run = json.loads(
+              Path("load-probe-current-run.json").read_text(encoding="utf-8")
+          )
+          probe_run = json.loads(
+              Path("load-probe-authority-run.json").read_text(encoding="utf-8")
+          )
+          expected_sha = os.environ["EXPECTED_CANDIDATE_SHA"]
+          expected_title = os.environ["EXPECTED_LOAD_PROBE_TITLE"]
+          workflow_id = current_run.get("workflow_id")
+          current_created_at = datetime.fromisoformat(
+              current_run["created_at"].replace("Z", "+00:00")
+          )
+          if (
+              probe_run.get("id") != int(os.environ["LOAD_PROBE_RUN_ID"])
+              or probe_run.get("workflow_id") != workflow_id
+              or probe_run.get("path") != ".github/workflows/release-build.yml"
+              or probe_run.get("event") != "workflow_dispatch"
+              or probe_run.get("display_title") != expected_title
+              or probe_run.get("head_sha") != expected_sha
+              or probe_run.get("head_branch") != "main"
+              or probe_run.get("status") != "completed"
+              or probe_run.get("conclusion") != "success"
+              or probe_run.get("run_attempt") != 1
+              or datetime.fromisoformat(
+                  probe_run["updated_at"].replace("Z", "+00:00")
+              )
+              > current_created_at
+          ):
+              raise SystemExit(
+                  "the exact load-probe run ID is not a completed first-attempt "
+                  "authority for this release candidate"
+              )
+          probe_run_id = probe_run.get("id")
+          if not isinstance(probe_run_id, int) or probe_run_id <= 0:
+              raise SystemExit("load-probe history contains an invalid run id")
+          Path("load-probe-run-id.txt").write_text(
+              f"{probe_run_id}\n", encoding="utf-8"
+          )
+          PY
+          probe_run_id="$(tr -d '\r\n' < load-probe-run-id.txt)"
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/artifacts?per_page=100" \
+            > load-probe-artifacts.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${probe_run_id}/attempts/1/jobs?per_page=100" \
+            > load-probe-jobs.json
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          from pathlib import Path
+
+          artifacts = json.loads(
+              Path("load-probe-artifacts.json").read_text(encoding="utf-8")
+          )
+          if artifacts.get("total_count") != 0 or artifacts.get("artifacts") != []:
+              raise SystemExit("read-only load probe must have exactly zero artifacts")
+
+          jobs_document = json.loads(
+              Path("load-probe-jobs.json").read_text(encoding="utf-8")
+          )
+          jobs = jobs_document.get("jobs", [])
+          expected_conclusions = {
+              "Read-only Release Workflow Load Probe": "success",
+              "Resolve Pre-tag Release Qualification Policy": "skipped",
+              "release-assurance": "skipped",
+              "$" + "{{ matrix.asset_os }} $" + "{{ matrix.archive }}": "skipped",
+              "Release Qualification": "skipped",
+              "Build Release Proof Inputs": "skipped",
+              "Publish Proof-bound Release": "skipped",
+          }
+          if jobs_document.get("total_count") != 7 or len(jobs) != 7:
+              raise SystemExit("load probe must expose the exact seven-job topology")
+          if {job.get("name") for job in jobs} != set(expected_conclusions):
+              raise SystemExit("load probe job topology differs from the approved workflow")
+          for job in jobs:
+              if (
+                  job.get("status") != "completed"
+                  or job.get("run_attempt") != 1
+                  or job.get("conclusion") != expected_conclusions[job["name"]]
+              ):
+                  raise SystemExit(
+                      "load probe must succeed once while every release path is skipped"
+                  )
+          PY
 
       - name: Require current release generation
         shell: bash
@@ -677,6 +817,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
+          LOAD_PROBE_RUN_ID: ${{ inputs.load_probe_run_id }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
@@ -773,6 +914,7 @@ jobs:
               "workflow_ref": os.environ["GITHUB_WORKFLOW_REF"],
               "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
               "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "load_probe_run_id": int(os.environ["LOAD_PROBE_RUN_ID"]),
               "gates": gates,
               "assets": assets,
           }
@@ -811,6 +953,7 @@ jobs:
       GH_HTTP_USER_AGENT: ai-sdlc-release-writer/1.0
       GITHUB_WORKFLOW_REF: ${{ github.workflow_ref }}
       EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+      LOAD_PROBE_RUN_ID: ${{ inputs.load_probe_run_id }}
       RELEASE_TAG: ${{ inputs.tag }}
     steps:
       - name: Checkout exact protected writer revision
@@ -988,6 +1131,61 @@ jobs:
             echo "Protected main advanced beyond the exact approved release candidate." >&2
             exit 1
           fi
+
+      - name: Revalidate exact load-probe authority before mutation
+        shell: bash
+        env:
+          EXPECTED_CANDIDATE_SHA: ${{ inputs.expected_candidate_sha }}
+          LOAD_PROBE_RUN_ID: ${{ inputs.load_probe_run_id }}
+        run: |
+          set -euo pipefail
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            > writer-probe-current-run.json
+          gh api -H "User-Agent: ${RELEASE_USER_AGENT}" \
+            "repos/${GITHUB_REPOSITORY}/actions/runs/${LOAD_PROBE_RUN_ID}/attempts/1" \
+            > writer-probe-authority-run.json
+          export EXPECTED_LOAD_PROBE_TITLE="release-load-probe|${RELEASE_TAG}|${EXPECTED_CANDIDATE_SHA}"
+          python - <<'PY'
+          from __future__ import annotations
+
+          import json
+          import os
+          from datetime import datetime
+          from pathlib import Path
+
+          current_run = json.loads(
+              Path("writer-probe-current-run.json").read_text(encoding="utf-8")
+          )
+          probe_run = json.loads(
+              Path("writer-probe-authority-run.json").read_text(encoding="utf-8")
+          )
+          expected_sha = os.environ["EXPECTED_CANDIDATE_SHA"]
+          expected_title = os.environ["EXPECTED_LOAD_PROBE_TITLE"]
+          workflow_id = current_run.get("workflow_id")
+          current_created_at = datetime.fromisoformat(
+              current_run["created_at"].replace("Z", "+00:00")
+          )
+          if (
+              probe_run.get("id") != int(os.environ["LOAD_PROBE_RUN_ID"])
+              or probe_run.get("workflow_id") != workflow_id
+              or probe_run.get("path") != ".github/workflows/release-build.yml"
+              or probe_run.get("event") != "workflow_dispatch"
+              or probe_run.get("display_title") != expected_title
+              or probe_run.get("head_sha") != expected_sha
+              or probe_run.get("head_branch") != "main"
+              or probe_run.get("status") != "completed"
+              or probe_run.get("conclusion") != "success"
+              or probe_run.get("run_attempt") != 1
+              or datetime.fromisoformat(
+                  probe_run["updated_at"].replace("Z", "+00:00")
+              )
+              > current_created_at
+          ):
+              raise SystemExit(
+                  "the pre-mutation load-probe run ID no longer proves the bound authority"
+              )
+          PY
 
       - name: Create exact annotated release tag
         shell: bash
