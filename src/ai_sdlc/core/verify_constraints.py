@@ -147,11 +147,15 @@ SKIP_REGISTRY_REL = Path("src") / "ai_sdlc" / "rules" / "agent-skip-registry.zh.
 FRAMEWORK_DEFECT_BACKLOG_REL = Path("docs") / "framework-defect-backlog.zh-CN.md"
 VERIFICATION_RULE_REL = Path("src") / "ai_sdlc" / "rules" / "verification.md"
 PR_CHECKLIST_REL = Path("docs") / "pull-request-checklist.zh.md"
+PRODUCT_CONTRACT_REL = Path("docs") / "product-contract.md"
 RELEASE_POLICY_REL = Path("docs") / "框架自迭代开发与发布约定.md"
 README_REL = Path("README.md")
 USER_GUIDE_REL = Path("USER_GUIDE.zh-CN.md")
 AGENTS_REL = Path("AGENTS.md")
 OFFLINE_README_REL = Path("packaging") / "offline" / "README.md"
+OFFLINE_RELEASE_CHECKLIST_REL = (
+    Path("packaging") / "offline" / "RELEASE_CHECKLIST.md"
+)
 PYPROJECT_REL = Path("pyproject.toml")
 PACKAGE_INIT_REL = Path("src") / "ai_sdlc" / "__init__.py"
 RELEASE_BUILD_WORKFLOW_REL = Path(".github") / "workflows" / "release-build.yml"
@@ -251,6 +255,14 @@ RECONCILE_SMOKE_CONTRACT_SURFACES: dict[Path, tuple[str, ...]] = {
         ),
     ),
 }
+S1_RELEASE_DOC_REQUIRED_TOKENS = (
+    "v1.0.5 release candidate / release-enabled / outcome-pending-closure",
+    "PR2 合并后",
+    "exact protected-main",
+    "唯一只读 load-probe",
+    "一次 actual generation",
+    "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5",
+)
 RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     README_REL: (
         "# AI-SDLC 1.0.5",
@@ -262,12 +274,12 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
         "ai-sdlc init . --agent-target codex --shell powershell",
         "uv run python scripts/validate_public_release_identity.py .",
+        *S1_RELEASE_DOC_REQUIRED_TOKENS,
     ),
     USER_GUIDE_REL: (
         "# AI-SDLC 1.0.2 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
         "v1.0.4 未发布",
-        "v1.0.5 release candidate / not published / prepared-disabled",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "Windows",
@@ -282,6 +294,12 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "ai-sdlc adopt .",
         "当前结果 / Result",
         "下一步 / Next",
+        *S1_RELEASE_DOC_REQUIRED_TOKENS,
+    ),
+    PRODUCT_CONTRACT_REL: (
+        "https://github.com/SinclairPan/Ai_AutoSDLC",
+        "last published version is v1.0.2",
+        *S1_RELEASE_DOC_REQUIRED_TOKENS,
     ),
     OFFLINE_README_REL: (
         "# AI-SDLC 1.0.5 离线打包说明",
@@ -295,6 +313,12 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "-AddToPath",
         "--add-to-path",
         "verify_offline_bundle.py",
+        *S1_RELEASE_DOC_REQUIRED_TOKENS,
+    ),
+    OFFLINE_RELEASE_CHECKLIST_REL: (
+        "https://github.com/SinclairPan/Ai_AutoSDLC",
+        "last published version is v1.0.2",
+        *S1_RELEASE_DOC_REQUIRED_TOKENS,
     ),
     RELEASE_POLICY_REL: (
         "README.md",
@@ -314,6 +338,7 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "packaging/offline/README.md",
         "1.0.5",
         "python scripts/validate_public_release_identity.py .",
+        *S1_RELEASE_DOC_REQUIRED_TOKENS,
     ),
     RELEASE_BUILD_WORKFLOW_REL: ("default: v1.0.5",),
     RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v1.0.5",),
@@ -323,6 +348,17 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "ai-sdlc init . --agent-target codex --shell powershell",
         "ai-sdlc run --dry-run",
     ),
+}
+RELEASE_DOCS_CONSISTENCY_FORBIDDEN_TOKENS: dict[Path, tuple[str, ...]] = {
+    rel: ("v1.0.5 release candidate / not published / prepared-disabled",)
+    for rel in (
+        README_REL,
+        USER_GUIDE_REL,
+        PRODUCT_CONTRACT_REL,
+        OFFLINE_README_REL,
+        OFFLINE_RELEASE_CHECKLIST_REL,
+        PR_CHECKLIST_REL,
+    )
 }
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "# AI-SDLC 1.0.2 中文用户指南",
@@ -370,6 +406,7 @@ BEGINNER_GUIDE_FORBIDDEN_TOKENS = (
     "git clone --branch",
     "开发版",
     "Codex + PowerShell 为默认组合",
+    "v1.0.5 release candidate / not published / prepared-disabled",
     "releases/download/v1.0.4/",
     "releases/download/v1.0.5/",
 )
@@ -4583,6 +4620,17 @@ def _release_docs_consistency_blockers(root: Path) -> list[str]:
             blockers.append(
                 "BLOCKER: release docs consistency drift: "
                 f"{rel.as_posix()} missing required markers: {', '.join(missing)}"
+            )
+        forbidden = [
+            token
+            for token in RELEASE_DOCS_CONSISTENCY_FORBIDDEN_TOKENS.get(rel, ())
+            if token in text
+        ]
+        if forbidden:
+            blockers.append(
+                "BLOCKER: release docs consistency drift: "
+                f"{rel.as_posix()} contains forbidden markers: "
+                f"{', '.join(forbidden)}"
             )
     return blockers
 

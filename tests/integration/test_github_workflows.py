@@ -647,10 +647,10 @@ def test_release_build_workflow_matrix_builds_smokes_and_uploads_assets(
     assert "default: v1.0.5" in workflow
     assert workflow_data["env"] == {
         "CURRENT_RELEASE_TAG": "v1.0.5",
-        "RELEASE_BOOTSTRAP_ENABLED": "false",
+        "RELEASE_BOOTSTRAP_ENABLED": "true",
         "RELEASE_PUBLISH_ENVIRONMENT": "release-publish",
-        "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED": "false",
-        "RELEASE_TAG_RULESET_PROTECTION_VERIFIED": "false",
+        "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED": "true",
+        "RELEASE_TAG_RULESET_PROTECTION_VERIFIED": "true",
         "RELEASE_USER_AGENT": "ai-sdlc-release-writer/1.0",
     }
     assert "ref: ${{ inputs.tag }}" not in workflow
@@ -1445,8 +1445,8 @@ def test_release_build_has_one_proof_bound_protected_writer() -> None:
     assert "RELEASE_USER_AGENT" in workflow_text
     assert publish_job["env"]["GH_HTTP_USER_AGENT"] == "ai-sdlc-release-writer/1.0"
     assert workflow["env"]["RELEASE_PUBLISH_ENVIRONMENT"] == "release-publish"
-    assert workflow["env"]["RELEASE_ENVIRONMENT_PROTECTION_VERIFIED"] == "false"
-    assert workflow["env"]["RELEASE_TAG_RULESET_PROTECTION_VERIFIED"] == "false"
+    assert workflow["env"]["RELEASE_ENVIRONMENT_PROTECTION_VERIFIED"] == "true"
+    assert workflow["env"]["RELEASE_TAG_RULESET_PROTECTION_VERIFIED"] == "true"
     assert '"${RELEASE_ENVIRONMENT_PROTECTION_VERIFIED}" != "true"' in workflow_text
     assert "historical writer runs remain blocked" in workflow_text
     assert "terminal-generation-burn" in workflow_text
@@ -2296,7 +2296,7 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     jobs = workflow["jobs"]
 
     assert workflow["env"]["CURRENT_RELEASE_TAG"] == "v1.0.5"
-    assert workflow["env"]["RELEASE_BOOTSTRAP_ENABLED"] == "false"
+    assert workflow["env"]["RELEASE_BOOTSTRAP_ENABLED"] == "true"
     assert "default: v1.0.5" in workflow_text
     assert "v1.0.1 v1.0.2" not in workflow_text
     assert jobs["release-assurance-policy"]["outputs"] == {

@@ -62,15 +62,15 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 不默认向远程模型发送代码；
 - 不在项目文件中保存密钥或令牌值。
 
-## 1.0.5 源码候选真值（prepared-disabled）
+## 1.0.5 源码候选真值（release-enabled / outcome-pending-closure）
 
 - Python 源码候选版本：`1.0.5`；
 - Git 仓库：`https://github.com/SinclairPan/Ai_AutoSDLC`；
-- `ai-sdlc-offline-1.0.5-windows-amd64.zip`、`ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.5-linux-amd64.tar.gz` 是该候选预期产物名，不是已发布发行集合；
-- `v1.0.5 release candidate / not published / prepared-disabled`：`WorkItem 010 three-PR release migration` 的 PR1 保持三个发布开关为 `false`，不得上传、发布或下载 v1.0.5 候选；
+- `ai-sdlc-offline-1.0.5-windows-amd64.zip`、`ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.5-linux-amd64.tar.gz` 是该候选预期产物名；S1 仍处于 outcome-pending-closure，它们不是普通用户公开安装权威；
+- `v1.0.5 release candidate / release-enabled / outcome-pending-closure`：`WorkItem 010 three-PR release migration` 的 S1 将三个发布开关设为字符串 `true`，只授权 exact protected-main `release-build` writer 在 PR2 合并后的唯一只读 load-probe 成功后执行一次 actual generation；普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5；
 - `last published version is v1.0.2`，其公开下载与校验入口见 `USER_GUIDE.zh-CN.md`；
 - `v1.0.4 terminal NO-GO / not released`：该候选代际已终止，010 不得恢复、启用、发布、清理或复用它；
-- `active no-bypass tag ruleset protects software and Certificate tags`：远端 active ruleset 精确覆盖软件 tag 与 generation-0 Certificate tag，允许新建但拒绝更新、删除和非快进变更，且不存在 bypass。PR1 中三个验证/发布开关均保持字符串 `false`；实际 generation 的部分 namespace、环境或 ruleset 失败均执行 terminal generation burn，不清理、不恢复、不重跑。
+- `active no-bypass tag ruleset protects software and Certificate tags`：远端 active ruleset 精确覆盖软件 tag 与 generation-0 Certificate tag，允许新建但拒绝更新、删除和非快进变更，且不存在 bypass。S1 中三个验证/发布开关均为字符串 `true`；实际 generation 的部分 namespace、环境或 ruleset 失败均执行 terminal generation burn，不清理、不恢复、不重跑。
 
 ## 验收接口
 

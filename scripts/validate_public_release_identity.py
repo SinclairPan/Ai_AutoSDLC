@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
-"""Validate the prepared-disabled 1.0.5 candidate and 1.0.2 public truth."""
+"""Validate the release-enabled 1.0.5 candidate and 1.0.2 public truth."""
 
 from __future__ import annotations
 
+import hashlib
+import io
 import re
 import subprocess
 import sys
@@ -16,6 +18,16 @@ PUBLISHED_VERSION = "1.0.2"
 STABLE_SOURCE_CLONE = (
     "git clone --branch v1.0.2 --depth 1 "
     "https://github.com/SinclairPan/Ai_AutoSDLC.git"
+)
+S1_RELEASE_STATE = (
+    "v1.0.5 release candidate / release-enabled / outcome-pending-closure"
+)
+S1_BOUNDARY_MARKERS = (
+    "PR2 合并后",
+    "exact protected-main",
+    "唯一只读 load-probe",
+    "一次 actual generation",
+    "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5",
 )
 
 PUBLIC_DOC_PATHS = {
@@ -31,17 +43,18 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         STABLE_SOURCE_CLONE,
-        "v1.0.5 release candidate / not published / prepared-disabled",
+        S1_RELEASE_STATE,
         "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
         "WorkItem 010 three-PR release migration",
         "active no-bypass tag ruleset protects software and Certificate tags",
+        *S1_BOUNDARY_MARKERS,
     ),
     "USER_GUIDE.zh-CN.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         PUBLISHED_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
+        S1_RELEASE_STATE,
         "last published version is v1.0.2",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
@@ -64,48 +77,53 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "ai-sdlc adopt .",
         "当前结果 / Result",
         "下一步 / Next",
+        *S1_BOUNDARY_MARKERS,
     ),
     "docs/product-contract.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
+        S1_RELEASE_STATE,
         "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
         "WorkItem 010 three-PR release migration",
         "active no-bypass tag ruleset protects software and Certificate tags",
+        *S1_BOUNDARY_MARKERS,
     ),
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         PUBLISHED_VERSION,
         STABLE_SOURCE_CLONE,
-        "v1.0.5 release candidate / not published / prepared-disabled",
+        S1_RELEASE_STATE,
         "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
         "WorkItem 010 three-PR release migration",
         "不得 redispatch、rerun、上传或发布 v1.0.4",
-        "不得上传、发布或下载 v1.0.5 候选",
+        "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5",
+        *S1_BOUNDARY_MARKERS,
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
         PUBLISHED_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
+        S1_RELEASE_STATE,
         "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
         "WorkItem 010 three-PR release migration",
         "不得 redispatch、rerun、上传或发布 v1.0.4",
-        "不得上传、发布或下载 v1.0.5 候选",
+        "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5",
+        *S1_BOUNDARY_MARKERS,
     ),
     "docs/pull-request-checklist.zh.md": (
         CURRENT_VERSION,
         PUBLISHED_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
+        S1_RELEASE_STATE,
         "last published version is v1.0.2",
         "v1.0.4 terminal NO-GO / not released",
         "WorkItem 010 three-PR release migration",
         "不得 redispatch、rerun、上传或发布 v1.0.4",
-        "不得上传、发布或下载 v1.0.5 候选",
+        "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5",
+        *S1_BOUNDARY_MARKERS,
     ),
     "packaging/install_online.sh": (
         'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
@@ -144,36 +162,42 @@ FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
     "README.md": (
         "WorkItem 008",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
     ),
     "USER_GUIDE.zh-CN.md": (
         "WorkItem 008",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
     ),
     "docs/product-contract.md": (
         "WorkItem 008",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
     ),
     "packaging/offline/README.md": (
         "上传动作必须由有权限的维护者明确触发",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         "上传动作由有权限维护者明确执行",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
     ),
     "docs/pull-request-checklist.zh.md": (
         "当前发布版本为 `1.0.4`",
         "only future WorkItem 010 may migrate to v1.0.5",
+        "v1.0.5 release candidate / not published / prepared-disabled",
         "releases/download/v1.0.5/",
         "v1.0.5 已发布",
     ),
@@ -235,6 +259,15 @@ GITHUB_REPOSITORY_PATTERN = re.compile(
     r"https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+"
 )
 IDENTITY_PATHS = set(REQUIRED_SURFACES)
+HTML_COMMENT_PATTERN = re.compile(r"<!--.*?(?:-->|$)", re.DOTALL)
+RELEASE_TREE_SEAL_DOMAIN = b"ai-sdlc-s1-release-tree-seal-v1"
+RELEASE_TREE_SEAL_TRUST_ROOT = b"scripts/validate_public_release_identity.py"
+RELEASE_TREE_SEAL_ANCHOR = b"README.md"
+RELEASE_TREE_SEAL_ANCHOR_PATTERN = re.compile(
+    rb"<!-- S1_RELEASE_TREE_SEAL: (?P<seal>[0-9a-f]{64}) -->"
+)
+RELEASE_TREE_SEAL_ANCHOR_PLACEHOLDER = b"0" * 64
+ALLOWED_RELEASE_TREE_MODES = frozenset({b"100644", b"100755"})
 
 
 @dataclass(frozen=True)
@@ -257,6 +290,139 @@ def tracked_paths(root: Path) -> tuple[str, ...]:
         capture_output=True,
     )
     return tuple(item.decode("utf-8") for item in completed.stdout.split(b"\0") if item)
+
+
+def _frame(digest: object, value: bytes) -> None:
+    """向 release tree seal 写入无歧义的长度分帧字段。"""
+
+    digest.update(str(len(value)).encode("ascii"))
+    digest.update(b"\0")
+    digest.update(value)
+
+
+def _normalize_release_tree_seal_anchor(blob: bytes) -> tuple[bytes, str]:
+    """只归一化 README 中唯一的 seal 值，其余原始字节仍进入全树摘要。"""
+
+    matches = tuple(RELEASE_TREE_SEAL_ANCHOR_PATTERN.finditer(blob))
+    if len(matches) != 1:
+        raise ValueError("release tree seal anchor must appear exactly once")
+    match = matches[0]
+    start, end = match.span("seal")
+    expected = match.group("seal").decode("ascii")
+    normalized = (
+        blob[:start] + RELEASE_TREE_SEAL_ANCHOR_PLACEHOLDER + blob[end:]
+    )
+    return normalized, expected
+
+
+def release_tree_seal(root: Path, state: str, treeish: str = "HEAD") -> str:
+    """从 Git 对象计算临时 S1 全树 seal，不读取 worktree 或 index。"""
+
+    listed = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "--full-tree", treeish],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    entries: list[tuple[bytes, bytes, bytes, bytes]] = []
+    for record in listed.split(b"\0"):
+        if not record:
+            continue
+        try:
+            metadata, path = record.split(b"\t", 1)
+            mode, object_type, object_id = metadata.split(b" ", 2)
+        except ValueError as exc:
+            raise ValueError("malformed Git tree entry") from exc
+        entries.append((path, mode, object_type, object_id))
+    entries.sort(key=lambda entry: entry[0])
+
+    trust_roots = [entry for entry in entries if entry[0] == RELEASE_TREE_SEAL_TRUST_ROOT]
+    if len(trust_roots) != 1 or trust_roots[0][1:3] != (b"100755", b"blob"):
+        raise ValueError("validator trust root must be one 100755 blob")
+    anchors = [entry for entry in entries if entry[0] == RELEASE_TREE_SEAL_ANCHOR]
+    if len(anchors) != 1 or anchors[0][1:3] != (b"100644", b"blob"):
+        raise ValueError("release tree seal anchor must be one 100644 blob")
+    for path, mode, object_type, _object_id in entries:
+        if object_type != b"blob" or mode not in ALLOWED_RELEASE_TREE_MODES:
+            decoded_path = path.decode("utf-8", errors="backslashreplace")
+            raise ValueError(f"unsupported Git tree entry: {mode!r} {decoded_path}")
+
+    batch = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        cwd=root,
+        input=b"".join(entry[3] + b"\n" for entry in entries),
+        check=True,
+        capture_output=True,
+    ).stdout
+    stream = io.BytesIO(batch)
+    digest = hashlib.sha256()
+    _frame(digest, RELEASE_TREE_SEAL_DOMAIN)
+    _frame(digest, state.encode("utf-8"))
+    _frame(digest, str(len(entries)).encode("ascii"))
+    for path, mode, object_type, expected_id in entries:
+        _frame(digest, mode)
+        _frame(digest, object_type)
+        _frame(digest, path)
+        header = stream.readline()
+        try:
+            actual_id, actual_type, size_text = header.rstrip(b"\n").split(b" ", 2)
+            size = int(size_text)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("malformed git cat-file header") from exc
+        if (
+            actual_id != expected_id
+            or actual_type != b"blob"
+            or str(size).encode("ascii") != size_text
+        ):
+            raise ValueError("git cat-file object differs from tree entry")
+        blob = stream.read(size)
+        if len(blob) != size or stream.read(1) != b"\n":
+            raise ValueError("truncated git cat-file blob")
+        if path == RELEASE_TREE_SEAL_ANCHOR:
+            blob, _expected = _normalize_release_tree_seal_anchor(blob)
+        _frame(digest, blob)
+    if stream.read():
+        raise ValueError("unexpected trailing git cat-file output")
+    return digest.hexdigest()
+
+
+def release_tree_seal_anchor(root: Path, treeish: str = "HEAD") -> str:
+    """从同一 Git tree 的 README blob 读取受审 seal 值。"""
+
+    blob = subprocess.run(
+        ["git", "cat-file", "blob", f"{treeish}:{RELEASE_TREE_SEAL_ANCHOR.decode('ascii')}"],
+        cwd=root,
+        check=True,
+        capture_output=True,
+    ).stdout
+    _normalized, expected = _normalize_release_tree_seal_anchor(blob)
+    return expected
+
+
+def validate_release_tree_seal(
+    root: Path,
+    state: str,
+) -> list[Finding]:
+    """将当前 HEAD 的临时 S1 全树 seal 与受审期望值比较。"""
+
+    expected = release_tree_seal_anchor(root)
+    actual = release_tree_seal(root, state)
+    if actual == expected:
+        return []
+    return [
+        Finding(
+            RELEASE_TREE_SEAL_ANCHOR.decode("ascii"),
+            None,
+            "s1-release-tree-seal-mismatch",
+            f"expected={expected} actual={actual}",
+        )
+    ]
+
+
+def _markdown_without_html_comments(text: str) -> str:
+    """移除 Markdown 中读者不可见的 HTML 注释，同时保留标记原文。"""
+
+    return HTML_COMMENT_PATTERN.sub("", text)
 
 
 def scan_paths(root: Path, files: Mapping[str, str]) -> list[Finding]:
@@ -321,8 +487,11 @@ def validate_required_surfaces(files: Mapping[str, str]) -> list[Finding]:
                 Finding(path, None, "required-public-surface-missing", path)
             )
             continue
+        required_marker_text = (
+            _markdown_without_html_comments(text) if path.endswith(".md") else text
+        )
         for marker in required_markers:
-            if marker not in text:
+            if marker not in required_marker_text:
                 findings.append(
                     Finding(path, None, "required-identity-marker-missing", marker)
                 )
@@ -343,7 +512,14 @@ def scan_public_tree(root: Path) -> list[Finding]:
             files[relative] = (root / relative).read_text(encoding="utf-8")
         except (UnicodeDecodeError, OSError):
             continue
-    return [*scan_paths(root, files), *validate_required_surfaces(files)]
+    return [
+        *scan_paths(root, files),
+        *validate_required_surfaces(files),
+        *validate_release_tree_seal(
+            root,
+            S1_RELEASE_STATE,
+        ),
+    ]
 
 
 def main(argv: Sequence[str] | None = None) -> int:

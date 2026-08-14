@@ -4,11 +4,13 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 候选状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 当前只准备候选，三个发布开关均保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`，普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装该版本。
+> 候选状态：`v1.0.5 release candidate / release-enabled / outcome-pending-closure`。`WorkItem 010 three-PR release migration` 的 S1 将三个发布开关设为字符串 `true`，只授权 exact protected-main `release-build` writer 在 PR2 合并后的唯一只读 load-probe 成功后执行一次 actual generation；普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5。`last published version is v1.0.2`，普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装该版本。
+
+<!-- S1_RELEASE_TREE_SEAL: 0599647d9ebd128b787626f161bb50589bb9d16f9a8fbfb4982c6646ce560541 -->
 
 `v1.0.4 terminal NO-GO / not released` 继续作为冻结审计事实：不能使用任何 `releases/download/v1.0.4/` 路径，不得 redispatch、rerun、上传或发布 v1.0.4，也不得以 010 清理或复用它的 tag、Draft、资产或证据。
 
-010 的 GO 同时依赖两个已经独立验证的远端保护：`release-publish` environment 必须以 required reviewers 阻断未审 writer（禁止自批与管理员 bypass）；`active no-bypass tag ruleset protects software and Certificate tags`，其精确覆盖软件 tag 与 generation-0 Certificate tag，允许新建但拒绝更新、删除和非快进变更。PR1 保持三个验证/发布开关为字符串 `false`；只有独立的 PR2 可以启用一次实际 generation，任一失败都永久烧毁该代际，不清理、不恢复、不重跑。
+010 的 GO 同时依赖两个已经独立验证的远端保护：`release-publish` environment 必须以 required reviewers 阻断未审 writer（禁止自批与管理员 bypass）；`active no-bypass tag ruleset protects software and Certificate tags`，其精确覆盖软件 tag 与 generation-0 Certificate tag，允许新建但拒绝更新、删除和非快进变更。S1 的三个验证/发布开关均为字符串 `true`；PR2 合并后必须先从精确 protected-main writer 完成唯一只读 load-probe，成功后才允许一次 actual generation，任一失败都永久烧毁该代际，不清理、不恢复、不重跑。
 
 ## 核心特性
 
@@ -39,7 +41,7 @@ ai-sdlc --version
 
 版本输出应为 `1.0.2`。
 
-需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
+`@main` 与“开发版”只用于记录被禁止的旧源码安装入口；普通用户与维护者均不得用它安装、验证、发布或 rerun v1.0.5。
 
 ### 从源码运行
 
@@ -256,7 +258,7 @@ ai-sdlc enterprise configure --help
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.5` 源码候选预期生成的产物名称；它们尚未形成已发布、可安装的正式集合：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.5` 源码候选预期生成的产物名称；S1 仍处于 outcome-pending-closure，它们不是普通用户公开安装权威，只有远端 generation 与 PR3 终态收口完成后才能判定其发行结论：
 
 - `ai-sdlc-offline-1.0.5-windows-amd64.zip`
 - `ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`

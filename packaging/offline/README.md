@@ -4,9 +4,9 @@
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-候选状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 的 PR1 只验证候选，三个发布开关保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`。`v1.0.4 terminal NO-GO / not released` 永久冻结，不得 redispatch、rerun、上传或发布 v1.0.4。
+候选状态：`v1.0.5 release candidate / release-enabled / outcome-pending-closure`。`WorkItem 010 three-PR release migration` 的 S1 将三个发布开关设为字符串 `true`，只授权 exact protected-main `release-build` writer 在 PR2 合并后的唯一只读 load-probe 成功后执行一次 actual generation；普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5。`last published version is v1.0.2`。`v1.0.4 terminal NO-GO / not released` 永久冻结，不得 redispatch、rerun、上传或发布 v1.0.4。
 
-下列 1.0.5 命令与制品名称只用于已审查 PR 的本地候选验证，不构成上传或发布授权。
+下列 1.0.5 命令与制品名称只用于已审查 PR 的本地候选验证，不构成普通用户或手工上传、发布、下载、安装授权。
 
 ## 包内容
 
@@ -139,7 +139,7 @@ cd smoke-project
 - `.github/workflows/windows-offline-smoke.yml`：验证 Windows 构建、安装、Codex 初始化和 dry-run；
 - `.github/workflows/posix-offline-smoke.yml`：验证 macOS 与 Linux 安装路径。
 
-工作流当前候选标识是 prepared-disabled 的 `v1.0.5`，PR1 只能运行只读 load-probe；`v1.0.4` 仅是被冻结候选的历史标识，其发布通道已终止。
+工作流当前候选标识是 release-enabled / outcome-pending-closure 的 `v1.0.5`；PR2 合并后只允许精确 protected-main writer 先执行唯一只读 load-probe，成功后才允许一次 actual generation。`v1.0.4` 仅是被冻结候选的历史标识，其发布通道已终止。
 
 ## 交付要求
 

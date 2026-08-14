@@ -4,9 +4,9 @@ AI-SDLC 会把项目规则、需求澄清、技术方案、任务执行、质量
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 发布可用性：`v1.0.5 release candidate / not published / prepared-disabled`，`WorkItem 010 three-PR release migration` 当前没有授权上传或发布该候选；`last published version is v1.0.2`，本指南仍只安装 `v1.0.2`。`v1.0.4 terminal NO-GO / not released` 与 `v1.0.4 未发布`继续保持冻结，不能使用任何 `releases/download/v1.0.4` 路径，也不得 redispatch、rerun、上传或发布 v1.0.4。
+> 发布可用性：`v1.0.5 release candidate / release-enabled / outcome-pending-closure`，`WorkItem 010 three-PR release migration` 的 S1 只授权 exact protected-main `release-build` writer 在唯一只读 load-probe 成功后执行一次 actual generation；普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5。`last published version is v1.0.2`，本指南仍只安装 `v1.0.2`。`v1.0.4 terminal NO-GO / not released` 与 `v1.0.4 未发布`继续保持冻结，不能使用任何 `releases/download/v1.0.4` 路径，也不得 redispatch、rerun、上传或发布 v1.0.4。
 
-010 只有在 PR1 的只读 load-probe 与全部门禁通过后，才可由独立 PR2 启用一次实际 generation：`release-publish` environment 以 required reviewers 阻断未审 writer，且禁止自批与管理员 bypass；`active no-bypass tag ruleset protects software and Certificate tags`，精确覆盖软件 tag 和 generation-0 Certificate tag，并拒绝更新、删除及非快进变更。PR1 中三个开关均为字符串 `false`；任何实际 generation 的部分创建或保护失败都属于 terminal generation burn，禁止清理、恢复或重跑。
+010 的 S1 将三个开关设为字符串 `true`：`release-publish` environment 以 required reviewers 阻断未审 writer，且禁止自批与管理员 bypass；`active no-bypass tag ruleset protects software and Certificate tags`，精确覆盖软件 tag 和 generation-0 Certificate tag，并拒绝更新、删除及非快进变更。PR2 合并后必须从精确 protected-main writer 先执行唯一只读 load-probe，成功后才允许一次 actual generation；任何部分创建或保护失败都属于 terminal generation burn，禁止清理、恢复或重跑。
 
 本指南只包含两条完整路径：
 

@@ -1,5 +1,8 @@
+import subprocess
 from pathlib import Path
 
+import pytest
+from scripts import validate_public_release_identity as release_identity
 from scripts.validate_public_release_identity import (
     CURRENT_REPOSITORY_URL,
     CURRENT_VERSION,
@@ -52,15 +55,18 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
     }
 
 
-def test_required_surfaces_enforce_current_release_identity() -> None:
+def test_required_surfaces_enforce_current_release_identity(tmp_path: Path) -> None:
     files = {
         "README.md": (
             f"{CURRENT_REPOSITORY_URL}\nAI-SDLC {CURRENT_VERSION}\n{STABLE_SOURCE_CLONE}\n"
-            "v1.0.5 release candidate / not published / prepared-disabled\n"
+            "v1.0.5 release candidate / release-enabled / outcome-pending-closure\n"
             "last published version is v1.0.2\n"
             "v1.0.4 terminal NO-GO / not released\n"
             "WorkItem 010 three-PR release migration\n"
-            "active no-bypass tag ruleset protects software and Certificate tags"
+            "active no-bypass tag ruleset protects software and Certificate tags\n"
+            "PR2 合并后\nexact protected-main\n唯一只读 load-probe\n"
+            "一次 actual generation\n"
+            "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5"
         ),
     }
 
@@ -70,7 +76,23 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
         finding.marker == "required-public-surface-missing" for finding in findings
     )
     assert not any(finding.path == "README.md" for finding in findings)
+    hidden_boundary = validate_required_surfaces(
+        {
+            "README.md": files["README.md"].replace(
+                "PR2 合并后",
+                "<!-- PR2 合并后 -->",
+                1,
+            )
+        }
+    )
+    assert any(
+        finding.path == "README.md"
+        and finding.marker == "required-identity-marker-missing"
+        and finding.excerpt == "PR2 合并后"
+        for finding in hidden_boundary
+    )
     assert "WorkItem 008" in FORBIDDEN_SURFACE_MARKERS["README.md"]
+    assert "@main" not in FORBIDDEN_SURFACE_MARKERS["README.md"]
     obsolete = validate_required_surfaces(
         {
             "README.md": (
@@ -86,7 +108,10 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
     )
     for path in ("README.md", "USER_GUIDE.zh-CN.md", "docs/product-contract.md"):
         markers = REQUIRED_SURFACES[path]
-        assert "v1.0.5 release candidate / not published / prepared-disabled" in markers
+        assert (
+            "v1.0.5 release candidate / release-enabled / outcome-pending-closure"
+            in markers
+        )
         assert "last published version is v1.0.2" in markers
         assert "v1.0.4 terminal NO-GO / not released" in markers
         assert "WorkItem 010 three-PR release migration" in markers
@@ -102,12 +127,119 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
     for path, obsolete_marker in terminal_release_surfaces.items():
         markers = REQUIRED_SURFACES[path]
         assert PUBLISHED_VERSION in markers
-        assert "v1.0.5 release candidate / not published / prepared-disabled" in markers
+        assert (
+            "v1.0.5 release candidate / release-enabled / outcome-pending-closure"
+            in markers
+        )
         assert "v1.0.4 terminal NO-GO / not released" in markers
         assert "WorkItem 010 three-PR release migration" in markers
         assert "不得 redispatch、rerun、上传或发布 v1.0.4" in markers
-        assert "不得上传、发布或下载 v1.0.5 候选" in markers
+        assert (
+            "普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5"
+            in markers
+        )
         assert obsolete_marker in FORBIDDEN_SURFACE_MARKERS[path]
+
+    validator_path = tmp_path / "scripts/validate_public_release_identity.py"
+    validator_path.parent.mkdir(parents=True)
+    validator_path.write_text("validator-v1\n", encoding="utf-8")
+    validator_path.chmod(0o755)
+    anchor_path = tmp_path / "README.md"
+    anchor_path.write_text(
+        "<!-- S1_RELEASE_TREE_SEAL: " + "0" * 64 + " -->\n",
+        encoding="utf-8",
+    )
+    payload_path = tmp_path / "payload.txt"
+    payload_path.write_text("payload-v1\n", encoding="utf-8")
+
+    def git(*arguments: str) -> None:
+        subprocess.run(
+            ["git", *arguments],
+            cwd=tmp_path,
+            check=True,
+            capture_output=True,
+        )
+
+    git("init", "--quiet")
+    git("config", "user.email", "release-test@example.invalid")
+    git("config", "user.name", "Release Test")
+    git("add", ".")
+    git("commit", "--quiet", "-m", "initial")
+    baseline_seal = release_identity.release_tree_seal(tmp_path, "candidate")
+    mismatch = release_identity.validate_release_tree_seal(
+        tmp_path,
+        "candidate",
+    )
+    assert [finding.marker for finding in mismatch] == [
+        "s1-release-tree-seal-mismatch"
+    ]
+    anchor_path.write_text(
+        f"<!-- S1_RELEASE_TREE_SEAL: {baseline_seal} -->\n",
+        encoding="utf-8",
+    )
+    git("add", "README.md")
+    git("commit", "--quiet", "-m", "seal-anchor")
+    assert release_identity.release_tree_seal(tmp_path, "candidate") == baseline_seal
+    assert release_identity.validate_release_tree_seal(tmp_path, "candidate") == []
+
+    payload_path.write_text("payload-v2\n", encoding="utf-8")
+    git("add", "payload.txt")
+    git("commit", "--quiet", "-m", "content")
+    assert release_identity.release_tree_seal(tmp_path, "candidate") != baseline_seal
+
+    payload_path.chmod(0o755)
+    git("add", "payload.txt")
+    git("commit", "--quiet", "-m", "mode")
+    mode_seal = release_identity.release_tree_seal(tmp_path, "candidate")
+    assert mode_seal != baseline_seal
+
+    validator_path.write_text("validator-v2\n", encoding="utf-8")
+    git("add", str(validator_path.relative_to(tmp_path)))
+    git("commit", "--quiet", "-m", "trust-root-content")
+    validator_seal = release_identity.release_tree_seal(tmp_path, "candidate")
+    assert validator_seal != mode_seal
+    assert release_identity.release_tree_seal(tmp_path, "published") != validator_seal
+
+    anchor_path.write_text(
+        f"<!-- S1_RELEASE_TREE_SEAL: {validator_seal} -->\n",
+        encoding="utf-8",
+    )
+    git("add", "README.md")
+    git("commit", "--quiet", "-m", "refresh-seal-anchor")
+    assert release_identity.release_tree_seal(tmp_path, "candidate") == validator_seal
+    assert release_identity.validate_release_tree_seal(tmp_path, "candidate") == []
+
+    anchor_path.write_text("anchor missing\n", encoding="utf-8")
+    git("add", "README.md")
+    git("commit", "--quiet", "-m", "missing-seal-anchor")
+    with pytest.raises(ValueError, match="seal anchor"):
+        release_identity.release_tree_seal(tmp_path, "candidate")
+
+    anchor_path.write_text(
+        "<!-- S1_RELEASE_TREE_SEAL: "
+        + validator_seal
+        + " -->\n<!-- S1_RELEASE_TREE_SEAL: "
+        + validator_seal
+        + " -->\n",
+        encoding="utf-8",
+    )
+    git("add", "README.md")
+    git("commit", "--quiet", "-m", "duplicate-seal-anchor")
+    with pytest.raises(ValueError, match="seal anchor"):
+        release_identity.release_tree_seal(tmp_path, "candidate")
+
+    validator_path.chmod(0o644)
+    git("add", str(validator_path.relative_to(tmp_path)))
+    git("commit", "--quiet", "-m", "invalid-trust-root-mode")
+    with pytest.raises(ValueError, match="validator trust root"):
+        release_identity.release_tree_seal(tmp_path, "candidate")
+
+    validator_path.chmod(0o755)
+    (tmp_path / "payload-link").symlink_to("payload.txt")
+    git("add", str(validator_path.relative_to(tmp_path)), "payload-link")
+    git("commit", "--quiet", "-m", "invalid-symlink")
+    with pytest.raises(ValueError, match="unsupported Git tree entry"):
+        release_identity.release_tree_seal(tmp_path, "candidate")
     assert REQUIRED_SURFACES["packaging/install_online.sh"] == (
         'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
     )
@@ -209,4 +341,7 @@ def test_user_guide_identity_requires_new_user_release_paths() -> None:
     assert not any("releases/download/v1.0.4/" in marker for marker in markers)
     assert not any("releases/download/v1.0.5/" in marker for marker in markers)
     assert "v1.0.4 未发布" in markers
-    assert "v1.0.5 release candidate / not published / prepared-disabled" in markers
+    assert (
+        "v1.0.5 release candidate / release-enabled / outcome-pending-closure"
+        in markers
+    )

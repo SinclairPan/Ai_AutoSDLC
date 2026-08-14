@@ -35,8 +35,8 @@
 
 - [ ] `README.md`、`USER_GUIDE.zh-CN.md` 与 `packaging/offline/README.md` 描述一致；
 - [ ] 源码候选版本为 `1.0.5`，`last published version is v1.0.2`；
-- [ ] `v1.0.5 release candidate / not published / prepared-disabled`，且 `WorkItem 010 three-PR release migration` 的当前 PR 没有发布授权；
-- [ ] 不得上传、发布或下载 v1.0.5 候选；
+- [ ] `v1.0.5 release candidate / release-enabled / outcome-pending-closure`，且 `WorkItem 010 three-PR release migration` 的 S1 只授权 exact protected-main `release-build` writer 在 PR2 合并后的唯一只读 load-probe 成功后执行一次 actual generation；
+- [ ] 普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5；
 - [ ] `v1.0.4 terminal NO-GO / not released` 保持冻结；
 - [ ] 不得 redispatch、rerun、上传或发布 v1.0.4；
 - [ ] 包版本、源码版本、锁文件和工作流一致；
