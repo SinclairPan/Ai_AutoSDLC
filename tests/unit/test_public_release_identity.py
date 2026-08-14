@@ -163,7 +163,13 @@ def test_required_surfaces_enforce_current_release_identity(tmp_path: Path) -> N
     git("init", "--quiet")
     git("config", "user.email", "release-test@example.invalid")
     git("config", "user.name", "Release Test")
+    git("config", "core.fileMode", "false")
     git("add", ".")
+    git(
+        "update-index",
+        "--chmod=+x",
+        str(validator_path.relative_to(tmp_path)),
+    )
     git("commit", "--quiet", "-m", "initial")
     baseline_seal = release_identity.release_tree_seal(tmp_path, "candidate")
     mismatch = release_identity.validate_release_tree_seal(
@@ -189,6 +195,7 @@ def test_required_surfaces_enforce_current_release_identity(tmp_path: Path) -> N
 
     payload_path.chmod(0o755)
     git("add", "payload.txt")
+    git("update-index", "--chmod=+x", "payload.txt")
     git("commit", "--quiet", "-m", "mode")
     mode_seal = release_identity.release_tree_seal(tmp_path, "candidate")
     assert mode_seal != baseline_seal
@@ -230,6 +237,11 @@ def test_required_surfaces_enforce_current_release_identity(tmp_path: Path) -> N
 
     validator_path.chmod(0o644)
     git("add", str(validator_path.relative_to(tmp_path)))
+    git(
+        "update-index",
+        "--chmod=-x",
+        str(validator_path.relative_to(tmp_path)),
+    )
     git("commit", "--quiet", "-m", "invalid-trust-root-mode")
     with pytest.raises(ValueError, match="validator trust root"):
         release_identity.release_tree_seal(tmp_path, "candidate")
@@ -237,6 +249,11 @@ def test_required_surfaces_enforce_current_release_identity(tmp_path: Path) -> N
     validator_path.chmod(0o755)
     (tmp_path / "payload-link").symlink_to("payload.txt")
     git("add", str(validator_path.relative_to(tmp_path)), "payload-link")
+    git(
+        "update-index",
+        "--chmod=+x",
+        str(validator_path.relative_to(tmp_path)),
+    )
     git("commit", "--quiet", "-m", "invalid-symlink")
     with pytest.raises(ValueError, match="unsupported Git tree entry"):
         release_identity.release_tree_seal(tmp_path, "candidate")

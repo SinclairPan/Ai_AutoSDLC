@@ -6,7 +6,7 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 
 > 候选状态：`v1.0.5 release candidate / release-enabled / outcome-pending-closure`。`WorkItem 010 three-PR release migration` 的 S1 将三个发布开关设为字符串 `true`，只授权 exact protected-main `release-build` writer 在 PR2 合并后的唯一只读 load-probe 成功后执行一次 actual generation；普通用户和手工路径仍禁止上传、替换、发布、下载、安装或 rerun v1.0.5。`last published version is v1.0.2`，普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装该版本。
 
-<!-- S1_RELEASE_TREE_SEAL: 0599647d9ebd128b787626f161bb50589bb9d16f9a8fbfb4982c6646ce560541 -->
+<!-- S1_RELEASE_TREE_SEAL: 4532feebb430f16de0426f74dea6ef22c0f13b9f57b0fcb113d79cf87a0d791e -->
 
 `v1.0.4 terminal NO-GO / not released` 继续作为冻结审计事实：不能使用任何 `releases/download/v1.0.4/` 路径，不得 redispatch、rerun、上传或发布 v1.0.4，也不得以 010 清理或复用它的 tag、Draft、资产或证据。
 
