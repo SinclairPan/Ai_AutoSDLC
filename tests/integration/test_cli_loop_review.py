@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -641,6 +642,42 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         )
         assert changed.input_digest != first.input_digest
         mutate.write_bytes(original)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+def test_stage_review_rejects_symlink_source_material(tmp_path: Path) -> None:
+    work_item = tmp_path / "specs" / "demo"
+    work_item.mkdir(parents=True)
+    target = work_item / "target.md"
+    target.write_text("trusted design\n", encoding="utf-8")
+    linked_spec = work_item / "spec.md"
+    linked_spec.symlink_to(target.name)
+
+    loop_dir = (
+        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-symlink-001"
+    )
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    (loop_dir / "design-contract-input.json").write_text(
+        json.dumps(
+            {
+                "requirement_loop_id": "",
+                "spec_path": linked_spec.relative_to(tmp_path).as_posix(),
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="review path is not a regular file"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="design-contract",
+            loop_id="design-symlink-001",
+        )
 
 
 def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path) -> None:

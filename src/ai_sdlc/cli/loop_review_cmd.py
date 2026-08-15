@@ -415,15 +415,19 @@ def _read_json_object(path: Path) -> dict[str, object]:
 
 
 def _repo_path(root: Path, value: str, field_name: str) -> Path:
+    resolved_root = root.resolve()
     candidate = Path(value)
-    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve(
-        strict=False
-    )
+    unresolved = candidate if candidate.is_absolute() else resolved_root / candidate
+    lexical = Path(os.path.abspath(unresolved))
     try:
-        resolved.relative_to(root.resolve())
+        lexical.relative_to(resolved_root)
     except ValueError as exc:
         raise ValueError(f"Loop {field_name} escapes the project: {value}") from exc
-    return resolved
+    try:
+        lexical.resolve(strict=False).relative_to(resolved_root)
+    except ValueError as exc:
+        raise ValueError(f"Loop {field_name} escapes the project: {value}") from exc
+    return lexical
 
 
 def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
@@ -435,7 +439,9 @@ def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
         matches = sorted(root.glob(pattern))
         for match in matches:
             resolved = _repo_path(root, str(match), "declared_scope")
-            if resolved.is_dir():
+            if resolved.is_symlink():
+                expanded.append(resolved)
+            elif resolved.is_dir():
                 expanded.extend(path for path in sorted(resolved.rglob("*")) if path.is_file())
             elif resolved.is_file():
                 expanded.append(resolved)
