@@ -11,7 +11,6 @@ from rich.console import Console
 
 from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
 from ai_sdlc.cli.loop_review_cmd import loop_review
-from ai_sdlc.cli.stage_review_guidance import execute_stage_close_for_cli
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
     DesignContractCloseOptions,
@@ -201,18 +200,13 @@ def requirement_freeze(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
-        root,
-        lambda: freeze_requirement_loop(
-            RequirementFreezeOptions(
-                root=root,
-                loop_id=loop_id,
-                yes=yes,
-                accepted_by=accepted_by,
-            )
-        ),
-        json_output=json_output,
-        emit=_emit_payload,
+    result = freeze_requirement_loop(
+        RequirementFreezeOptions(
+            root=root,
+            loop_id=loop_id,
+            yes=yes,
+            accepted_by=accepted_by,
+        )
     )
     _emit_requirement_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" else 1)
@@ -279,18 +273,13 @@ def design_contract_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
-        root,
-        lambda: close_design_contract_loop(
-            DesignContractCloseOptions(
-                root=root,
-                loop_id=loop_id,
-                yes=yes,
-                closed_by=closed_by,
-            )
-        ),
-        json_output=json_output,
-        emit=_emit_payload,
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=root,
+            loop_id=loop_id,
+            yes=yes,
+            closed_by=closed_by,
+        )
     )
     _emit_design_contract_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -398,18 +387,13 @@ def implementation_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
-        root,
-        lambda: close_implementation_loop(
-            ImplementationCloseOptions(
-                root=root,
-                loop_id=loop_id,
-                yes=yes,
-                closed_by=closed_by,
-            )
-        ),
-        json_output=json_output,
-        emit=_emit_payload,
+    result = close_implementation_loop(
+        ImplementationCloseOptions(
+            root=root,
+            loop_id=loop_id,
+            yes=yes,
+            closed_by=closed_by,
+        )
     )
     _emit_implementation_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -522,21 +506,16 @@ def frontend_evidence_skip(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
-        root,
-        lambda: skip_frontend_evidence_loop(
-            FrontendEvidenceSkipOptions(
-                root=root,
-                work_item=work_item,
-                implementation_loop_id=implementation_loop_id,
-                loop_id=loop_id,
-                reason=reason,
-                yes=yes,
-                closed_by=closed_by,
-            )
-        ),
-        json_output=json_output,
-        emit=_emit_payload,
+    result = skip_frontend_evidence_loop(
+        FrontendEvidenceSkipOptions(
+            root=root,
+            work_item=work_item,
+            implementation_loop_id=implementation_loop_id,
+            loop_id=loop_id,
+            reason=reason,
+            yes=yes,
+            closed_by=closed_by,
+        )
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -574,19 +553,14 @@ def frontend_evidence_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
-        root,
-        lambda: close_frontend_evidence_loop(
-            FrontendEvidenceCloseOptions(
-                root=root,
-                loop_id=loop_id,
-                yes=yes,
-                allow_warnings=allow_warnings,
-                closed_by=closed_by,
-            )
-        ),
-        json_output=json_output,
-        emit=_emit_payload,
+    result = close_frontend_evidence_loop(
+        FrontendEvidenceCloseOptions(
+            root=root,
+            loop_id=loop_id,
+            yes=yes,
+            allow_warnings=allow_warnings,
+            closed_by=closed_by,
+        )
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)

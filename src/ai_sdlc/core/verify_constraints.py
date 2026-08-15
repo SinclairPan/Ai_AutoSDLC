@@ -14,7 +14,6 @@ from ai_sdlc.branch.git_client import GitError
 from ai_sdlc.context.state import load_checkpoint
 from ai_sdlc.core.artifact_target_guard import detect_misplaced_formal_artifacts
 from ai_sdlc.core.backlog_breach_guard import collect_missing_backlog_entry_references
-from ai_sdlc.core.comment_policy import collect_comment_deletion_blockers
 from ai_sdlc.core.frontend_contract_observation_provider import (
     FRONTEND_CONTRACT_OBSERVATION_ARTIFACT_STATUS_ATTACHED,
     FRONTEND_CONTRACT_OBSERVATION_ARTIFACT_STATUS_INVALID_ARTIFACT,
@@ -780,7 +779,6 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                         "pr_review_fix",
                         "pr_review_rerun",
                         "pr_review_close",
-                        "pr_review_attest",
                     ),
                 ),
             ),
@@ -875,37 +873,6 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
             ),
         ),
         FeatureContractSurface(
-            label="local PR review attestation and finding history",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_models.py",
-                    ),
-                    required_tokens=(
-                        "ReviewAttestation",
-                        "ci_may_call_model",
-                        "diff_source_hash",
-                        "review-attestation",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_service.py",
-                    ),
-                    required_tokens=(
-                        "latest-attestation.json",
-                        "_reviewed_diff_source_mismatch",
-                        "_reviewer_outputs_tamper_blocker",
-                        "_remove_latest_attestation",
-                        "CI must not call any model",
-                        "finding-history.json",
-                        "review-finding-history",
-                        "_snapshot_previous_findings",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
             label="local PR review user docs",
             evidence_entries=(
                 FeatureContractEvidence(
@@ -913,7 +880,6 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                     required_tokens=(
                         "ai-sdlc pr-review doctor",
                         "ai-sdlc pr-review start",
-                        "ai-sdlc pr-review attest",
                         "model current",
                         "DiffSource",
                         "local-staged",
@@ -925,10 +891,7 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                     ),
                     required_tokens=(
                         "本地 PR review",
-                        "CI",
-                        "不得发起模型请求",
                         "DiffSource",
-                        "latest-attestation.json",
                     ),
                 ),
             ),
@@ -2189,7 +2152,6 @@ def collect_constraint_blockers(root: Path) -> list[str]:
     blockers.extend(_doc_first_surface_blockers(root))
     blockers.extend(_verification_profile_blockers(root))
     blockers.extend(_feature_regression_guard_blockers(root))
-    blockers.extend(collect_comment_deletion_blockers(root))
     blockers.extend(collect_text_quality_blockers(root))
 
     if cp is None or cp.feature is None:

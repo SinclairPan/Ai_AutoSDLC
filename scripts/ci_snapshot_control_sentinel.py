@@ -8,7 +8,10 @@ import subprocess
 import sys
 from pathlib import Path
 
-SENTINEL_NODE = "tests/unit/test_lean_code_pr_review.py::test_closed_scope_blocks_risk_disposition_tamper[True--False]"
+SENTINEL_NODE = (
+    "tests/unit/test_review_kernel.py::"
+    "test_merge_expert_findings_deduplicates_without_deciding_close"
+)
 SENTINEL_ROUNDS = 5
 RUNNER_ERROR_EXIT_CODE = 1
 

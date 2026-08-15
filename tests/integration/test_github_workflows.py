@@ -40,64 +40,16 @@ def test_github_workflows_are_valid_yaml() -> None:
     )
 
 
-def test_cross_platform_core_runs_clean_user_stage_gate_on_three_platforms() -> None:
+def test_cross_platform_core_runs_minimal_review_smoke_on_three_platforms() -> None:
     workflow_path = _WORKFLOWS_DIR / "cross-platform-core.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
 
     matrix = workflow["jobs"]["core-smoke"]["strategy"]["matrix"]
     assert matrix["os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
     smoke = workflow_path.read_text(encoding="utf-8")
-    assert "tests/e2e/test_clean_user_stage_gate.py" in smoke
-
-
-def test_ci_certificate_workflow_is_read_only_and_cross_platform() -> None:
-    workflow_path = _WORKFLOWS_DIR / "ci-certificate.yml"
-    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
-
-    matrix = workflow["jobs"]["verify"]["strategy"]["matrix"]
-    assert matrix["os"] == ["ubuntu-latest", "macos-latest", "windows-latest"]
-    content = workflow_path.read_text(encoding="utf-8")
-    assert "fetch-depth: 0" in content
-    assert "persist-credentials: false" in content
-    assert "test_stage_review_attestation.py" in content
-    assert "CI Certificate Gate" in content
-    assert "contents: read" in content
-    assert "codex" not in content.lower()
-    assert "\n    paths:" not in content
-    assert "pull_request_target:" in content
-    assert "\n  pull_request:\n" not in content
-    assert "workflow_dispatch:" not in content
-    assert "Checkout trusted verifier from protected base" in content
-    assert "Checkout untrusted Candidate as data only" in content
-    assert "path: trusted-verifier" in content
-    assert "path: candidate" in content
-    assert "working-directory: trusted-verifier" in content
-    assert "working-directory: candidate" not in content
-
-
-def test_ci_certificate_workflow_verifies_the_exact_pr_head_bundle() -> None:
-    content = (_WORKFLOWS_DIR / "ci-certificate.yml").read_text(encoding="utf-8")
-
-    assert "repository: ${{ github.event.pull_request.head.repo.full_name" in content
-    assert "ref: ${{ github.event.pull_request.head.sha || github.sha }}" in content
-    assert "ref: ${{ github.event.pull_request.base.sha || github.sha }}" in content
-    assert "$candidateRoot" in content
-    assert "--root $candidateRoot" in content
-    assert 'Get-ChildItem ".ai-sdlc/state/stage-review"' not in content
-    assert ".ai-sdlc/attestations/ci-certificate-bundle.json" in content
-    assert "verify stage-certificate-policy" in content
-    assert "certificate_required" in content
-    assert "Current Candidate certificate bundle verification failed" in content
-    assert "Certificate is not required for this Shadow Candidate" in content
-    assert "verify stage-certificate" in content
-    assert "--tested-commit $testedCommit" in content
-    assert (
-        "git -C $candidateRoot status --porcelain=v1 "
-        "--untracked-files=all --ignored=matching" in content
-    )
-    assert "CI certificate verification changed the Candidate checkout" in content
-    assert content.count("uv sync --locked") == 1
-    assert "uv sync --locked --project" not in content
+    assert "tests/unit/test_review_kernel.py" in smoke
+    assert "tests/unit/test_slimming_advice.py" in smoke
+    assert "stage_review" not in smoke
 
 
 def test_windows_offline_smoke_workflow_covers_bundle_build_install_and_cli_checks() -> (
@@ -1874,84 +1826,6 @@ def test_posix_offline_smoke_matrix_concurrency_is_job_scoped() -> None:
     }
 
 
-def test_reviewer_isolation_workflow_requires_real_mode_specific_evidence() -> None:
-    workflow_path = _WORKFLOWS_DIR / "reviewer-isolation.yml"
-
-    assert workflow_path.is_file()
-    workflow = workflow_path.read_text(encoding="utf-8")
-    for platform in ("ubuntu-latest", "macos-latest", "windows-latest"):
-        assert workflow.count(f"os: {platform}") == 3
-    assert workflow.count("mode: ordinary-fail-closed") == 3
-    assert workflow.count("mode: required-enforced") == 2
-    assert workflow.count("mode: required-unavailable") == 1
-    assert workflow.count("mode: detected-only") == 3
-    assert "codex_version: 0.137.0" in workflow
-    assert workflow.count("codex_version: 0.138.0") == 6
-    assert "AI_SDLC_CODEX_PREFIX=$codexPrefix" in workflow
-    assert '$codexPrefix = "/usr/local/share/ai-sdlc-codex-backend"' in workflow
-    assert 'if ("${{ runner.os }}" -eq "Linux")' in workflow
-    assert "sudo chown -R $env:USER $codexPrefix" in workflow
-    assert '$codexPrefix = Join-Path $env:RUNNER_TEMP "codex-backend"' in workflow
-    assert "npm install --prefix $env:AI_SDLC_CODEX_PREFIX" in workflow
-    assert "npm audit signatures --prefix $env:AI_SDLC_CODEX_PREFIX --json" in workflow
-    assert "codex-npm-audit-signatures.json" in workflow
-    assert "codex-npm-registry-attestations.json" in workflow
-    assert "verify_published_codex_npm_attestations" in workflow
-    assert "AI_SDLC_CODEX_NPM_ATTESTATIONS=$registryPath" in workflow
-    assert "published_codex_release; release = published_codex_release()" in workflow
-    assert "print(release.package_version)" in workflow
-    assert (
-        "trusted_published_codex_release; release = trusted_published_codex_release()"
-        not in workflow
-    )
-    assert "codex-npm-provenance-verification.json" in workflow
-    assert "codex.npm-pinned-provenance-unverified" in workflow
-    assert "npm_provenance_verified" in workflow
-    assert "kernel.apparmor_restrict_unprivileged_userns=0" in workflow
-    assert "sudo apt-get install --yes bubblewrap musl" in workflow
-    assert "AI_SDLC_LINUX_NAMESPACE_PREPARED=1" in workflow
-    assert "linux_namespace_prepared" in workflow
-    assert "t601-unit-junit.xml" in workflow
-    assert "t601-e2e-junit.xml" in workflow
-    assert "tests/unit/stage_review/test_codex_isolation_probe.py" in workflow
-    assert "Get-ChildItem $pytestRoot -Recurse -Force -File" in workflow
-    assert "$document.testsuites.testsuite" in workflow
-    assert "Measure-Object -Property tests -Sum" in workflow
-    assert "--junitxml" in workflow
-    assert "-W error" in workflow
-    assert "junit.e2e.unexpected-test-count" in workflow
-    assert "ordinary-mode-started-or-attested-provider" in workflow
-    assert "required-mode-egress-lineage-count" in workflow
-    assert "required-mode-transport-claim-invalid" in workflow
-    assert "required-unavailable-started-provider-command" in workflow
-    assert "required-unavailable-proof-missing" in workflow
-    assert "detected-only-started-provider-command" in workflow
-    assert "detected-only-stage-lineage-invalid" in workflow
-    assert 'artifact_kind = "reviewer-isolation-ci-evidence"' in workflow
-    assert 'expectedTestedCommit = "${{ github.sha }}"' in workflow
-    assert (
-        'candidateHeadCommit = "${{ github.event.pull_request.head.sha || github.sha }}"'
-        in workflow
-    )
-    assert 'baseCommit = "${{ github.event.pull_request.base.sha }}"' in workflow
-    assert "reviewed_commit = $testedCommit" in workflow
-    assert "tested_commit = $testedCommit" in workflow
-    assert "candidate_head_commit = $candidateHeadCommit" in workflow
-    assert "base_commit = $baseCommit" in workflow
-    assert "workflow.tested-commit-identity-mismatch" in workflow
-    assert "execution_evidence_root_digest" in workflow
-    assert "transport_contract_attested" in workflow
-    assert "remote_provider_exercised" in workflow
-    assert "actions/attest-build-provenance@v2" not in workflow
-    assert "reviewer-isolation-gate:" in workflow
-    assert "name: Reviewer Isolation Gate" in workflow
-    assert "needs: isolation" in workflow
-    assert '"${{ needs.isolation.result }}" -ne "success"' in workflow
-    assert "--ignore" not in workflow
-    assert "pytest.mark.skip" not in workflow
-    assert "pytest.mark.xfail" not in workflow
-
-
 def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
     workflow_path = _WORKFLOWS_DIR / "compatibility-gate.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
@@ -2013,7 +1887,7 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
     assert "python scripts/ci_static_assurance.py collect" in workflow
     assert "python scripts/ci_static_assurance.py cell-evidence" in workflow
     assert "python scripts/ci_static_assurance.py aggregate" in workflow
-    assert "--ignore=tests/e2e/stage_review" in workflow
+    assert "--ignore=tests/e2e/stage_review" not in workflow
     assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
     assert (
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -2061,7 +1935,8 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
         "pytest",
         "-q",
         "--no-cov",
-        "tests/unit/test_lean_code_pr_review.py::test_closed_scope_blocks_risk_disposition_tamper[True--False]",
+        "tests/unit/test_review_kernel.py::"
+        "test_merge_expert_findings_deduplicates_without_deciding_close",
     ]
     assert sentinel["SENTINEL_NODE"] == expected_command[-1]
     assert sentinel["SENTINEL_ROUNDS"] == 5
@@ -2280,49 +2155,6 @@ def test_candidate_ci_helper_is_not_packaged_for_ordinary_users() -> None:
     assert (_REPO_ROOT / ".github" / "ci" / "fast-gate-tests.txt").is_file()
     assert not (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").exists()
     assert not (_REPO_ROOT / ".github" / "ci" / "test-lineage.json").exists()
-
-
-def test_activation_evidence_workflow_owns_its_trust_root_and_real_inputs() -> None:
-    workflow_path = _WORKFLOWS_DIR / "activation-evidence.yml"
-
-    assert workflow_path.is_file()
-    workflow = workflow_path.read_text(encoding="utf-8")
-    assert "pull_request:" in workflow
-    assert "push:" in workflow
-    assert "branches: [main]" in workflow
-    assert "uses: ./.github/workflows/reviewer-isolation.yml" in workflow
-    assert "workflow_call:" in (_WORKFLOWS_DIR / "reviewer-isolation.yml").read_text(
-        encoding="utf-8"
-    )
-    assert "artifact-metadata: write" in workflow
-    assert "actions/download-artifact@v7" in workflow
-    assert "actions/upload-artifact@v6" in workflow
-    assert "actions/attest@v4" in workflow
-    assert (
-        "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in workflow
-    )
-    assert "name: Activation Evidence Required Gate" in workflow
-    assert "activation-evidence-required:" in workflow
-    assert "if: always()" in workflow
-    assert (
-        "needs: [reviewer-isolation, probe-evidence, activation-evidence-build]"
-        in workflow
-    )
-    assert '"${{ needs.reviewer-isolation.result }}"' in workflow
-    assert '"${{ needs.probe-evidence.result }}"' in workflow
-    assert '"${{ needs.activation-evidence-build.result }}"' in workflow
-    assert (
-        "subject-path: activation-evidence/activation-evidence-package.json" in workflow
-    )
-    assert "AI_SDLC_ACTIVATION_EVIDENCE_PURPOSE: stage-gate-activation" in workflow
-    assert (
-        "AI_SDLC_ACTIVATION_PREDICATE_TYPE: https://slsa.dev/provenance/v1" in workflow
-    )
-    assert "scripts/build_activation_evidence.py" in workflow
-    assert "scripts/build_activation_quality_cell.py" in workflow
-    assert "tests/integration/test_cli_activation.py" in workflow
-    assert "${{ inputs." not in workflow
-    assert "activation-evidence-package.json" in workflow
 
 
 def test_github_workflows_use_node24_compatible_core_actions() -> None:

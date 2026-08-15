@@ -135,7 +135,7 @@ def test_feature_contract_runtime_objects_canonicalize_evidence_sets() -> None:
     assert surface.evidence_entries == (evidence,)
 
 
-def test_189_feature_contract_surfaces_cover_source_attestation_docs() -> None:
+def test_189_feature_contract_surfaces_keep_only_local_review_boundaries() -> None:
     checkpoint = Checkpoint(
         current_stage="execute",
         feature=FeatureInfo(
@@ -154,20 +154,15 @@ def test_189_feature_contract_surfaces_cover_source_attestation_docs() -> None:
     assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["189"]
     labels = {surface.label for surface in surfaces}
     assert "local PR review source adapter and model fallback boundary" in labels
-    assert "local PR review attestation and finding history" in labels
-    assert "local PR review P2 enterprise fail-closed boundaries" in labels
-    attestation_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "local PR review attestation and finding history"
-    )
     tokens = {
         token
-        for evidence in attestation_surface.evidence_entries
+        for surface in surfaces
+        for evidence in surface.evidence_entries
         for token in evidence.required_tokens
     }
-    assert "latest-attestation.json" in tokens
-    assert "finding-history.json" in tokens
+    assert "latest-attestation.json" not in tokens
+    assert "finding-history.json" not in tokens
+    assert "pr_review_attest" not in tokens
 
 
 def test_190_feature_contract_surfaces_cover_loop_status_list_read_only_docs() -> None:

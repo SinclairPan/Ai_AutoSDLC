@@ -2,20 +2,54 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from datetime import datetime
-from typing import Literal, Self
+from typing import Literal, Self, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
-
-from ai_sdlc.core.stage_review.artifact_compat import (
-    ArtifactCompatibility,
-    fill_artifact_digest,
-)
 
 _MODEL_CONFIG = ConfigDict(extra="forbid", frozen=True, allow_inf_nan=False)
 _DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
 _GIT_SHA = re.compile(r"^[0-9a-f]{40}$")
+_ArtifactT = TypeVar("_ArtifactT", bound=BaseModel)
+
+
+class ArtifactCompatibility(BaseModel):
+    """Small release-artifact envelope independent of review governance."""
+
+    model_config = _MODEL_CONFIG
+
+    canonicalization_version: Literal["canonical-json.v1"] = "canonical-json.v1"
+    compatibility_mode: Literal["strict"] = "strict"
+    extensions: dict[str, object] = Field(default_factory=dict)
+
+    @field_validator("extensions")
+    @classmethod
+    def _require_json_extensions(cls, value: dict[str, object]) -> dict[str, object]:
+        json.dumps(value, ensure_ascii=False, allow_nan=False)
+        return value
+
+
+def fill_artifact_digest(value: _ArtifactT, digest_field: str) -> _ArtifactT:
+    """Fill or verify a deterministic digest for one release artifact."""
+
+    payload = value.model_dump(exclude={digest_field}, mode="json")
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    expected = "sha256:" + hashlib.sha256(encoded).hexdigest()
+    current = getattr(value, digest_field)
+    if current and current != expected:
+        raise ValueError(f"{digest_field} does not match content")
+    if not current:
+        object.__setattr__(value, digest_field, expected)
+    return value
 
 
 def _require_identity(value: str) -> str:

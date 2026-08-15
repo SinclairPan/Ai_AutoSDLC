@@ -138,7 +138,7 @@ jobs:
         run: |
           # 006 validates member identity and result completeness; candidate
           # test bodies remain inside the repository code-review trust boundary.
-          uv run pytest -q --ignore=tests/e2e/stage_review --durations=50 \
+          uv run pytest -q --durations=50 \
             --junitxml=ci-evidence/${CELL}/compatibility-results.xml
 
       - name: Run fixed SnapshotControl stability sentinel
