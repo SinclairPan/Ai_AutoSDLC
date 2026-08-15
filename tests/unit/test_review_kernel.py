@@ -222,6 +222,25 @@ def test_build_review_input_rejects_posix_mode_changes_while_reading(
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable")
+def test_build_review_input_rejects_repository_symlink(tmp_path: Path) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("target content\n", encoding="utf-8")
+    artifact = tmp_path / "artifact.txt"
+    artifact.symlink_to(target.name)
+
+    with pytest.raises(ValueError, match="review path is not a regular file"):
+        build_review_input(
+            tmp_path,
+            loop_id="loop-1",
+            loop_type="implementation",
+            round_number=1,
+            artifact_paths=[artifact],
+            upstream_context_paths=[],
+            risk_signals=[],
+        )
+
+
 def test_build_review_input_reads_windows_files_in_binary_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

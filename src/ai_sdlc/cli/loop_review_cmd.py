@@ -535,6 +535,31 @@ def _local_review_source_risk_signals(
     if not isinstance(diff_source, dict):
         raise ValueError(f"Review pack diff_source is invalid: {review_pack_path}")
     source_kind = diff_source.get("source_kind", "")
+    if source_kind == "patch":
+        patch_file = diff_source.get("patch_file", "")
+        head_ref = diff_source.get("head_ref", payload.get("head_ref", "HEAD"))
+        if not isinstance(patch_file, str) or not patch_file.strip():
+            raise ValueError(
+                f"Review pack patch_file is invalid: {review_pack_path}"
+            )
+        if not isinstance(head_ref, str) or not head_ref.strip():
+            raise ValueError(
+                f"Review pack patch head_ref is invalid: {review_pack_path}"
+            )
+        snapshot = build_source_snapshot(
+            SourceSnapshotOptions(
+                root=root,
+                source_kind=source_kind,
+                head_ref=head_ref.strip(),
+                patch_file=patch_file.strip(),
+            )
+        )
+        return [
+            f"git-selected-source:{source_kind}",
+            f"git-selected-head-tip:{snapshot.head_commit}",
+            f"git-selected-patch:{snapshot.source_input_digest}",
+            f"git-selected-diff:{snapshot.diff_hash}",
+        ]
     if source_kind == "local-git-range":
         base_ref = diff_source.get("base_ref", payload.get("base_ref", ""))
         head_ref = diff_source.get("head_ref", payload.get("head_ref", "HEAD"))

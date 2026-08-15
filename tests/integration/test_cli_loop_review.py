@@ -318,6 +318,80 @@ def test_local_pr_review_binds_movable_git_range_refs(tmp_path: Path) -> None:
     assert changed.input_digest != reviewed.input_digest
 
 
+@pytest.mark.parametrize("mutation", ["patch-file", "head-ref"])
+def test_local_pr_review_binds_live_patch_source(
+    tmp_path: Path,
+    mutation: str,
+) -> None:
+    _init_git_repo(tmp_path)
+    base_branch = _git(tmp_path, "branch", "--show-current")
+    _git(tmp_path, "checkout", "-b", "future")
+    (tmp_path / "future.txt").write_text("future head\n", encoding="utf-8")
+    _git(tmp_path, "add", "future.txt")
+    _git(tmp_path, "commit", "-m", "future head")
+    future_head = _git(tmp_path, "rev-parse", "HEAD")
+    _git(tmp_path, "checkout", base_branch)
+    _git(tmp_path, "branch", "moving-head")
+
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("reviewed patch content\n", encoding="utf-8")
+    patch_file = tmp_path / "source.patch"
+    patch_file.write_text(
+        _git(tmp_path, "diff", "--binary", "--", "tracked.txt") + "\n",
+        encoding="utf-8",
+    )
+    _git(tmp_path, "checkout", "--", "tracked.txt")
+
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-patch"
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps({"loop_id": "loop-pr-patch", "current_round": 1}),
+        encoding="utf-8",
+    )
+    copied_diff = review_dir / "diff.patch"
+    copied_diff.write_bytes(patch_file.read_bytes())
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": copied_diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": (
+                    f"sha256:{hashlib.sha256(copied_diff.read_bytes()).hexdigest()}"
+                ),
+                "diff_source": {
+                    "source_kind": "patch",
+                    "patch_file": patch_file.relative_to(tmp_path).as_posix(),
+                    "head_ref": "moving-head",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-patch",
+    )
+
+    if mutation == "patch-file":
+        patch_file.write_text(
+            patch_file.read_text(encoding="utf-8").replace(
+                "+reviewed patch content", "+changed patch content"
+            ),
+            encoding="utf-8",
+        )
+    else:
+        _git(tmp_path, "update-ref", "refs/heads/moving-head", future_head)
+
+    changed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-patch",
+    )
+    assert changed.input_digest != reviewed.input_digest
+
+
 def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> None:
     requirement_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"

@@ -247,6 +247,12 @@ def _read_paths(
         candidate = Path(raw_path)
         path = candidate if candidate.is_absolute() else root / candidate
         try:
+            original = path.lstat()
+        except FileNotFoundError as exc:
+            raise ValueError(f"review path is missing: {raw_path}") from exc
+        if stat.S_ISLNK(original.st_mode):
+            raise ValueError(f"review path is not a regular file: {raw_path}")
+        try:
             resolved = path.resolve(strict=True)
         except FileNotFoundError as exc:
             raise ValueError(f"review path is missing: {raw_path}") from exc
