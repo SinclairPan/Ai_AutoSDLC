@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import stat
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -254,15 +255,39 @@ def _read_paths(
         finally:
             os.close(descriptor)
         closed = resolved.stat(follow_symlinks=False)
-        identities = {
-            (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
-            for item in (before, opened, after, closed)
-        }
-        if len(identities) != 1 or len(content) != before.st_size:
+        if not _file_snapshot_is_stable(
+            before,
+            opened,
+            after,
+            closed,
+            content_size=len(content),
+        ):
             raise ValueError(f"review path changed while reading: {relative}")
         records.append((relative, content))
     records.sort(key=lambda item: item[0])
     return records
+
+
+def _file_snapshot_is_stable(
+    before: os.stat_result,
+    opened: os.stat_result,
+    after: os.stat_result,
+    closed: os.stat_result,
+    *,
+    content_size: int,
+) -> bool:
+    def identity(item: os.stat_result) -> tuple[int, int, int, int]:
+        return (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
+
+    if content_size != opened.st_size:
+        return False
+    if sys.platform == "win32":
+        return (
+            identity(before) == identity(closed)
+            and identity(opened) == identity(after)
+            and before.st_size == opened.st_size
+        )
+    return len({identity(item) for item in (before, opened, after, closed)}) == 1
 
 
 def _digest_record(path: str, content: bytes) -> dict[str, object]:

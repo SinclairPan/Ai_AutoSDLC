@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from pydantic import ValidationError
@@ -157,6 +159,53 @@ def test_build_review_input_is_stable_read_only_and_detects_drift(
         risk_signals=["public-api"],
     )
     assert changed.input_digest != first.input_digest
+
+
+def test_build_review_input_accepts_stable_windows_stat_channels(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "spec.md"
+    artifact.write_text("contract v1\n", encoding="utf-8")
+    resolved = artifact.resolve()
+    actual = artifact.stat()
+    original_path_stat = Path.stat
+
+    path_record = SimpleNamespace(
+        st_mode=actual.st_mode,
+        st_dev=1,
+        st_ino=11,
+        st_size=actual.st_size,
+        st_mtime_ns=100,
+    )
+    descriptor_record = SimpleNamespace(
+        st_mode=actual.st_mode,
+        st_dev=2,
+        st_ino=22,
+        st_size=actual.st_size,
+        st_mtime_ns=101,
+    )
+
+    def fake_path_stat(path: Path, *args: object, **kwargs: object) -> object:
+        if path == resolved:
+            return path_record
+        return original_path_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_path_stat)
+    monkeypatch.setattr("ai_sdlc.core.review_kernel.os.fstat", lambda _: descriptor_record)
+    monkeypatch.setattr(sys, "platform", "win32")
+
+    review_input = build_review_input(
+        tmp_path,
+        loop_id="loop-1",
+        loop_type="design-contract",
+        round_number=1,
+        artifact_paths=[artifact],
+        upstream_context_paths=[],
+        risk_signals=[],
+    )
+
+    assert review_input.artifact_paths == ["spec.md"]
 
 
 @pytest.mark.parametrize("unsafe", ["missing.md", "../outside.md"])

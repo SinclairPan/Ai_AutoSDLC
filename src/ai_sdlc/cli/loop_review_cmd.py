@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 from typing import cast
@@ -29,6 +30,23 @@ _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
         "frontend-evidence-snapshot.json",
         "frontend-evidence-report.json",
         "frontend-evidence-report.md",
+    ),
+}
+_STAGE_PREDECESSORS: dict[str, tuple[str, str, str]] = {
+    "design-contract": (
+        "design-contract-input.json",
+        "requirement_loop_id",
+        "requirement",
+    ),
+    "implementation": (
+        "implementation-input.json",
+        "design_contract_loop_id",
+        "design-contract",
+    ),
+    "frontend-evidence": (
+        "frontend-evidence-input.json",
+        "implementation_loop_id",
+        "implementation",
     ),
 }
 _LOCAL_REQUIRED = ("review-pack.json", "findings.json")
@@ -126,7 +144,8 @@ def resolve_review_input(
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
         artifacts = [loop_dir / name for name in _STAGE_ARTIFACTS[loop_type]]
-        risk_signals = _content_risk_signals(artifacts)
+        upstream_context = _stage_upstream_context(root, loop_type, loop_dir)
+        risk_signals = _content_risk_signals([*artifacts, *upstream_context])
         round_number = _read_round_number(loop_dir / "loop-run.json")
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
@@ -137,9 +156,58 @@ def resolve_review_input(
         loop_type=cast(LoopReviewType, loop_type),
         round_number=round_number,
         artifact_paths=artifacts,
-        upstream_context_paths=[],
+        upstream_context_paths=upstream_context if loop_type != "local-pr-review" else [],
         risk_signals=risk_signals,
     )
+
+
+def _stage_upstream_context(
+    root: Path,
+    loop_type: str,
+    loop_dir: Path,
+    *,
+    visited: frozenset[tuple[str, str]] = frozenset(),
+) -> list[Path]:
+    predecessor = _STAGE_PREDECESSORS.get(loop_type)
+    if predecessor is None:
+        return []
+    input_name, id_field, predecessor_type = predecessor
+    input_path = loop_dir / input_name
+    try:
+        payload = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Loop input is unreadable: {input_path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Loop input root must be an object: {input_path}")
+    raw_loop_id = payload.get(id_field, "")
+    if not isinstance(raw_loop_id, str):
+        raise ValueError(f"Loop predecessor id is invalid: {input_path}")
+    predecessor_id = raw_loop_id.strip()
+    if not predecessor_id:
+        if loop_type == "design-contract":
+            return []
+        raise ValueError(f"Loop predecessor id is missing: {input_path}")
+    safe_predecessor_id = _safe_identifier(predecessor_id)
+    identity = (predecessor_type, safe_predecessor_id)
+    if identity in visited:
+        raise ValueError(f"Loop predecessor cycle detected: {predecessor_type}/{safe_predecessor_id}")
+    predecessor_dir = (
+        root
+        / ".ai-sdlc"
+        / "loops"
+        / predecessor_type
+        / safe_predecessor_id
+    )
+    inherited = _stage_upstream_context(
+        root,
+        predecessor_type,
+        predecessor_dir,
+        visited=visited | {identity},
+    )
+    return [
+        *inherited,
+        *(predecessor_dir / name for name in _STAGE_ARTIFACTS[predecessor_type]),
+    ]
 
 
 def _find_local_review_dir(root: Path, loop_id: str) -> Path:
@@ -183,9 +251,14 @@ def _content_risk_signals(paths: list[Path]) -> list[str]:
     risks = [
         risk
         for risk, terms in _RISK_TERMS.items()
-        if any(term in content for term in terms)
+        if any(_contains_risk_term(content, term) for term in terms)
     ]
     return risks or ["general-correctness"]
+
+
+def _contains_risk_term(content: str, term: str) -> bool:
+    pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+    return re.search(pattern, content) is not None
 
 
 def _git_risk_signals(root: Path) -> list[str]:
