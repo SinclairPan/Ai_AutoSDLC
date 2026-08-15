@@ -199,6 +199,24 @@ def test_future_cache_timestamp_forces_refresh(monkeypatch, tmp_path) -> None:
     assert calls == 2
 
 
+def test_future_cache_timestamp_is_expired_without_refresh(
+    monkeypatch, tmp_path
+) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    monkeypatch.setenv("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION", "v1.0.1")
+    future = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    evaluate_update_advisor(now=future)
+
+    after_rollback = evaluate_update_advisor(
+        now=future - timedelta(days=1),
+        allow_refresh=False,
+    )
+
+    assert after_rollback.freshness == "expired"
+    assert after_rollback.refresh_attempted is False
+    assert after_rollback.eligible_notice_classes == ()
+
+
 def test_rendered_notice_throttles_without_acknowledging(
     monkeypatch, tmp_path
 ) -> None:
