@@ -172,7 +172,8 @@ def test_build_review_input_reads_windows_files_in_binary_mode(
     def windows_open(path: Path, flags: int) -> int:
         if not flags & binary_flag:
             raise AssertionError("Windows low-level reads must request binary mode")
-        return original_open(path, flags & ~binary_flag)
+        forwarded_flags = flags if os.name == "nt" else flags & ~binary_flag
+        return original_open(path, forwarded_flags)
 
     monkeypatch.setattr("ai_sdlc.core.review_kernel.os.O_BINARY", binary_flag, raising=False)
     monkeypatch.setattr("ai_sdlc.core.review_kernel.os.open", windows_open)
