@@ -33,9 +33,7 @@ def test_review_models_expose_only_ephemeral_review_values() -> None:
         loop_type="requirement",
         round_number=1,
         input_digest="a" * 64,
-        artifact_paths=[
-            ".ai-sdlc/loops/requirement/loop-1/requirement-brief.md"
-        ],
+        artifact_paths=[".ai-sdlc/loops/requirement/loop-1/requirement-brief.md"],
         upstream_context_paths=[],
         risk_signals=["public-api"],
         role_brief="Choose one primary expert and at most one cross-risk expert.",
@@ -83,7 +81,9 @@ def test_review_models_expose_only_ephemeral_review_values() -> None:
         },
     ],
 )
-def test_review_execution_rejects_invalid_ephemeral_state(payload: dict[str, object]) -> None:
+def test_review_execution_rejects_invalid_ephemeral_state(
+    payload: dict[str, object],
+) -> None:
     with pytest.raises(ValidationError):
         ReviewExecution.model_validate(payload)
 
@@ -160,6 +160,68 @@ def test_build_review_input_is_stable_read_only_and_detects_drift(
     assert changed.input_digest != first.input_digest
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not available")
+def test_build_review_input_digest_binds_posix_file_mode(tmp_path: Path) -> None:
+    artifact = tmp_path / "hook.sh"
+    artifact.write_bytes(b"#!/bin/sh\nexit 0\n")
+    artifact.chmod(0o644)
+
+    before = build_review_input(
+        tmp_path,
+        loop_id="loop-1",
+        loop_type="implementation",
+        round_number=1,
+        artifact_paths=[artifact],
+        upstream_context_paths=[],
+        risk_signals=[],
+    )
+    artifact.chmod(0o755)
+    after = build_review_input(
+        tmp_path,
+        loop_id="loop-1",
+        loop_type="implementation",
+        round_number=1,
+        artifact_paths=[artifact],
+        upstream_context_paths=[],
+        risk_signals=[],
+    )
+
+    assert after.input_digest != before.input_digest
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not available")
+def test_build_review_input_rejects_posix_mode_changes_while_reading(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    artifact = tmp_path / "hook.sh"
+    artifact.write_bytes(b"#!/bin/sh\nexit 0\n")
+    artifact.chmod(0o644)
+    original_read = os.read
+    changed = False
+
+    def chmod_after_first_read(descriptor: int, size: int) -> bytes:
+        nonlocal changed
+        content = original_read(descriptor, size)
+        if content and not changed:
+            artifact.chmod(0o755)
+            changed = True
+        return content
+
+    monkeypatch.setattr("ai_sdlc.core.review_kernel.os.read", chmod_after_first_read)
+
+    with pytest.raises(ValueError, match="review path changed while reading"):
+        build_review_input(
+            tmp_path,
+            loop_id="loop-1",
+            loop_type="implementation",
+            round_number=1,
+            artifact_paths=[artifact],
+            upstream_context_paths=[],
+            risk_signals=[],
+        )
+
+
 def test_build_review_input_reads_windows_files_in_binary_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -175,7 +237,9 @@ def test_build_review_input_reads_windows_files_in_binary_mode(
         forwarded_flags = flags if os.name == "nt" else flags & ~binary_flag
         return original_open(path, forwarded_flags)
 
-    monkeypatch.setattr("ai_sdlc.core.review_kernel.os.O_BINARY", binary_flag, raising=False)
+    monkeypatch.setattr(
+        "ai_sdlc.core.review_kernel.os.O_BINARY", binary_flag, raising=False
+    )
     monkeypatch.setattr("ai_sdlc.core.review_kernel.os.open", windows_open)
 
     review_input = build_review_input(
