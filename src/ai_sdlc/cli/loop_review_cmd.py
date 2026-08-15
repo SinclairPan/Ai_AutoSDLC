@@ -208,7 +208,10 @@ def resolve_review_input(
                 *_stage_source_material(root, loop_type, loop_dir),
             ]
         )
-        upstream_context = _stage_upstream_context(root, loop_type, loop_dir)
+        upstream_context = _exclude_paths(
+            _stage_upstream_context(root, loop_type, loop_dir),
+            excluded=artifacts,
+        )
         risk_signals = _content_risk_signals([*artifacts, *upstream_context])
         round_number = _read_round_number(loop_dir / "loop-run.json")
     else:
@@ -387,7 +390,17 @@ def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
 
 
 def _unique_paths(paths: list[Path]) -> list[Path]:
-    return list(dict.fromkeys(paths))
+    unique: dict[Path, Path] = {}
+    for path in paths:
+        unique.setdefault(path.resolve(strict=False), path)
+    return list(unique.values())
+
+
+def _exclude_paths(paths: list[Path], *, excluded: list[Path]) -> list[Path]:
+    excluded_keys = {path.resolve(strict=False) for path in excluded}
+    return [
+        path for path in paths if path.resolve(strict=False) not in excluded_keys
+    ]
 
 
 def _find_local_review_dir(root: Path, loop_id: str) -> Path:

@@ -382,7 +382,7 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         json.dumps(
             {
                 "design_contract_loop_id": "design-001",
-                "declared_scope": ["src/runtime/*.py"],
+                "declared_scope": ["src/runtime/*.py", "specs/demo/*.md"],
             }
         ),
         encoding="utf-8",
@@ -451,6 +451,7 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         assert set(case["expected"]) <= {
             Path(path).name for path in first.artifact_paths
         }
+        assert not set(first.artifact_paths) & set(first.upstream_context_paths)
         mutate = Path(case["mutate"])
         original = mutate.read_bytes()
         mutate.write_bytes(original + b" changed")
