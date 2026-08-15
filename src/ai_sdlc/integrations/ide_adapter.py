@@ -44,6 +44,8 @@ _ALTERNATE_ADAPTER_PATHS: dict[IDEKind, tuple[str, ...]] = {
     IDEKind.CLAUDE_CODE: (".claude/AI-SDLC.md",),
 }
 _SHELL_GUIDANCE_MARKER = "<!-- AI-SDLC managed shell guidance -->"
+_REVIEW_GUIDANCE_START = "<!-- AI-SDLC managed review guidance start -->"
+_REVIEW_GUIDANCE_END = "<!-- AI-SDLC managed review guidance end -->"
 
 
 @dataclass
@@ -141,11 +143,22 @@ def _render_adapter_content(base_text: str, preferred_shell: str) -> str:
 def _managed_adapter_variants(base_texts: tuple[str, ...]) -> set[str]:
     variants: set[str] = set()
     for text in base_texts:
-        variants.add(text)
-        variants.add(_render_adapter_content(text, ""))
-        for shell in PreferredShell:
-            variants.add(_render_adapter_content(text, shell.value))
+        for managed_text in _managed_adapter_base_texts(text):
+            variants.add(managed_text)
+            variants.add(_render_adapter_content(managed_text, ""))
+            for shell in PreferredShell:
+                variants.add(_render_adapter_content(managed_text, shell.value))
     return variants
+
+
+def _managed_adapter_base_texts(text: str) -> tuple[str, ...]:
+    """返回当前模板与可精确还原的上一版托管模板。"""
+
+    before, start, remainder = text.partition(_REVIEW_GUIDANCE_START)
+    _managed, end, after = remainder.partition(_REVIEW_GUIDANCE_END)
+    if not start or not end:
+        return (text,)
+    return (text, before + after.lstrip("\n"))
 
 
 def _bundle_root() -> Path:

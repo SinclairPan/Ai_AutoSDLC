@@ -328,7 +328,7 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         / "screenshot.png"
     )
     screenshot.parent.mkdir(parents=True)
-    screenshot.write_bytes(b"screenshot-v1")
+    screenshot.write_bytes(b"\x89PNG\r\n\x1a\n\x00screenshot-v1")
 
     loop_specs = {
         "requirement": ("requirement-001",),
@@ -461,6 +461,60 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         )
         assert changed.input_digest != first.input_digest
         mutate.write_bytes(original)
+
+
+def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path) -> None:
+    design_dir = (
+        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-delete-001"
+    )
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+    loop_dir = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "implementation-delete-001"
+    )
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {
+                "design_contract_loop_id": "design-delete-001",
+                "declared_scope": ["src/runtime/deleted.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "verification-evidence.json",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    deleted = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="implementation-delete-001",
+    )
+
+    restored_path = tmp_path / "src" / "runtime" / "deleted.py"
+    restored_path.parent.mkdir(parents=True)
+    restored_path.write_text("RESTORED = True\n", encoding="utf-8")
+    restored = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="implementation-delete-001",
+    )
+    assert restored.input_digest != deleted.input_digest
 
 
 def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> None:

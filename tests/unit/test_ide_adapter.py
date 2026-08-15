@@ -175,6 +175,42 @@ class TestApplyAdapter:
         assert f.read_text(encoding="utf-8") == "user content"
         assert str(f) in r.skipped_user_modified
 
+    @pytest.mark.parametrize(
+        ("ide", "destination"),
+        [
+            (IDEKind.CODEX, "AGENTS.md"),
+            (IDEKind.CURSOR, ".cursor/rules/ai-sdlc.mdc"),
+            (IDEKind.VSCODE, ".github/copilot-instructions.md"),
+            (IDEKind.CLAUDE_CODE, ".claude/CLAUDE.md"),
+        ],
+    )
+    def test_migrates_previous_managed_template(
+        self,
+        tmp_path: Path,
+        ide: IDEKind,
+        destination: str,
+    ) -> None:
+        (tmp_path / AI_SDLC_DIR).mkdir(parents=True)
+        apply_adapter(tmp_path, ide)
+        adapter = tmp_path / destination
+        bundle = adapter.read_text(encoding="utf-8")
+        start = "<!-- AI-SDLC managed review guidance start -->"
+        end = "<!-- AI-SDLC managed review guidance end -->"
+        before, separator, remainder = bundle.partition(start)
+        assert separator
+        _managed, separator, after = remainder.partition(end)
+        assert separator
+        previous = before + after.lstrip("\n")
+        adapter.write_text(previous, encoding="utf-8")
+
+        result = apply_adapter(tmp_path, ide)
+
+        migrated = adapter.read_text(encoding="utf-8")
+        assert "五类结果的内置动态专家复核" in migrated
+        assert start in migrated
+        assert str(adapter) in result.written
+        assert str(adapter) not in result.skipped_user_modified
+
     def test_migrates_alternate_vscode_adapter(self, tmp_path: Path) -> None:
         (tmp_path / AI_SDLC_DIR).mkdir(parents=True)
         alternate = tmp_path / ".vscode" / "AI-SDLC.md"

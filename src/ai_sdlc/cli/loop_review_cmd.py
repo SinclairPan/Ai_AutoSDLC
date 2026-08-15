@@ -66,6 +66,56 @@ _RISK_TERMS: dict[str, tuple[str, ...]] = {
     "concurrency": ("concurrency", "parallel", "race", "lock"),
     "frontend": ("frontend", "browser", "accessibility", "ui", "ux"),
 }
+_TEXT_RISK_SUFFIXES = {
+    ".bat",
+    ".cfg",
+    ".cmd",
+    ".css",
+    ".csv",
+    ".diff",
+    ".html",
+    ".ini",
+    ".js",
+    ".json",
+    ".jsx",
+    ".md",
+    ".patch",
+    ".ps1",
+    ".py",
+    ".sh",
+    ".sql",
+    ".toml",
+    ".ts",
+    ".tsx",
+    ".txt",
+    ".vue",
+    ".xml",
+    ".yaml",
+    ".yml",
+}
+_BINARY_RISK_SUFFIXES = {
+    ".avi",
+    ".bmp",
+    ".db",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jpeg",
+    ".jpg",
+    ".mov",
+    ".mp4",
+    ".otf",
+    ".pdf",
+    ".png",
+    ".sqlite",
+    ".tar",
+    ".ttf",
+    ".webm",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".zip",
+}
 _GIT_ROUTING_ENV = {
     "GIT_DIR",
     "GIT_WORK_TREE",
@@ -327,8 +377,6 @@ def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
         if pattern_path.is_absolute() or ".." in pattern_path.parts:
             raise ValueError(f"Loop declared_scope escapes the project: {pattern}")
         matches = sorted(root.glob(pattern))
-        if not matches:
-            raise ValueError(f"Loop declared_scope matches no files: {pattern}")
         for match in matches:
             resolved = _repo_path(root, str(match), "declared_scope")
             if resolved.is_dir():
@@ -376,9 +424,16 @@ def _content_risk_signals(paths: list[Path]) -> list[str]:
     chunks: list[str] = []
     for path in paths:
         try:
-            chunks.append(path.read_text(encoding="utf-8").lower())
-        except (OSError, UnicodeError) as exc:
-            raise ValueError(f"Review artifact is not strict UTF-8: {path}") from exc
+            content = path.read_bytes()
+        except OSError as exc:
+            raise ValueError(f"Review artifact is unreadable: {path}") from exc
+        if path.suffix.lower() in _BINARY_RISK_SUFFIXES:
+            continue
+        try:
+            chunks.append(content.decode("utf-8").lower())
+        except UnicodeDecodeError as exc:
+            if path.suffix.lower() in _TEXT_RISK_SUFFIXES:
+                raise ValueError(f"Review text artifact is not strict UTF-8: {path}") from exc
     content = "\n".join(chunks)
     risks = [
         risk
