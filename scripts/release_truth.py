@@ -27,10 +27,6 @@ from ai_sdlc.core.release_truth_models import (
     ReleaseCandidateSnapshot,
     ReleaseSatisfactionProof,
 )
-from ai_sdlc.core.stage_review.artifacts import (
-    create_json_exclusive,
-    read_json_object,
-)
 
 _PROTECTED_TAG_PATTERNS = (
     "refs/tags/release-truth/v*/certificate/g0",
@@ -47,15 +43,45 @@ _RELEASE_ENABLEMENT_FLAGS = (
 )
 
 
+def _read_json_object(path: Path) -> dict[str, Any]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ReleaseTruthError(f"JSON artifact must be an object: {path}")
+    return payload
+
+
+def _create_json_exclusive(path: Path, payload: dict[str, Any]) -> bool:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (
+        json.dumps(
+            payload,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        )
+        + "\n"
+    ).encode("utf-8")
+    try:
+        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        return False
+    with os.fdopen(descriptor, "wb") as handle:
+        handle.write(encoded)
+        handle.flush()
+        os.fsync(handle.fileno())
+    return True
+
+
 def _read_model(path: Path, model_type: type[BaseModel]) -> BaseModel:
-    return model_type.model_validate(read_json_object(path))
+    return model_type.model_validate(_read_json_object(path))
 
 
 def _persist_model(path: Path, model: BaseModel) -> None:
     payload = model.model_dump(mode="json")
-    if create_json_exclusive(path, payload):
+    if _create_json_exclusive(path, payload):
         return
-    if read_json_object(path) != payload:
+    if _read_json_object(path) != payload:
         raise ReleaseTruthError(f"immutable artifact fork: {path.name}")
 
 
@@ -102,7 +128,7 @@ def _certificate(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _upload_asset(args: argparse.Namespace) -> dict[str, Any]:
-    authority = read_json_object(args.authority)
+    authority = _read_json_object(args.authority)
     release_id = authority.get("id")
     if isinstance(release_id, bool) or not isinstance(release_id, int) or release_id <= 0:
         raise ReleaseTruthError("release authority does not contain a numeric release ID")
@@ -174,11 +200,11 @@ def _upload_asset(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _authority_check(args: argparse.Namespace) -> dict[str, Any]:
-    admission = read_json_object(args.admission)
-    ref = read_json_object(args.ref)
-    tag = read_json_object(args.tag)
-    commit = read_json_object(args.commit)
-    release = read_json_object(args.release)
+    admission = _read_json_object(args.admission)
+    ref = _read_json_object(args.ref)
+    tag = _read_json_object(args.tag)
+    commit = _read_json_object(args.commit)
+    release = _read_json_object(args.release)
     frozen = {key: value for key, value in admission.items() if key != "admission_digest"}
     encoded = json.dumps(
         frozen, ensure_ascii=False, separators=(",", ":"), sort_keys=True
@@ -251,7 +277,7 @@ def _run_authority_check(args: argparse.Namespace) -> dict[str, Any]:
     if args.current_run_id <= 0:
         raise ReleaseTruthError("current workflow run ID must be positive")
 
-    current_run = read_json_object(args.current_run)
+    current_run = _read_json_object(args.current_run)
     expected_run_name = (
         f"release-admission|{args.release_tag}|{args.generation}"
     )
@@ -348,8 +374,8 @@ def _run_authority_check(args: argparse.Namespace) -> dict[str, Any]:
         "workflow_path": args.workflow_path,
     }
     if (
-        not create_json_exclusive(args.output, authority)
-        and read_json_object(args.output) != authority
+        not _create_json_exclusive(args.output, authority)
+        and _read_json_object(args.output) != authority
     ):
         raise ReleaseTruthError("release run authority changed")
     return {"status": "success", **authority}
@@ -410,8 +436,8 @@ def _ruleset_check(args: argparse.Namespace) -> dict[str, Any]:
     ).encode()
     authority["ruleset_digest"] = "sha256:" + hashlib.sha256(encoded).hexdigest()
     if (
-        not create_json_exclusive(args.output, authority)
-        and read_json_object(args.output) != authority
+        not _create_json_exclusive(args.output, authority)
+        and _read_json_object(args.output) != authority
     ):
         raise ReleaseTruthError("protective tag ruleset authority changed")
     return {
@@ -422,10 +448,10 @@ def _ruleset_check(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def _tag_authority_check(args: argparse.Namespace) -> dict[str, Any]:
-    admission = read_json_object(args.admission)
-    ref = read_json_object(args.ref)
-    tag = read_json_object(args.tag)
-    commit = read_json_object(args.commit)
+    admission = _read_json_object(args.admission)
+    ref = _read_json_object(args.ref)
+    tag = _read_json_object(args.tag)
+    commit = _read_json_object(args.commit)
     certificate_tag = admission.get("certificate_tag")
     if (
         not isinstance(certificate_tag, str)

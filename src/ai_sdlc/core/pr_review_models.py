@@ -376,24 +376,6 @@ class ReviewPack(LoopArtifactModel):
     code_egress: bool = False
     redaction_report_path: str = ""
     reviewer_allowlist: list[str] = Field(default_factory=list)
-    lean_report_path: str = ""
-    lean_report_digest: str = ""
-    lean_report_markdown_path: str = ""
-    lean_report_markdown_digest: str = ""
-    lean_input_path: str = ""
-    lean_input_digest: str = ""
-    lean_snapshot_path: str = ""
-    lean_snapshot_digest: str = ""
-    lean_findings_path: str = ""
-    lean_findings_digest: str = ""
-    lean_policy_path: str = ""
-    lean_policy_snapshot_digest: str = ""
-    lean_diff_hash: str = ""
-    lean_policy_digest: str = ""
-    lean_implementation_loop_id: str = ""
-    lean_work_item_id: str = ""
-    lean_risk_accepted: bool = False
-    lean_exception_ids: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _require_commit_scope(self) -> ReviewPack:
@@ -492,24 +474,6 @@ class ReviewRun(LoopArtifactModel):
     resolution_path: str = ""
     final_report_path: str = ""
     final_report_digest: str = ""
-    lean_report_path: str = ""
-    lean_report_digest: str = ""
-    lean_report_markdown_path: str = ""
-    lean_report_markdown_digest: str = ""
-    lean_input_path: str = ""
-    lean_input_digest: str = ""
-    lean_snapshot_path: str = ""
-    lean_snapshot_digest: str = ""
-    lean_findings_path: str = ""
-    lean_findings_digest: str = ""
-    lean_policy_path: str = ""
-    lean_policy_snapshot_digest: str = ""
-    lean_diff_hash: str = ""
-    lean_policy_digest: str = ""
-    lean_implementation_loop_id: str = ""
-    lean_work_item_id: str = ""
-    lean_risk_accepted: bool = False
-    lean_exception_ids: list[str] = Field(default_factory=list)
     verdict: ReviewVerdict | None = None
     unresolved_blockers: int = 0
     unresolved_required: int = 0
@@ -539,97 +503,6 @@ class ReviewRun(LoopArtifactModel):
         return self
 
 
-class ReviewAttestation(LoopArtifactModel):
-    """CI-readable proof that a local review artifact covers one head commit."""
-
-    artifact_kind: str = "review-attestation"
-    review_id: str
-    loop_id: str
-    head_commit: str
-    diff_source: DiffSourceDescriptor = Field(default_factory=DiffSourceDescriptor)
-    diff_source_hash: str = ""
-    verdict: ReviewVerdict
-    unresolved_blockers: int = 0
-    unresolved_required: int = 0
-    unresolved_advisory: int = 0
-    generated_at: str = Field(default_factory=utc_now_iso)
-    review_run_path: str
-    review_pack_path: str
-    findings_path: str = ""
-    final_report_path: str
-    review_pack_digest: str = ""
-    findings_digest: str = ""
-    final_report_digest: str = ""
-    lean_report_path: str = ""
-    lean_report_digest: str = ""
-    lean_report_markdown_path: str = ""
-    lean_report_markdown_digest: str = ""
-    lean_input_path: str = ""
-    lean_input_digest: str = ""
-    lean_snapshot_path: str = ""
-    lean_snapshot_digest: str = ""
-    lean_findings_path: str = ""
-    lean_findings_digest: str = ""
-    lean_policy_path: str = ""
-    lean_policy_snapshot_digest: str = ""
-    lean_diff_hash: str = ""
-    lean_policy_digest: str = ""
-    lean_implementation_loop_id: str = ""
-    lean_work_item_id: str = ""
-    lean_risk_accepted: bool = False
-    lean_exception_ids: list[str] = Field(default_factory=list)
-    ci_may_call_model: bool = False
-
-    @field_validator(
-        "review_id",
-        "loop_id",
-        "head_commit",
-        "review_run_path",
-        "review_pack_path",
-        "final_report_path",
-    )
-    @classmethod
-    def _require_attestation_text(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("attestation field is required")
-        return value
-
-    @field_validator(
-        "unresolved_blockers",
-        "unresolved_required",
-        "unresolved_advisory",
-    )
-    @classmethod
-    def _attestation_counts_cannot_be_negative(cls, value: int) -> int:
-        if value < 0:
-            raise ValueError("attestation unresolved counts cannot be negative")
-        return value
-
-    @model_validator(mode="after")
-    def _attestation_is_ci_read_only(self) -> ReviewAttestation:
-        if self.ci_may_call_model:
-            raise ValueError("review attestation cannot authorize CI model calls")
-        if self.diff_source.patch_hash and not self.diff_source_hash:
-            self.diff_source_hash = self.diff_source.patch_hash
-        if (
-            self.diff_source_hash
-            and self.diff_source.patch_hash
-            and self.diff_source_hash != self.diff_source.patch_hash
-        ):
-            raise ValueError(
-                "review attestation diff_source_hash does not match diff_source"
-            )
-        if (
-            DiffSourceKind(self.diff_source.source_kind)
-            != DiffSourceKind.LOCAL_GIT_RANGE
-            and not self.diff_source_hash.strip()
-        ):
-            raise ValueError(
-                "non-git-range review attestation requires diff_source_hash"
-            )
-        return self
-
-
 __all__ = [
     "FindingResolution",
     "FindingResolutionStatus",
@@ -642,7 +515,6 @@ __all__ = [
     "ProviderIsolationStatus",
     "ProviderMode",
     "ProviderRunnerInvocation",
-    "ReviewAttestation",
     "ReviewFinding",
     "ReviewFindings",
     "ReviewPack",

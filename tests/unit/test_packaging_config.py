@@ -78,14 +78,20 @@ def test_sdist_includes_browser_gate_probe_runner_source(
     )
 
 
-def test_sdist_includes_lean_rule_and_runtime_sources(tmp_path: Path) -> None:
+def test_sdist_includes_minimal_review_kernel_without_retired_subsystems(
+    tmp_path: Path,
+) -> None:
     sdist_name = packaging_backend.build_sdist(str(tmp_path))
     sdist_path = tmp_path / sdist_name
 
     with tarfile.open(sdist_path, "r:gz") as archive:
         members = set(archive.getnames())
 
-    assert any(member.endswith("/src/ai_sdlc/rules/lean-code.md") for member in members)
+    assert any(member.endswith("/src/ai_sdlc/core/review_kernel.py") for member in members)
     assert any(
-        member.endswith("/src/ai_sdlc/core/lean_code_runtime.py") for member in members
+        member.endswith("/src/ai_sdlc/core/pr_review_provider.py")
+        for member in members
     )
+    assert not any(member.endswith("/src/ai_sdlc/rules/lean-code.md") for member in members)
+    assert not any("/src/ai_sdlc/core/lean_code" in member for member in members)
+    assert not any("/src/ai_sdlc/core/stage_review/" in member for member in members)

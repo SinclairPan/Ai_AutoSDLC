@@ -10,7 +10,6 @@ from typer.testing import CliRunner
 from ai_sdlc.cli.main import app
 from ai_sdlc.routers.bootstrap import init_project
 
-
 _LEGACY_ARTIFACTS = {
     ".ai-sdlc/sessions/WI-LEGACY/requirement/session-001/session.json": (
         b'{"artifact_kind":"stage-review-session","status":"closed"}\n'

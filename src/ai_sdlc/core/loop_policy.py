@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import warnings
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict
+import yaml
+from pydantic import BaseModel, ConfigDict, ValidationError
 
-from ai_sdlc.core.config import YamlStore, YamlStoreError
 from ai_sdlc.core.loop_models import LoopPolicyProfile
 from ai_sdlc.core.pr_review_models import (
     ModelResolution,
@@ -19,6 +20,24 @@ from ai_sdlc.core.pr_review_models import (
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 LOOP_POLICY_PATH = Path(AI_SDLC_DIR) / "project" / "config" / "loop-policy.yaml"
+_RETIRED_LEAN_POLICY_KEYS = frozenset(
+    {
+        "lean_code_enabled",
+        "lean_enforcement_mode",
+        "lean_max_rounds",
+        "lean_file_line_budget",
+        "lean_function_line_budget",
+        "lean_complexity_budget",
+        "lean_complexity_delta",
+        "lean_nesting_budget",
+        "lean_fan_out_budget",
+        "lean_fan_out_delta",
+        "lean_public_caller_minimum",
+        "lean_generated_files_per_task_budget",
+        "lean_significant_changed_lines",
+        "lean_significant_changed_ratio",
+    }
+)
 
 
 class LoopPolicyError(ValueError):
@@ -61,9 +80,24 @@ def load_loop_policy(root: Path) -> LoopPolicyProfile:
     """Load project loop policy, returning safe defaults when absent."""
 
     path = root / LOOP_POLICY_PATH
+    if not path.exists():
+        return LoopPolicyProfile()
     try:
-        return YamlStore.load(path, LoopPolicyProfile, default=LoopPolicyProfile())
-    except YamlStoreError as exc:
+        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+        if payload is None:
+            payload = {}
+        if not isinstance(payload, dict):
+            raise ValueError("loop policy must be a YAML mapping")
+        retired = sorted(_RETIRED_LEAN_POLICY_KEYS & set(payload))
+        if retired:
+            warnings.warn(
+                "Retired Lean policy keys are ignored: " + ", ".join(retired),
+                FutureWarning,
+                stacklevel=2,
+            )
+            payload = {key: value for key, value in payload.items() if key not in retired}
+        return LoopPolicyProfile.model_validate(payload)
+    except (OSError, UnicodeError, yaml.YAMLError, ValidationError, ValueError) as exc:
         raise LoopPolicyError(
             f"Loop policy is malformed: {exc}. Fix {LOOP_POLICY_PATH.as_posix()}."
         ) from exc

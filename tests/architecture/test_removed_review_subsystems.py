@@ -5,7 +5,6 @@ from __future__ import annotations
 import ast
 from pathlib import Path
 
-
 _ROOT = Path(__file__).resolve().parents[2]
 _REMOVED_PATHS = _ROOT / "tests" / "architecture" / "review_kernel_removed_paths.txt"
 _KERNEL = _ROOT / "src" / "ai_sdlc" / "core" / "review_kernel.py"

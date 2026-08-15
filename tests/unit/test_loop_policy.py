@@ -64,6 +64,35 @@ def test_load_loop_policy_rejects_malformed_project_config(tmp_path) -> None:
         load_loop_policy(tmp_path)
 
 
+def test_load_loop_policy_ignores_retired_lean_keys_once(tmp_path) -> None:
+    path = tmp_path / LOOP_POLICY_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text(
+        "profile_id: retained\n"
+        "lean_code_enabled: true\n"
+        "lean_enforcement_mode: blocking\n"
+        "lean_file_line_budget: 400\n",
+        encoding="utf-8",
+    )
+
+    with pytest.warns(FutureWarning) as notices:
+        policy = load_loop_policy(tmp_path)
+
+    assert policy.profile_id == "retained"
+    assert len(notices) == 1
+    assert "Retired Lean policy keys are ignored" in str(notices[0].message)
+    assert not any(name.startswith("lean_") for name in type(policy).model_fields)
+
+
+def test_load_loop_policy_still_rejects_unknown_unrelated_keys(tmp_path) -> None:
+    path = tmp_path / LOOP_POLICY_PATH
+    path.parent.mkdir(parents=True)
+    path.write_text("unrelated_future_authority: true\n", encoding="utf-8")
+
+    with pytest.raises(LoopPolicyError, match="Loop policy is malformed"):
+        load_loop_policy(tmp_path)
+
+
 def test_resolve_model_defaults_to_current_before_policy_or_provider() -> None:
     policy = LoopPolicyProfile(default_model="claude-sonnet-4")
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 from pathlib import Path
 
@@ -28,10 +27,6 @@ from ai_sdlc.core.requirement_loop import (
     RequirementStartOptions,
     freeze_requirement_loop,
     start_requirement_loop,
-)
-from ai_sdlc.core.stage_review.artifacts import (
-    resolve_canonical_shared_state,
-    resolve_repository_project_id,
 )
 
 
@@ -753,149 +748,6 @@ def test_start_implementation_loop_ignores_copied_legacy_authority_artifact(
     assert result.loop_status == "running"
 
 
-def _legacy_enforced_design_close_allows_implementation_start(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from ai_sdlc.core import design_close_enforce_authority as authority_module
-    from ai_sdlc.core import design_contract_loop as design_module
-    from ai_sdlc.core.stage_review.activation_models import (
-        ActivationSessionObservation,
-        ActivationSessionRecord,
-    )
-    from ai_sdlc.core.stage_review.close_gate_observation import (
-        stage_close_operation_id,
-    )
-    from ai_sdlc.core.stage_review.finding_models import FindingScope
-
-    candidate_digest = f"sha256:{'1' * 64}"
-    certificate_digest = f"sha256:{'2' * 64}"
-    records: list[ActivationSessionRecord] = []
-    receipt_close_digests: list[str] = []
-
-    def execute_enforced_close(prepared, writer, **kwargs):
-        assert kwargs == {"require_durable_shadow_intent": True}
-        result = writer()
-        operation_id = stage_close_operation_id(prepared)
-        marker = {
-            "schema_version": "stage-close-authorization.v1",
-            "artifact_kind": "stage-close-authorization",
-            "operation_id": operation_id,
-            "stage_key": prepared.stage_key,
-            "close_kind": prepared.close_kind,
-            "target_status": prepared.target_status,
-            "stage_input_digest": prepared.stage_input_digest,
-            "product_close_artifact_path": prepared.close_artifact_path,
-            "candidate_manifest_digest": candidate_digest,
-            "gate_decision_digest": f"sha256:{'3' * 64}",
-        }
-        marker_path = (
-            prepared.root
-            / ".ai-sdlc"
-            / "state"
-            / "stage-close-authorizations"
-            / f"{operation_id}.json"
-        )
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text(json.dumps(marker), encoding="utf-8")
-        project_id = resolve_repository_project_id(prepared.root)
-        scope = FindingScope(
-            project_id=project_id,
-            work_item_id=prepared.work_item_id,
-            stage_instance_id=prepared.stage_instance_id,
-            session_id="session-enforced-design-close",
-        )
-        records.append(
-            ActivationSessionRecord(
-                record_id="activation-enforced-design-close",
-                project_id=project_id,
-                close_proof_kind="enforce-certificate",
-                close_proof_id="certificate-enforced-design-close",
-                close_proof_digest=certificate_digest,
-                candidate_manifest_digest=candidate_digest,
-                panel_plan_digest=f"sha256:{'4' * 64}",
-                review_session_digest=f"sha256:{'5' * 64}",
-                review_completion_digest=f"sha256:{'6' * 64}",
-                scope=scope,
-                observation=ActivationSessionObservation(
-                    session_id=scope.session_id,
-                    stage_key=prepared.stage_key,
-                    risk_level="medium",
-                    mode="enforce",
-                    completed_at="2026-07-27T12:00:00Z",
-                ),
-            )
-        )
-        close_path = prepared.root / prepared.close_artifact_path
-        receipt_close_digests.append(
-            f"sha256:{hashlib.sha256(close_path.read_bytes()).hexdigest()}"
-        )
-        return result
-
-    monkeypatch.setattr(design_module, "execute_stage_close", execute_enforced_close)
-    monkeypatch.setattr(
-        authority_module,
-        "_read_activation_session_records",
-        lambda _root: tuple(records),
-    )
-
-    def trusted_candidate_artifacts(root, _scope, **_identity):
-        loop_dir = (
-            root
-            / ".ai-sdlc"
-            / "loops"
-            / "design-contract"
-            / "dc-demo-implementation-loop"
-        )
-        paths = (
-            loop_dir / "design-contract-input.json",
-            loop_dir / "design-contract-report.json",
-        )
-        return tuple(
-            (
-                path.relative_to(root).as_posix(),
-                f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}",
-            )
-            for path in paths
-        )
-
-    monkeypatch.setattr(
-        authority_module,
-        "_trusted_candidate_artifacts",
-        trusted_candidate_artifacts,
-    )
-    monkeypatch.setattr(
-        authority_module,
-        "_trusted_enforce_receipt",
-        lambda _root, _record, _project_id: receipt_close_digests[-1],
-        raising=False,
-    )
-    work_item = _write_ready_work_item(tmp_path)
-    _close_design_contract_for_work_item(tmp_path, work_item)
-
-    result = start_implementation_loop(
-        ImplementationStartOptions(
-            root=tmp_path,
-            work_item="specs/demo-implementation-loop",
-            loop_id="impl-after-enforced-design-close",
-        )
-    )
-
-    assert result.status == "ready"
-    assert result.loop_status == "running"
-    project_id = resolve_repository_project_id(tmp_path)
-    shared = resolve_canonical_shared_state(tmp_path, project_id)
-    authority = json.loads(
-        (
-            shared
-            / "scope-authority"
-            / "design-close"
-            / "dc-demo-implementation-loop.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert authority["stage_close_proof_kind"] == "enforce-certificate"
-    assert authority["stage_close_proof_digest"] == certificate_digest
-    assert authority["candidate_manifest_digest"] == candidate_digest
 
 
 @pytest.mark.parametrize(

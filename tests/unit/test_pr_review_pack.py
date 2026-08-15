@@ -31,7 +31,6 @@ def test_build_review_pack_writes_required_artifacts(tmp_path) -> None:
             work_item_refs=["specs/189/tasks.md"],
             test_results_refs=["pytest.log"],
             policy_refs=[".ai-sdlc/project/config/loop-policy.yaml"],
-            lean_binding=object(),
         )
     )
 
@@ -74,9 +73,6 @@ def test_build_review_pack_writes_required_artifacts(tmp_path) -> None:
     assert review_payload["redaction_report_path"].endswith(
         ".ai-sdlc/reviews/pr/review-001/redaction-report.json"
     )
-    assert not any(key.startswith("lean_") for key in review_payload["policy_decisions"])
-    assert review_payload["lean_report_path"] == ""
-    assert review_payload["lean_snapshot_path"] == ""
     assert not (Path(result.review_pack_path).parent / "lean-closed-scope.json").exists()
     assert "src/app.py" in changed_files
     assert "+print('review me')" in diff_text

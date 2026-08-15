@@ -78,8 +78,6 @@ class ReviewPackBuildOptions:
     max_file_bytes: int = 1_000_000
     clear_stale_artifacts: bool = True
     preserve_resolution_history: bool = False
-    # Read compatibility only. Review packs no longer consume Lean evidence.
-    lean_binding: object | None = None
 
 
 class ReviewPackBuildResult(BaseModel):
@@ -462,18 +460,6 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         model_resolution=model_resolution,
         source_resolution=source_resolution,
     )
-
-
-def scope_lean_review_binding(
-    root: Path,
-    binding: object | None,
-    source: SourceAdapterResolution,
-    reviewed_files: list[str],
-) -> tuple[None, str, dict[str, object]]:
-    """Ignore legacy Lean evidence while old callers are being removed."""
-
-    del root, binding, source, reviewed_files
-    return None, "", {}
 
 
 def _git_changed_files(root: Path, base_ref: str, head_ref: str) -> list[str]:
@@ -1034,5 +1020,4 @@ __all__ = [
     "build_review_pack",
     "decide_incomplete_review_pack",
     "resolve_review_input_for_source",
-    "scope_lean_review_binding",
 ]
