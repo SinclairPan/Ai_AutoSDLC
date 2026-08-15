@@ -17,10 +17,6 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ai_sdlc.branch.git_client import GitClient, GitError
-from ai_sdlc.core.lean_code_review import (
-    resolve_lean_review_binding,
-    validate_review_run_lean_binding,
-)
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopPolicyProfile, LoopStatus, utc_now_iso
 from ai_sdlc.core.loop_policy import (
@@ -37,7 +33,6 @@ from ai_sdlc.core.pr_review_models import (
     ModelResolution,
     ModelResolutionStatus,
     ProviderMode,
-    ReviewAttestation,
     ReviewFinding,
     ReviewFindings,
     ReviewPack,
@@ -54,7 +49,6 @@ from ai_sdlc.core.pr_review_pack import (
     build_review_pack,
     decide_incomplete_review_pack,
     resolve_review_input_for_source,
-    scope_lean_review_binding,
 )
 from ai_sdlc.core.pr_review_provider import (
     MockReviewerFixture,
@@ -68,14 +62,6 @@ from ai_sdlc.core.pr_review_redaction import RedactionReport, analyze_redaction
 from ai_sdlc.core.pr_review_source import (
     DiffSourceResolutionOptions,
     resolve_diff_source,
-)
-from ai_sdlc.core.stage_review.adapters import LocalPRReviewStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_local_pr_stage_close,
-)
-from ai_sdlc.core.stage_review.close_gate_models import (
-    StageCloseExecutionIdentityResult,
 )
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
@@ -245,26 +231,6 @@ class PRReviewCloseResult(BaseModel):
     next_action: str = ""
 
 
-class PRReviewAttestResult(StageCloseExecutionIdentityResult):
-    """Result for writing a CI-readable local review attestation."""
-
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
-
-    status: PRReviewCommandStatus
-    review_id: str = ""
-    loop_id: str = ""
-    attestation_path: str = ""
-    ci_certificate_bundle_path: str = ""
-    head_commit: str = ""
-    diff_source_hash: str = ""
-    verdict: ReviewVerdict | None = None
-    unresolved_blockers: int = 0
-    unresolved_required: int = 0
-    unresolved_advisory: int = 0
-    blocker: str = ""
-    next_action: str = ""
-
-
 def _policy_blocker(exc: LoopPolicyError) -> str:
     return str(exc)
 
@@ -350,20 +316,6 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
     """Start or dry-run a local PR review."""
 
     root = options.root.resolve()
-    if not options.dry_run:
-        try:
-            _remove_latest_attestation(_latest_attestation_path(root))
-        except OSError as exc:
-            return PRReviewStartResult(
-                status=PRReviewCommandStatus.BLOCKED,
-                provider_id=options.provider_id,
-                review_id=options.review_id.strip(),
-                blocker=f"Unable to clear stale review attestation: {exc}",
-                next_action=(
-                    "Remove latest-attestation.json and rerun pr-review start."
-                ),
-            )
-
     review_id_blocker = _unsafe_explicit_review_id_blocker(options.review_id)
     if review_id_blocker:
         return PRReviewStartResult(
@@ -444,20 +396,6 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
     )
     review_id = _resolve_review_id(provider_options)
     loop_id = _resolve_loop_id(provider_options)
-    lean_binding, lean_blocker = resolve_lean_review_binding(
-        root,
-        allow_closed_source_mismatch=True,
-    )
-    if lean_blocker:
-        return PRReviewStartResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            provider_id=provider_options.provider_id,
-            review_id=review_id,
-            loop_id=loop_id,
-            review_dir=str(LoopArtifactStore(root).review_run_dir(review_id)),
-            blocker=lean_blocker,
-            next_action=_lean_binding_next_action(lean_blocker),
-        )
     provider_blocker = _unsupported_provider_blocker(provider_options.provider_id)
     if provider_blocker:
         return PRReviewStartResult(
@@ -490,7 +428,6 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
                 loop_id=loop_id,
                 clear_stale_artifacts=provider_options.clear_stale_artifacts,
                 preserve_resolution_history=provider_options.preserve_resolution_history,
-                lean_binding=lean_binding,
             )
         )
     except GitError as exc:
@@ -645,8 +582,7 @@ def status_pr_review(root: Path) -> PRReviewStatusResult:
             blocker=f"Current review-run.json is malformed: {exc}",
             next_action="Rerun ai-sdlc pr-review start.",
         )
-    lean_blocker = validate_review_run_lean_binding(root.resolve(), review_run)
-    return _status_result(root, review_run_path, review_run, lean_blocker)
+    return _status_result(root, review_run_path, review_run, "")
 
 
 def _status_result(
@@ -675,23 +611,8 @@ def _status_result(
         unresolved_required=review_run.unresolved_required,
         unresolved_advisory=review_run.unresolved_advisory,
         blocker=blocker,
-        next_action=_lean_binding_next_action(blocker)
-        if blocker
-        else review_run.next_action,
+        next_action="Rerun local PR review." if blocker else review_run.next_action,
     )
-
-
-def _lean_binding_next_action(
-    blocker: str,
-    fallback: str = "Run a fresh passed Lean evaluation before local PR review.",
-) -> str:
-    if "Closed Lean review scope" in blocker:
-        return "Rerun PR review to rebuild the frozen review scope."
-    if "Implementation close" in blocker:
-        return "Restore the frozen Implementation close artifacts before PR review."
-    if "lean" in blocker.lower():
-        return "Run a fresh passed Lean evaluation before local PR review."
-    return fallback
 
 
 def fix_pr_review(
@@ -923,10 +844,7 @@ def rerun_pr_review(
             provider_id=review_run.provider_id,
             review_id=review_run.review_id,
             blocker=tamper_blocker,
-            next_action=_lean_binding_next_action(
-                tamper_blocker,
-                "Rerun PR review before resetting resolution artifacts.",
-            ),
+            next_action="Rerun PR review before resetting resolution artifacts.",
         )
 
     try:
@@ -1174,15 +1092,6 @@ def close_pr_review(
 
     resolved_root = root.resolve()
     try:
-        _remove_latest_attestation(_latest_attestation_path(resolved_root))
-    except OSError as exc:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            verdict=ReviewVerdict.BLOCKED,
-            blocker=f"Unable to clear stale review attestation: {exc}",
-            next_action="Remove latest-attestation.json and rerun pr-review close.",
-        )
-    try:
         policy = load_loop_policy(resolved_root)
     except LoopPolicyError as exc:
         return PRReviewCloseResult(
@@ -1227,10 +1136,7 @@ def close_pr_review(
             unresolved_required=review_run.unresolved_required,
             unresolved_advisory=review_run.unresolved_advisory,
             blocker=tamper_blocker,
-            next_action=_lean_binding_next_action(
-                tamper_blocker,
-                "Rerun PR review before closing.",
-            ),
+            next_action="Rerun PR review before closing.",
         )
 
     if (
@@ -1337,10 +1243,6 @@ def close_pr_review(
         verdict = ReviewVerdict.RISK_ACCEPTED
         status = PRReviewCommandStatus.CLOSED
         next_action = "Risk accepted with unresolved REQUIRED findings disclosed."
-    elif review_run.lean_risk_accepted:
-        verdict = ReviewVerdict.RISK_ACCEPTED
-        status = PRReviewCommandStatus.CLOSED
-        next_action = "Risk accepted because the Lean evaluation used exceptions."
     elif FindingResolutionStatus.WAIVED in resolution_statuses.values():
         verdict = ReviewVerdict.RISK_ACCEPTED
         status = PRReviewCommandStatus.CLOSED
@@ -1379,21 +1281,7 @@ def close_pr_review(
             final_report_path=final_report_path,
         )
 
-    if status != PRReviewCommandStatus.CLOSED:
-        return writer()
-    prepared = prepare_local_pr_stage_close(
-        root=root.resolve(),
-        adapter=LocalPRReviewStageAdapter(),
-        review_run=review_run,
-        work_item_id=review_run.lean_work_item_id,
-        close_kind="local-pr-review-close",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=final_report_path,
-    )
-    return execute_stage_close(
-        prepared,
-        writer,
-    )
+    return writer()
 
 
 def _write_pr_review_close(
@@ -1492,244 +1380,6 @@ def _pr_review_close_result(
         blocker=blocker,
         next_action=next_action,
     )
-
-
-def attest_pr_review(root: Path) -> PRReviewAttestResult:
-    """Write a CI-readable attestation for the current closed local review."""
-
-    resolved_root = root.resolve()
-    attestation_path = _latest_attestation_path(resolved_root)
-    try:
-        _remove_latest_attestation(attestation_path)
-    except OSError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"Unable to clear stale review attestation: {exc}",
-            next_action="Remove latest-attestation.json and rerun pr-review attest.",
-        )
-    try:
-        review_run, review_run_path = _load_current_review_run(resolved_root)
-    except FileNotFoundError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.NO_REVIEW,
-            blocker=str(exc),
-            next_action="Run ai-sdlc pr-review start --base <branch>.",
-        )
-    except (json.JSONDecodeError, ValidationError, ValueError, OSError) as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"Current PR review artifacts are malformed: {exc}",
-            next_action="Rerun ai-sdlc pr-review start.",
-        )
-
-    diff_source_mismatch = _reviewed_diff_source_mismatch(resolved_root, review_run)
-    if diff_source_mismatch:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            head_commit=review_run.head_commit,
-            diff_source_hash=review_run.diff_source.patch_hash,
-            blocker=diff_source_mismatch,
-            next_action="Rerun local PR review for the current diff source.",
-        )
-    if review_run.status != LoopStatus.CLOSED:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Local PR review must be closed before attestation.",
-            next_action="Run ai-sdlc pr-review close after resolving findings.",
-        )
-    if review_run.unresolved_blockers > 0:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            unresolved_blockers=review_run.unresolved_blockers,
-            blocker="Unresolved BLOCKER findings cannot be attested.",
-            next_action="Fix blocker findings and rerun local PR review.",
-        )
-    if review_run.verdict is None:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Closed review is missing a verdict.",
-            next_action="Rerun ai-sdlc pr-review close.",
-        )
-    final_report_path = _resolve_repo_path(resolved_root, review_run.final_report_path)
-    if not review_run.final_report_path.strip() or not final_report_path.is_file():
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Final report is missing; attestation would be unverifiable.",
-            next_action="Rerun ai-sdlc pr-review close.",
-        )
-    final_report_blocker = _final_report_tamper_blocker(final_report_path, review_run)
-    if final_report_blocker:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=final_report_blocker,
-            next_action="Rerun ai-sdlc pr-review close.",
-        )
-    try:
-        findings = _load_findings(resolved_root, review_run)
-    except (
-        FileNotFoundError,
-        json.JSONDecodeError,
-        ValidationError,
-        ValueError,
-        OSError,
-    ) as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=f"Current PR review findings are not attestable: {exc}",
-            next_action="Rerun local PR review before writing review attestation.",
-        )
-    tamper_blocker = _reviewer_outputs_tamper_blocker(
-        resolved_root,
-        review_run,
-        findings,
-    )
-    if tamper_blocker:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=tamper_blocker,
-            next_action=_lean_binding_next_action(
-                tamper_blocker,
-                "Rerun local PR review before writing review attestation.",
-            ),
-        )
-    try:
-        current_head = _resolved_reviewed_head_commit(resolved_root, review_run)
-    except GitError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=f"Unable to verify reviewed head for attestation: {exc}",
-            next_action="Fix Git state before writing review attestation.",
-        )
-    if review_run.head_commit and review_run.head_commit != current_head:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            head_commit=review_run.head_commit,
-            blocker=(
-                "Reviewed head ref no longer matches the reviewed head commit; "
-                "attestation would be stale."
-            ),
-            next_action="Rerun local PR review for the current commit.",
-        )
-    if attestation_path.exists() and not attestation_path.is_file():
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Unable to replace stale review attestation: path is not a file.",
-            next_action="Remove latest-attestation.json and rerun pr-review attest.",
-        )
-
-    store = LoopArtifactStore(resolved_root)
-    attestation = ReviewAttestation(
-        review_id=review_run.review_id,
-        loop_id=review_run.loop_id,
-        head_commit=review_run.head_commit,
-        diff_source=review_run.diff_source,
-        diff_source_hash=review_run.diff_source.patch_hash,
-        verdict=review_run.verdict,
-        unresolved_blockers=review_run.unresolved_blockers,
-        unresolved_required=review_run.unresolved_required,
-        unresolved_advisory=review_run.unresolved_advisory,
-        review_run_path=_repo_relative_path(resolved_root, review_run_path),
-        review_pack_path=review_run.review_pack_path,
-        findings_path=review_run.findings_path,
-        final_report_path=review_run.final_report_path,
-        review_pack_digest=review_run.review_pack_digest,
-        findings_digest=review_run.findings_digest,
-        final_report_digest=review_run.final_report_digest,
-        lean_report_path=review_run.lean_report_path,
-        lean_report_digest=review_run.lean_report_digest,
-        lean_report_markdown_path=review_run.lean_report_markdown_path,
-        lean_report_markdown_digest=review_run.lean_report_markdown_digest,
-        lean_input_path=review_run.lean_input_path,
-        lean_input_digest=review_run.lean_input_digest,
-        lean_snapshot_path=review_run.lean_snapshot_path,
-        lean_snapshot_digest=review_run.lean_snapshot_digest,
-        lean_findings_path=review_run.lean_findings_path,
-        lean_findings_digest=review_run.lean_findings_digest,
-        lean_policy_path=review_run.lean_policy_path,
-        lean_policy_snapshot_digest=review_run.lean_policy_snapshot_digest,
-        lean_diff_hash=review_run.lean_diff_hash,
-        lean_policy_digest=review_run.lean_policy_digest,
-        lean_implementation_loop_id=review_run.lean_implementation_loop_id,
-        lean_work_item_id=review_run.lean_work_item_id,
-        lean_risk_accepted=review_run.lean_risk_accepted,
-        lean_exception_ids=review_run.lean_exception_ids,
-    )
-    prepared = prepare_local_pr_stage_close(
-        root=resolved_root,
-        adapter=LocalPRReviewStageAdapter(),
-        review_run=review_run,
-        work_item_id=review_run.lean_work_item_id,
-        close_kind="local-pr-review-attest",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=attestation_path,
-    )
-    return execute_stage_close(
-        prepared,
-        lambda: _write_pr_review_attestation(
-            store,
-            attestation_path,
-            attestation,
-            review_run,
-        ),
-    )
-
-
-def _write_pr_review_attestation(
-    store: LoopArtifactStore,
-    attestation_path: Path,
-    attestation: ReviewAttestation,
-    review_run: ReviewRun,
-) -> PRReviewAttestResult:
-    store.write_json_artifact(attestation_path, attestation)
-    return PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id=review_run.review_id,
-        loop_id=review_run.loop_id,
-        attestation_path=str(attestation_path),
-        head_commit=review_run.head_commit,
-        diff_source_hash=review_run.diff_source.patch_hash,
-        verdict=review_run.verdict,
-        unresolved_blockers=review_run.unresolved_blockers,
-        unresolved_required=review_run.unresolved_required,
-        unresolved_advisory=review_run.unresolved_advisory,
-        next_action=(
-            "Export the CI certificate bundle before pushing; "
-            "CI must not call any model."
-        ),
-    )
-
-
-def _latest_attestation_path(root: Path) -> Path:
-    return root / AI_SDLC_DIR / "reviews" / "pr" / "latest-attestation.json"
-
-
-def _remove_latest_attestation(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
 
 
 def _not_closeable_review_result(
@@ -1902,10 +1552,6 @@ def _reviewer_outputs_tamper_blocker(
     if actual_pack_digest != review_run.review_pack_digest:
         return "Current review-pack.json changed after the reviewer run."
 
-    lean_blocker = validate_review_run_lean_binding(root, review_run)
-    if lean_blocker:
-        return lean_blocker
-
     if review_run.findings_digest.strip():
         findings_path = _resolve_repo_path(root, review_run.findings_path)
         try:
@@ -1934,7 +1580,7 @@ def _final_report_tamper_blocker(
     review_run: ReviewRun,
 ) -> str:
     if not review_run.final_report_digest.strip():
-        return "Final report digest is missing; attestation would be unverifiable."
+        return "Final report digest is missing; the report cannot be verified."
     try:
         actual_digest = _file_sha256(final_report_path)
     except OSError as exc:
@@ -2214,41 +1860,6 @@ def _preview(
         )
     provider_options = _normalize_provider_options(
         _apply_policy_provider_default(options, policy)
-    )
-    lean_binding, lean_blocker = resolve_lean_review_binding(
-        root,
-        allow_closed_source_mismatch=True,
-    )
-    if not lean_blocker:
-        lean_binding, lean_blocker, _scope_decisions = scope_lean_review_binding(
-            root,
-            lean_binding,
-            source_resolution,
-            changed_files,
-        )
-    if lean_blocker:
-        checks.append(
-            PRReviewCheck(
-                name="lean",
-                status=PRReviewCommandStatus.BLOCKED,
-                detail=lean_blocker,
-            )
-        )
-        return (
-            checks,
-            PRReviewCommandStatus.BLOCKED,
-            lean_blocker,
-            _lean_binding_next_action(lean_blocker),
-            None,
-            None,
-            source_resolution,
-        )
-    checks.append(
-        PRReviewCheck(
-            name="lean",
-            status=PRReviewCommandStatus.READY,
-            detail="Lean prerequisite is satisfied or not enabled.",
-        )
     )
     provider_blocker = _unsupported_provider_blocker(provider_options.provider_id)
     if provider_blocker:
@@ -2597,24 +2208,6 @@ def _write_review_run(
         findings_digest=_file_sha256(findings_path)
         if findings_path and findings_path.is_file()
         else "",
-        lean_report_path=review_pack.lean_report_path,
-        lean_report_digest=review_pack.lean_report_digest,
-        lean_report_markdown_path=review_pack.lean_report_markdown_path,
-        lean_report_markdown_digest=review_pack.lean_report_markdown_digest,
-        lean_input_path=review_pack.lean_input_path,
-        lean_input_digest=review_pack.lean_input_digest,
-        lean_snapshot_path=review_pack.lean_snapshot_path,
-        lean_snapshot_digest=review_pack.lean_snapshot_digest,
-        lean_findings_path=review_pack.lean_findings_path,
-        lean_findings_digest=review_pack.lean_findings_digest,
-        lean_policy_path=review_pack.lean_policy_path,
-        lean_policy_snapshot_digest=review_pack.lean_policy_snapshot_digest,
-        lean_diff_hash=review_pack.lean_diff_hash,
-        lean_policy_digest=review_pack.lean_policy_digest,
-        lean_implementation_loop_id=review_pack.lean_implementation_loop_id,
-        lean_work_item_id=review_pack.lean_work_item_id,
-        lean_risk_accepted=review_pack.lean_risk_accepted,
-        lean_exception_ids=review_pack.lean_exception_ids,
         verdict=findings.verdict if findings else None,
         unresolved_blockers=_count_findings(findings, FindingSeverity.BLOCKER),
         unresolved_required=_count_findings(findings, FindingSeverity.REQUIRED),
@@ -2965,17 +2558,6 @@ def _render_final_report(
         f"- redacted_files: {coverage.get('redacted_files', 0)}",
         f"- omitted_files: {coverage.get('omitted_files', 0)}",
     ]
-    if review_run.lean_report_path:
-        lines.extend(
-            [
-                f"- lean_report: {review_run.lean_report_path}",
-                f"- lean_report_digest: {review_run.lean_report_digest}",
-                f"- lean_diff_hash: {review_run.lean_diff_hash}",
-                f"- lean_policy_digest: {review_run.lean_policy_digest}",
-                f"- lean_risk_accepted: {str(review_run.lean_risk_accepted).lower()}",
-                f"- lean_exception_ids: {','.join(review_run.lean_exception_ids) or '-'}",
-            ]
-        )
     lines.extend([f"- next_action: {next_action}", "", "## Verification Evidence"])
     lines.extend(f"- {item}" for item in evidence)
     lines.extend(
@@ -3041,7 +2623,6 @@ def _render_finding_outcome_lines(
 __all__ = [
     "CURRENT_REVIEW_PATH",
     "PRReviewCheck",
-    "PRReviewAttestResult",
     "PRReviewCommandStatus",
     "PRReviewCloseResult",
     "PRReviewDoctorResult",
@@ -3050,7 +2631,6 @@ __all__ = [
     "PRReviewStartResult",
     "PRReviewStatusResult",
     "close_pr_review",
-    "attest_pr_review",
     "detect_current_model",
     "doctor_pr_review",
     "fix_pr_review",
