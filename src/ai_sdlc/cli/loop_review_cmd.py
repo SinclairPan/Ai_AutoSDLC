@@ -16,17 +16,25 @@ from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review
 from ai_sdlc.utils.helpers import find_project_root
 
 _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
-    "requirement": ("requirement-brief.md", "acceptance-checklist.md"),
+    "requirement": (
+        "requirement-intake.json",
+        "requirement-brief.md",
+        "clarification-questions.md",
+        "acceptance-checklist.md",
+    ),
     "design-contract": (
+        "design-contract-input.json",
         "design-contract-report.json",
         "design-contract-report.md",
     ),
     "implementation": (
+        "implementation-input.json",
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
     ),
     "frontend-evidence": (
+        "frontend-evidence-input.json",
         "frontend-evidence-snapshot.json",
         "frontend-evidence-report.json",
         "frontend-evidence-report.md",
@@ -139,11 +147,17 @@ def resolve_review_input(
             for name in _LOCAL_OPTIONAL
             if (loop_dir / name).is_file()
         )
+        artifacts.append(_local_review_diff(root, loop_dir / "review-pack.json"))
         risk_signals = [*_content_risk_signals(artifacts), *_git_risk_signals(root)]
         round_number = _read_round_number(loop_dir / "review-run.json")
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
-        artifacts = [loop_dir / name for name in _STAGE_ARTIFACTS[loop_type]]
+        artifacts = _unique_paths(
+            [
+                *(loop_dir / name for name in _STAGE_ARTIFACTS[loop_type]),
+                *_stage_source_material(root, loop_type, loop_dir),
+            ]
+        )
         upstream_context = _stage_upstream_context(root, loop_type, loop_dir)
         risk_signals = _content_risk_signals([*artifacts, *upstream_context])
         round_number = _read_round_number(loop_dir / "loop-run.json")
@@ -204,10 +218,128 @@ def _stage_upstream_context(
         predecessor_dir,
         visited=visited | {identity},
     )
-    return [
-        *inherited,
+    predecessor_artifacts = [
         *(predecessor_dir / name for name in _STAGE_ARTIFACTS[predecessor_type]),
+        *_stage_source_material(root, predecessor_type, predecessor_dir),
     ]
+    return _unique_paths([*inherited, *predecessor_artifacts])
+
+
+def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[Path]:
+    if loop_type == "requirement":
+        return []
+    if loop_type == "design-contract":
+        payload = _read_json_object(loop_dir / "design-contract-input.json")
+        return [
+            _repo_path(root, value, field_name)
+            for field_name in ("spec_path", "plan_path", "tasks_path")
+            if isinstance((value := payload.get(field_name)), str) and value.strip()
+        ]
+    if loop_type == "implementation":
+        payload = _read_json_object(loop_dir / "implementation-input.json")
+        declared_scope = payload.get("declared_scope", [])
+        if not isinstance(declared_scope, list) or not all(
+            isinstance(item, str) for item in declared_scope
+        ):
+            raise ValueError(
+                f"Loop declared_scope is invalid: {loop_dir / 'implementation-input.json'}"
+            )
+        return _expand_repo_patterns(root, declared_scope)
+    if loop_type == "frontend-evidence":
+        input_payload = _read_json_object(loop_dir / "frontend-evidence-input.json")
+        snapshot_payload = _read_json_object(
+            loop_dir / "frontend-evidence-snapshot.json"
+        )
+        referenced: list[Path] = []
+        source_path = input_payload.get("source_artifact_path", "")
+        if isinstance(source_path, str) and source_path.strip():
+            referenced.append(_repo_path(root, source_path, "source_artifact_path"))
+        records = snapshot_payload.get("artifact_records", [])
+        if not isinstance(records, list):
+            raise ValueError(
+                "Frontend evidence artifact_records must be a list: "
+                f"{loop_dir / 'frontend-evidence-snapshot.json'}"
+            )
+        for record in records:
+            if not isinstance(record, dict) or record.get("capture_status") != "captured":
+                continue
+            artifact_ref = record.get("artifact_ref", "")
+            if isinstance(artifact_ref, str) and artifact_ref.strip():
+                referenced.append(_repo_path(root, artifact_ref, "artifact_ref"))
+        for field_name in ("screenshot_refs", "trace_refs"):
+            refs = snapshot_payload.get(field_name, [])
+            if not isinstance(refs, list):
+                raise ValueError(
+                    f"Frontend evidence {field_name} must be a list: "
+                    f"{loop_dir / 'frontend-evidence-snapshot.json'}"
+                )
+            for ref in refs:
+                if isinstance(ref, str) and ref.strip():
+                    referenced.append(_repo_path(root, ref, field_name))
+        return _unique_paths(referenced)
+    return []
+
+
+def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
+    payload = _read_json_object(review_pack_path)
+    diff_path_text = payload.get("diff_path", "")
+    diff_digest = payload.get("diff_digest", "")
+    if not isinstance(diff_path_text, str) or not diff_path_text.strip():
+        raise ValueError(f"Review pack diff_path is missing: {review_pack_path}")
+    if not isinstance(diff_digest, str) or not diff_digest.startswith("sha256:"):
+        raise ValueError(f"Review pack diff_digest is invalid: {review_pack_path}")
+    diff_path = _repo_path(root, diff_path_text, "diff_path")
+    try:
+        actual = hashlib.sha256(diff_path.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise ValueError(f"Review diff is unreadable: {diff_path}") from exc
+    if diff_digest != f"sha256:{actual}":
+        raise ValueError(f"Review diff digest does not match review-pack.json: {diff_path}")
+    return diff_path
+
+
+def _read_json_object(path: Path) -> dict[str, object]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Loop input is unreadable: {path}") from exc
+    if not isinstance(payload, dict):
+        raise ValueError(f"Loop input root must be an object: {path}")
+    return payload
+
+
+def _repo_path(root: Path, value: str, field_name: str) -> Path:
+    candidate = Path(value)
+    resolved = (candidate if candidate.is_absolute() else root / candidate).resolve(
+        strict=False
+    )
+    try:
+        resolved.relative_to(root.resolve())
+    except ValueError as exc:
+        raise ValueError(f"Loop {field_name} escapes the project: {value}") from exc
+    return resolved
+
+
+def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
+    expanded: list[Path] = []
+    for pattern in patterns:
+        pattern_path = Path(pattern)
+        if pattern_path.is_absolute() or ".." in pattern_path.parts:
+            raise ValueError(f"Loop declared_scope escapes the project: {pattern}")
+        matches = sorted(root.glob(pattern))
+        if not matches:
+            raise ValueError(f"Loop declared_scope matches no files: {pattern}")
+        for match in matches:
+            resolved = _repo_path(root, str(match), "declared_scope")
+            if resolved.is_dir():
+                expanded.extend(path for path in sorted(resolved.rglob("*")) if path.is_file())
+            elif resolved.is_file():
+                expanded.append(resolved)
+    return _unique_paths(expanded)
+
+
+def _unique_paths(paths: list[Path]) -> list[Path]:
+    return list(dict.fromkeys(paths))
 
 
 def _find_local_review_dir(root: Path, loop_id: str) -> Path:

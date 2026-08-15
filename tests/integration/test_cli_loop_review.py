@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 from pathlib import Path
@@ -22,12 +23,21 @@ pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
     [
         (
             "requirement",
-            ["requirement-brief.md", "acceptance-checklist.md"],
+            [
+                "requirement-intake.json",
+                "requirement-brief.md",
+                "clarification-questions.md",
+                "acceptance-checklist.md",
+            ],
             "requirement-freeze.json",
         ),
         (
             "design-contract",
-            ["design-contract-report.json", "design-contract-report.md"],
+            [
+                "design-contract-input.json",
+                "design-contract-report.json",
+                "design-contract-report.md",
+            ],
             "design-contract-close.json",
         ),
         (
@@ -36,6 +46,7 @@ pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
                 "implementation-report.json",
                 "implementation-report.md",
                 "verification-evidence.json",
+                "implementation-input.json",
             ],
             "implementation-close.json",
         ),
@@ -45,6 +56,7 @@ pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
                 "frontend-evidence-snapshot.json",
                 "frontend-evidence-report.json",
                 "frontend-evidence-report.md",
+                "frontend-evidence-input.json",
             ],
             "frontend-evidence-close.json",
         ),
@@ -64,7 +76,8 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
         encoding="utf-8",
     )
     for filename in [*filenames, excluded]:
-        (loop_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
+        content = "{}" if filename.endswith(".json") else f"{filename}\n"
+        (loop_dir / filename).write_text(content, encoding="utf-8")
     expected_upstream = _write_predecessor_fixture(tmp_path, loop_type, loop_dir)
 
     with patch(
@@ -105,12 +118,25 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     )
     included = [
         "review-pack.json",
+        "diff.patch",
         "findings.json",
         "resolution.yaml",
         "verification-evidence.json",
     ]
+    diff = review_dir / "diff.patch"
+    diff.write_text("diff --git a/tracked.txt b/tracked.txt\n", encoding="utf-8")
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+            }
+        ),
+        encoding="utf-8",
+    )
     for filename in included:
-        (review_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
+        if filename not in {"review-pack.json", "diff.patch"}:
+            (review_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
     (review_dir / "final-report.md").write_text("must be excluded\n", encoding="utf-8")
     tracked = tmp_path / "tracked.txt"
     tracked.write_text("changed\n", encoding="utf-8")
@@ -139,6 +165,26 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     assert any(item.startswith("git-head:") for item in payload["risk_signals"])
     assert any(item.startswith("git-index:") for item in payload["risk_signals"])
     assert any(item.startswith("git-staged-diff:") for item in payload["risk_signals"])
+
+    diff.write_text("tampered diff\n", encoding="utf-8")
+    with patch(
+        "ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path
+    ):
+        tampered = runner.invoke(
+            app,
+            [
+                "loop",
+                "review",
+                "--type",
+                "local-pr-review",
+                "--loop-id",
+                "loop-pr-001",
+                "--json",
+            ],
+        )
+    assert tampered.exit_code == 1
+    assert json.loads(tampered.output)["reason"] == "review-input-unavailable"
+    diff.write_text("diff --git a/tracked.txt b/tracked.txt\n", encoding="utf-8")
 
     digest = payload["input_digest"]
     tracked.write_text("changed again\n", encoding="utf-8")
@@ -193,8 +239,14 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
             encoding="utf-8",
         )
 
-    for filename in ("requirement-brief.md", "acceptance-checklist.md"):
-        (requirement_dir / filename).write_text(filename, encoding="utf-8")
+    for filename in (
+        "requirement-intake.json",
+        "requirement-brief.md",
+        "clarification-questions.md",
+        "acceptance-checklist.md",
+    ):
+        content = "{}" if filename.endswith(".json") else filename
+        (requirement_dir / filename).write_text(content, encoding="utf-8")
     (design_dir / "design-contract-input.json").write_text(
         json.dumps({"requirement_loop_id": "requirement-001"}),
         encoding="utf-8",
@@ -220,7 +272,8 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
         "frontend-evidence-report.json",
         "frontend-evidence-report.md",
     ):
-        (frontend_dir / filename).write_text(filename, encoding="utf-8")
+        content = "{}" if filename.endswith(".json") else filename
+        (frontend_dir / filename).write_text(content, encoding="utf-8")
 
     first = resolve_review_input(
         tmp_path,
@@ -230,9 +283,13 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
 
     assert {Path(path).name for path in first.upstream_context_paths} == {
         "requirement-brief.md",
+        "requirement-intake.json",
+        "clarification-questions.md",
         "acceptance-checklist.md",
+        "design-contract-input.json",
         "design-contract-report.json",
         "design-contract-report.md",
+        "implementation-input.json",
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
@@ -250,6 +307,162 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
     assert changed.input_digest != first.input_digest
 
 
+def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
+    work_item = tmp_path / "specs" / "demo"
+    work_item.mkdir(parents=True)
+    for filename in ("spec.md", "plan.md", "tasks.md"):
+        (work_item / filename).write_text(filename, encoding="utf-8")
+    source_dir = tmp_path / "src" / "runtime"
+    source_dir.mkdir(parents=True)
+    source = source_dir / "feature.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    gate_source = tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    gate_source.parent.mkdir(parents=True)
+    gate_source.write_text("gate_run_id: gate-1\n", encoding="utf-8")
+    screenshot = (
+        tmp_path
+        / ".ai-sdlc"
+        / "artifacts"
+        / "frontend-browser-gate"
+        / "gate-1"
+        / "screenshot.png"
+    )
+    screenshot.parent.mkdir(parents=True)
+    screenshot.write_bytes(b"screenshot-v1")
+
+    loop_specs = {
+        "requirement": ("requirement-001",),
+        "design-contract": ("design-001",),
+        "implementation": ("implementation-001",),
+        "frontend-evidence": ("frontend-001",),
+    }
+    loop_dirs: dict[str, Path] = {}
+    for loop_type, (loop_id,) in loop_specs.items():
+        loop_dir = tmp_path / ".ai-sdlc" / "loops" / loop_type / loop_id
+        loop_dir.mkdir(parents=True)
+        (loop_dir / "loop-run.json").write_text(
+            json.dumps({"current_round": 1}), encoding="utf-8"
+        )
+        loop_dirs[loop_type] = loop_dir
+
+    requirement_dir = loop_dirs["requirement"]
+    (requirement_dir / "requirement-intake.json").write_text(
+        json.dumps(
+            {
+                "clarification_questions": ["Which users?"],
+                "design_scope_families": ["implementation"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "requirement-brief.md",
+        "clarification-questions.md",
+        "acceptance-checklist.md",
+    ):
+        (requirement_dir / filename).write_text(filename, encoding="utf-8")
+
+    design_dir = loop_dirs["design-contract"]
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps(
+            {
+                "requirement_loop_id": "requirement-001",
+                "spec_path": "specs/demo/spec.md",
+                "plan_path": "specs/demo/plan.md",
+                "tasks_path": "specs/demo/tasks.md",
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    implementation_dir = loop_dirs["implementation"]
+    (implementation_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {
+                "design_contract_loop_id": "design-001",
+                "declared_scope": ["src/runtime/*.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "verification-evidence.json",
+    ):
+        (implementation_dir / filename).write_text("{}", encoding="utf-8")
+
+    frontend_dir = loop_dirs["frontend-evidence"]
+    (frontend_dir / "frontend-evidence-input.json").write_text(
+        json.dumps(
+            {
+                "implementation_loop_id": "implementation-001",
+                "source_artifact_path": ".ai-sdlc/memory/frontend-browser-gate/latest.yaml",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (frontend_dir / "frontend-evidence-snapshot.json").write_text(
+        json.dumps(
+            {
+                "artifact_records": [
+                    {
+                        "capture_status": "captured",
+                        "artifact_ref": screenshot.relative_to(tmp_path).as_posix(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in ("frontend-evidence-report.json", "frontend-evidence-report.md"):
+        (frontend_dir / filename).write_text("{}", encoding="utf-8")
+
+    cases = {
+        "requirement": {
+            "loop_id": "requirement-001",
+            "expected": {"requirement-intake.json", "clarification-questions.md"},
+            "mutate": requirement_dir / "requirement-intake.json",
+        },
+        "design-contract": {
+            "loop_id": "design-001",
+            "expected": {"design-contract-input.json", "spec.md", "plan.md", "tasks.md"},
+            "mutate": work_item / "spec.md",
+        },
+        "implementation": {
+            "loop_id": "implementation-001",
+            "expected": {"implementation-input.json", "feature.py"},
+            "mutate": source,
+        },
+        "frontend-evidence": {
+            "loop_id": "frontend-001",
+            "expected": {"frontend-evidence-input.json", "latest.yaml", "screenshot.png"},
+            "mutate": screenshot,
+        },
+    }
+    for loop_type, case in cases.items():
+        first = resolve_review_input(
+            tmp_path,
+            loop_type=loop_type,
+            loop_id=str(case["loop_id"]),
+        )
+        assert set(case["expected"]) <= {
+            Path(path).name for path in first.artifact_paths
+        }
+        mutate = Path(case["mutate"])
+        original = mutate.read_bytes()
+        mutate.write_bytes(original + b" changed")
+        changed = resolve_review_input(
+            tmp_path,
+            loop_type=loop_type,
+            loop_id=str(case["loop_id"]),
+        )
+        assert changed.input_digest != first.input_digest
+        mutate.write_bytes(original)
+
+
 def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> None:
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
     loop_dir.mkdir(parents=True)
@@ -262,6 +475,8 @@ def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> N
         encoding="utf-8",
     )
     (loop_dir / "acceptance-checklist.md").write_text("complete", encoding="utf-8")
+    (loop_dir / "requirement-intake.json").write_text("{}", encoding="utf-8")
+    (loop_dir / "clarification-questions.md").write_text("none", encoding="utf-8")
 
     review_input = resolve_review_input(
         tmp_path,
@@ -284,6 +499,8 @@ def test_risk_signals_detect_standalone_short_terms(tmp_path: Path) -> None:
         encoding="utf-8",
     )
     (loop_dir / "acceptance-checklist.md").write_text("complete", encoding="utf-8")
+    (loop_dir / "requirement-intake.json").write_text("{}", encoding="utf-8")
+    (loop_dir / "clarification-questions.md").write_text("none", encoding="utf-8")
 
     review_input = resolve_review_input(
         tmp_path,
@@ -323,8 +540,12 @@ def _write_predecessor_fixture(
         json.dumps({"requirement_loop_id": ""}),
         encoding="utf-8",
     )
-    design_files = {"design-contract-report.json", "design-contract-report.md"}
-    for filename in design_files:
+    design_files = {
+        "design-contract-input.json",
+        "design-contract-report.json",
+        "design-contract-report.md",
+    }
+    for filename in design_files - {"design-contract-input.json"}:
         (design_dir / filename).write_text(filename, encoding="utf-8")
     if loop_type == "implementation":
         (loop_dir / "implementation-input.json").write_text(
@@ -342,11 +563,12 @@ def _write_predecessor_fixture(
         encoding="utf-8",
     )
     implementation_files = {
+        "implementation-input.json",
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
     }
-    for filename in implementation_files:
+    for filename in implementation_files - {"implementation-input.json"}:
         (implementation_dir / filename).write_text(filename, encoding="utf-8")
     (loop_dir / "frontend-evidence-input.json").write_text(
         json.dumps({"implementation_loop_id": "implementation-upstream"}),

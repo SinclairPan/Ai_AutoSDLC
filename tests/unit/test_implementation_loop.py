@@ -421,6 +421,14 @@ def test_record_implementation_progress_updates_evidence_and_report(
 
 def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> None:
     work_item = _write_ready_work_item(tmp_path)
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "src/ai_sdlc/core/implementation_loop.py",
+            "src/ai_sdlc/core/*.py",
+        ),
+        encoding="utf-8",
+    )
     source = tmp_path / "src" / "ai_sdlc" / "core" / "implementation_loop.py"
     source.parent.mkdir(parents=True)
     source.write_text("\n".join(f"line_{index} = {index}" for index in range(510)))

@@ -210,13 +210,16 @@ def test_build_review_input_rejects_missing_or_escaping_path(
 
 def test_merge_expert_findings_deduplicates_without_deciding_close() -> None:
     finding = _finding()
+    reworded = finding.model_copy(
+        update={"recommendation": "Keep the existing response field."}
+    )
     merged = merge_expert_findings(
         [
             ReviewExecution(
                 status="completed",
                 roles=["API compatibility reviewer"],
                 role_reasons={"API compatibility reviewer": "public schema"},
-                findings=[finding],
+                findings=[reworded],
             ),
             ReviewExecution(
                 status="completed",
@@ -228,7 +231,7 @@ def test_merge_expert_findings_deduplicates_without_deciding_close() -> None:
     )
 
     assert merged.status == "completed"
-    assert merged.findings == [finding]
+    assert merged.findings == [reworded]
     assert set(merged.model_dump()) == {
         "status",
         "roles",

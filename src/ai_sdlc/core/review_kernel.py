@@ -203,7 +203,7 @@ def merge_expert_findings(executions: Sequence[ReviewExecution]) -> ReviewExecut
 
     roles, reasons = _merge_roles(executions)
     findings: list[ReviewFinding] = []
-    seen: set[tuple[str, str, str, str, str]] = set()
+    seen: set[tuple[str, str, str, str]] = set()
     for execution in executions:
         for finding in execution.findings:
             identity = (
@@ -211,7 +211,6 @@ def merge_expert_findings(executions: Sequence[ReviewExecution]) -> ReviewExecut
                 finding.role,
                 finding.location,
                 finding.summary,
-                finding.recommendation,
             )
             if identity not in seen:
                 seen.add(identity)

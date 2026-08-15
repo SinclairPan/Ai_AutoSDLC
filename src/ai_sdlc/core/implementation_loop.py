@@ -998,12 +998,19 @@ def _implementation_slimming_advisories(
     root = root.resolve()
     paths: list[Path] = []
     for path_text in impl_input.declared_scope:
-        candidate = (root / path_text).resolve(strict=False)
-        try:
-            candidate.relative_to(root)
-        except ValueError:
+        pattern = Path(path_text)
+        if pattern.is_absolute() or ".." in pattern.parts:
             continue
-        paths.append(candidate)
+        for candidate in sorted(root.glob(path_text)):
+            resolved = candidate.resolve(strict=False)
+            try:
+                resolved.relative_to(root)
+            except ValueError:
+                continue
+            if resolved.is_dir():
+                paths.extend(path for path in sorted(resolved.rglob("*")) if path.is_file())
+            elif resolved.is_file():
+                paths.append(resolved)
     rendered: list[str] = []
     for advice in collect_slimming_advice(paths):
         path = Path(advice.path)
