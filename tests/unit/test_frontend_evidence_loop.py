@@ -815,12 +815,18 @@ def test_close_frontend_evidence_loop_requires_allow_warnings(
         advisory_reason_codes=["low_contrast_text"],
         remediation_hints=["review generated frontend visual/accessibility warnings"],
     )
-    start_frontend_evidence_loop(
+    start = start_frontend_evidence_loop(
         FrontendEvidenceStartOptions(
             root=tmp_path,
             work_item="specs/demo-frontend",
             loop_id="fe-advisory",
         )
+    )
+
+    assert start.status == "ready"
+    assert start.loop_status == "needs_review"
+    assert start.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-advisory"
     )
 
     blocked_close = close_frontend_evidence_loop(

@@ -1429,11 +1429,6 @@ def _loop_status_for_snapshot(
             return LoopStatus.BLOCKED
         return LoopStatus.NEEDS_FIX
     if snapshot.execute_gate_state == FRONTEND_GATE_EXECUTE_STATE_READY:
-        if (
-            snapshot.decision_reason == FRONTEND_GATE_DECISION_REASON_ADVISORY_ONLY
-            or warnings
-        ):
-            return LoopStatus.NEEDS_USER
         return LoopStatus.NEEDS_REVIEW
     if snapshot.execute_gate_state in {
         FRONTEND_GATE_EXECUTE_STATE_NEEDS_REMEDIATION,

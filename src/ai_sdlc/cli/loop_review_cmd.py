@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import hashlib
 import json
 import os
@@ -67,6 +68,9 @@ _RISK_TERMS: dict[str, tuple[str, ...]] = {
     "concurrency": ("concurrency", "parallel", "race", "lock"),
     "frontend": ("frontend", "browser", "accessibility", "ui", "ux"),
 }
+_RISK_SCAN_OVERLAP = max(
+    len(term) for terms in _RISK_TERMS.values() for term in terms
+) + 2
 _TEXT_RISK_SUFFIXES = {
     ".bat",
     ".cfg",
@@ -499,33 +503,78 @@ def _read_round_number(path: Path) -> int:
 
 
 def _content_risk_signals(paths: list[Path]) -> list[str]:
-    chunks: list[str] = []
+    detected: set[str] = set()
     for path in paths:
         if path.is_symlink():
             raise ValueError(f"review path is not a regular file: {path}")
-        try:
-            content = path.read_bytes()
-        except OSError as exc:
-            raise ValueError(f"Review artifact is unreadable: {path}") from exc
-        if path.suffix.lower() in _BINARY_RISK_SUFFIXES:
+        suffix = path.suffix.lower()
+        if suffix in _BINARY_RISK_SUFFIXES:
             continue
         try:
-            chunks.append(content.decode("utf-8").lower())
-        except UnicodeDecodeError as exc:
-            if path.suffix.lower() in _TEXT_RISK_SUFFIXES:
-                raise ValueError(f"Review text artifact is not strict UTF-8: {path}") from exc
-    content = "\n".join(chunks)
-    risks = [
-        risk
-        for risk, terms in _RISK_TERMS.items()
-        if any(_contains_risk_term(content, term) for term in terms)
-    ]
+            detected.update(
+                _stream_text_risk_signals(
+                    path,
+                    strict_text=suffix in _TEXT_RISK_SUFFIXES,
+                )
+            )
+        except OSError as exc:
+            raise ValueError(f"Review artifact is unreadable: {path}") from exc
+    risks = [risk for risk in _RISK_TERMS if risk in detected]
     return risks or ["general-correctness"]
 
 
-def _contains_risk_term(content: str, term: str) -> bool:
-    pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
-    return re.search(pattern, content) is not None
+def _stream_text_risk_signals(path: Path, *, strict_text: bool) -> set[str]:
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    detected: set[str] = set()
+    tail = ""
+    left_truncated = False
+    try:
+        with path.open("rb") as handle:
+            while chunk := handle.read(64 * 1024):
+                combined = tail + decoder.decode(chunk).lower()
+                detected.update(
+                    _matching_risk_signals(
+                        combined,
+                        eof=False,
+                        left_truncated=left_truncated,
+                    )
+                )
+                left_truncated = left_truncated or len(combined) > _RISK_SCAN_OVERLAP
+                tail = combined[-_RISK_SCAN_OVERLAP:]
+        combined = tail + decoder.decode(b"", final=True).lower()
+    except UnicodeDecodeError as exc:
+        if strict_text:
+            raise ValueError(f"Review text artifact is not strict UTF-8: {path}") from exc
+        return set()
+    detected.update(
+        _matching_risk_signals(
+            combined,
+            eof=True,
+            left_truncated=left_truncated,
+        )
+    )
+    return detected
+
+
+def _matching_risk_signals(
+    content: str,
+    *,
+    eof: bool,
+    left_truncated: bool,
+) -> set[str]:
+    detected: set[str] = set()
+    for risk, terms in _RISK_TERMS.items():
+        for term in terms:
+            pattern = rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])"
+            for match in re.finditer(pattern, content):
+                if left_truncated and match.start() == 0:
+                    continue
+                if eof or match.end() < len(content):
+                    detected.add(risk)
+                    break
+            if risk in detected:
+                break
+    return detected
 
 
 def _git_risk_signals(root: Path) -> list[str]:

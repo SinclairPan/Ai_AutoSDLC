@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import subprocess
+import tracemalloc
 from pathlib import Path
 from unittest.mock import patch
 
@@ -681,6 +682,91 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         )
         assert changed.input_digest != first.input_digest
         mutate.write_bytes(original)
+
+
+def test_frontend_review_skips_large_binary_artifacts_before_risk_scan(
+    tmp_path: Path,
+) -> None:
+    loop_id = "frontend-large-binary"
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "frontend-evidence" / loop_id
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    _write_predecessor_fixture(tmp_path, "frontend-evidence", loop_dir)
+    for filename in ("frontend-evidence-report.json", "frontend-evidence-report.md"):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    screenshot = tmp_path / ".ai-sdlc" / "artifacts" / "capture.png"
+    screenshot.parent.mkdir(parents=True)
+    chunk = b"x" * (1024 * 1024)
+    artifact_size = 12 * len(chunk)
+    with screenshot.open("wb") as handle:
+        for _ in range(12):
+            handle.write(chunk)
+    (loop_dir / "frontend-evidence-snapshot.json").write_text(
+        json.dumps(
+            {
+                "artifact_records": [
+                    {
+                        "capture_status": "captured",
+                        "artifact_ref": screenshot.relative_to(tmp_path).as_posix(),
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    tracemalloc.start()
+    try:
+        review_input = resolve_review_input(
+            tmp_path,
+            loop_type="frontend-evidence",
+            loop_id=loop_id,
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert screenshot.relative_to(tmp_path).as_posix() in review_input.artifact_paths
+    assert peak < artifact_size // 2
+
+
+def test_review_streams_large_text_artifacts_during_risk_scan(tmp_path: Path) -> None:
+    loop_id = "requirement-large-text"
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / loop_id
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    for filename in (
+        "requirement-intake.json",
+        "clarification-questions.md",
+        "acceptance-checklist.md",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    report = loop_dir / "requirement-brief.md"
+    chunk = b"plain requirement evidence\n" * 40960
+    artifact_size = 12 * len(chunk)
+    with report.open("wb") as handle:
+        for _ in range(12):
+            handle.write(chunk)
+
+    tracemalloc.start()
+    try:
+        review_input = resolve_review_input(
+            tmp_path,
+            loop_type="requirement",
+            loop_id=loop_id,
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert review_input.risk_signals == ["general-correctness"]
+    assert peak < artifact_size // 2
 
 
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
