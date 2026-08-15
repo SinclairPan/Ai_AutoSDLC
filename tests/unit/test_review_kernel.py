@@ -268,6 +268,40 @@ def test_build_review_input_rejects_repository_symlink(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable")
+def test_build_review_input_rejects_symlink_replacement_before_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    target = tmp_path / "target.txt"
+    target.write_text("replacement content\n", encoding="utf-8")
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_text("reviewed content\n", encoding="utf-8")
+    original_resolve = Path.resolve
+    replaced = False
+
+    def replace_before_resolve(path: Path, strict: bool = False) -> Path:
+        nonlocal replaced
+        if not replaced and path == artifact:
+            artifact.unlink()
+            artifact.symlink_to(target.name)
+            replaced = True
+        return original_resolve(path, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", replace_before_resolve)
+
+    with pytest.raises(ValueError, match="not a regular file|changed while opening"):
+        build_review_input(
+            tmp_path,
+            loop_id="loop-1",
+            loop_type="implementation",
+            round_number=1,
+            artifact_paths=[artifact],
+            upstream_context_paths=[],
+            risk_signals=[],
+        )
+
+
 def test_build_review_input_reads_windows_files_in_binary_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

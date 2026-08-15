@@ -247,7 +247,12 @@ def _read_paths(
     records: list[tuple[str, int, int, str]] = []
     for raw_path in paths:
         candidate = Path(raw_path)
-        path = candidate if candidate.is_absolute() else root / candidate
+        unresolved = candidate if candidate.is_absolute() else root / candidate
+        path = Path(os.path.abspath(unresolved))
+        try:
+            relative = path.relative_to(root).as_posix()
+        except ValueError as exc:
+            raise ValueError(f"review path escapes project: {raw_path}") from exc
         try:
             original = path.lstat()
         except FileNotFoundError as exc:
@@ -259,16 +264,31 @@ def _read_paths(
         except FileNotFoundError as exc:
             raise ValueError(f"review path is missing: {raw_path}") from exc
         try:
-            relative = resolved.relative_to(root).as_posix()
+            resolved.relative_to(root)
         except ValueError as exc:
             raise ValueError(f"review path escapes project: {raw_path}") from exc
 
-        before = resolved.stat(follow_symlinks=False)
-        if not stat.S_ISREG(before.st_mode) or resolved.is_symlink():
-            raise ValueError(f"review path is not a regular file: {relative}")
-        descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        open_flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        try:
+            descriptor = os.open(path, open_flags)
+        except OSError as exc:
+            try:
+                changed = path.lstat()
+            except OSError:
+                changed = None
+            if changed is not None and stat.S_ISLNK(changed.st_mode):
+                raise ValueError(
+                    f"review path is not a regular file: {relative}"
+                ) from exc
+            raise ValueError(f"review path changed while opening: {relative}") from exc
         try:
             opened = os.fstat(descriptor)
+            if not stat.S_ISREG(opened.st_mode):
+                raise ValueError(f"review path is not a regular file: {relative}")
             digest = hashlib.sha256()
             content_size = 0
             while chunk := os.read(descriptor, 1024 * 1024):
@@ -277,9 +297,9 @@ def _read_paths(
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
-        closed = resolved.stat(follow_symlinks=False)
+        closed = path.stat(follow_symlinks=False)
         if not _file_snapshot_is_stable(
-            before,
+            original,
             opened,
             after,
             closed,

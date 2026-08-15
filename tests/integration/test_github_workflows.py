@@ -294,7 +294,7 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     assert "actions/attest" not in workflow
 
 
-def test_release_upload_step_refuses_published_or_duplicate_assets(tmp_path) -> None:
+def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
     bash = shutil.which("bash")
     if bash is None:
         pytest.skip("The release upload step requires Bash.")
@@ -317,6 +317,26 @@ if [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json isDraft"* ]]; then
   printf '%s\n' "${FAKE_RELEASE_IS_DRAFT}"
 elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json assets"* ]]; then
   printf '%s' "${FAKE_RELEASE_ASSETS}"
+elif [[ "$1" == "release" && "$2" == "download" ]]; then
+  pattern=""
+  destination=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --pattern)
+        pattern="$2"
+        shift 2
+        ;;
+      --dir)
+        destination="$2"
+        shift 2
+        ;;
+      *)
+        shift
+        ;;
+    esac
+  done
+  mkdir -p "${destination}"
+  cp "${FAKE_REMOTE_ASSETS}/${pattern}" "${destination}/${pattern}"
 elif [[ "$1" == "release" && "$2" == "upload" ]]; then
   printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
 else
@@ -333,7 +353,10 @@ fi
     )
     asset.parent.mkdir()
     asset.write_bytes(b"archive")
-    Path(f"{asset}.sha256").write_text("digest  archive\n", encoding="utf-8")
+    sidecar = Path(f"{asset}.sha256")
+    sidecar.write_text("digest  archive\n", encoding="utf-8")
+    remote_assets = tmp_path / "remote-assets"
+    remote_assets.mkdir()
     log_path = tmp_path / "gh.log"
     base_env = {
         **os.environ,
@@ -343,6 +366,7 @@ fi
         "AI_SDLC_RELEASE_ASSET_OS": "linux",
         "AI_SDLC_RELEASE_ASSET_MACHINE": "amd64",
         "FAKE_GH_LOG": str(log_path),
+        "FAKE_REMOTE_ASSETS": str(remote_assets),
     }
 
     published = subprocess.run(
@@ -353,7 +377,8 @@ fi
         capture_output=True,
         check=False,
     )
-    duplicate = subprocess.run(
+    (remote_assets / asset.name).write_bytes(b"different archive")
+    mismatched = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
         env={
@@ -365,6 +390,37 @@ fi
         capture_output=True,
         check=False,
     )
+    (remote_assets / asset.name).write_bytes(asset.read_bytes())
+    partial = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": asset.name,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    partial_upload = (
+        log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    )
+    log_path.unlink(missing_ok=True)
+    (remote_assets / sidecar.name).write_bytes(sidecar.read_bytes())
+    complete = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": f"{asset.name}\n{sidecar.name}",
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    complete_uploaded = log_path.exists()
     allowed = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -375,7 +431,13 @@ fi
     )
 
     assert published.returncode != 0
-    assert duplicate.returncode != 0
+    assert mismatched.returncode != 0
+    assert partial.returncode == 0, partial.stderr
+    partial_tokens = partial_upload.split()
+    assert asset.relative_to(tmp_path).as_posix() not in partial_tokens
+    assert sidecar.relative_to(tmp_path).as_posix() in partial_tokens
+    assert complete.returncode == 0, complete.stderr
+    assert not complete_uploaded
     assert allowed.returncode == 0, allowed.stderr
     upload_call = log_path.read_text(encoding="utf-8")
     assert asset.name in upload_call

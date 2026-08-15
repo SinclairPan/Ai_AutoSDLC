@@ -352,10 +352,28 @@ jobs:
           existing_asset_names="$(
             gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name'
           )"
-          while IFS= read -r existing_name; do
-            if [[ "${existing_name}" == "${asset_name}" || "${existing_name}" == "${sidecar_name}" ]]; then
-              echo "Release asset already exists; refusing to overwrite: ${existing_name}" >&2
-              exit 1
+          download_dir="$(mktemp -d)"
+          trap 'rm -rf -- "${download_dir}"' EXIT
+          upload_paths=()
+          for local_path in "${asset}" "${asset}.sha256"; do
+            local_name="$(basename "${local_path}")"
+            exists="false"
+            while IFS= read -r existing_name; do
+              if [[ "${existing_name}" == "${local_name}" ]]; then
+                exists="true"
+                break
+              fi
+            done <<< "${existing_asset_names}"
+            if [[ "${exists}" == "true" ]]; then
+              gh release download "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --pattern "${local_name}" --dir "${download_dir}"
+              if ! cmp -s "${local_path}" "${download_dir}/${local_name}"; then
+                echo "Existing release asset does not match the smoke-tested file: ${local_name}" >&2
+                exit 1
+              fi
+            else
+              upload_paths+=("${local_path}")
             fi
-          done <<< "${existing_asset_names}"
-          gh release upload "${RELEASE_TAG}" "${asset}" "${asset}.sha256" --repo "${GITHUB_REPOSITORY}"
+          done
+          if (( ${#upload_paths[@]} > 0 )); then
+            gh release upload "${RELEASE_TAG}" "${upload_paths[@]}" --repo "${GITHUB_REPOSITORY}"
+          fi
