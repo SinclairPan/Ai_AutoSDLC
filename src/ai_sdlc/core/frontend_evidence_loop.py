@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -79,11 +79,6 @@ from ai_sdlc.core.loop_models import (
     LoopStatus,
     LoopType,
     utc_now_iso,
-)
-from ai_sdlc.core.stage_review.adapters import FrontendEvidenceStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_loop_stage_close,
 )
 from ai_sdlc.models.frontend_browser_gate import (
     BrowserGateProbeRuntimeSession,
@@ -443,21 +438,15 @@ def skip_frontend_evidence_loop(
         skip_reason=reason,
         skip_risk_acknowledgement=_FRONTEND_EVIDENCE_SKIP_RISK,
     )
-    return _execute_frontend_close_gate(
+    return _write_frontend_skip(
         root,
+        frontend_input,
+        snapshot,
+        report,
         loop_run,
+        close,
         artifacts,
-        close_kind="frontend-evidence-skip",
-        writer=lambda: _write_frontend_skip(
-            root,
-            frontend_input,
-            snapshot,
-            report,
-            loop_run,
-            close,
-            artifacts,
-            reason,
-        ),
+        reason,
     )
 
 
@@ -481,13 +470,7 @@ def _reconcile_existing_frontend_skip(
         loop_id=loop_run.loop_id,
         artifacts=artifacts.refs(root, include_close=True),
     )
-    return _execute_frontend_close_gate(
-        root,
-        loop_run,
-        artifacts,
-        close_kind="frontend-evidence-skip",
-        writer=lambda: result,
-    )
+    return result
 
 
 def _write_frontend_skip(
@@ -569,13 +552,7 @@ def close_frontend_evidence_loop(
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _local_pr_review_next_action(),
         )
-        return _execute_frontend_close_gate(
-            root,
-            loop_run,
-            artifacts,
-            close_kind="frontend-evidence-close",
-            writer=lambda: result,
-        )
+        return result
     if report.blocker_count or report.status in {
         LoopStatus.BLOCKED,
         LoopStatus.NEEDS_FIX,
@@ -1592,20 +1569,14 @@ def _write_close(
     *,
     allow_warnings: bool,
 ) -> FrontendEvidenceCommandResult:
-    return _execute_frontend_close_gate(
+    return _write_frontend_close(
         root,
         loop_run,
+        report,
+        snapshot,
         artifacts,
-        close_kind="frontend-evidence-close",
-        writer=lambda: _write_frontend_close(
-            root,
-            loop_run,
-            report,
-            snapshot,
-            artifacts,
-            closed_by,
-            allow_warnings=allow_warnings,
-        ),
+        closed_by,
+        allow_warnings=allow_warnings,
     )
 
 
@@ -1653,25 +1624,6 @@ def _write_frontend_close(
         allow_warnings=allow_warnings,
         snapshot=snapshot,
     )
-
-
-def _execute_frontend_close_gate(
-    root: Path,
-    loop_run: LoopRun,
-    artifacts: FrontendEvidenceArtifacts,
-    *,
-    close_kind: str,
-    writer: Callable[[], FrontendEvidenceCommandResult],
-) -> FrontendEvidenceCommandResult:
-    prepared = prepare_loop_stage_close(
-        root=root,
-        adapter=FrontendEvidenceStageAdapter(),
-        loop_run=loop_run,
-        close_kind=close_kind,
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=artifacts.close_path,
-    )
-    return execute_stage_close(prepared, writer)
 
 
 def _build_loop_run(

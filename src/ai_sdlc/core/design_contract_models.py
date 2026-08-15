@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from ai_sdlc.core.loop_models import (
     LoopArtifactModel,
@@ -88,17 +88,6 @@ class DesignContractInput(LoopArtifactModel):
         if not value.strip():
             raise ValueError("field must not be empty")
         return value
-
-    @model_validator(mode="after")
-    def _scope_authority_is_complete(self) -> DesignContractInput:
-        has_ref = bool(self.scope_authority_ref)
-        has_digest = bool(self.scope_authority_digest)
-        if has_ref != has_digest:
-            raise ValueError("scope authority binding is incomplete")
-        if self.authorized_scope_families and not has_ref:
-            raise ValueError("authorized scope families require authority binding")
-        return self
-
 
 class ContractCoverageItem(BaseModel):
     """Coverage record for one requirement or success criterion."""

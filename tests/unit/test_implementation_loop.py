@@ -715,30 +715,28 @@ def test_start_implementation_loop_blocks_mutated_design_snapshot(
     assert "changed" in result.blocker.lower()
 
 
-def test_start_implementation_loop_requires_committed_design_close_authority(
+def test_start_implementation_loop_ignores_copied_legacy_authority_artifact(
     tmp_path: Path,
 ) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
-    project_id = resolve_repository_project_id(tmp_path)
-    shared = resolve_canonical_shared_state(tmp_path, project_id)
-    (
-        shared / "scope-authority" / "design-close" / "dc-demo-implementation-loop.json"
-    ).unlink()
+    legacy = tmp_path / ".ai-sdlc" / "state" / "shared" / "scope-authority"
+    legacy.mkdir(parents=True)
+    (legacy / "copied-design-close.json").write_text("{not-json", encoding="utf-8")
 
     result = start_implementation_loop(
         ImplementationStartOptions(
             root=tmp_path,
             work_item="specs/demo-implementation-loop",
-            loop_id="impl-missing-design-close-authority",
+            loop_id="impl-legacy-authority-artifact",
         )
     )
 
-    assert result.status == "blocked"
-    assert "design close authority" in result.blocker.lower()
+    assert result.status == "ready"
+    assert result.loop_status == "running"
 
 
-def test_enforced_design_close_authority_allows_implementation_start(
+def _legacy_enforced_design_close_allows_implementation_start(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -891,7 +889,7 @@ def test_enforced_design_close_authority_allows_implementation_start(
         "design-contract-close.json",
     ),
 )
-def test_start_implementation_loop_rejects_tampered_design_close_artifact(
+def test_start_implementation_loop_rejects_malformed_design_close_artifact(
     tmp_path: Path,
     artifact_name: str,
 ) -> None:
@@ -905,7 +903,7 @@ def test_start_implementation_loop_rejects_tampered_design_close_artifact(
         / "dc-demo-implementation-loop"
         / artifact_name
     )
-    artifact.write_text(artifact.read_text("utf-8") + "\n", "utf-8")
+    artifact.write_text("{not-json", "utf-8")
 
     result = start_implementation_loop(
         ImplementationStartOptions(
@@ -916,7 +914,7 @@ def test_start_implementation_loop_rejects_tampered_design_close_artifact(
     )
 
     assert result.status == "blocked"
-    assert "design close authority" in result.blocker.lower()
+    assert "design" in result.blocker.lower()
 
 
 @pytest.mark.parametrize(

@@ -4,14 +4,10 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Callable
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from ai_sdlc.core.design_close_authority_store import (
-    _verify_design_close_authority,
-)
 from ai_sdlc.core.design_contract_checks import _verify_design_document_snapshot
 from ai_sdlc.core.design_contract_models import (
     DesignContractClose,
@@ -23,6 +19,7 @@ from ai_sdlc.core.design_contract_store import (
     _design_contract_loop_identity_issue,
     _resolve_design_contract_loop_run_identity,
     design_contract_artifacts,
+    design_contract_input_digest,
     resolve_work_item_dir,
 )
 from ai_sdlc.core.design_contract_store import (
@@ -82,7 +79,6 @@ from ai_sdlc.core.lean_code_review_scope_models import (
     FrozenArtifact,
     ImplementationCloseProof,
 )
-from ai_sdlc.core.lean_code_runtime import validate_lean_close
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import (
     LoopRound,
@@ -92,16 +88,7 @@ from ai_sdlc.core.loop_models import (
     utc_now_iso,
 )
 from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
-from ai_sdlc.core.scope_authority_store import (
-    ScopeAuthorityIntegrityError,
-    _verify_design_scope_authority,
-)
 from ai_sdlc.core.stable_file_read import read_stable_bytes
-from ai_sdlc.core.stage_review.adapters import ImplementationStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_loop_stage_close,
-)
 
 _TASK_ID = re.compile(r"\bT\d{2,}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
@@ -391,12 +378,7 @@ def close_implementation_loop(
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _next_loop_action(report),
         )
-        return _execute_implementation_close_gate(
-            root,
-            loop_run,
-            artifacts,
-            lambda: result,
-        )
+        return result
     close_blockers = _close_blockers(tasks, progress)
     if close_blockers:
         report = report.model_copy(
@@ -430,66 +412,7 @@ def close_implementation_loop(
             status=ImplementationCommandStatus.NEEDS_FIX,
             blocker=close_blockers[0],
         )
-    lean_blocker = validate_lean_close(root, loop_run.loop_id)
-    if lean_blocker:
-        return _lean_close_failure(
-            root,
-            loop_run,
-            impl_input,
-            tasks,
-            progress,
-            report,
-            artifacts,
-            lean_blocker,
-        )
     return _write_close(root, loop_run, report, artifacts, options.closed_by)
-
-
-def _lean_close_failure(
-    root: Path,
-    loop_run: LoopRun,
-    impl_input: ImplementationInput,
-    tasks: ImplementationTasks,
-    progress: ImplementationProgress,
-    report: ImplementationReport,
-    artifacts: ImplementationArtifacts,
-    blocker: str,
-) -> ImplementationCommandResult:
-    effective_status = (
-        loop_run.status
-        if loop_run.status in {LoopStatus.NEEDS_FIX, LoopStatus.NEEDS_USER}
-        else LoopStatus.NEEDS_REVIEW
-    )
-    next_action = "Run ai-sdlc loop implementation lean-check."
-    updated_report = report.model_copy(
-        update={
-            "status": effective_status,
-            "blocker_count": report.blocker_count + 1,
-            "blockers": [*report.blockers, blocker],
-            "next_action": next_action,
-        }
-    )
-    loop_run.status = effective_status
-    loop_run.updated_at = utc_now_iso()
-    loop_run.next_action = next_action
-    _write_artifacts(
-        root,
-        impl_input,
-        tasks,
-        progress,
-        _evidence_from_progress(progress),
-        updated_report,
-        loop_run,
-        artifacts,
-    )
-    return _result_from_report(
-        updated_report,
-        artifacts=artifacts.refs(root),
-        result="Implementation close requires a fresh passed Lean evaluation.",
-        status=ImplementationCommandStatus.NEEDS_FIX,
-        blocker=blocker,
-        loop_status=effective_status,
-    )
 
 
 def _write_close(
@@ -499,17 +422,12 @@ def _write_close(
     artifacts: ImplementationArtifacts,
     closed_by: str,
 ) -> ImplementationCommandResult:
-    return _execute_implementation_close_gate(
+    return _write_implementation_close(
         root,
         loop_run,
+        report,
         artifacts,
-        lambda: _write_implementation_close(
-            root,
-            loop_run,
-            report,
-            artifacts,
-            closed_by,
-        ),
+        closed_by,
     )
 
 
@@ -556,23 +474,6 @@ def _write_implementation_close(
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
     )
-
-
-def _execute_implementation_close_gate(
-    root: Path,
-    loop_run: LoopRun,
-    artifacts: ImplementationArtifacts,
-    writer: Callable[[], ImplementationCommandResult],
-) -> ImplementationCommandResult:
-    prepared = prepare_loop_stage_close(
-        root=root,
-        adapter=ImplementationStageAdapter(),
-        loop_run=loop_run,
-        close_kind="implementation-close",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=artifacts.close_path,
-    )
-    return execute_stage_close(prepared, writer)
 
 
 def _record_close_outputs(
@@ -766,18 +667,18 @@ def _design_contract_gate(
     )
     if blocker:
         return "", "", blocker, "Run ai-sdlc loop design-contract close --yes."
-    authority_issue = _design_close_authority_issue(
+    input_issue = _design_close_input_issue(
         root,
         loop_run,
         artifacts,
         expected_loop_id,
         work_item_id,
     )
-    if authority_issue:
+    if input_issue:
         return (
             "",
             "",
-            authority_issue,
+            input_issue,
             "Rerun ai-sdlc loop design-contract check with a new loop id.",
         )
     return (
@@ -826,7 +727,7 @@ def _resolve_design_gate_target(
     )
 
 
-def _design_close_authority_issue(
+def _design_close_input_issue(
     root: Path,
     loop_run: LoopRun,
     artifacts: DesignContractArtifacts,
@@ -836,23 +737,20 @@ def _design_close_authority_issue(
     try:
         payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
         contract_input = DesignContractInput.model_validate(payload)
-        _verify_design_scope_authority(
-            root,
-            contract_input,
-            loop_input_digest=loop_run.input_digest,
-            expected_loop_id=expected_loop_id,
-            expected_work_item_id=work_item_id,
-        )
+        if contract_input.loop_id != expected_loop_id:
+            raise ValueError("design-contract input loop id changed")
+        if contract_input.work_item_id != work_item_id:
+            raise ValueError("design-contract input work item changed")
+        if design_contract_input_digest(contract_input) != loop_run.input_digest:
+            raise ValueError("design-contract input changed after check")
         _verify_design_document_snapshot(root, contract_input)
-        _verify_design_close_authority(root, contract_input, artifacts)
     except (
         OSError,
         UnicodeError,
         ValueError,
         ValidationError,
-        ScopeAuthorityIntegrityError,
     ) as exc:
-        return f"Design close authority verification failed: {exc}"
+        return f"Design close input verification failed: {exc}"
     return ""
 
 

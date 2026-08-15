@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -22,22 +21,7 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
-from ai_sdlc.core.scope_authority_store import (
-    RequirementScopeAuthorityAnchor,
-    ScopeAuthorityIntegrityError,
-    _commit_requirement_scope_authority,
-    _record_requirement_scope_authority_intent,
-    _requirement_scope_authority_intent_approval,
-    _verify_requirement_scope_authority_intent,
-)
 from ai_sdlc.core.stable_file_read import read_stable_text
-from ai_sdlc.core.stage_review.adapters import RequirementStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_loop_stage_close,
-)
-from ai_sdlc.core.stage_review.close_gate_models import PreparedStageClose
-from ai_sdlc.core.stage_review.close_gate_observation import stage_close_operation_id
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REQUIREMENT_PATH = (
@@ -675,17 +659,7 @@ def _refreeze_closed_requirement(
             artifacts,
             "Requirement freeze identity does not match the confirmed loop.",
         )
-    result = _existing_requirement_freeze_result(root, loop_run, intake, artifacts)
-    prepared = _prepare_requirement_freeze_close(root, loop_run, artifacts)
-    return _execute_requirement_freeze_close(
-        root,
-        prepared,
-        intake,
-        freeze,
-        artifacts,
-        lambda _freeze: result,
-        create_anchor=False,
-    )
+    return _existing_requirement_freeze_result(root, loop_run, intake, artifacts)
 
 
 def _malformed_requirement_freeze_result(
@@ -734,24 +708,8 @@ def _freeze_open_requirement(
     intake: RequirementIntake,
     artifacts: _RequirementArtifacts,
 ) -> RequirementLoopCommandResult:
-    try:
-        intent_approval = _requirement_scope_authority_intent_approval(
-            root,
-            loop_run.loop_id,
-        )
-    except ScopeAuthorityIntegrityError as exc:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.BLOCKED,
-            result="Requirement freeze authority is unavailable.",
-            loop_id=intake.loop_id,
-            blocker=str(exc),
-            next_action="Start and freeze a new requirement loop.",
-            artifacts=artifacts.refs(root),
-        )
-    accepted_by, accepted_at = intent_approval or (
-        options.accepted_by.strip() or "local-user",
-        utc_now_iso(),
-    )
+    accepted_by = options.accepted_by.strip() or "local-user"
+    accepted_at = utc_now_iso()
     freeze = RequirementFreeze(
         loop_id=loop_run.loop_id,
         created_at=accepted_at,
@@ -761,136 +719,13 @@ def _freeze_open_requirement(
         intake_digest=_requirement_intake_digest(intake),
         acceptance_count=len(intake.acceptance_criteria),
     )
-    prepared = _prepare_requirement_freeze_close(root, loop_run, artifacts)
-    return _execute_requirement_freeze_close(
+    return _write_requirement_freeze(
         root,
-        prepared,
+        loop_run,
         intake,
         freeze,
         artifacts,
-        lambda authoritative_freeze: _write_requirement_freeze(
-            root,
-            loop_run,
-            intake,
-            authoritative_freeze,
-            artifacts,
-        ),
-        create_anchor=True,
     )
-
-
-def _prepare_requirement_freeze_close(
-    root: Path,
-    loop_run: LoopRun,
-    artifacts: _RequirementArtifacts,
-) -> PreparedStageClose:
-    return prepare_loop_stage_close(
-        root=root,
-        adapter=RequirementStageAdapter(),
-        loop_run=loop_run,
-        close_kind="requirement-freeze",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=artifacts.freeze_path,
-    )
-
-
-def _execute_requirement_freeze_close(
-    root: Path,
-    prepared: PreparedStageClose,
-    intake: RequirementIntake,
-    freeze: RequirementFreeze,
-    artifacts: _RequirementArtifacts,
-    writer: Callable[[RequirementFreeze], RequirementLoopCommandResult],
-    *,
-    create_anchor: bool,
-) -> RequirementLoopCommandResult:
-    try:
-        values, authoritative_freeze = _bind_requirement_scope_authority(
-            root,
-            prepared,
-            intake,
-            freeze,
-            artifacts,
-            create_anchor=create_anchor,
-        )
-    except ScopeAuthorityIntegrityError as exc:
-        return RequirementLoopCommandResult(
-            status=RequirementCommandStatus.BLOCKED,
-            result="Requirement freeze authority is unavailable.",
-            loop_id=intake.loop_id,
-            blocker=str(exc),
-            next_action="Start and freeze a new requirement loop.",
-            artifacts=artifacts.refs(root, include_freeze=artifacts.freeze_path.is_file()),
-        )
-    result = execute_stage_close(prepared, lambda: writer(authoritative_freeze))
-    if result.status != RequirementCommandStatus.READY or not result.frozen:
-        return result
-    try:
-        _commit_requirement_scope_authority(root, **values)
-    except ScopeAuthorityIntegrityError as exc:
-        return result.model_copy(
-            update={
-                "status": RequirementCommandStatus.BLOCKED,
-                "result": "Requirement freeze authority commit is unavailable.",
-                "blocker": str(exc),
-                "next_action": "Rerun requirement freeze to recover the commit.",
-            }
-        )
-    return result
-
-
-def _bind_requirement_scope_authority(
-    root: Path,
-    prepared: PreparedStageClose,
-    intake: RequirementIntake,
-    freeze: RequirementFreeze,
-    artifacts: _RequirementArtifacts,
-    *,
-    create_anchor: bool,
-) -> tuple[dict[str, str], RequirementFreeze]:
-    values = {
-        "loop_id": intake.loop_id,
-        "work_item_id": intake.work_item_id,
-        "intake_path": _repo_relative_path(root, artifacts.intake_path),
-        "intake_digest": _requirement_intake_digest(intake),
-        "freeze_path": _repo_relative_path(root, artifacts.freeze_path),
-        "freeze_digest": _requirement_freeze_digest(freeze),
-        "accepted_by": freeze.accepted_by,
-        "accepted_at": freeze.accepted_at,
-        "stage_close_operation_id": stage_close_operation_id(prepared),
-    }
-    if create_anchor:
-        anchor = _record_requirement_scope_authority_intent(root, **values)
-    else:
-        anchor = _verify_requirement_scope_authority_intent(root, **values)
-    authoritative_freeze = freeze.model_copy(
-        update={
-            "created_at": anchor.accepted_at,
-            "accepted_by": anchor.accepted_by,
-            "accepted_at": anchor.accepted_at,
-        }
-    )
-    if _requirement_freeze_digest(authoritative_freeze) != anchor.freeze_digest:
-        raise ScopeAuthorityIntegrityError(
-            "requirement scope authority intent approval is inconsistent"
-        )
-    return _requirement_authority_values(anchor), authoritative_freeze
-
-
-def _requirement_authority_values(
-    anchor: RequirementScopeAuthorityAnchor,
-) -> dict[str, str]:
-    return {
-        "loop_id": anchor.loop_id,
-        "work_item_id": anchor.work_item_id,
-        "intake_path": anchor.intake_path,
-        "intake_digest": anchor.intake_digest,
-        "freeze_path": anchor.freeze_path,
-        "freeze_digest": anchor.freeze_digest,
-        "accepted_by": anchor.accepted_by,
-        "accepted_at": anchor.accepted_at,
-        "stage_close_operation_id": anchor.stage_close_operation_id,
-    }
 
 
 def _write_requirement_freeze(
