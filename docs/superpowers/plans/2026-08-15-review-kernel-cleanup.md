@@ -20,12 +20,48 @@
 - Expert findings are applied by the normal stage writer/implementation agent to the substantive result, then the normal Loop check/reducer is rerun. Experts never edit files or write Loop state. On expert timeout/unavailability/invalid output, the active agent does not call close and reports the existing Loop as still needing review; it never treats failure as zero findings.
 - Code-slimming output is always advisory. Missing analysis, analysis failure, thresholds, or accepted complexity cannot block a Loop, commit, PR, or release.
 - Local PR review retains exact reviewed HEAD/index/staged-diff binding, an independent subprocess/context, and before/after no-mutation checks. Local PR Review's cross-stage expert review is terminal and is never reviewed again.
+- PR1 deletes the protected-base test baseline/lineage authority and its negative-delta/preflight protocol. Standard CI continues to bind each candidate cell's actual collection to its own JUnit result and to require every configured cell; intentional removal of retired tests is allowed without a lineage mapping.
 - Each PR gets one three-expert review and at most one focused repair re-review. A second unresolved Critical/Important/regression is Delivery No-Go; do not broaden the PR or ask the user to referee ordinary review findings.
 - Use repository source commands (`uv run ...`). Never use a globally installed package as the controlling implementation.
 
 ---
 
 ## PR1 — Atomic Runtime Cutover
+
+### Task 0: Replace monotonic test lineage with candidate-local execution evidence
+
+**Files:**
+
+- Modify: `scripts/ci_static_assurance.py`
+- Modify: `tests/unit/test_ci_static_assurance.py`
+- Modify: `.github/workflows/compatibility-gate.yml`
+- Modify: `tests/integration/test_github_workflows.py`
+- Delete: `.github/ci/test-baseline.json`
+- Delete: `.github/ci/test-lineage.json`
+
+- [ ] Add RED behavior tests proving that a candidate may intentionally remove collected node IDs without any rename mapping, while duplicate cells, a missing cell, a manifest/commit mismatch, duplicate or missing JUnit cases, failures, errors, and missing evidence still fail.
+- [ ] Add a RED workflow test requiring no protected-base checkout, `authority-check`, `baseline-preflight`, baseline/lineage artifact, `validate-lineage`, `verify-transition`, or `decide-mode`; require candidate-local `collect`, `cell-evidence`, and `aggregate` plus the unchanged fast suite, OS/Python matrix, and Windows shell smoke.
+- [ ] Run the two RED files and confirm the failures are caused by the existing monotonic authority:
+
+```powershell
+uv run pytest -q tests/unit/test_ci_static_assurance.py tests/integration/test_github_workflows.py
+```
+
+- [ ] Remove baseline/lineage schemas, builders, transition/preflight/mode commands, protected-base comparison, negative-delta enforcement, and allowed-skip authority. Keep only candidate-local collection manifest construction, JUnit cell evidence, and complete-cell aggregation; ordinary pytest skips remain recorded but are not converted into a second policy store.
+- [ ] Simplify Compatibility Gate so draft PRs run the fixed fast gate and Ready/push/merge-group/scheduled/manual runs execute the existing full matrix. Full aggregation must use only candidate code and candidate artifacts and must not read a trusted-base checkout.
+- [ ] Run GREEN and the workflow parser tests:
+
+```powershell
+uv run pytest -q tests/unit/test_ci_static_assurance.py tests/integration/test_github_workflows.py
+uv run ruff check scripts/ci_static_assurance.py tests/unit/test_ci_static_assurance.py tests/integration/test_github_workflows.py
+```
+
+- [ ] Commit the ordinary-CI cutover before any product deletion:
+
+```powershell
+git add -A scripts/ci_static_assurance.py tests/unit/test_ci_static_assurance.py .github/workflows/compatibility-gate.yml tests/integration/test_github_workflows.py .github/ci/test-baseline.json .github/ci/test-lineage.json
+git commit -m "refactor(ci): allow intentional test removal"
+```
 
 ### Task 1: Freeze the minimal product boundary with failing tests
 
@@ -78,7 +114,7 @@ ReviewExecution(
   - Design Contract: `design-contract-report.json` and `.md`, never the close artifact;
   - Implementation: `implementation-report.json`/`.md` plus `verification-evidence.json`;
   - Frontend Evidence: `frontend-evidence-snapshot.json` plus report JSON/Markdown;
-  - Local PR Review: the existing `ReviewRun.final_report_path`, or current findings/review pack before final report exists, without creating a second `LoopRun`.
+  - Local PR Review: the pre-close Review Pack, Findings, `resolution.yaml`, verification evidence, and current HEAD/index/staged diff; never `final-report.md`, which is generated only by the existing close writer after review, and never a second `LoopRun`.
 - [ ] Assert the read-only input builder never creates/modifies a file and that calling it twice on unchanged artifacts gives the same digest; changing an artifact changes the digest; its own stdout/output is never part of the digest.
 - [ ] Preserve/add local reviewer tests for HEAD drift, staged-diff drift, timeout followed by mutation, ignored-file mutation, reviewer-created commit, and an unrelated pre-existing unstaged file excluded from the staged result identity.
 - [ ] Add architecture tests that fail if `review_kernel.py` imports any writer/store, `LoopArtifactStore`, stage-specific Loop module, `stage_review`, `lean_code`, subprocess/provider/model/network code, or exposes persistence/close/authorization symbols.
@@ -266,7 +302,7 @@ git commit -m "refactor: make code slimming advisory only"
 - [ ] Retain exact staged identity and safeguards in `pr_review_provider.py`: reviewed HEAD, index, staged diff, independent subprocess/context, dirty scope, timeout, and before/after HEAD/index/worktree mutation guard.
 - [ ] Remove stage-review session/panel/binding/quorum/certificate/attestation and Lean fields from new reports/service behavior. If removing legacy model fields would break untouched PR1 tests, leave the fields parse-only and unused until Task 9; do not write new values.
 - [ ] Remove `pr-review attest`, attestation export, CI certificate export, stale attestation cleanup, attestation locks, and `execute_stage_close` service calls. Keep only commands supporting the retained local review (`doctor`, `start`, `status`, `fix`, `rerun`, `close`).
-- [ ] Make `loop_status.py` report Local PR status from the existing `ReviewRun` only. The active adapter performs one terminal cross-stage expert pass over the final report; no state field records that pass.
+- [ ] Make `loop_status.py` report Local PR status from the existing `ReviewRun` only. Before close, the active adapter performs one terminal cross-stage expert pass over Review Pack, Findings, `resolution.yaml`, verification evidence, and current HEAD/index/staged diff; the existing close writer then generates `final-report.md`. No state field records that pass.
 - [ ] Test that a reviewer cannot modify tracked, ignored, staged, or commit state; pre-existing unstaged content is outside staged identity but cannot change during execution; old copied attestation/certificate files never affect close/status; CLI help omits `attest`.
 - [ ] Run:
 
@@ -305,12 +341,14 @@ git commit -m "refactor: keep local review without close authority"
 - Delete: `tests/integration/test_stage_review_shadow_planning.py`
 - Delete: `tests/e2e/stage_review/test_codex_permission_profile_backend.py`
 - Delete: `tests/e2e/test_clean_user_stage_gate.py`
+- Delete: `tests/unit/test_cli_stage_review_guidance.py`
+- Delete: `tests/unit/test_cli_optimization_hooks.py`
 - Modify: `tests/integration/test_cli_run.py`
 - Modify: `tests/integration/test_cli_verify_constraints.py`
 - Modify: `tests/integration/test_github_workflows.py`
 - Create: `tests/architecture/test_review_kernel_cutover.py`
 
-- [ ] Remove activation registration, stage-certificate verification commands, stage-review CLI guidance, and optimization hooks. Remove all `optimization_hooks` imports/calls from `run_cmd.py` before deleting the module.
+- [ ] Remove activation registration, stage-certificate verification commands, stage-review CLI guidance, and optimization hooks. Remove all callers/imports before deleting the modules, including `tests/unit/test_cli_stage_review_guidance.py` and `tests/unit/test_cli_optimization_hooks.py`.
 - [ ] Remove `verify_constraints` requirements for stage-review history, attestation, certificate, activation, sealed transition, or WorkItem 010. Keep ordinary repository, docs, packaging, Loop, and release consistency checks.
 - [ ] Remove workflows whose sole purpose is activation/certificate/reviewer-isolation authority. Update ordinary workflow tests and selectors without weakening the existing full test jobs.
 - [ ] Delete integration/e2e tests that assert removed public behavior. Keep all legacy unit tests whose implementation remains in PR1; they must continue passing until PR2 removes both code and tests.
@@ -322,6 +360,8 @@ uv run pytest -q
 uv run ai-sdlc verify constraints
 uv run ruff check .
 git diff --check
+if (Test-Path .github/ci/test-baseline.json) { throw "legacy test baseline still exists" }
+if (Test-Path .github/ci/test-lineage.json) { throw "legacy test lineage still exists" }
 uv run ai-sdlc --help
 uv run ai-sdlc loop --help
 uv run ai-sdlc pr-review --help

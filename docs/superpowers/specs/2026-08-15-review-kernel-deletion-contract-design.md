@@ -31,8 +31,8 @@ AI-SDLC 保留原有 `init`、`run`、WorkItem、五个 Loop 及必要的工件�
 - 专家身份只存在于本次返回值中，不持久化为账号、Profile、Registry、资格或资产。
 - 专家只产生 findings，不启动或修改 Loop，不拥有关闭权，不自动修复。
 - 单次返回内去重后的 findings 回流原 Loop，由原 reducer/writer 独立决定状态；Review kernel 不返回 verdict，不写关闭状态。
-- 专家执行失败、超时或输出损坏必须显式返回 execution failure，由原 Loop 映射到既有 `needs_user/blocked`，不得伪装为无 finding。
-- Local PR Review 的专家审查是终点，禁止递归评审聚合结果或 Reviewer 本身。
+- 专家执行失败、超时或输出损坏必须显式返回 execution failure；active agent 不调用 close，原 Loop 保持既有 `needs_review` 状态，不得伪装为无 finding，也不得为此新增 `needs_user/blocked` 写入协议。
+- Local PR Review 的专家审查在 close 前读取现有 Review Pack、Findings、`resolution.yaml`、verification evidence 和当前 HEAD/index/staged diff；`final-report.md` 仍只由现有 close writer 在审查干净后生成。该专家审查是终点，禁止递归评审聚合结果、最终报告或 Reviewer 本身。
 - 同一输入最多审查一次；输入变化后的复审轮次只使用既有 `LoopRun/LoopRound`，禁止新建 review session、history 或 ledger。
 
 ## 2. 明确删除的能力
@@ -51,7 +51,7 @@ AI-SDLC 保留原有 `init`、`run`、WorkItem、五个 Loop 及必要的工件�
 - 仅服务于上述废止能力的 CLI、workflow、policy、schema、artifact codec、测试和文档。共享基础设施必须先迁移或证明仍被保留能力使用。
 - WorkItem 010 sealed-transition foundation、authority contract 及其未合并实现。
 
-普通本地测试、标准 CI、分支保护、构建和 Release workflow 不在删除范围；AI-SDLC 只是不再自建第二套发布真实性基础设施。
+普通本地测试、标准 CI、分支保护、构建和 Release workflow 不在删除范围；AI-SDLC 只是不再自建第二套发布真实性基础设施。现有“测试集合只能增长或一对一重命名”的 protected-base baseline/lineage authority 不属于标准 CI，必须在 PR1 删除；保留的 CI 只验证候选自身实际收集的测试在各运行 cell 完整执行并通过。
 
 ## 3. 最小目标架构
 
@@ -73,12 +73,13 @@ Review kernel 禁止导入 Loop writer/store，禁止写 Loop 状态或全局状
 
 ### PR1：原子切换
 
-1. 冻结五个 Loop 的基本状态迁移和本地 Reviewer no-mutation 合约测试。
-2. 建立极小 review kernel 和五类输入 mapper。
-3. 在五个 Loop 的原 reducer/writer 前调用新 kernel；kernel 只同步返回 execution status 与 findings，原 Loop writer 保持唯一状态迁移权。
-4. 将 Lean Code 替换为纯 Advisory。
-5. 直接移除 activation、certificate、attest、promotion 等公共 CLI 和 workflow 入口，不保留兼容命令。
-6. PR1 合并前要求：六个旧 `execute_stage_close` 调用归零；待删除目录的外部生产导入归零；scope/design authority 后置提交和阻断式 Lean close 归零；`verify_constraints` 不再要求 attestation/history。
+1. 先删除 protected-base baseline/lineage、negative-delta 和自授权 preflight；普通 CI 改为验证候选自身 collection、JUnit 终态和 cell 完整性，不新增替代 authority。
+2. 冻结五个 Loop 的基本状态迁移和本地 Reviewer no-mutation 合约测试。
+3. 建立极小 review kernel 和五类输入 mapper。
+4. 五个 Loop 的既有 writer 在产生实质结果后保持 `needs_review`；active adapter 读取该结果并运行新 kernel，kernel 只同步返回 execution status 与 findings。无 finding 且无漂移时 active adapter 才调用既有 close，原 Loop writer 始终是唯一状态迁移权。
+5. 将 Lean Code 替换为纯 Advisory。
+6. 直接移除 activation、certificate、attest、promotion 等公共 CLI 和 workflow 入口，不保留兼容命令。
+7. PR1 合并前要求：六个旧 `execute_stage_close` 调用归零；待删除目录的外部生产导入归零；scope/design authority 后置提交和阻断式 Lean close 归零；`verify_constraints` 不再要求 attestation/history；`.github/ci/test-baseline.json`、`.github/ci/test-lineage.json` 及其 protected-base workflow 路径归零。
 
 ### PR2：物理清除
 
@@ -104,6 +105,7 @@ Review kernel 禁止导入 Loop writer/store，禁止写 Loop 状态或全局状
 - Local PR Reviewer 使用独立上下文且不能修改仓库；staged 内容变化使结果失效。
 - 保留现有 Reviewer 的 HEAD 漂移、staged diff 漂移、timeout 后变更、ignored 文件变更和 reviewer commit 等 no-mutation 测试。
 - Lean finding、Lean 缺失和 Lean 分析失败均不能阻止提交或 Loop close。
+- CI 允许有意删除废止测试；每个实际候选 cell 仍必须把自身 collection 与 JUnit 终态一一绑定，失败、错误、漏执行、重复执行或缺 cell 继续阻断。
 - `src/` 对旧 `stage_review`、Lean close/authority、activation/certificate authority 的生产导入为零。
 - Review kernel 对 Loop writer/store 的导入为零，不能写 close/global 状态；复制或序列化旧审查返回值不能推进任何 Loop。
 - CLI 帮助不再宣称 activation、attest、certificate、seal 或 promotion。
