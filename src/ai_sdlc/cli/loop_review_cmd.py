@@ -423,7 +423,7 @@ def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
         raise ValueError(f"Review pack diff_digest is invalid: {review_pack_path}")
     diff_path = _repo_path(root, diff_path_text, "diff_path")
     try:
-        actual = hashlib.sha256(diff_path.read_bytes()).hexdigest()
+        actual = _file_sha256(diff_path)
     except OSError as exc:
         raise ValueError(f"Review diff is unreadable: {diff_path}") from exc
     if diff_digest != f"sha256:{actual}":
@@ -469,7 +469,11 @@ def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
             if resolved.is_symlink():
                 expanded.append(resolved)
             elif resolved.is_dir():
-                expanded.extend(path for path in sorted(resolved.rglob("*")) if path.is_file())
+                expanded.extend(
+                    path
+                    for path in sorted(resolved.rglob("*"))
+                    if path.is_symlink() or path.is_file()
+                )
             elif resolved.is_file():
                 expanded.append(resolved)
     return _unique_paths(expanded)
@@ -480,6 +484,14 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
     for path in paths:
         unique.setdefault(_lexical_path(path), path)
     return list(unique.values())
+
+
+def _file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        while chunk := handle.read(64 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _exclude_paths(paths: list[Path], *, excluded: list[Path]) -> list[Path]:

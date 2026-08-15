@@ -773,6 +773,56 @@ def test_local_pr_review_accepts_external_absolute_patch_source(
     )
 
 
+def test_local_pr_review_streams_copied_diff_digest(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-large-diff"
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps(
+            {
+                "review_id": "review-large-diff",
+                "loop_id": "loop-pr-large-diff",
+                "current_round": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-large-diff",
+        loop_id="loop-pr-large-diff",
+    )
+    diff = review_dir / "diff.patch"
+    chunk = b"binary review payload\n" * 50000
+    artifact_size = 12 * len(chunk)
+    with diff.open("wb") as handle:
+        for _ in range(12):
+            handle.write(chunk)
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    tracemalloc.start()
+    try:
+        resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id="loop-pr-large-diff",
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < artifact_size // 2
+
+
 def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> None:
     requirement_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
@@ -1155,6 +1205,53 @@ def test_stage_review_rejects_symlink_source_material(tmp_path: Path) -> None:
             tmp_path,
             loop_type="design-contract",
             loop_id="design-symlink-001",
+        )
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+@pytest.mark.parametrize("link_kind", ["directory", "broken"])
+def test_implementation_review_rejects_nested_directory_symlinks(
+    tmp_path: Path,
+    link_kind: str,
+) -> None:
+    source_dir = tmp_path / "src" / "runtime"
+    nested = source_dir / "nested"
+    nested.mkdir(parents=True)
+    (nested / "feature.py").write_text("VALUE = 1\n", encoding="utf-8")
+    link = nested / "linked-dir"
+    if link_kind == "directory":
+        target = source_dir / "target"
+        target.mkdir()
+        link.symlink_to(target, target_is_directory=True)
+    else:
+        link.symlink_to(source_dir / "missing", target_is_directory=True)
+
+    loop_id = f"implementation-nested-{link_kind}"
+    loop_dir = _write_stage_current_state(tmp_path, "implementation", loop_id)
+    _write_predecessor_fixture(tmp_path, "implementation", loop_dir)
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {
+                "design_contract_loop_id": "design-upstream",
+                "declared_scope": ["src/runtime"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="review path is not a regular file"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="implementation",
+            loop_id=loop_id,
         )
 
 
