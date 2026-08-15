@@ -153,7 +153,7 @@ def build_review_input(
     resolved_root = root.resolve(strict=True)
     artifacts = _read_paths(resolved_root, artifact_paths)
     upstream = _read_paths(resolved_root, upstream_context_paths)
-    all_paths = [path for path, _, _ in (*artifacts, *upstream)]
+    all_paths = [path for path, _, _, _ in (*artifacts, *upstream)]
     if len(all_paths) != len(set(all_paths)):
         raise ValueError("review paths must be unique")
 
@@ -168,10 +168,12 @@ def build_review_input(
         "loop_type": loop_type,
         "round_number": round_number,
         "artifacts": [
-            _digest_record(path, mode, content) for path, mode, content in artifacts
+            _digest_record(path, mode, size, digest)
+            for path, mode, size, digest in artifacts
         ],
         "upstream": [
-            _digest_record(path, mode, content) for path, mode, content in upstream
+            _digest_record(path, mode, size, digest)
+            for path, mode, size, digest in upstream
         ],
         "risk_signals": normalized_signals,
     }
@@ -186,8 +188,8 @@ def build_review_input(
         loop_type=loop_type,
         round_number=round_number,
         input_digest=hashlib.sha256(encoded).hexdigest(),
-        artifact_paths=[path for path, _, _ in artifacts],
-        upstream_context_paths=[path for path, _, _ in upstream],
+        artifact_paths=[path for path, _, _, _ in artifacts],
+        upstream_context_paths=[path for path, _, _, _ in upstream],
         risk_signals=normalized_signals,
     )
 
@@ -241,8 +243,8 @@ def merge_expert_findings(executions: Sequence[ReviewExecution]) -> ReviewExecut
 def _read_paths(
     root: Path,
     paths: Sequence[str | Path],
-) -> list[tuple[str, int, bytes]]:
-    records: list[tuple[str, int, bytes]] = []
+) -> list[tuple[str, int, int, str]]:
+    records: list[tuple[str, int, int, str]] = []
     for raw_path in paths:
         candidate = Path(raw_path)
         path = candidate if candidate.is_absolute() else root / candidate
@@ -267,9 +269,11 @@ def _read_paths(
         descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_BINARY", 0))
         try:
             opened = os.fstat(descriptor)
-            content = b""
+            digest = hashlib.sha256()
+            content_size = 0
             while chunk := os.read(descriptor, 1024 * 1024):
-                content += chunk
+                digest.update(chunk)
+                content_size += len(chunk)
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
@@ -279,10 +283,12 @@ def _read_paths(
             opened,
             after,
             closed,
-            content_size=len(content),
+            content_size=content_size,
         ):
             raise ValueError(f"review path changed while reading: {relative}")
-        records.append((relative, stat.S_IMODE(opened.st_mode), content))
+        records.append(
+            (relative, stat.S_IMODE(opened.st_mode), content_size, digest.hexdigest())
+        )
     records.sort(key=lambda item: item[0])
     return records
 
@@ -308,12 +314,17 @@ def _file_snapshot_is_stable(
     return len(identities) == 1 and content_size == opened.st_size
 
 
-def _digest_record(path: str, mode: int, content: bytes) -> dict[str, object]:
+def _digest_record(
+    path: str,
+    mode: int,
+    size: int,
+    digest: str,
+) -> dict[str, object]:
     return {
         "path": path,
         "mode": mode,
-        "size": len(content),
-        "sha256": hashlib.sha256(content).hexdigest(),
+        "size": size,
+        "sha256": digest,
     }
 
 

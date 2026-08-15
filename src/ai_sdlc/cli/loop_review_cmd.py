@@ -374,15 +374,14 @@ def _implementation_evidence_material(root: Path, loop_dir: Path) -> list[Path]:
             if not text:
                 continue
             candidate = Path(text)
-            resolved = (
-                candidate if candidate.is_absolute() else resolved_root / candidate
-            ).resolve(strict=False)
+            unresolved = candidate if candidate.is_absolute() else resolved_root / candidate
+            lexical = _lexical_path(unresolved)
             try:
-                resolved.relative_to(resolved_root)
+                lexical.relative_to(resolved_root)
             except ValueError:
                 continue
-            if resolved.is_file():
-                referenced.append(resolved)
+            if lexical.is_symlink() or lexical.is_file():
+                referenced.append(lexical)
     return _unique_paths(referenced)
 
 
@@ -469,16 +468,19 @@ def _lexical_path(path: Path) -> Path:
 def _find_local_review_dir(root: Path, loop_id: str) -> Path:
     reviews_root = root / ".ai-sdlc" / "reviews" / "pr"
     matches: list[Path] = []
+    unreadable: list[Path] = []
     for run_path in sorted(reviews_root.glob("*/review-run.json")):
         try:
             payload = json.loads(run_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Local PR review state is unreadable: {run_path}") from exc
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            unreadable.append(run_path)
+            continue
         if isinstance(payload, dict) and payload.get("loop_id") == loop_id:
             matches.append(run_path.parent)
     if len(matches) != 1:
+        suffix = f"; unreadable histories: {len(unreadable)}" if unreadable else ""
         raise ValueError(
-            f"Expected one local PR review for Loop {loop_id}, found {len(matches)}."
+            f"Expected one local PR review for Loop {loop_id}, found {len(matches)}{suffix}."
         )
     return matches[0]
 
@@ -499,6 +501,8 @@ def _read_round_number(path: Path) -> int:
 def _content_risk_signals(paths: list[Path]) -> list[str]:
     chunks: list[str] = []
     for path in paths:
+        if path.is_symlink():
+            raise ValueError(f"review path is not a regular file: {path}")
         try:
             content = path.read_bytes()
         except OSError as exc:

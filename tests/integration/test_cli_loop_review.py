@@ -215,6 +215,45 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     ).exists()
 
 
+@pytest.mark.parametrize("malformed_bytes", [b"{", b"\xff"])
+def test_local_pr_review_ignores_malformed_unrelated_history(
+    tmp_path: Path,
+    malformed_bytes: bytes,
+) -> None:
+    _init_git_repo(tmp_path)
+    reviews_root = tmp_path / ".ai-sdlc" / "reviews" / "pr"
+    malformed = reviews_root / "000-malformed"
+    malformed.mkdir(parents=True)
+    (malformed / "review-run.json").write_bytes(malformed_bytes)
+
+    review_dir = reviews_root / "review-current"
+    review_dir.mkdir()
+    (review_dir / "review-run.json").write_text(
+        json.dumps({"loop_id": "loop-pr-current", "current_round": 1}),
+        encoding="utf-8",
+    )
+    diff = review_dir / "diff.patch"
+    diff.write_text("reviewed diff\n", encoding="utf-8")
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    review_input = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-current",
+    )
+
+    assert review_input.loop_id == "loop-pr-current"
+
+
 def test_local_pr_review_binds_live_unstaged_and_untracked_source(
     tmp_path: Path,
 ) -> None:
@@ -847,6 +886,62 @@ def test_implementation_review_binds_repository_evidence_files(tmp_path: Path) -
         loop_id="implementation-evidence-001",
     )
     assert changed.input_digest != reviewed.input_digest
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+def test_implementation_review_rejects_escaped_evidence_symlink(
+    tmp_path: Path,
+) -> None:
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    loop_dir = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "implementation-evidence-symlink"
+    )
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {"design_contract_loop_id": "design-001", "declared_scope": []}
+        ),
+        encoding="utf-8",
+    )
+    for filename in ("implementation-report.json", "implementation-report.md"):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    external = tmp_path.parent / "external-evidence.log"
+    external.write_text("external result\n", encoding="utf-8")
+    evidence = tmp_path / "artifacts" / "test-results.log"
+    evidence.parent.mkdir()
+    evidence.symlink_to(external)
+    (loop_dir / "verification-evidence.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {"evidence": [evidence.relative_to(tmp_path).as_posix()]}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="implementation",
+            loop_id="implementation-evidence-symlink",
+        )
 
 
 def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> None:

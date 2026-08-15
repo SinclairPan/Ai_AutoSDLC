@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import tracemalloc
 from pathlib import Path
 
 import pytest
@@ -158,6 +159,32 @@ def test_build_review_input_is_stable_read_only_and_detects_drift(
         risk_signals=["public-api"],
     )
     assert changed.input_digest != first.input_digest
+
+
+def test_build_review_input_streams_large_artifacts(tmp_path: Path) -> None:
+    artifact = tmp_path / "trace.bin"
+    chunk = b"x" * (1024 * 1024)
+    artifact_size = 12 * len(chunk)
+    with artifact.open("wb") as handle:
+        for _ in range(12):
+            handle.write(chunk)
+
+    tracemalloc.start()
+    try:
+        build_review_input(
+            tmp_path,
+            loop_id="loop-large",
+            loop_type="frontend-evidence",
+            round_number=1,
+            artifact_paths=[artifact],
+            upstream_context_paths=[],
+            risk_signals=[],
+        )
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert peak < artifact_size
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not available")
