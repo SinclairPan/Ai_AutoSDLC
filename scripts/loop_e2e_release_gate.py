@@ -1068,9 +1068,8 @@ def _run_frontend_evidence_ready_path(
     )
     start_payload = fe_start.parsed_json or {}
     start_status = start_payload.get("loop_status")
-    advisory_needs_user = (
-        start_status == "needs_user"
-        and start_payload.get("overall_gate_status") == "passed_with_advisories"
+    advisory_warnings = (
+        start_payload.get("overall_gate_status") == "passed_with_advisories"
         and start_payload.get("execute_gate_state") == "ready"
         and start_payload.get("blocker_count") == 0
         and "allow-warnings" in str(start_payload.get("next_action", ""))
@@ -1078,12 +1077,12 @@ def _run_frontend_evidence_ready_path(
     h.assert_true(
         "Frontend-evidence loop starts with valid browser artifact",
         fe_start.parsed_json is not None
-        and (start_status == "needs_review" or advisory_needs_user),
+        and start_status == "needs_review",
     )
     h.run(status_slug, ["loop", "status", "--type", "frontend-evidence"])
     _review_input_and_recheck(h, "frontend-evidence", loop_id, f"{start_slug}_review")
     close_args = ["loop", "frontend-evidence", "close", "--loop-id", loop_id, "--yes"]
-    if advisory_needs_user:
+    if advisory_warnings:
         close_args.append("--allow-warnings")
     close_args.append("--json")
     fe_close = h.run(

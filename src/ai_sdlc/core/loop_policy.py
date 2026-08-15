@@ -19,6 +19,27 @@ from ai_sdlc.core.pr_review_models import (
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 LOOP_POLICY_PATH = Path(AI_SDLC_DIR) / "project" / "config" / "loop-policy.yaml"
+
+_RETIRED_LEAN_POLICY_KEYS = frozenset(
+    {
+        "lean_code_enabled",
+        "lean_complexity_budget",
+        "lean_complexity_delta",
+        "lean_enforcement_mode",
+        "lean_fan_out_budget",
+        "lean_fan_out_delta",
+        "lean_file_line_budget",
+        "lean_function_line_budget",
+        "lean_generated_files_per_task_budget",
+        "lean_max_rounds",
+        "lean_nesting_budget",
+        "lean_public_caller_minimum",
+        "lean_significant_changed_lines",
+        "lean_significant_changed_ratio",
+    }
+)
+
+
 class LoopPolicyError(ValueError):
     """Raised when a present loop-policy.yaml cannot be parsed safely."""
 
@@ -67,6 +88,11 @@ def load_loop_policy(root: Path) -> LoopPolicyProfile:
             payload = {}
         if not isinstance(payload, dict):
             raise ValueError("loop policy must be a YAML mapping")
+        payload = {
+            key: value
+            for key, value in payload.items()
+            if key not in _RETIRED_LEAN_POLICY_KEYS
+        }
         return LoopPolicyProfile.model_validate(payload)
     except (OSError, UnicodeError, yaml.YAMLError, ValidationError, ValueError) as exc:
         raise LoopPolicyError(

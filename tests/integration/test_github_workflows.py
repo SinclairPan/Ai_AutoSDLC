@@ -3,12 +3,16 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import runpy
+import shutil
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 import yaml
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -149,6 +153,50 @@ def test_loop_e2e_release_gate_covers_browser_probe_runner_changes() -> None:
     assert "scripts/frontend_browser_gate_probe_runner.mjs" in workflow
 
 
+def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
+    script = runpy.run_path(_REPO_ROOT / "scripts" / "loop_e2e_release_gate.py")
+
+    class FakeHarness:
+        def __init__(self) -> None:
+            self.close_args: list[str] = []
+
+        def assert_true(self, message: str, condition: bool) -> None:
+            assert condition, message
+
+        def run(self, slug: str, args: list[str], **_kwargs: object) -> SimpleNamespace:
+            if slug == "frontend_evidence_doctor_auto_artifact":
+                payload = {
+                    "browser_artifact_available": True,
+                    "recommended_provider": "external-artifact",
+                }
+            elif slug == "frontend_evidence_start":
+                payload = {
+                    "loop_status": "needs_review",
+                    "overall_gate_status": "passed_with_advisories",
+                    "execute_gate_state": "ready",
+                    "blocker_count": 0,
+                    "next_action": "Review, then close with --allow-warnings.",
+                }
+            elif slug.endswith("_review_input") or slug.endswith("_review_recheck"):
+                payload = {"input_digest": "stable-review-input"}
+            elif slug == "frontend_evidence_close":
+                self.close_args = args
+                payload = {"closed": True, "next_action": "Run local pr-review."}
+            else:
+                payload = {}
+            return SimpleNamespace(parsed_json=payload)
+
+    harness = FakeHarness()
+    script["_run_frontend_evidence_ready_path"](
+        harness,
+        loop_id="frontend-e2e",
+        start_slug="frontend_evidence_start",
+        close_slug="frontend_evidence_close",
+    )
+
+    assert "--allow-warnings" in harness.close_args
+
+
 def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
     workflow_path = _WORKFLOWS_DIR / "release-artifact-smoke.yml"
 
@@ -233,10 +281,101 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     assert "install_offline.ps1" in workflow
     assert "./install_offline.sh" in workflow
     assert "gh release upload" in workflow
+    assert "--json isDraft" in workflow
+    assert "--json assets" in workflow
+    assert "--clobber" not in workflow
     assert "release-satisfaction-proof" not in workflow
     assert "release-certificate" not in workflow
     assert "terminal-generation-burn" not in workflow
     assert "actions/attest" not in workflow
+
+
+def test_release_upload_step_refuses_published_or_duplicate_assets(tmp_path) -> None:
+    bash = shutil.which("bash")
+    if bash is None:
+        pytest.skip("The release upload step requires Bash.")
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    )
+    steps = workflow["jobs"]["build-smoke-upload"]["steps"]
+    upload_script = next(
+        step["run"]
+        for step in steps
+        if step.get("name") == "Upload smoke-passed asset to release"
+    ).replace("${{ matrix.archive }}", "tar.gz")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    fake_gh = fake_bin / "gh"
+    fake_gh.write_text(
+        """#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json isDraft"* ]]; then
+  printf '%s\n' "${FAKE_RELEASE_IS_DRAFT}"
+elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json assets"* ]]; then
+  printf '%s' "${FAKE_RELEASE_ASSETS}"
+elif [[ "$1" == "release" && "$2" == "upload" ]]; then
+  printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+else
+  exit 97
+fi
+""",
+        encoding="utf-8",
+    )
+    fake_gh.chmod(0o755)
+    asset = (
+        tmp_path
+        / "dist-offline"
+        / "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz"
+    )
+    asset.parent.mkdir()
+    asset.write_bytes(b"archive")
+    Path(f"{asset}.sha256").write_text("digest  archive\n", encoding="utf-8")
+    log_path = tmp_path / "gh.log"
+    base_env = {
+        **os.environ,
+        "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
+        "RELEASE_TAG": "v1.0.5",
+        "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
+        "AI_SDLC_RELEASE_ASSET_OS": "linux",
+        "AI_SDLC_RELEASE_ASSET_MACHINE": "amd64",
+        "FAKE_GH_LOG": str(log_path),
+    }
+
+    published = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={**base_env, "FAKE_RELEASE_IS_DRAFT": "false", "FAKE_RELEASE_ASSETS": ""},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    duplicate = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": asset.name,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    allowed = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={**base_env, "FAKE_RELEASE_IS_DRAFT": "true", "FAKE_RELEASE_ASSETS": ""},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert published.returncode != 0
+    assert duplicate.returncode != 0
+    assert allowed.returncode == 0, allowed.stderr
+    upload_call = log_path.read_text(encoding="utf-8")
+    assert asset.name in upload_call
+    assert "--clobber" not in upload_call
 
 
 def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:

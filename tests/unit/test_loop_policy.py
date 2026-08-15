@@ -64,19 +64,31 @@ def test_load_loop_policy_rejects_malformed_project_config(tmp_path) -> None:
         load_loop_policy(tmp_path)
 
 
-def test_load_loop_policy_rejects_retired_lean_keys(tmp_path) -> None:
+def test_load_loop_policy_ignores_only_retired_lean_keys(tmp_path) -> None:
     path = tmp_path / LOOP_POLICY_PATH
     path.parent.mkdir(parents=True)
     path.write_text(
         "profile_id: retained\n"
         "lean_code_enabled: true\n"
         "lean_enforcement_mode: blocking\n"
-        "lean_file_line_budget: 400\n",
+        "lean_max_rounds: 2\n"
+        "lean_file_line_budget: 400\n"
+        "lean_function_line_budget: 50\n"
+        "lean_complexity_budget: 11\n"
+        "lean_complexity_delta: 2\n"
+        "lean_nesting_budget: 5\n"
+        "lean_fan_out_budget: 12\n"
+        "lean_fan_out_delta: 3\n"
+        "lean_public_caller_minimum: 3\n"
+        "lean_generated_files_per_task_budget: 5\n"
+        "lean_significant_changed_lines: 20\n"
+        "lean_significant_changed_ratio: 0.25\n",
         encoding="utf-8",
     )
 
-    with pytest.raises(LoopPolicyError, match="Loop policy is malformed"):
-        load_loop_policy(tmp_path)
+    policy = load_loop_policy(tmp_path)
+
+    assert policy.profile_id == "retained"
 
 
 def test_load_loop_policy_still_rejects_unknown_unrelated_keys(tmp_path) -> None:
