@@ -9,6 +9,12 @@ _ROOT = Path(__file__).resolve().parents[2]
 _REMOVED_PATHS = _ROOT / "tests" / "architecture" / "review_kernel_removed_paths.txt"
 _KERNEL = _ROOT / "src" / "ai_sdlc" / "core" / "review_kernel.py"
 _SLIMMING = _ROOT / "src" / "ai_sdlc" / "core" / "slimming_advice.py"
+_RETIRED_RELEASE_AUTHORITY_PATHS = (
+    "scripts/release_truth.py",
+    "src/ai_sdlc/core/github_attestation_verifier.py",
+    "src/ai_sdlc/core/release_truth.py",
+    "src/ai_sdlc/core/release_truth_models.py",
+)
 
 
 def _inventory() -> tuple[str, ...]:
@@ -122,3 +128,23 @@ def test_slimming_advice_cannot_block_or_close_a_loop() -> None:
     }
     assert public_names == {"SlimmingAdvice", "collect_slimming_advice"}
 
+
+def test_retired_release_authority_is_physically_absent() -> None:
+    assert [path for path in _RETIRED_RELEASE_AUTHORITY_PATHS if (_ROOT / path).exists()] == []
+
+    production_paths = (
+        _ROOT / ".github" / "workflows" / "release-build.yml",
+        _ROOT / ".github" / "workflows" / "release-artifact-smoke.yml",
+        _ROOT / "src" / "ai_sdlc" / "core" / "update_advisor.py",
+        _ROOT / "scripts" / "loop_e2e_release_gate.py",
+    )
+    retired_markers = (
+        "release-satisfaction-proof",
+        "release-certificate",
+        "terminal-generation-burn",
+        "pr-review\", \"attest",
+        "latest-attestation.json",
+    )
+    for path in production_paths:
+        source = path.read_text(encoding="utf-8").lower()
+        assert not {marker for marker in retired_markers if marker in source}, path

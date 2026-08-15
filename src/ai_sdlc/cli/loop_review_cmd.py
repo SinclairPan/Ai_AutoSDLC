@@ -233,4 +233,3 @@ def _emit(payload: dict[str, object], *, json_output: bool) -> None:
 
 
 __all__ = ["loop_review", "resolve_review_input"]
-

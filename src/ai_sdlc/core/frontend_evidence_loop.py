@@ -1420,7 +1420,11 @@ def _build_report(
         screenshot_refs=snapshot.screenshot_refs,
         trace_refs=snapshot.trace_refs,
         artifact_refs=[record.artifact_ref for record in snapshot.artifact_records],
-        next_action=_next_action_for_status(status, frontend_input.work_item_path),
+        next_action=_next_action_for_status(
+            status,
+            frontend_input.work_item_path,
+            frontend_input.loop_id,
+        ),
     )
 
 
@@ -1440,7 +1444,7 @@ def _loop_status_for_snapshot(
             or warnings
         ):
             return LoopStatus.NEEDS_USER
-        return LoopStatus.PASSED
+        return LoopStatus.NEEDS_REVIEW
     if snapshot.execute_gate_state in {
         FRONTEND_GATE_EXECUTE_STATE_NEEDS_REMEDIATION,
         FRONTEND_GATE_EXECUTE_STATE_RECHECK_REQUIRED,
@@ -1487,9 +1491,16 @@ def _report_warnings(snapshot: FrontendEvidenceSnapshot) -> list[str]:
     return _unique_strings(warnings)
 
 
-def _next_action_for_status(status: LoopStatus, work_item_path: str) -> str:
-    if status == LoopStatus.PASSED:
-        return "Run ai-sdlc loop frontend-evidence close --yes."
+def _next_action_for_status(
+    status: LoopStatus,
+    work_item_path: str,
+    loop_id: str,
+) -> str:
+    if status == LoopStatus.NEEDS_REVIEW:
+        return (
+            "Run ai-sdlc loop review --type frontend-evidence "
+            f"--loop-id {loop_id}."
+        )
     if status == LoopStatus.NEEDS_USER:
         return "Run ai-sdlc loop frontend-evidence close --yes --allow-warnings."
     if status == LoopStatus.NEEDS_FIX:
@@ -1830,14 +1841,17 @@ def _next_guidance_for_result(
             safety="may_call_local_review_agent",
             evidence=evidence,
         )
-    if report.status == LoopStatus.PASSED:
+    if report.status == LoopStatus.NEEDS_REVIEW:
         return FrontendEvidenceNextGuidance(
-            command="ai-sdlc loop frontend-evidence close --yes",
-            reason="Browser gate evidence passed with no blockers or advisory warnings.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type frontend-evidence "
+                f"--loop-id {report.loop_id}"
+            ),
+            reason="Frontend evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety="writes_project_artifacts",
+            safety="safe_read_only",
             evidence=evidence,
         )
     if report.status == LoopStatus.NEEDS_USER:
@@ -1872,8 +1886,8 @@ def _next_guidance_for_result(
 
 
 def _result_text_for_report(report: FrontendEvidenceReport) -> str:
-    if report.status == LoopStatus.PASSED:
-        return "Frontend evidence passed."
+    if report.status == LoopStatus.NEEDS_REVIEW:
+        return "Frontend evidence is ready for bounded adversarial review."
     if report.status == LoopStatus.NEEDS_USER:
         return "Frontend evidence passed with warnings."
     if report.status == LoopStatus.NEEDS_FIX:

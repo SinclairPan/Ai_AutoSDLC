@@ -43,7 +43,6 @@ def _emit_fields(payload: dict[str, object]) -> None:
         ("review_pack_path", "review_pack"),
         ("source_resolution_path", "source_resolution"),
         ("findings_path", "findings"),
-        ("ci_certificate_bundle_path", "ci_certificate_bundle"),
     ):
         if payload.get(key):
             _CONSOLE.print(f"{label}: {payload[key]}")

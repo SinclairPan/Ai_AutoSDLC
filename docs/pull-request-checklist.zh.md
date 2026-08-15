@@ -35,11 +35,8 @@
 ## 发布相关变更
 
 - [ ] `README.md`、`USER_GUIDE.zh-CN.md` 与 `packaging/offline/README.md` 描述一致；
-- [ ] 源码候选版本为 `1.0.5`，`last published version is v1.0.2`；
-- [ ] `v1.0.5 release candidate / not published / prepared-disabled`，且 `WorkItem 010 three-PR release migration` 的当前 PR 没有发布授权；
-- [ ] 不得上传、发布或下载 v1.0.5 候选；
-- [ ] `v1.0.4 terminal NO-GO / not released` 保持冻结；
-- [ ] 不得 redispatch、rerun、上传或发布 v1.0.4；
+- [ ] 源码候选版本为 `1.0.5`，公开稳定版本仍为 `v1.0.2`；
+- [ ] 发布变更只使用普通 GitHub Release、tag、跨平台 smoke 和分支保护；
 - [ ] 包版本、源码版本、锁文件和工作流一致；
 - [ ] README、用户指南和打包说明一致；
 - [ ] 离线包名称与 manifest 一致；

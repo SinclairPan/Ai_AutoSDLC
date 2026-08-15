@@ -65,4 +65,3 @@ def test_review_kernel_exposes_no_close_or_persistence_symbols() -> None:
         for symbol in public_symbols
         if any(fragment in symbol.lower() for fragment in forbidden_fragments)
     }
-

@@ -180,4 +180,3 @@ def _git(root: Path, *args: str) -> str:
         capture_output=True,
         text=True,
     ).stdout.strip()
-

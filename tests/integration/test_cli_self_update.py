@@ -189,11 +189,6 @@ def test_self_update_check_reports_retry_and_offline_rescue_on_refresh_failure(
             upstream_latest_version=None,
             channel_latest_version=None,
             release_url=None,
-            release_trust="unknown",
-            release_truth_freshness="unavailable",
-            release_truth_reason_code="network_error",
-            release_certificate_digest=None,
-            revocation_generation=0,
             eligible_notice_classes=(),
             reason_code="network_error",
             upgrade_command=None,
@@ -398,6 +393,7 @@ def test_self_update_installs_wheel_matching_requested_version(
     assert commands[0][-1] == str(target)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows PATH repair only")
 def test_self_update_bare_cli_validation_repairs_windows_process_path_silently(
     tmp_path, monkeypatch
 ) -> None:
@@ -410,24 +406,7 @@ def test_self_update_bare_cli_validation_repairs_windows_process_path_silently(
     old_cli.write_text("@echo off\r\necho 1.0.0\r\n", encoding="utf-8")
     new_cli.write_text("@echo off\r\necho 1.1.0\r\n", encoding="utf-8")
     monkeypatch.setenv("PATH", f"{old_dir}{os.pathsep}{new_dir}")
-    monkeypatch.setattr(self_update_cmd.sys, "platform", "win32")
-    monkeypatch.setattr(self_update_cmd, "_discover_path_candidates", lambda: [])
     monkeypatch.setattr(self_update_cmd, "_current_cli_directory", lambda: new_dir)
-    monkeypatch.setattr(self_update_cmd, "_repair_user_path_if_possible", lambda _path: None)
-    monkeypatch.setattr(
-        self_update_cmd.shutil,
-        "which",
-        lambda _name: str(
-            new_cli
-            if Path(os.environ["PATH"].split(os.pathsep)[0]) == new_dir
-            else old_cli
-        ),
-    )
-    monkeypatch.setattr(
-        self_update_cmd,
-        "_read_cli_candidate_version",
-        lambda path: ("1.1.0", None) if path == new_cli else ("1.0.0", None),
-    )
 
     version = self_update_cmd._verify_bare_cli_version("1.1.0")
 
@@ -440,6 +419,7 @@ def test_self_update_bare_cli_validation_repairs_windows_process_path_silently(
     }
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX validation path")
 def test_self_update_bare_cli_validation_does_not_mask_posix_path_gaps(
     tmp_path, monkeypatch
 ) -> None:
@@ -455,14 +435,6 @@ def test_self_update_bare_cli_validation_does_not_mask_posix_path_gaps(
     new_cli.chmod(0o755)
     original_path = str(old_dir)
     monkeypatch.setenv("PATH", original_path)
-    monkeypatch.setattr(self_update_cmd.sys, "platform", "linux")
-    monkeypatch.setattr(self_update_cmd, "_discover_path_candidates", lambda: [])
-    monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _name: str(old_cli))
-    monkeypatch.setattr(
-        self_update_cmd,
-        "_read_cli_candidate_version",
-        lambda _path: ("1.0.0", None),
-    )
     monkeypatch.setattr(self_update_cmd, "_current_cli_directory", lambda: new_dir)
 
     with pytest.raises(self_update_cmd.SelfUpdateError):

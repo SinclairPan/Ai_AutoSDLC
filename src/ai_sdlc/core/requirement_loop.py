@@ -1186,7 +1186,10 @@ def _derive_clarification_questions(text: str, acceptance: list[str]) -> list[st
 
 def _next_action_for_requirement(loop_status: LoopStatus, loop_id: str) -> str:
     if loop_status == LoopStatus.NEEDS_REVIEW:
-        return "Run ai-sdlc loop requirement freeze --yes."
+        return (
+            "Run ai-sdlc loop review --type requirement "
+            f"--loop-id {loop_id}."
+        )
     if loop_status == LoopStatus.NEEDS_USER:
         return (
             "Add acceptance criteria, then run ai-sdlc loop requirement start "

@@ -653,7 +653,7 @@ def test_loop_requirement_start_status_and_freeze_json(tmp_path: Path) -> None:
     assert status_payload["current_loop"]["loop_type"] == "requirement"
     assert status_payload["current_loop"]["requirement"]["acceptance_count"] == 1
     assert status_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop requirement freeze --yes"
+        "ai-sdlc loop review --type requirement --loop-id req-cli"
     )
 
     assert freeze.exit_code == 0
@@ -810,8 +810,8 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
     assert check.exit_code == 0
     check_payload = json.loads(check.output)
     assert check_payload["status"] == "ready"
-    assert check_payload["loop_status"] == "passed"
-    assert check_payload["design_contract"]["status"] == "passed"
+    assert check_payload["loop_status"] == "needs_review"
+    assert check_payload["design_contract"]["status"] == "needs_review"
     assert check_payload["design_contract"]["coverage_count"] == 2
     assert check_payload["design_contract"]["coverage_matrix_path"].endswith(
         ".ai-sdlc/loops/design-contract/dc-cli/coverage-matrix.json"
@@ -820,13 +820,13 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
         ".ai-sdlc/loops/design-contract/dc-cli/design-contract-report.json"
     )
     assert check_payload["next_action"] == (
-        "Run ai-sdlc loop design-contract close --yes."
+        "Run ai-sdlc loop review --type design-contract --loop-id dc-cli."
     )
     assert check_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop design-contract close --yes"
+        "ai-sdlc loop review --type design-contract --loop-id dc-cli"
     )
-    assert check_payload["next_guidance"]["requires_model"] is False
-    assert check_payload["next_guidance"]["writes_artifacts"] is True
+    assert check_payload["next_guidance"]["requires_model"] is True
+    assert check_payload["next_guidance"]["writes_artifacts"] is False
     assert check_payload["next_guidance"]["writes_code"] is False
 
     assert status.exit_code == 0
@@ -835,7 +835,7 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
     assert status_payload["current_loop"]["loop_type"] == "design-contract"
     assert status_payload["current_loop"]["design_contract"]["blocker_count"] == 0
     assert status_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop design-contract close --yes"
+        "ai-sdlc loop review --type design-contract --loop-id dc-cli"
     )
 
     assert close.exit_code == 0
@@ -1043,10 +1043,10 @@ def test_loop_implementation_start_record_status_and_close_json(
 
     assert record.exit_code == 0
     record_payload = json.loads(record.output)
-    assert record_payload["loop_status"] == "passed"
+    assert record_payload["loop_status"] == "needs_review"
     assert record_payload["done_count"] == 1
     assert record_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop implementation close --yes"
+        "ai-sdlc loop review --type implementation --loop-id impl-cli"
     )
 
     assert close.exit_code == 0
@@ -1141,7 +1141,7 @@ def test_loop_frontend_evidence_start_status_and_close_json(
     assert start.exit_code == 0
     start_payload = json.loads(start.output)
     assert start_payload["status"] == "ready"
-    assert start_payload["loop_status"] == "passed"
+    assert start_payload["loop_status"] == "needs_review"
     assert start_payload["frontend_evidence"]["gate_run_id"] == "gate-run-cli"
     assert start_payload["frontend_evidence"]["report_path"].endswith(
         ".ai-sdlc/loops/frontend-evidence/fe-cli/frontend-evidence-report.json"
@@ -1154,7 +1154,7 @@ def test_loop_frontend_evidence_start_status_and_close_json(
         "demo-frontend"
     )
     assert status_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop frontend-evidence close --yes"
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-cli"
     )
 
     assert close.exit_code == 0

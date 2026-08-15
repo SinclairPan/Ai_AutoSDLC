@@ -20,6 +20,7 @@ from ai_sdlc.core.pr_review_service import (
     doctor_pr_review,
     fix_pr_review,
     parse_provider_command,
+    record_pr_review_verification_evidence,
     rerun_pr_review,
     start_pr_review,
     status_pr_review,
@@ -871,15 +872,16 @@ def test_close_blocks_required_findings_then_allows_risk_accepted(
     )
 
     blocked = close_pr_review(tmp_path)
-    accepted = close_pr_review(
+    evidence = record_pr_review_verification_evidence(
         tmp_path,
-        require_no_blockers=True,
-        verification_evidence=["uv run pytest tests/unit/test_x.py -q"],
+        evidence=["uv run pytest tests/unit/test_x.py -q"],
     )
+    accepted = close_pr_review(tmp_path, require_no_blockers=True)
 
     assert blocked.status == PRReviewCommandStatus.BLOCKED
     assert blocked.verdict == "blocked"
     assert "REQUIRED" in blocked.blocker
+    assert evidence.status == PRReviewCommandStatus.READY
     assert accepted.status == PRReviewCommandStatus.CLOSED
     assert accepted.verdict == "risk_accepted"
     assert Path(accepted.final_report_path).is_file()

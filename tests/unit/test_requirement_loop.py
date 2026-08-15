@@ -37,7 +37,9 @@ def test_start_requirement_loop_writes_artifacts(tmp_path: Path) -> None:
     assert result.requirement.summary == "运营用户需要订单审批流，范围只覆盖后台人工审批。"
     assert result.requirement.source_kind == "idea"
     assert result.requirement.acceptance_count == 2
-    assert result.next_action == "Run ai-sdlc loop requirement freeze --yes."
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type requirement --loop-id req-001."
+    )
 
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "req-001"
     assert (loop_dir / "loop-run.json").is_file()
@@ -111,7 +113,9 @@ def test_start_requirement_loop_reuses_existing_intake_when_adding_acceptance(
     assert result.loop_status == "needs_review"
     assert result.acceptance_count == 1
     assert result.summary == "运营用户需要订单审批流，范围只覆盖后台人工审批。"
-    assert result.next_action == "Run ai-sdlc loop requirement freeze --yes."
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type requirement --loop-id req-add-acceptance."
+    )
 
     intake_path = (
         tmp_path

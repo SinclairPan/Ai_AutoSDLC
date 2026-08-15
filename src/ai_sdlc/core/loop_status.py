@@ -2090,27 +2090,15 @@ def _guidance_for_review_run(
             safety=LoopNextActionSafety.WRITES_REVIEW_ARTIFACTS,
             evidence=evidence,
         )
-    if review_run.status == LoopStatus.PASSED:
-        if final_report_path:
-            evidence.append(final_report_path)
-        return LoopNextActionGuidance(
-            command="ai-sdlc pr-review close",
-            reason="The review passed; close it by writing the final review report.",
-            requires_model=False,
-            writes_artifacts=True,
-            writes_code=False,
-            safety=LoopNextActionSafety.WRITES_REVIEW_ARTIFACTS,
-            evidence=evidence,
-        )
     if review_run.status == LoopStatus.NEEDS_REVIEW:
         return LoopNextActionGuidance(
-            command="ai-sdlc pr-review rerun",
-            reason=(
-                "The review needs another reviewer pass; rerun the local independent "
-                "review agent against the current diff."
+            command=(
+                "ai-sdlc loop review --type local-pr-review "
+                f"--loop-id {review_run.loop_id}"
             ),
+            reason="Local PR findings are ready for bounded adversarial review.",
             requires_model=True,
-            writes_artifacts=True,
+            writes_artifacts=False,
             writes_code=False,
             safety=LoopNextActionSafety.MAY_CALL_LOCAL_REVIEW_AGENT,
             evidence=evidence,
@@ -2220,17 +2208,17 @@ def _guidance_for_requirement_loop(
             safety=LoopNextActionSafety.NEEDS_USER,
             evidence=[*evidence, _repo_relative_path(root, loop_run_path.parent / "acceptance-checklist.md")],
         )
-    if loop_run.status in {LoopStatus.NEEDS_REVIEW, LoopStatus.PASSED}:
+    if loop_run.status == LoopStatus.NEEDS_REVIEW:
         return LoopNextActionGuidance(
-            command="ai-sdlc loop requirement freeze --yes",
-            reason=(
-                "The requirement has acceptance criteria; freeze it before "
-                "starting the design-contract loop."
+            command=(
+                "ai-sdlc loop review --type requirement "
+                f"--loop-id {loop_run.loop_id}"
             ),
-            requires_model=False,
-            writes_artifacts=True,
+            reason="Requirement evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
+            safety=LoopNextActionSafety.SAFE_READ_ONLY,
             evidence=evidence,
         )
     if loop_run.status == LoopStatus.CLOSED:
@@ -2312,14 +2300,17 @@ def _guidance_for_design_contract_loop(
             safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
             evidence=evidence,
         )
-    if loop_run.status == LoopStatus.PASSED:
+    if loop_run.status == LoopStatus.NEEDS_REVIEW:
         return LoopNextActionGuidance(
-            command="ai-sdlc loop design-contract close --yes",
-            reason="The design contract passed; close it before implementation.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type design-contract "
+                f"--loop-id {loop_run.loop_id}"
+            ),
+            reason="The design contract is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
+            safety=LoopNextActionSafety.SAFE_READ_ONLY,
             evidence=evidence,
         )
     if loop_run.status == LoopStatus.CLOSED or closed:
@@ -2400,14 +2391,17 @@ def _guidance_for_implementation_loop(
             safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
             evidence=evidence,
         )
-    if loop_run.status == LoopStatus.PASSED:
+    if loop_run.status == LoopStatus.NEEDS_REVIEW:
         return LoopNextActionGuidance(
-            command="ai-sdlc loop implementation close --yes",
-            reason="All required implementation tasks have recorded evidence.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type implementation "
+                f"--loop-id {loop_run.loop_id}"
+            ),
+            reason="Implementation evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
+            safety=LoopNextActionSafety.SAFE_READ_ONLY,
             evidence=evidence,
         )
     if loop_run.status == LoopStatus.CLOSED or closed:
@@ -2483,14 +2477,17 @@ def _guidance_for_frontend_evidence_loop(
             evidence=evidence,
             alternatives=["Inspect the historical frontend-evidence artifacts."],
         )
-    if loop_run.status == LoopStatus.PASSED:
+    if loop_run.status == LoopStatus.NEEDS_REVIEW:
         return LoopNextActionGuidance(
-            command="ai-sdlc loop frontend-evidence close --yes",
-            reason="Frontend browser gate evidence passed; close it before PR review.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type frontend-evidence "
+                f"--loop-id {loop_run.loop_id}"
+            ),
+            reason="Frontend evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
+            safety=LoopNextActionSafety.SAFE_READ_ONLY,
             evidence=evidence,
         )
     if loop_run.status == LoopStatus.NEEDS_USER:

@@ -56,6 +56,7 @@ def test_pr_review_help_lists_p0_commands() -> None:
     assert "status" in result.output
     assert "fix" in result.output
     assert "rerun" in result.output
+    assert "record-evidence" in result.output
     assert "close" in result.output
     assert "attest" not in result.output
 

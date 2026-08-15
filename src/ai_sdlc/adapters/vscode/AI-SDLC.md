@@ -18,7 +18,7 @@
 
 Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review 产出实质结果后，由当前 AI 代理自动执行以下边界内复核，不要求用户选择专家、管理复核文件或裁决普通分歧：
 
-1. 对当前 Loop 执行 `ai-sdlc loop review --type <类型> --loop-id <ID> --json`，读取实质结果和风险信号。
+1. 对当前 Loop 执行 `ai-sdlc loop review --type <类型> --loop-id <ID> --json`，读取实质结果和风险信号。Local PR Review 在此之前先用 `ai-sdlc pr-review record-evidence --evidence "<命令和结果>"` 记录本次验证证据，使其进入同一次复核输入。
 2. 按结果内容临时选择一个主专家；仅在存在明确交叉风险时，最多增加一个交叉风险专家。每位专家必须使用独立于结果编写者的全新且只读的独立上下文，不继承编写过程的推理历史。
 3. 专家只返回有证据位置的问题和建议，不修改代码或工件。存在问题时交回原结果编写者修复并重跑该 Loop 的正常检查；同一结果最多进行一次修复后复审。
 4. 准备执行现有 close 命令前，用 `ai-sdlc loop review --type <类型> --loop-id <ID> --expect-digest <摘要> --json` 复核输入未漂移。若输入变化，废弃旧结论并按上述上限复审。

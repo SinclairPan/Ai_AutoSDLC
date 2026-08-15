@@ -339,6 +339,50 @@ def main() -> int:
             temp_dir.cleanup()
 
 
+def _review_input_and_recheck(
+    h: E2EHarness,
+    loop_type: str,
+    loop_id: str,
+    slug: str,
+) -> None:
+    first = h.run(
+        f"{slug}_input",
+        [
+            "loop",
+            "review",
+            "--type",
+            loop_type,
+            "--loop-id",
+            loop_id,
+            "--json",
+        ],
+        parse_json=True,
+    )
+    if first.parsed_json is None:
+        raise AssertionError(f"{slug} did not produce JSON")
+    digest = str(first.parsed_json["input_digest"])
+    recheck = h.run(
+        f"{slug}_recheck",
+        [
+            "loop",
+            "review",
+            "--type",
+            loop_type,
+            "--loop-id",
+            loop_id,
+            "--expect-digest",
+            digest,
+            "--json",
+        ],
+        parse_json=True,
+    )
+    h.assert_true(
+        f"{loop_type} review input remains stable before close",
+        recheck.parsed_json is not None
+        and recheck.parsed_json.get("input_digest") == digest,
+    )
+
+
 def run_scenario(
     h: E2EHarness,
     *,
@@ -424,6 +468,7 @@ def run_scenario(
         req.parsed_json is not None and req.parsed_json.get("status") == "ready",
     )
     h.run("requirement_status_human", ["loop", "status", "--type", "requirement"])
+    _review_input_and_recheck(h, "requirement", "req-e2e", "requirement_review")
     req_freeze = h.run(
         "requirement_freeze",
         ["loop", "requirement", "freeze", "--loop-id", "req-e2e", "--yes", "--json"],
@@ -485,11 +530,12 @@ def run_scenario(
         parse_json=True,
     )
     h.assert_true(
-        "Design-contract check passes after repairing task contract",
+        "Design-contract check is ready for expert review after repair",
         dc_ready.parsed_json is not None
-        and dc_ready.parsed_json.get("loop_status") == "passed",
+        and dc_ready.parsed_json.get("loop_status") == "needs_review",
     )
     h.run("design_contract_status_human", ["loop", "status", "--type", "design-contract"])
+    _review_input_and_recheck(h, "design-contract", "dc-e2e", "design_contract_review")
     dc_close = h.run(
         "design_contract_close",
         ["loop", "design-contract", "close", "--loop-id", "dc-e2e", "--yes", "--json"],
@@ -568,6 +614,7 @@ def run_scenario(
         and impl_record.parsed_json.get("done_count") == 1,
     )
     h.run("implementation_status_human", ["loop", "status", "--type", "implementation"])
+    _review_input_and_recheck(h, "implementation", "impl-e2e", "implementation_review")
     impl_close = h.run(
         "implementation_close",
         ["loop", "implementation", "close", "--loop-id", "impl-e2e", "--yes", "--json"],
@@ -758,6 +805,26 @@ def run_scenario(
         and review_rerun.parsed_json.get("verdict") == "clean",
     )
     h.run("local_pr_review_status_clean_human", ["loop", "status"])
+    h.run(
+        "pr_review_record_evidence",
+        [
+            "pr-review",
+            "record-evidence",
+            "--evidence",
+            "loop E2E verification passed",
+            "--json",
+        ],
+        parse_json=True,
+    )
+    if review_rerun.parsed_json is None:
+        raise AssertionError("pr_review_rerun_clean did not produce JSON")
+    local_review_loop_id = str(review_rerun.parsed_json["loop_id"])
+    _review_input_and_recheck(
+        h,
+        "local-pr-review",
+        local_review_loop_id,
+        "local_pr_review",
+    )
     review_close = h.run(
         "pr_review_close",
         ["pr-review", "close", "--json"],
@@ -771,16 +838,6 @@ def run_scenario(
         in {"clean", "fully_clean", "risk_accepted"}
         and review_close.parsed_json.get("unresolved_required", 0) == 0,
     )
-    review_attest = h.run(
-        "pr_review_attest",
-        ["pr-review", "attest", "--json"],
-        parse_json=True,
-    )
-    h.assert_true(
-        "Local PR review attestation is CI-readable and model-free for CI",
-        review_attest.parsed_json is not None
-        and review_attest.parsed_json.get("status") == "ready",
-    )
     h.run("loop_list_all_local_pr_review_human", ["loop", "list"])
 
     for key, rel in {
@@ -788,11 +845,15 @@ def run_scenario(
         "design_contract_report": ".ai-sdlc/loops/design-contract/dc-e2e/design-contract-report.json",
         "implementation_report": ".ai-sdlc/loops/implementation/impl-e2e/implementation-report.json",
         "frontend_evidence_report": ".ai-sdlc/loops/frontend-evidence/fe-e2e/frontend-evidence-report.json",
-        "pr_review_attestation": ".ai-sdlc/reviews/pr/latest-attestation.json",
     }.items():
         path = h.project_root / rel
         h.assert_true(f"Artifact exists: {rel}", path.is_file())
         h.result.key_artifacts[key] = str(path)
+    if review_close.parsed_json is None:
+        raise AssertionError("pr_review_close did not produce JSON")
+    final_report = Path(str(review_close.parsed_json["final_report_path"]))
+    h.assert_true("Local PR final report exists", final_report.is_file())
+    h.result.key_artifacts["pr_review_final_report"] = str(final_report)
 
 
 def _write_work_item(work_item: Path, *, valid_tasks: bool) -> None:
@@ -1015,9 +1076,10 @@ def _run_frontend_evidence_ready_path(
     h.assert_true(
         "Frontend-evidence loop starts with valid browser artifact",
         fe_start.parsed_json is not None
-        and (start_status == "passed" or advisory_needs_user),
+        and (start_status == "needs_review" or advisory_needs_user),
     )
     h.run(status_slug, ["loop", "status", "--type", "frontend-evidence"])
+    _review_input_and_recheck(h, "frontend-evidence", loop_id, f"{start_slug}_review")
     close_args = ["loop", "frontend-evidence", "close", "--loop-id", loop_id, "--yes"]
     if advisory_needs_user:
         close_args.append("--allow-warnings")

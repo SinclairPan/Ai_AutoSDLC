@@ -263,7 +263,7 @@ def _design_contract_report(
         loop_id=contract_input.loop_id,
         work_item_id=contract_input.work_item_id,
         work_item_path=contract_input.work_item_path,
-        status=LoopStatus.NEEDS_FIX if blocker_count else LoopStatus.PASSED,
+        status=LoopStatus.NEEDS_FIX if blocker_count else LoopStatus.NEEDS_REVIEW,
         blocker_count=blocker_count,
         warning_count=warning_count,
         coverage_count=len(coverage_items),

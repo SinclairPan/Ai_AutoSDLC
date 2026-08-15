@@ -29,7 +29,7 @@ from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
 
 
-def test_start_frontend_evidence_loop_writes_passed_artifacts(tmp_path: Path) -> None:
+def test_start_frontend_evidence_loop_waits_for_expert_review(tmp_path: Path) -> None:
     work_item = _write_work_item(tmp_path)
     _write_closed_implementation_loop(tmp_path, work_item)
     _write_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
@@ -43,16 +43,20 @@ def test_start_frontend_evidence_loop_writes_passed_artifacts(tmp_path: Path) ->
     )
 
     assert result.status == "ready"
-    assert result.loop_status == "passed"
+    assert result.loop_status == "needs_review"
     assert result.work_item_id == "demo-frontend"
     assert result.gate_run_id == "gate-run-001"
     assert result.overall_gate_status == "passed"
     assert result.warning_count == 0
     assert result.blocker_count == 0
-    assert result.next_action == "Run ai-sdlc loop frontend-evidence close --yes."
-    assert result.next_guidance.command == "ai-sdlc loop frontend-evidence close --yes"
-    assert result.next_guidance.requires_model is False
-    assert result.next_guidance.writes_artifacts is True
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type frontend-evidence --loop-id fe-001."
+    )
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-001"
+    )
+    assert result.next_guidance.requires_model is True
+    assert result.next_guidance.writes_artifacts is False
     assert result.next_guidance.writes_code is False
     assert result.frontend_evidence is not None
     assert result.frontend_evidence.report_path.endswith(
@@ -71,7 +75,7 @@ def test_start_frontend_evidence_loop_writes_passed_artifacts(tmp_path: Path) ->
         (loop_dir / "frontend-evidence-report.json").read_text(encoding="utf-8")
     )
     assert report["artifact_kind"] == "frontend-evidence-report"
-    assert report["status"] == "passed"
+    assert report["status"] == "needs_review"
     assert report["screenshot_refs"] == [
         ".ai-sdlc/artifacts/frontend-browser-gate/gate-run-001/shared-runtime/navigation-screenshot.png"
     ]

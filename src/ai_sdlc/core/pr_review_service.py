@@ -215,6 +215,19 @@ class PRReviewFixResult(BaseModel):
     next_action: str = ""
 
 
+class PRReviewEvidenceResult(BaseModel):
+    """Result for recording verification evidence before expert review."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    status: PRReviewCommandStatus
+    review_id: str = ""
+    evidence_path: str = ""
+    evidence_count: int = 0
+    blocker: str = ""
+    next_action: str = ""
+
+
 class PRReviewCloseResult(BaseModel):
     """Result for closing a local PR review."""
 
@@ -583,6 +596,67 @@ def status_pr_review(root: Path) -> PRReviewStatusResult:
             next_action="Rerun ai-sdlc pr-review start.",
         )
     return _status_result(root, review_run_path, review_run, "")
+
+
+def record_pr_review_verification_evidence(
+    root: Path,
+    *,
+    evidence: list[str],
+) -> PRReviewEvidenceResult:
+    """Record ordinary verification output before bounded expert review."""
+
+    entries = list(dict.fromkeys(item.strip() for item in evidence if item.strip()))
+    if not entries:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker="At least one non-empty verification evidence line is required.",
+            next_action="Pass --evidence with the command and result to record.",
+        )
+    try:
+        review_run, _ = _load_current_review_run(root)
+    except FileNotFoundError as exc:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.NO_REVIEW,
+            blocker=str(exc),
+            next_action="Run ai-sdlc pr-review start --base <branch>.",
+        )
+    except (json.JSONDecodeError, ValidationError, ValueError, OSError) as exc:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker=f"Current PR review artifacts are malformed: {exc}",
+            next_action="Rerun ai-sdlc pr-review start.",
+        )
+    if review_run.status == LoopStatus.CLOSED:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker="Closed PR review evidence cannot be changed.",
+            next_action="Start a new local PR review for a changed diff.",
+        )
+    evidence_path = (
+        LoopArtifactStore(root.resolve()).review_run_dir(review_run.review_id)
+        / "verification-evidence.json"
+    )
+    LoopArtifactStore(root.resolve()).write_json_artifact(
+        evidence_path,
+        {
+            "schema_version": "1",
+            "artifact_kind": "review-verification-evidence",
+            "review_id": review_run.review_id,
+            "loop_id": review_run.loop_id,
+            "entries": entries,
+        },
+    )
+    return PRReviewEvidenceResult(
+        status=PRReviewCommandStatus.READY,
+        review_id=review_run.review_id,
+        evidence_path=str(evidence_path),
+        evidence_count=len(entries),
+        next_action=(
+            "Run ai-sdlc loop review --type local-pr-review "
+            f"--loop-id {review_run.loop_id}."
+        ),
+    )
 
 
 def _status_result(
@@ -1075,7 +1149,12 @@ def _reset_rerun_resolution_artifacts(root: Path, review_id: str) -> None:
                 "round_number": round_number,
             },
         )
-    for name in ("resolution.yaml", "fix-plan.md", "final-report.md"):
+    for name in (
+        "resolution.yaml",
+        "fix-plan.md",
+        "final-report.md",
+        "verification-evidence.json",
+    ):
         try:
             (review_dir / name).unlink()
         except FileNotFoundError:
@@ -1086,7 +1165,6 @@ def close_pr_review(
     root: Path,
     *,
     require_no_blockers: bool = False,
-    verification_evidence: list[str] | None = None,
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
@@ -1110,6 +1188,9 @@ def close_pr_review(
             return not_closeable
         findings = _load_findings(root.resolve(), review_run)
         review_pack = _load_review_pack(root.resolve(), review_run.review_pack_path)
+        verification_evidence = _load_verification_evidence(
+            root.resolve(), review_run
+        )
     except FileNotFoundError as exc:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.NO_REVIEW,
@@ -1274,7 +1355,7 @@ def close_pr_review(
             resolution_records=resolution_records,
             verdict=verdict,
             unresolved=unresolved,
-            verification_evidence=verification_evidence or [],
+            verification_evidence=verification_evidence,
             status=status,
             blocker=blocker,
             next_action=next_action,
@@ -2326,7 +2407,7 @@ def _status_from_loop_status(status: LoopStatus) -> PRReviewCommandStatus:
 
 def _loop_status_from_provider(status: ProviderRunStatus) -> LoopStatus:
     if status == ProviderRunStatus.SUCCESS:
-        return LoopStatus.PASSED
+        return LoopStatus.NEEDS_REVIEW
     if status == ProviderRunStatus.CHANGES_REQUIRED:
         return LoopStatus.NEEDS_FIX
     if status == ProviderRunStatus.NEEDS_USER:
@@ -2342,7 +2423,9 @@ def _count_findings(findings: ReviewFindings | None, severity: FindingSeverity) 
 
 def _next_action_for_provider(result: ProviderRunResult) -> str:
     if result.status == ProviderRunStatus.SUCCESS:
-        return "Run ai-sdlc pr-review close."
+        return (
+            "Record verification evidence, then run bounded local PR expert review."
+        )
     if result.status == ProviderRunStatus.CHANGES_REQUIRED:
         return "Run ai-sdlc pr-review fix."
     if result.status == ProviderRunStatus.NEEDS_USER:
@@ -2385,6 +2468,29 @@ def _load_review_pack(root: Path, path_text: str) -> ReviewPack:
     if not path.exists():
         raise FileNotFoundError("Current review-pack.json is missing.")
     return ReviewPack.model_validate(json.loads(path.read_text(encoding="utf-8")))
+
+
+def _load_verification_evidence(root: Path, review_run: ReviewRun) -> list[str]:
+    path = LoopArtifactStore(root).review_run_dir(review_run.review_id) / (
+        "verification-evidence.json"
+    )
+    if not path.is_file():
+        return []
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, dict):
+        raise ValueError("verification-evidence.json root must be an object")
+    if payload.get("artifact_kind") != "review-verification-evidence":
+        raise ValueError("verification-evidence.json artifact kind is invalid")
+    if payload.get("review_id") != review_run.review_id:
+        raise ValueError("verification-evidence.json review id does not match")
+    if payload.get("loop_id") != review_run.loop_id:
+        raise ValueError("verification-evidence.json loop id does not match")
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not all(
+        isinstance(item, str) and item.strip() for item in entries
+    ):
+        raise ValueError("verification-evidence.json entries must be non-empty strings")
+    return list(dict.fromkeys(item.strip() for item in entries))
 
 
 def _repo_relative_path(root: Path, path: Path) -> str:
@@ -2626,6 +2732,7 @@ __all__ = [
     "PRReviewCommandStatus",
     "PRReviewCloseResult",
     "PRReviewDoctorResult",
+    "PRReviewEvidenceResult",
     "PRReviewFixResult",
     "PRReviewStartOptions",
     "PRReviewStartResult",
@@ -2635,6 +2742,7 @@ __all__ = [
     "doctor_pr_review",
     "fix_pr_review",
     "parse_provider_command",
+    "record_pr_review_verification_evidence",
     "rerun_pr_review",
     "start_pr_review",
     "status_pr_review",

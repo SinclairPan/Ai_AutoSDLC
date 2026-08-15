@@ -30,8 +30,9 @@ def test_release_workflow_defaults_target_v1_0_2() -> None:
         REPO_ROOT / ".github/workflows/release-artifact-smoke.yml"
     ).read_text(encoding="utf-8")
     assert "default: v1.0.5" in release_build
-    assert "CURRENT_RELEASE_TAG: v1.0.5" in release_build
     assert "default: v1.0.5" in release_smoke
+    assert "release-satisfaction-proof" not in release_build
+    assert "release-certificate" not in release_build
     for name in ("posix-user-guide-e2e.yml", "windows-user-guide-e2e.yml"):
         text = (REPO_ROOT / ".github" / "workflows" / name).read_text(
             encoding="utf-8"
@@ -69,7 +70,6 @@ def test_user_guide_pins_published_assets_and_integrity_commands() -> None:
         assert f"releases/download/v1.0.2/{asset}" in text
         assert f"{asset}.sha256" in text
     assert "releases/download/v1.0.4/" not in text
-    assert "v1.0.4 未发布" in text
     for marker in (
         "Get-FileHash -Algorithm SHA256",
         "shasum -a 256 -c",

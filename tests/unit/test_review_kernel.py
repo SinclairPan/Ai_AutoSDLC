@@ -205,4 +205,3 @@ def test_merge_expert_findings_deduplicates_without_deciding_close() -> None:
         "failure_kind",
         "failure_reason",
     }
-

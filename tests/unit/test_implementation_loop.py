@@ -401,10 +401,12 @@ def test_record_implementation_progress_updates_evidence_and_report(
     )
 
     assert result.status == "ready"
-    assert result.loop_status == "passed"
+    assert result.loop_status == "needs_review"
     assert result.done_count == 1
     assert result.evidence_count == 2
-    assert result.next_action == "Run ai-sdlc loop implementation close --yes."
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type implementation --loop-id impl-record."
+    )
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-record"
     progress = json.loads(
         (loop_dir / "implementation-progress.json").read_text("utf-8")
@@ -441,8 +443,10 @@ def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> No
         )
     )
 
-    assert result.loop_status == "passed"
-    assert result.next_action == "Run ai-sdlc loop implementation close --yes."
+    assert result.loop_status == "needs_review"
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type implementation --loop-id impl-advisory-only."
+    )
     assert any("510 lines" in advice for advice in result.advisories)
 
 

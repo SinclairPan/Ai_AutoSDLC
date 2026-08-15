@@ -353,7 +353,7 @@ def _close_verified_design_context(
     )
     if existing is not None:
         return existing
-    if report.blocker_count or loop_run.status != LoopStatus.PASSED:
+    if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
         return _result_from_report(
             report,
             artifacts=artifacts.refs(root),
@@ -385,7 +385,7 @@ def _finish_verified_design_close(
     if isinstance(refreshed, DesignContractCommandResult):
         return refreshed
     report, loop_run = refreshed
-    if report.blocker_count or loop_run.status != LoopStatus.PASSED:
+    if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
         return _result_from_report(
             report,
             artifacts=artifacts.refs(root),
@@ -419,7 +419,7 @@ def _existing_design_close_result(
         return _already_closed_design_result(
             root, loop_run, report, verified_input, artifacts
         )
-    if loop_run.status == LoopStatus.PASSED and close_exists:
+    if loop_run.status == LoopStatus.NEEDS_REVIEW and close_exists:
         return _recover_partially_written_design_close(
             root,
             loop_run,
@@ -1236,7 +1236,10 @@ def _next_action_for_report(report: DesignContractReport) -> str:
             "Fix design-contract blockers, then run "
             f"ai-sdlc loop design-contract check --wi {report.work_item_path}."
         )
-    return "Run ai-sdlc loop design-contract close --yes."
+    return (
+        "Run ai-sdlc loop review --type design-contract "
+        f"--loop-id {report.loop_id}."
+    )
 
 
 def _next_guidance_for_result(
@@ -1269,12 +1272,15 @@ def _next_guidance_for_result(
             evidence=evidence,
         )
     return DesignContractNextGuidance(
-        command="ai-sdlc loop design-contract close --yes",
-        reason="The design contract passed; close it before implementation.",
-        requires_model=False,
-        writes_artifacts=True,
+        command=(
+            "ai-sdlc loop review --type design-contract "
+            f"--loop-id {report.loop_id}"
+        ),
+        reason="The design contract is ready for bounded adversarial review.",
+        requires_model=True,
+        writes_artifacts=False,
         writes_code=False,
-        safety="writes_project_artifacts",
+        safety="safe_read_only",
         evidence=evidence,
     )
 

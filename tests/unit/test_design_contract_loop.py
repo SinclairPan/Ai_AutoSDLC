@@ -46,7 +46,7 @@ def test_public_design_contract_resolver_keeps_two_value_signature(
     assert blocker == "No current design-contract loop exists."
 
 
-def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> None:
+def test_check_design_contract_loop_waits_for_expert_review(tmp_path: Path) -> None:
     work_item = _write_work_item(tmp_path)
 
     result = check_design_contract_loop(
@@ -58,13 +58,13 @@ def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> N
     )
 
     assert result.status == "ready"
-    assert result.loop_status == "passed"
+    assert result.loop_status == "needs_review"
     assert result.work_item_id == "demo-contract"
     assert result.work_item_path == "specs/demo-contract"
     assert result.blocker_count == 0
     assert result.coverage_count == 2
     assert result.design_contract is not None
-    assert result.design_contract.status == "passed"
+    assert result.design_contract.status == "needs_review"
     assert result.design_contract.coverage_count == 2
     assert result.design_contract.coverage_matrix_path.endswith(
         ".ai-sdlc/loops/design-contract/dc-001/coverage-matrix.json"
@@ -72,10 +72,10 @@ def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> N
     assert result.design_contract.report_path.endswith(
         ".ai-sdlc/loops/design-contract/dc-001/design-contract-report.json"
     )
-    assert result.next_action == "Run ai-sdlc loop design-contract close --yes."
-    assert result.next_guidance.command == "ai-sdlc loop design-contract close --yes"
-    assert result.next_guidance.requires_model is False
-    assert result.next_guidance.writes_artifacts is True
+    assert result.next_action == "Run ai-sdlc loop review --type design-contract --loop-id dc-001."
+    assert result.next_guidance.command == "ai-sdlc loop review --type design-contract --loop-id dc-001"
+    assert result.next_guidance.requires_model is True
+    assert result.next_guidance.writes_artifacts is False
     assert result.next_guidance.writes_code is False
 
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "dc-001"
@@ -90,7 +90,7 @@ def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> N
         (loop_dir / "design-contract-report.json").read_text(encoding="utf-8")
     )
     assert report["artifact_kind"] == "design-contract-report"
-    assert report["status"] == "passed"
+    assert report["status"] == "needs_review"
     assert report["coverage_count"] == 2
     assert {item["source_id"] for item in report["coverage_items"]} == {
         "FR-DEMO-001",
@@ -119,7 +119,7 @@ def test_check_design_contract_loop_writes_passed_artifacts(tmp_path: Path) -> N
 
     loop_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
     assert loop_run["loop_type"] == "design-contract"
-    assert loop_run["status"] == "passed"
+    assert loop_run["status"] == "needs_review"
     assert loop_run["work_item_id"] == work_item.name
     contract_input = json.loads(
         (loop_dir / "design-contract-input.json").read_text(encoding="utf-8")
@@ -162,7 +162,7 @@ def test_check_design_contract_loop_allows_fix_and_recheck_in_same_loop(
     )
 
     assert second.status == "ready"
-    assert second.loop_status == "passed"
+    assert second.loop_status == "needs_review"
     closed = close_design_contract_loop(
         DesignContractCloseOptions(
             root=tmp_path,
@@ -248,7 +248,7 @@ def test_check_design_contract_loop_recovers_initial_partial_artifact_write(
         )
     )
     assert retried.status == "ready", retried.blocker
-    assert retried.loop_status == "passed"
+    assert retried.loop_status == "needs_review"
 
 
 @pytest.mark.parametrize(
@@ -1923,7 +1923,7 @@ def test_close_design_contract_loop_recovers_close_written_before_loop_run(
     persisted_run = json.loads(
         (loop_dir / "loop-run.json").read_text(encoding="utf-8")
     )
-    assert persisted_run["status"] == "passed"
+    assert persisted_run["status"] == "needs_review"
     unchanged_artifacts = {
         name: (loop_dir / name).read_bytes()
         for name in (

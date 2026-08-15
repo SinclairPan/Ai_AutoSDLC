@@ -134,24 +134,26 @@ def test_get_loop_status_blocks_uninitialized_project(tmp_path: Path) -> None:
     assert result.next_guidance.writes_artifacts is True
 
 
-def test_get_loop_status_guides_passed_review_to_close(tmp_path: Path) -> None:
+def test_get_loop_status_guides_local_review_to_bounded_experts(tmp_path: Path) -> None:
     review_run_path = _write_review_run(
         tmp_path,
-        status=LoopStatus.PASSED,
+        status=LoopStatus.NEEDS_REVIEW,
         verdict=ReviewVerdict.CLEAN,
         unresolved_blockers=0,
-        next_action="Run ai-sdlc pr-review close.",
+        next_action="Record verification evidence, then run bounded expert review.",
     )
     _write_current_pointer(tmp_path, review_run_path)
 
     result = get_loop_status(tmp_path)
 
     assert result.status == LoopStatusCommandStatus.READY
-    assert result.next_guidance.command == "ai-sdlc pr-review close"
-    assert result.next_guidance.requires_model is False
-    assert result.next_guidance.writes_artifacts is True
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type local-pr-review --loop-id loop-review-001"
+    )
+    assert result.next_guidance.requires_model is True
+    assert result.next_guidance.writes_artifacts is False
     assert result.next_guidance.writes_code is False
-    assert result.next_guidance.safety == "writes_review_artifacts"
+    assert result.next_guidance.safety == "may_call_local_review_agent"
 
 
 def test_get_loop_status_blocks_malformed_pointer_without_traceback(
@@ -504,8 +506,10 @@ def test_get_loop_status_reads_current_requirement_loop(tmp_path: Path) -> None:
     assert result.current_loop is not None
     assert result.current_loop.loop_type == "requirement"
     assert result.current_loop.status == "needs_review"
-    assert result.next_guidance.command == "ai-sdlc loop requirement freeze --yes"
-    assert result.next_guidance.requires_model is False
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type requirement --loop-id req-status"
+    )
+    assert result.next_guidance.requires_model is True
     assert result.current_loop.requirement is not None
     assert result.current_loop.requirement.summary == (
         "运营用户需要订单审批流，范围只覆盖后台人工审批。"
@@ -591,7 +595,9 @@ def test_list_loops_reads_requirement_runs_and_marks_current(tmp_path: Path) -> 
     assert result.current_loop_id == "req-current"
     assert [item.loop_id for item in result.items] == ["req-current", "req-old"]
     assert result.items[0].is_current is True
-    assert result.items[0].next_guidance.command == "ai-sdlc loop requirement freeze --yes"
+    assert result.items[0].next_guidance.command == (
+        "ai-sdlc loop review --type requirement --loop-id req-current"
+    )
     assert result.items[1].is_current is False
     assert result.items[1].next_guidance.command == (
         "ai-sdlc loop list --type requirement --json"
@@ -750,9 +756,11 @@ def test_get_loop_status_reads_current_design_contract_loop(tmp_path: Path) -> N
     assert result.result == "Current design-contract loop found."
     assert result.current_loop is not None
     assert result.current_loop.loop_type == "design-contract"
-    assert result.current_loop.status == "passed"
-    assert result.next_guidance.command == "ai-sdlc loop design-contract close --yes"
-    assert result.next_guidance.requires_model is False
+    assert result.current_loop.status == "needs_review"
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type design-contract --loop-id dc-status"
+    )
+    assert result.next_guidance.requires_model is True
     assert result.current_loop.design_contract is not None
     assert result.current_loop.design_contract.work_item_id == "demo-design-contract"
     assert result.current_loop.design_contract.coverage_count == 2
@@ -802,7 +810,7 @@ def test_list_loops_reads_design_contract_runs_and_marks_current(
     assert result.items[0].is_current is True
     assert result.items[0].design_contract is not None
     assert result.items[0].next_guidance.command == (
-        "ai-sdlc loop design-contract close --yes"
+        "ai-sdlc loop review --type design-contract --loop-id dc-current"
     )
     assert result.items[1].is_current is False
     assert result.items[1].next_guidance.command == (
@@ -1037,9 +1045,11 @@ def test_get_loop_status_reads_current_frontend_evidence_loop(tmp_path: Path) ->
     assert result.result == "Current frontend-evidence loop found."
     assert result.current_loop is not None
     assert result.current_loop.loop_type == "frontend-evidence"
-    assert result.current_loop.status == "passed"
-    assert result.next_guidance.command == "ai-sdlc loop frontend-evidence close --yes"
-    assert result.next_guidance.requires_model is False
+    assert result.current_loop.status == "needs_review"
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-status"
+    )
+    assert result.next_guidance.requires_model is True
     assert result.current_loop.frontend_evidence is not None
     assert result.current_loop.frontend_evidence.work_item_id == "demo-frontend"
     assert result.current_loop.frontend_evidence.gate_run_id == "gate-run-status"
@@ -1060,7 +1070,7 @@ def test_list_loops_reads_frontend_evidence_runs_and_marks_current(
     assert [item.loop_id for item in result.items] == ["fe-current", "fe-old"]
     assert result.items[0].is_current is True
     assert result.items[0].next_guidance.command == (
-        "ai-sdlc loop frontend-evidence close --yes"
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-current"
     )
     assert result.items[1].is_current is False
     assert result.items[1].next_guidance.command == (
@@ -1124,7 +1134,7 @@ def _write_frontend_evidence_status_loop(
     root: Path,
     *,
     loop_id: str,
-    status: LoopStatus = LoopStatus.PASSED,
+    status: LoopStatus = LoopStatus.NEEDS_REVIEW,
     closed: bool = False,
 ) -> None:
     store = LoopArtifactStore(root)
@@ -1133,7 +1143,7 @@ def _write_frontend_evidence_status_loop(
     next_action = (
         "Run ai-sdlc pr-review start."
         if closed
-        else "Run ai-sdlc loop frontend-evidence close --yes."
+        else f"Run ai-sdlc loop review --type frontend-evidence --loop-id {loop_id}."
     )
     report = FrontendEvidenceReport(
         loop_id=loop_id,

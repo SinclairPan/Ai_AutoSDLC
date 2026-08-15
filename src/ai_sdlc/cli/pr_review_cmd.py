@@ -18,6 +18,7 @@ from ai_sdlc.core.pr_review_service import (
     doctor_pr_review,
     fix_pr_review,
     parse_provider_command,
+    record_pr_review_verification_evidence,
     rerun_pr_review,
     start_pr_review,
     status_pr_review,
@@ -279,17 +280,29 @@ def pr_review_rerun(
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.STARTED else 1)
 
 
+@pr_review_app.command(name="record-evidence")
+def pr_review_record_evidence(
+    evidence: list[str] = typer.Option(
+        ...,
+        "--evidence",
+        help="Verification command and result to include in expert review input.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Record verification evidence before bounded expert review."""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = record_pr_review_verification_evidence(root, evidence=evidence)
+    _emit_result(result.model_dump(mode="json"), json_output=json_output)
+    raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
+
+
 @pr_review_app.command(name="close")
 def pr_review_close(
     require_no_blockers: bool = typer.Option(
         False,
         "--require-no-blockers",
         help="Allow risk_accepted when REQUIRED findings remain but no BLOCKERs.",
-    ),
-    evidence: list[str] = typer.Option(
-        [],
-        "--evidence",
-        help="Verification evidence line to include in final report.",
     ),
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
 ) -> None:
@@ -299,7 +312,6 @@ def pr_review_close(
     result = close_pr_review(
         root,
         require_no_blockers=require_no_blockers,
-        verification_evidence=evidence,
     )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.CLOSED else 1)

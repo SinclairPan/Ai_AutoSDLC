@@ -737,7 +737,7 @@ def _design_contract_blocker(
             f"work item is {work_item_id}."
         )
     if (
-        report.status != LoopStatus.PASSED
+        report.status != LoopStatus.NEEDS_REVIEW
         or report.blocker_count != 0
         or close.blocker_count != 0
     ):
@@ -920,7 +920,7 @@ def _build_report(
     if blockers:
         status = LoopStatus.NEEDS_FIX
     elif len(done_required) == len(required):
-        status = LoopStatus.PASSED
+        status = LoopStatus.NEEDS_REVIEW
     evidence_count = sum(
         len(item.evidence) + len(item.verification_commands) for item in progress.tasks
     )
@@ -950,8 +950,11 @@ def _next_action_for_progress(
     progress: ImplementationProgress,
     status: LoopStatus,
 ) -> str:
-    if status == LoopStatus.PASSED:
-        return "Run ai-sdlc loop implementation close --yes."
+    if status == LoopStatus.NEEDS_REVIEW:
+        return (
+            "Run ai-sdlc loop review --type implementation "
+            f"--loop-id {progress.loop_id}."
+        )
     return _record_next_action(tasks, progress)
 
 
@@ -982,7 +985,10 @@ def _record_next_action(
                 f"--task-id {item.task_id} --status done "
                 '--verification "<command>" --evidence <path>.'
             )
-    return "Run ai-sdlc loop implementation close --yes."
+    return (
+        "Run ai-sdlc loop review --type implementation "
+        f"--loop-id {progress.loop_id}."
+    )
 
 
 def _implementation_slimming_advisories(
@@ -1209,14 +1215,17 @@ def _next_guidance_for_result(
             safety="writes_project_artifacts",
             evidence=evidence,
         )
-    if report.status == LoopStatus.PASSED:
+    if report.status == LoopStatus.NEEDS_REVIEW:
         return ImplementationNextGuidance(
-            command="ai-sdlc loop implementation close --yes",
-            reason="All required implementation tasks have recorded evidence.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type implementation "
+                f"--loop-id {report.loop_id}"
+            ),
+            reason="Implementation evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety="writes_project_artifacts",
+            safety="safe_read_only",
             evidence=evidence,
         )
     return ImplementationNextGuidance(

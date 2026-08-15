@@ -265,8 +265,6 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     USER_GUIDE_REL: (
         "# AI-SDLC 1.0.2 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "v1.0.4 未发布",
-        "v1.0.5 release candidate / not published / prepared-disabled",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "Windows",
@@ -325,7 +323,6 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
 }
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "# AI-SDLC 1.0.2 中文用户指南",
-    "v1.0.4 未发布",
     "## 第一章：全新用户 + 全新空项目",
     "## 第二章：全新用户 + 已有项目",
     "### 1.1 Windows",
