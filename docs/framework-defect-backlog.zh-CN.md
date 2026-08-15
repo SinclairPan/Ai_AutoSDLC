@@ -14,3 +14,7 @@
 ## 当前状态
 
 当前没有开放的框架问题。
+
+## 已删除的非产品机制
+
+以下机制已从产品、CLI、模板、工作流和发行包中删除，不作为延期需求重新引入：Shadow/Enforce 激活体系、stage close certificate、review session/ledger、authority/store、离线优化、资源治理、阻断式 Lean governance。保留范围仅为五阶段动态专家复核、本地独立 PR reviewer，以及非阻断代码精简建议。

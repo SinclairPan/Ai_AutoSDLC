@@ -17,10 +17,11 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 | 项目初始化与接入 | `init` 为新项目建立规则、状态与代理入口；`adopt` 在不修改业务文件的前提下识别已有项目事实。 |
 | Codex 项目适配 | 以 `AGENTS.md` 作为项目级指令入口，可持久化 Codex 与 PowerShell、Bash、Zsh 或 Cmd 偏好。 |
 | 可恢复流水线 | checkpoint 记录执行阶段、开放门禁和下一步动作，支持 `status`、`recover` 与 `run --dry-run`。 |
-| Loop Engineering | 内置 requirement、design-contract、implementation、frontend-evidence 四类确定性闭环。 |
-| Lean Code 有界质量闭环 | 对新功能与 Bug 修复执行确定性风险评估、定向修复计划、最多两轮复评和结构化 No-Go。 |
+| Loop Engineering | 内置 requirement、design-contract、implementation、frontend-evidence、local-pr-review 五类闭环。 |
+| 动态专家复核 | 每个 Loop 的实质结果由当前代理按内容选择最多两名只读专家；只允许一轮修复复审，不持久化专家权威。 |
+| 精简建议 | 对代码体积和复杂度给出非阻断建议；建议不改变 Loop 状态，也不阻止 close。 |
 | 质量与治理门禁 | 对规则、任务、约束、分支、文档契约、前端证据和关闭条件执行只读验证。 |
-| 本地对抗审查 | `pr-review` 支持 Git 范围、暂存区、工作区和补丁输入，可生成修复计划、复审结果与 CI 证明。 |
+| 本地对抗审查 | `pr-review` 支持 Git 范围、暂存区、工作区和补丁输入，在提交前由独立只读代理检查当前变更。 |
 | 前端交付治理 | 覆盖页面契约、生成约束、组件提供方、浏览器探针、视觉回归、可访问性和交付上下文。 |
 | AgentOps 集成 | 可输出运行事件、保存 outbox、检查网关配置并重试投递，不在仓库内保存令牌值。 |
 | 跨平台交付 | 支持 Windows、macOS、Linux 的源码安装、在线安装和带 Python 运行时的离线包。 |
@@ -98,48 +99,11 @@ ai-sdlc loop status
 
 每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。只有证据满足关闭条件时，闭环才会进入完成状态。
 
-### Lean Code 风险预算
+### 非阻断精简建议
 
-Lean Code 是 Implementation Loop 的质量 Profile，不是新的顶层 Loop，也不是机械 LOC 门禁。手写产品文件 400 行、函数 50 行只是初始风险预算：单独超限为 ADVISORY；同时出现复杂度、重复、耦合或范围蔓延时才成为 REQUIRED；行为、安全、授权、兼容、验证或 artifact 完整性被破坏时为 BLOCKER。
+Implementation Loop 可以根据变更内容生成代码体积、重复、复杂度或拆分建议。该报告只用于帮助实现者保持代码精简；它不产生 BLOCKER/REQUIRED，不改变 Loop 状态，不要求 receipt、例外、No-Go 或额外治理工件，也不阻止现有 close 命令。实现者可以基于行为正确性、维护成本和交付价值选择采纳或说明不采纳。
 
-新功能必须限制在已确认的 acceptance/tasks 范围内。Bug 修复还必须提供绑定当前 diff、RED/GREEN 输出 artifact 和测试源码 digest 的结构化回归证据；只填写退出码或任意字符串不能通过。generated/vendored 豁免必须有生成头或上游 provenance，不能只靠目录名。运行确定性评估：
-
-```powershell
-ai-sdlc loop implementation lean-check --loop-id <implementation-loop-id>
-```
-
-评估源可以选择 `local-unstaged`、`local-staged`、`local-git-range` 或项目内 patch。若使用非默认源，后续 `lean-verify` 以及 `lean-regression` 的 RED/GREEN 阶段必须重复传入同一组 `--diff-source / --base / --head / --patch-file` 参数；receipt 与评估会按精确 diff hash 交叉绑定，不会静默回退到工作区未暂存变更。
-
-Bug 修复先由公开 CLI 真实执行同一回归 argv；`--` 后的参数不会经过 shell：
-
-```powershell
-ai-sdlc loop implementation lean-regression --loop-id <id> --phase red `
-  --test-id <test-id> --test-source tests/test_bug.py `
-  --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
-# 完成最小修复后运行同一命令
-ai-sdlc loop implementation lean-regression --loop-id <id> --phase green `
-  --test-id <test-id> --test-source tests/test_bug.py `
-  --failure-signature "assertion:<目标错误>" -- python -m pytest tests/test_bug.py -q
-```
-
-如果第一轮产生可操作 finding，修复后用 `lean-verify --loop-id <id> --test-source <path> -- <argv>` 生成当前 diff 的执行 receipt。声明的 test source 必须由受控 runner 形态实际执行，例如 `python <path>`、`python -m pytest <path>::<node>`、`python -m py_compile <path>` 或直接 `pytest <path>`；只把路径放进 `python -c` 的普通参数、ignore/config 参数或输出文本不会被接受。把返回的 `receipt_path` 记录为 Implementation evidence；只记录命令文本不会推进第二轮。Implementation start 时冻结的任务内容不可事后修改；评估与 close 都会对照冻结摘要并 fail-closed。
-
-评估只读取项目事实并写入 JSON/Markdown artifact，不调用模型，也不修改应用代码。BLOCKER/REQUIRED 会生成定向 fix plan，由 Implementation Agent 修改后再运行第二轮评估。最多两轮；在当前 enforcement mode 下，第二轮只要仍有未解决的 BLOCKER/REQUIRED，无论是否与上一轮相同，都会进入 `needs_user`，不会留下无法继续评估的悬空状态。close 与 PR 会重新验证 receipt、例外及其证据，删除或替换后旧结论立即失效。
-
-确有边界风险时，可通过 `--exception <project-local-json>` 提交绑定 finding、scope、policy、commit、diff、有效期与证据 digest 的结构化例外。例外不会隐藏 finding，结论只能是 `risk_accepted`。如果降低指标只能破坏行为，或修复成本大于收益，可以记录 source-bound No-Go：
-
-```powershell
-ai-sdlc loop implementation lean-no-go --loop-id <implementation-loop-id> `
-  --reason "Metric-only change would break behavior." `
-  --owner "implementation-owner" `
-  --repair-cost "behavioral regression" `
-  --expected-benefit "one metric reduction" `
-  --evidence ".ai-sdlc/evidence/no-go-proof.txt"
-```
-
-`report`、`warning`、`blocking` 分别用于只报告非完整性 REQUIRED、要求定向修复、以及阻断未解决 REQUIRED；artifact 完整性、scope drift、验证失败和无效例外始终 fail-closed。当前语义指标的精确 adapter 为 Python AST。TypeScript、Java、Go 等语言仍保留确定性 diff/分类指标；缺少可靠语义 adapter 时会明确标记 `unsupported` 并进入 `needs_user`，不会用零复杂度或零调用者制造假结论。Local PR Reviewer 与 Implementation Agent 保持独立，并将 report、snapshot、policy、findings 和 evaluation input 纳入 review-pack、final-report 与 attestation digest 链；内置审计证明独立进程与独立输入上下文，不宣称不同人类身份。需要职责分离时应另配 reviewer 账号/provider 并保留 actor/session 记录。CI 只验证确定性 artifact，不调用模型自动修复。
-
-本地 digest 链用于发现过期 artifact、单点变更和链内不一致，不是外部签名或不可变账本。能够同时改写全部本地 artifact、策略标记与 digest 的主体不在这项本地完整性保证范围；需要覆盖该信任边界时，应把 attestation 交由受保护 CI、外部审计存储或签名系统保管。
+五个 Loop 的实质结果都采用同一个最小复核边界：当前代理按结果风险自动选择最多两名只读专家；有发现时由原实现代理修复，并只允许一次复审；无发现时由当前代理调用既有 close。专家不可用时结果停留在 `needs_review`，不会把失败解释为通过，也不会创建 session、ledger、certificate、attestation、authority/store 或优化历史。
 
 ### 3. 预演与执行
 
@@ -204,26 +168,9 @@ ai-sdlc pr-review status
 ai-sdlc pr-review fix
 ai-sdlc pr-review rerun
 ai-sdlc pr-review close
-ai-sdlc pr-review attest
 ```
 
-当 Enforce 策略要求 CI 关闭证书时，`attest` 会输出唯一的
-`.ai-sdlc/attestations/ci-certificate-bundle.json`。CLI 不会代替用户修改
-Git 历史；必须显式提交并推送该文件：
-
-```powershell
-git add -- .ai-sdlc/attestations/ci-certificate-bundle.json
-git commit -m "chore: publish AI-SDLC review certificate"
-git push
-```
-
-只提交命令输出的固定 bundle，不要把本地 `.ai-sdlc/state/` 运行状态加入
-Git。Shadow 策略不要求证书时，`attest` 不会要求执行这一步。
-
-仓库内置的 `CI Certificate Gate` 由受保护 base 分支版本启动：可信
-verifier 只从 base checkout 安装运行，PR head 被放入独立目录且仅作为
-Git/JSON 数据读取，不在证书 Gate 中安装 head 依赖或执行 head 代码。仓库治理
-应将这个 Gate 固定为 required check，不能只依赖待审 PR 自己声明的同名任务。
+Local PR Review 在 close 前由独立的本地只读代理检查 Review Pack、findings、修复结果和当前 Git 变更。若代理执行失败或发现仍未解决，审查保持未关闭；通过后直接生成普通最终报告。该流程不生成 CI 证书、attestation、authority pointer 或持久化专家会话。
 
 ## 前端工程能力
 

@@ -37,14 +37,19 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - Requirement Loop：目标、范围、验收标准和风险；
 - Design Contract Loop：接口、数据、边界和验证策略；
 - Implementation Loop：任务、代码、测试和关闭证据；
-- Frontend Evidence Loop：页面契约、浏览器证据、视觉与可访问性。
+- Frontend Evidence Loop：页面契约、浏览器证据、视觉与可访问性；
+- Local PR Review：提交前由独立本地只读代理执行跨阶段审查。
+
+五个 Loop 的实质结果均由当前代理按内容自动选择最多两名只读专家复核。有发现时由原实现代理修复，并只允许一次复审；通过后调用既有 close。专家失败时保留 `needs_review`，不创建持久化专家身份、session、ledger、certificate、attestation 或 authority/store。
+
+代码精简只提供非阻断建议。它不改变 Loop 状态，不产生强制修复、receipt、例外或 No-Go，也不阻止 close。
 
 ### 质量治理
 
 - 项目规则与 Git 分支约束；
 - 任务级验收与门禁一致性；
 - 前端契约、交付上下文和浏览器探针；
-- 本地对抗 PR 审查与 CI attestation；
+- 本地独立对抗 PR 审查；
 - 发布身份、文档、离线包和工作流一致性。
 
 ### 运行集成
@@ -61,6 +66,7 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 不绕过组织权限执行合并、发布或生产变更；
 - 不默认向远程模型发送代码；
 - 不在项目文件中保存密钥或令牌值。
+- 不提供 Shadow/Enforce 激活体系、close certificate、review session/ledger、离线优化、资源治理或阻断式 Lean governance；这些旧能力已删除，不是隐藏开关或后续默认路线。
 
 ## 1.0.5 源码候选真值（prepared-disabled）
 

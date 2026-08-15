@@ -19,7 +19,7 @@ CASE_NAMESPACE = "pytest-nodeid-v1"
 MANIFEST_SCHEMA = "ci-test-manifest-v1"
 CELL_EVIDENCE_SCHEMA = "ci-cell-evidence-v1"
 AGGREGATE_SCHEMA = "ci-assurance-report-v1"
-DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q --ignore=tests/e2e/stage_review"
+DEFAULT_COLLECTION_COMMAND = "pytest --collect-only -q"
 
 
 class AssuranceError(ValueError):
@@ -518,7 +518,6 @@ def _collect_nodeids(root: Path, pytest_args: Sequence[str]) -> list[str]:
         "pytest",
         "--collect-only",
         "-q",
-        "--ignore=tests/e2e/stage_review",
         *pytest_args,
     ]
     completed = subprocess.run(

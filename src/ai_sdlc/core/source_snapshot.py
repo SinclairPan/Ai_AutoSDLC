@@ -1,4 +1,4 @@
-"""Deterministic source snapshots shared by Lean Code and PR review gates."""
+"""Deterministic source snapshots for local review and source comparison."""
 
 from __future__ import annotations
 

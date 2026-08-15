@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import ast
 import json
 import os
 import re
@@ -1775,43 +1774,15 @@ def test_historical_update_prompt_workflow_is_not_published() -> None:
     assert not (_WORKFLOWS_DIR / "windows-update-prompt-e2e.yml").exists()
 
 
-def test_windows_online_job_runs_real_installed_lean_user_flow() -> None:
+def test_windows_online_job_does_not_install_retired_lean_governance() -> None:
     workflow = (_WORKFLOWS_DIR / "windows-user-guide-e2e.yml").read_text(
         encoding="utf-8"
     )
-    driver_path = _REPO_ROOT / "scripts" / "windows_lean_code_e2e.py"
 
-    assert driver_path.is_file()
-    driver = driver_path.read_text(encoding="utf-8")
-    assert "Run the installed Lean Code user journey" in workflow
-    assert "windows_lean_code_e2e.py" in workflow
-    assert '      - "scripts/windows_lean_code_e2e_support.py"' in workflow
+    assert "Run the installed Lean Code user journey" not in workflow
+    assert "windows_lean_code_e2e.py" not in workflow
+    assert "windows_lean_code_e2e_support.py" not in workflow
     assert "windows-clean-online-user-e2e-evidence" in workflow
-    adjacent_cli_tokens: set[tuple[str, str]] = set()
-    for node in ast.walk(ast.parse(driver)):
-        if not isinstance(node, (ast.List, ast.Tuple)):
-            continue
-        values = [
-            item.value
-            if isinstance(item, ast.Constant) and isinstance(item.value, str)
-            else ""
-            for item in node.elts
-        ]
-        adjacent_cli_tokens.update(zip(values, values[1:], strict=False))
-    assert {
-        ("requirement", "start"),
-        ("requirement", "freeze"),
-        ("design-contract", "check"),
-        ("design-contract", "close"),
-        ("implementation", "start"),
-        ("implementation", "record"),
-        ("implementation", "lean-verify"),
-        ("implementation", "lean-regression"),
-        ("implementation", "lean-check"),
-        ("implementation", "close"),
-    } <= adjacent_cli_tokens
-    assert "src/订单.py" in driver
-    assert "ai_sdlc.core" not in driver
 
 
 def test_posix_offline_smoke_matrix_concurrency_is_job_scoped() -> None:

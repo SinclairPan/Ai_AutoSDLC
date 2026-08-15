@@ -28,7 +28,8 @@
 - [ ] 已执行 `ai-sdlc pr-review doctor`；
 - [ ] 审查输入来源和范围正确；
 - [ ] BLOCKER 与 REQUIRED 发现均已处理；
-- [ ] 复审结果与最终 attestation 已生成；
+- [ ] 独立本地 reviewer 已在 close 前完成最终复核；
+- [ ] 复审未超过一轮，最终报告只在 clean 后生成；
 - [ ] 代码外发策略符合项目要求。
 
 ## 发布相关变更

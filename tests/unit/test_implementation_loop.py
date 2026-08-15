@@ -209,7 +209,7 @@ def test_direct_formal_work_item_does_not_enable_blocking_quality_profile(
         ImplementationStartOptions(
             root=tmp_path,
             work_item="specs/demo-implementation-loop",
-            loop_id="impl-direct-formal-lean-profile",
+            loop_id="impl-direct-formal-quality-profile",
         )
     )
 
@@ -220,7 +220,7 @@ def test_direct_formal_work_item_does_not_enable_blocking_quality_profile(
             / ".ai-sdlc"
             / "loops"
             / "implementation"
-            / "impl-direct-formal-lean-profile"
+            / "impl-direct-formal-quality-profile"
             / "implementation-input.json"
         ).read_text("utf-8")
     )
