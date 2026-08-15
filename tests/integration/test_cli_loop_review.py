@@ -214,6 +214,58 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     ).exists()
 
 
+def test_local_pr_review_binds_live_unstaged_and_untracked_source(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("reviewed unstaged content\n", encoding="utf-8")
+    untracked = tmp_path / "untracked.txt"
+    untracked.write_text("reviewed untracked content\n", encoding="utf-8")
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-unstaged"
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps({"loop_id": "loop-pr-unstaged", "current_round": 1}),
+        encoding="utf-8",
+    )
+    diff = review_dir / "diff.patch"
+    diff.write_text("reviewed local-unstaged diff\n", encoding="utf-8")
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+                "diff_source": {"source_kind": "local-unstaged"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-unstaged",
+    )
+
+    tracked.write_text("changed after review\n", encoding="utf-8")
+    tracked_drift = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-unstaged",
+    )
+    assert tracked_drift.input_digest != reviewed.input_digest
+
+    tracked.write_text("reviewed unstaged content\n", encoding="utf-8")
+    untracked.write_text("changed untracked content\n", encoding="utf-8")
+    untracked_drift = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-unstaged",
+    )
+    assert untracked_drift.input_digest != reviewed.input_digest
+
+
 def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> None:
     requirement_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
@@ -262,7 +314,8 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
         "implementation-report.md",
         "verification-evidence.json",
     ):
-        (implementation_dir / filename).write_text(filename, encoding="utf-8")
+        content = "{}" if filename.endswith(".json") else filename
+        (implementation_dir / filename).write_text(content, encoding="utf-8")
     (frontend_dir / "frontend-evidence-input.json").write_text(
         json.dumps({"implementation_loop_id": "implementation-001"}),
         encoding="utf-8",
@@ -518,6 +571,72 @@ def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path)
     assert restored.input_digest != deleted.input_digest
 
 
+def test_implementation_review_binds_repository_evidence_files(tmp_path: Path) -> None:
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    loop_dir = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "implementation-evidence-001"
+    )
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {
+                "design_contract_loop_id": "design-001",
+                "declared_scope": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in ("implementation-report.json", "implementation-report.md"):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+    evidence_file = tmp_path / "artifacts" / "test-results.log"
+    evidence_file.parent.mkdir(parents=True)
+    evidence_file.write_text("3470 passed\n", encoding="utf-8")
+    (loop_dir / "verification-evidence.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {
+                        "evidence": [
+                            evidence_file.relative_to(tmp_path).as_posix(),
+                            "pytest completed successfully",
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="implementation-evidence-001",
+    )
+    assert evidence_file.relative_to(tmp_path).as_posix() in reviewed.artifact_paths
+
+    evidence_file.write_text("1 failed\n", encoding="utf-8")
+    changed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="implementation-evidence-001",
+    )
+    assert changed.input_digest != reviewed.input_digest
+
+
 def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> None:
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
     loop_dir.mkdir(parents=True)
@@ -624,7 +743,8 @@ def _write_predecessor_fixture(
         "verification-evidence.json",
     }
     for filename in implementation_files - {"implementation-input.json"}:
-        (implementation_dir / filename).write_text(filename, encoding="utf-8")
+        content = "{}" if filename.endswith(".json") else filename
+        (implementation_dir / filename).write_text(content, encoding="utf-8")
     (loop_dir / "frontend-evidence-input.json").write_text(
         json.dumps({"implementation_loop_id": "implementation-upstream"}),
         encoding="utf-8",

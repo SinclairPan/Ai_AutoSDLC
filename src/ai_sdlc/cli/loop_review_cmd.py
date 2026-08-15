@@ -13,6 +13,7 @@ from typing import cast
 import typer
 
 from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review_input
+from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
 from ai_sdlc.utils.helpers import find_project_root
 
 _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
@@ -198,7 +199,13 @@ def resolve_review_input(
             if (loop_dir / name).is_file()
         )
         artifacts.append(_local_review_diff(root, loop_dir / "review-pack.json"))
-        risk_signals = [*_content_risk_signals(artifacts), *_git_risk_signals(root)]
+        risk_signals = [
+            *_content_risk_signals(artifacts),
+            *_git_risk_signals(root),
+            *_local_review_source_risk_signals(
+                root, loop_dir / "review-pack.json"
+            ),
+        ]
         round_number = _read_round_number(loop_dir / "review-run.json")
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
@@ -297,7 +304,12 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
             raise ValueError(
                 f"Loop declared_scope is invalid: {loop_dir / 'implementation-input.json'}"
             )
-        return _expand_repo_patterns(root, declared_scope)
+        return _unique_paths(
+            [
+                *_expand_repo_patterns(root, declared_scope),
+                *_implementation_evidence_material(root, loop_dir),
+            ]
+        )
     if loop_type == "frontend-evidence":
         input_payload = _read_json_object(loop_dir / "frontend-evidence-input.json")
         snapshot_payload = _read_json_object(
@@ -331,6 +343,47 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
                     referenced.append(_repo_path(root, ref, field_name))
         return _unique_paths(referenced)
     return []
+
+
+def _implementation_evidence_material(root: Path, loop_dir: Path) -> list[Path]:
+    payload = _read_json_object(loop_dir / "verification-evidence.json")
+    tasks = payload.get("tasks", [])
+    if not isinstance(tasks, list):
+        raise ValueError(
+            "Implementation verification evidence tasks must be a list: "
+            f"{loop_dir / 'verification-evidence.json'}"
+        )
+    referenced: list[Path] = []
+    resolved_root = root.resolve()
+    for task in tasks:
+        if not isinstance(task, dict):
+            raise ValueError(
+                "Implementation verification evidence task must be an object: "
+                f"{loop_dir / 'verification-evidence.json'}"
+            )
+        evidence = task.get("evidence", [])
+        if not isinstance(evidence, list) or not all(
+            isinstance(item, str) for item in evidence
+        ):
+            raise ValueError(
+                "Implementation verification evidence paths must be strings: "
+                f"{loop_dir / 'verification-evidence.json'}"
+            )
+        for item in evidence:
+            text = item.strip()
+            if not text:
+                continue
+            candidate = Path(text)
+            resolved = (
+                candidate if candidate.is_absolute() else resolved_root / candidate
+            ).resolve(strict=False)
+            try:
+                resolved.relative_to(resolved_root)
+            except ValueError:
+                continue
+            if resolved.is_file():
+                referenced.append(resolved)
+    return _unique_paths(referenced)
 
 
 def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
@@ -469,6 +522,27 @@ def _git_risk_signals(root: Path) -> list[str]:
         f"git-head:{head}",
         f"git-index:{hashlib.sha256(index).hexdigest()}",
         f"git-staged-diff:{hashlib.sha256(staged).hexdigest()}",
+    ]
+
+
+def _local_review_source_risk_signals(
+    root: Path, review_pack_path: Path
+) -> list[str]:
+    payload = _read_json_object(review_pack_path)
+    diff_source = payload.get("diff_source")
+    if diff_source is None:
+        return []
+    if not isinstance(diff_source, dict):
+        raise ValueError(f"Review pack diff_source is invalid: {review_pack_path}")
+    source_kind = diff_source.get("source_kind", "")
+    if source_kind not in {"local-staged", "local-unstaged"}:
+        return []
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(root=root, source_kind=source_kind)
+    )
+    return [
+        f"git-selected-source:{source_kind}",
+        f"git-selected-diff:{snapshot.diff_hash}",
     ]
 
 
