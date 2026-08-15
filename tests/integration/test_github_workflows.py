@@ -2168,6 +2168,34 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts(
     assert sentinel["SENTINEL_NODE"] == expected_command[-1]
     assert sentinel["SENTINEL_ROUNDS"] == 5
 
+
+def test_compatibility_gate_uses_candidate_local_execution_evidence_only() -> None:
+    """普通 CI 不得以 protected baseline/lineage 阻止有意删除废止测试。"""
+    workflow_text = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
+
+    assert "authority-check" not in jobs
+    assert "baseline-preflight" not in jobs
+    assert "trusted-base" not in workflow_text
+    assert "test-baseline.json" not in workflow_text
+    assert "test-lineage.json" not in workflow_text
+    assert "baseline-preflight" not in workflow_text
+    assert "verify-transition" not in workflow_text
+    assert "validate-lineage" not in workflow_text
+    assert "decide-mode" not in workflow_text
+    assert "collect" in workflow_text
+    assert "cell-evidence" in workflow_text
+    assert "aggregate" in workflow_text
+    assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
+        "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
+        "python-version": ["3.11", "3.12", "3.13", "3.14"],
+    }
+    assert "windows-shell-smoke" in jobs
+    assert "fast-gate" in jobs
+
     success_calls: list[list[str]] = []
 
     def successful_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
