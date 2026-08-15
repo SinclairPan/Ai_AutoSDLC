@@ -1565,6 +1565,14 @@ def _reviewed_diff_source_mismatch(root: Path, review_run: ReviewRun) -> str:
                 f"{source_resolution.head_commit} != {review_run.head_commit}."
             )
         return ""
+    if source_kind in {
+        DiffSourceKind.LOCAL_STAGED,
+        DiffSourceKind.LOCAL_UNSTAGED,
+    }:
+        try:
+            resolve_review_input_for_source(root, source_resolution)
+        except GitError as exc:
+            return f"Reviewed diff source cannot be verified: {exc}"
     expected_hash = review_run.diff_source.patch_hash.strip()
     if not expected_hash:
         return "Reviewed diff source hash is missing; rerun PR review."

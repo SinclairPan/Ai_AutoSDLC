@@ -492,6 +492,11 @@ def _resolve_review_input(
     source_resolution: SourceAdapterResolution,
 ) -> ResolvedReviewInput:
     source_kind = DiffSourceKind(source_resolution.source_kind)
+    if source_kind in {
+        DiffSourceKind.LOCAL_STAGED,
+        DiffSourceKind.LOCAL_UNSTAGED,
+    }:
+        _require_visible_local_index(root)
     if source_kind == DiffSourceKind.LOCAL_GIT_RANGE:
         return ResolvedReviewInput(
             changed_files=_git_changed_files(
@@ -539,6 +544,24 @@ def _resolve_review_input(
             base_file_bytes=_git_index_file_blobs(root, changed_files),
         )
     raise GitError(f"Unsupported resolved diff source: {source_resolution.source_kind}")
+
+
+def _require_visible_local_index(root: Path) -> None:
+    records = _git_text(root, "ls-files", "-v", "-z").split("\0")
+    hidden: list[str] = []
+    for record in records:
+        if not record:
+            continue
+        tag, separator, path = record.partition(" ")
+        if not separator or len(tag) != 1:
+            raise GitError("git index flags are malformed")
+        if tag == "S" or tag.islower():
+            hidden.append(path)
+    if hidden:
+        raise GitError(
+            "Local review cannot inspect paths with hidden index flags: "
+            + ", ".join(sorted(hidden))
+        )
 
 
 def resolve_review_input_for_source(

@@ -8,6 +8,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
 import yaml
 
 from ai_sdlc.core.pr_review_provider import MockReviewerFixture, ProviderRunStatus
@@ -1166,6 +1167,59 @@ def test_close_allows_reviewed_local_staged_path_with_space(tmp_path) -> None:
     assert start.status == PRReviewCommandStatus.STARTED
     assert result.status == PRReviewCommandStatus.CLOSED
     assert result.verdict == "fully_clean"
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_local_staged_review_rejects_hidden_index_paths(
+    tmp_path,
+    index_flag: str,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('base')\n", "add app")
+    (tmp_path / "src/app.py").write_text("print('staged')\n", encoding="utf-8")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "update-index", index_flag, "src/app.py")
+
+    result = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="",
+            diff_source="local-staged",
+            provider_id="mock-reviewer",
+            review_id="review-local-staged-hidden-index",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "hidden index flags" in result.blocker
+
+
+def test_close_blocks_hidden_index_flag_added_after_local_staged_review(
+    tmp_path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('base')\n", "add app")
+    (tmp_path / "src/app.py").write_text("print('staged')\n", encoding="utf-8")
+    _git(tmp_path, "add", "src/app.py")
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="",
+            diff_source="local-staged",
+            provider_id="mock-reviewer",
+            review_id="review-local-staged-hidden-after-start",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    _git(tmp_path, "update-index", "--assume-unchanged", "src/app.py")
+    (tmp_path / "src/app.py").write_text("print('hidden')\n", encoding="utf-8")
+
+    result = close_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "hidden index flags" in result.blocker
+    assert result.final_report_path == ""
 
 
 def test_close_blocks_changed_local_staged_diff_after_review(tmp_path) -> None:
