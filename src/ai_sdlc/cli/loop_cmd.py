@@ -10,6 +10,7 @@ import typer
 from rich.console import Console
 
 from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
+from ai_sdlc.cli.loop_review_cmd import loop_review
 from ai_sdlc.cli.stage_review_guidance import execute_stage_close_for_cli
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
@@ -1189,5 +1190,6 @@ loop_app.add_typer(requirement_app, name="requirement")
 loop_app.add_typer(design_contract_app, name="design-contract")
 loop_app.add_typer(implementation_app, name="implementation")
 loop_app.add_typer(frontend_evidence_app, name="frontend-evidence")
+loop_app.command(name="review")(loop_review)
 
 __all__ = ["loop_app"]
