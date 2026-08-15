@@ -1277,7 +1277,7 @@ def test_loop_frontend_evidence_doctor_playwright_provider_shows_install_command
     assert "optional install: npx playwright install chromium" in result.output
 
 
-def test_loop_frontend_evidence_skip_json_closes_with_audit(
+def test_loop_frontend_evidence_skip_json_waits_for_review(
     tmp_path: Path,
 ) -> None:
     work_item = _write_frontend_work_item(tmp_path)
@@ -1310,18 +1310,23 @@ def test_loop_frontend_evidence_skip_json_closes_with_audit(
 
     assert skip.exit_code == 0
     skip_payload = json.loads(skip.output)
-    assert skip_payload["closed"] is True
+    assert skip_payload["closed"] is False
     assert skip_payload["skipped"] is True
     assert skip_payload["skip_reason"] == reason
-    assert skip_payload["next_action"] == "Run ai-sdlc pr-review start."
+    assert skip_payload["loop_status"] == "needs_review"
+    assert skip_payload["next_action"] == (
+        "Run ai-sdlc loop review --type frontend-evidence --loop-id fe-cli-skip."
+    )
 
     assert status.exit_code == 0
     status_payload = json.loads(status.output)
     frontend = status_payload["current_loop"]["frontend_evidence"]
-    assert frontend["closed"] is True
+    assert frontend["closed"] is False
     assert frontend["skipped"] is True
     assert frontend["skip_reason"] == reason
-    assert status_payload["next_guidance"]["command"] == "ai-sdlc pr-review start"
+    assert status_payload["next_guidance"]["command"] == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-cli-skip"
+    )
 
 
 def test_python_module_help_fallback_lists_loop() -> None:

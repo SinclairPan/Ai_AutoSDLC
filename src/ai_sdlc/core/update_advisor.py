@@ -634,7 +634,7 @@ def _freshness(cache: UpdateCache, now: datetime) -> str:
     if last_success is None:
         return "expired"
     age = now - last_success
-    if age < FRESH_WINDOW:
+    if timedelta(0) <= age < FRESH_WINDOW:
         return "fresh"
     if age < EXPIRED_WINDOW:
         return "stale_but_usable"

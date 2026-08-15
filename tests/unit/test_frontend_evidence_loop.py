@@ -295,7 +295,7 @@ def test_skip_frontend_evidence_loop_requires_confirmation(tmp_path: Path) -> No
     ).exists()
 
 
-def test_skip_frontend_evidence_loop_closes_with_audit_without_browser_artifact(
+def test_skip_frontend_evidence_loop_waits_for_review_before_close(
     tmp_path: Path,
 ) -> None:
     work_item = _write_work_item(tmp_path)
@@ -314,11 +314,14 @@ def test_skip_frontend_evidence_loop_closes_with_audit_without_browser_artifact(
     )
 
     assert result.status == "ready"
-    assert result.closed is True
+    assert result.closed is False
     assert result.skipped is True
-    assert result.loop_status == "closed"
+    assert result.loop_status == "needs_review"
     assert result.skip_reason == reason
-    assert result.next_guidance.command == "ai-sdlc pr-review start"
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence "
+        "--loop-id fe-skip-browser-unavailable"
+    )
     loop_dir = (
         tmp_path
         / ".ai-sdlc"
@@ -326,18 +329,34 @@ def test_skip_frontend_evidence_loop_closes_with_audit_without_browser_artifact(
         / "frontend-evidence"
         / "fe-skip-browser-unavailable"
     )
-    close_payload = json.loads(
-        (loop_dir / "frontend-evidence-close.json").read_text(encoding="utf-8")
-    )
+    assert not (loop_dir / "frontend-evidence-close.json").exists()
     report_payload = json.loads(
         (loop_dir / "frontend-evidence-report.json").read_text(encoding="utf-8")
+    )
+    assert report_payload["status"] == "needs_review"
+    assert report_payload["overall_gate_status"] == "skipped"
+    assert "frontend_browser_e2e_skipped" in report_payload["advisory_reason_codes"]
+
+    close = close_frontend_evidence_loop(
+        FrontendEvidenceCloseOptions(
+            root=tmp_path,
+            loop_id="fe-skip-browser-unavailable",
+            yes=True,
+            allow_warnings=True,
+            closed_by="tester",
+        )
+    )
+
+    assert close.closed is True
+    assert close.skipped is True
+    assert close.loop_status == "closed"
+    assert close.next_guidance.command == "ai-sdlc pr-review start"
+    close_payload = json.loads(
+        (loop_dir / "frontend-evidence-close.json").read_text(encoding="utf-8")
     )
     assert close_payload["skipped"] is True
     assert close_payload["skip_reason"] == reason
     assert close_payload["closed_by"] == "tester"
-    assert report_payload["status"] == "closed"
-    assert report_payload["overall_gate_status"] == "skipped"
-    assert "frontend_browser_e2e_skipped" in report_payload["advisory_reason_codes"]
 
 
 def test_start_frontend_evidence_loop_blocks_scope_mismatch(tmp_path: Path) -> None:

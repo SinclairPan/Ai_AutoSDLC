@@ -518,7 +518,7 @@ def frontend_evidence_skip(
         )
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
-    raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
+    raise typer.Exit(0 if result.status == "ready" else 1)
 
 
 @frontend_evidence_app.command(name="status")

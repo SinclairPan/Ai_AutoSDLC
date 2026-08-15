@@ -1725,8 +1725,12 @@ def _summary_from_frontend_evidence_loop_run(
         artifacts.append(_artifact_ref(root, kind, path))
     close_path = loop_dir / "frontend-evidence-close.json"
     closed = close_path.is_file()
-    skipped = False
-    skip_reason = ""
+    skipped = (
+        not closed
+        and report.overall_gate_status == "skipped"
+        and report.decision_reason == "frontend_browser_e2e_skipped"
+    )
+    skip_reason = report.warnings[-1] if skipped and report.warnings else ""
     if closed:
         try:
             close_payload = FrontendEvidenceClose.model_validate(

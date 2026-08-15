@@ -257,7 +257,7 @@ class E2EHarness:
             "- Frontend-evidence loop: missing browser artifact blocks start; valid artifact closes.",
             "- Windows frontend provider path: no Codex/no local Playwright, doctor-recommended Playwright install, Chromium smoke.",
             "- Windows Playwright evidence path: installed Playwright runs browser-gate-probe, handles first-run baseline when needed, materializes browser evidence, and closes frontend-evidence.",
-            "- No-install frontend path: provider tooling unavailable, explicit skip closes with audit instead of hard-blocking.",
+            "- No-install frontend path: provider tooling unavailable, explicit skip records audit and waits for expert review.",
             "- Local PR review loop: mock adversarial finding forces fix/rerun; clean rerun closes and attests.",
             "",
             "## Step Results",
@@ -702,7 +702,7 @@ def run_scenario(
         parse_json=True,
         env_overrides=no_install_env,
         note=(
-            "No install-tool PATH is active; skip must still close with audit."
+            "No install-tool PATH is active; skip must still record audit and await review."
             if no_install_env
             else ""
         ),
@@ -710,9 +710,11 @@ def run_scenario(
     h.assert_true(
         "Frontend-evidence can be skipped with explicit risk acceptance",
         fe_skip.parsed_json is not None
-        and fe_skip.parsed_json.get("closed") is True
+        and fe_skip.parsed_json.get("closed") is False
         and fe_skip.parsed_json.get("skipped") is True
-        and "pr-review" in str(fe_skip.parsed_json.get("next_action", "")),
+        and fe_skip.parsed_json.get("loop_status") == "needs_review"
+        and "loop review --type frontend-evidence"
+        in str(fe_skip.parsed_json.get("next_action", "")),
     )
     fe_doctor_codex = h.run(
         "frontend_evidence_doctor_codex_browser",

@@ -177,6 +177,28 @@ def test_stale_cache_still_emits_known_update_notice_without_refresh(
     assert stale.upgrade_command == "ai-sdlc self-update check"
 
 
+def test_future_cache_timestamp_forces_refresh(monkeypatch, tmp_path) -> None:
+    _force_installed(monkeypatch, tmp_path)
+    calls = 0
+
+    def fetch_latest(timeout: float) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        return {"tag_name": "v1.0.1", "draft": False, "prerelease": False}
+
+    future = datetime(2026, 5, 2, 12, 0, tzinfo=UTC)
+    evaluate_update_advisor(now=future, fetch_latest=fetch_latest)
+
+    after_rollback = evaluate_update_advisor(
+        now=future - timedelta(days=1),
+        fetch_latest=fetch_latest,
+    )
+
+    assert after_rollback.refresh_attempted is True
+    assert after_rollback.refresh_result == "success"
+    assert calls == 2
+
+
 def test_rendered_notice_throttles_without_acknowledging(
     monkeypatch, tmp_path
 ) -> None:

@@ -381,7 +381,12 @@ def skip_frontend_evidence_loop(
             artifacts=planned_refs,
         )
 
-    source_artifact_path = repo_relative_path(root, artifacts.close_path)
+    source_artifact_path = repo_relative_path(root, artifacts.report_json_path)
+    review_next_action = _next_action_for_status(
+        LoopStatus.NEEDS_REVIEW,
+        repo_relative_path(root, work_item_dir),
+        loop_id,
+    )
     frontend_input = FrontendEvidenceInput(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
@@ -403,13 +408,13 @@ def skip_frontend_evidence_loop(
         blocking_reason_codes=[],
         advisory_reason_codes=[_FRONTEND_EVIDENCE_SKIP_REASON_CODE],
         warnings=[_FRONTEND_EVIDENCE_SKIP_RISK, reason],
-        recommended_next_steps=[_local_pr_review_next_action()],
+        recommended_next_steps=[review_next_action],
     )
     report = FrontendEvidenceReport(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
         work_item_path=repo_relative_path(root, work_item_dir),
-        status=LoopStatus.CLOSED,
+        status=LoopStatus.NEEDS_REVIEW,
         gate_run_id="skipped",
         source_artifact_path=source_artifact_path,
         overall_gate_status="skipped",
@@ -419,7 +424,7 @@ def skip_frontend_evidence_loop(
         warning_count=2,
         warnings=[_FRONTEND_EVIDENCE_SKIP_RISK, reason],
         advisory_reason_codes=[_FRONTEND_EVIDENCE_SKIP_REASON_CODE],
-        next_action=_local_pr_review_next_action(),
+        next_action=review_next_action,
     )
     loop_run = _build_skip_loop_run(
         frontend_input=frontend_input,
@@ -427,24 +432,12 @@ def skip_frontend_evidence_loop(
         artifacts=artifacts,
         root=root,
     )
-    close = FrontendEvidenceClose(
-        loop_id=loop_id,
-        closed_by=options.closed_by.strip() or "local-user",
-        report_path=repo_relative_path(root, artifacts.report_json_path),
-        allow_warnings=True,
-        warning_count=report.warning_count,
-        accepted_warning_reason_codes=list(report.advisory_reason_codes),
-        skipped=True,
-        skip_reason=reason,
-        skip_risk_acknowledgement=_FRONTEND_EVIDENCE_SKIP_RISK,
-    )
     return _write_frontend_skip(
         root,
         frontend_input,
         snapshot,
         report,
         loop_run,
-        close,
         artifacts,
         reason,
     )
@@ -479,7 +472,6 @@ def _write_frontend_skip(
     snapshot: FrontendEvidenceSnapshot,
     report: FrontendEvidenceReport,
     loop_run: LoopRun,
-    close: FrontendEvidenceClose,
     artifacts: FrontendEvidenceArtifacts,
     reason: str,
 ) -> FrontendEvidenceCommandResult:
@@ -489,20 +481,18 @@ def _write_frontend_skip(
         snapshot,
         report,
         loop_run,
-        close,
         artifacts,
     )
     return _result_from_report(
         report,
-        artifacts=artifacts.refs(root, include_close=True),
-        result="Frontend evidence loop skipped with explicit risk acceptance.",
+        artifacts=artifacts.refs(root),
+        result="Frontend evidence skip recorded and waiting for expert review.",
         status=FrontendEvidenceCommandStatus.READY,
-        closed=True,
+        closed=False,
         skipped=True,
         skip_reason=reason,
-        loop_status=LoopStatus.CLOSED,
-        next_action=_local_pr_review_next_action(),
-        allow_warnings=True,
+        loop_status=LoopStatus.NEEDS_REVIEW,
+        next_action=report.next_action,
         snapshot=snapshot,
     )
 
@@ -1544,7 +1534,6 @@ def _write_skip_artifacts(
     snapshot: FrontendEvidenceSnapshot,
     report: FrontendEvidenceReport,
     loop_run: LoopRun,
-    close: FrontendEvidenceClose,
     artifacts: FrontendEvidenceArtifacts,
 ) -> None:
     store = LoopArtifactStore(root)
@@ -1559,7 +1548,6 @@ def _write_skip_artifacts(
         artifacts.report_md_path,
         _render_report_markdown(report),
     )
-    store.write_json_artifact(artifacts.close_path, close)
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
     store.write_json_artifact(
         artifacts.pointer_path,
@@ -1601,6 +1589,20 @@ def _write_frontend_close(
     *,
     allow_warnings: bool,
 ) -> FrontendEvidenceCommandResult:
+    skipped = (
+        report.overall_gate_status == "skipped"
+        and report.decision_reason == _FRONTEND_EVIDENCE_SKIP_REASON_CODE
+    )
+    skip_reason = ""
+    if skipped:
+        skip_reason = next(
+            (
+                warning
+                for warning in report.warnings
+                if warning != _FRONTEND_EVIDENCE_SKIP_RISK
+            ),
+            "",
+        )
     close = FrontendEvidenceClose(
         loop_id=loop_run.loop_id,
         closed_by=closed_by.strip() or "local-user",
@@ -1609,6 +1611,11 @@ def _write_frontend_close(
         warning_count=report.warning_count,
         accepted_warning_reason_codes=(
             list(report.advisory_reason_codes) if allow_warnings else []
+        ),
+        skipped=skipped,
+        skip_reason=skip_reason,
+        skip_risk_acknowledgement=(
+            _FRONTEND_EVIDENCE_SKIP_RISK if skipped else ""
         ),
     )
     loop_run.status = LoopStatus.CLOSED
@@ -1630,6 +1637,8 @@ def _write_frontend_close(
         result="Frontend evidence loop closed.",
         status=FrontendEvidenceCommandStatus.READY,
         closed=True,
+        skipped=skipped,
+        skip_reason=skip_reason,
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
         allow_warnings=allow_warnings,
@@ -1687,12 +1696,11 @@ def _build_skip_loop_run(
         repo_relative_path(root, artifacts.snapshot_path),
         repo_relative_path(root, artifacts.report_json_path),
         repo_relative_path(root, artifacts.report_md_path),
-        repo_relative_path(root, artifacts.close_path),
     ]
     return LoopRun(
         loop_id=frontend_input.loop_id,
         loop_type=LoopType.FRONTEND_EVIDENCE,
-        status=LoopStatus.CLOSED,
+        status=LoopStatus.NEEDS_REVIEW,
         work_item_id=frontend_input.work_item_id,
         current_round=1,
         rounds=[
@@ -1701,8 +1709,8 @@ def _build_skip_loop_run(
                 input_artifacts=[frontend_input.implementation_report_path],
                 output_artifacts=output_artifacts,
                 command=["ai-sdlc", "loop", "frontend-evidence", "skip"],
-                status=LoopStatus.CLOSED,
-                result=LoopStatus.CLOSED,
+                status=LoopStatus.NEEDS_REVIEW,
+                result=LoopStatus.NEEDS_REVIEW,
                 next_action=report.next_action,
             )
         ],
