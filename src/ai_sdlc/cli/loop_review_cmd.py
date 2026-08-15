@@ -34,6 +34,8 @@ _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     ),
     "frontend-evidence": (
         "frontend-evidence-input.json",

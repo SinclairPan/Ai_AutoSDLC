@@ -49,6 +49,8 @@ pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
                 "implementation-report.md",
                 "verification-evidence.json",
                 "implementation-input.json",
+                "implementation-tasks.json",
+                "implementation-progress.json",
             ],
             "implementation-close.json",
         ),
@@ -108,6 +110,49 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
         expected_upstream
     )
     assert excluded not in result.output
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ["implementation-tasks.json", "implementation-progress.json"],
+)
+def test_implementation_review_binds_generated_task_state(
+    tmp_path: Path,
+    filename: str,
+) -> None:
+    loop_id = "implementation-task-state"
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "implementation" / loop_id
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    _write_predecessor_fixture(tmp_path, "implementation", loop_dir)
+    for artifact in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
+        content = "{}" if artifact.endswith(".json") else artifact
+        (loop_dir / artifact).write_text(content, encoding="utf-8")
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id=loop_id,
+    )
+    (loop_dir / filename).write_text(
+        json.dumps({"changed_after_review": True}),
+        encoding="utf-8",
+    )
+    changed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id=loop_id,
+    )
+
+    assert changed.input_digest != reviewed.input_digest
 
 
 def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path) -> None:
@@ -480,6 +525,8 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     ):
         content = "{}" if filename.endswith(".json") else filename
         (implementation_dir / filename).write_text(content, encoding="utf-8")
@@ -513,6 +560,8 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     }
 
     (requirement_dir / "requirement-brief.md").write_text(
@@ -611,6 +660,8 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     ):
         (implementation_dir / filename).write_text("{}", encoding="utf-8")
 
@@ -843,6 +894,8 @@ def test_stage_review_keeps_symlink_when_scope_also_matches_target(
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     ):
         (loop_dir / filename).write_text("{}", encoding="utf-8")
 
@@ -888,6 +941,8 @@ def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path)
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     ):
         (loop_dir / filename).write_text("{}", encoding="utf-8")
 
@@ -937,7 +992,12 @@ def test_implementation_review_binds_repository_evidence_files(tmp_path: Path) -
         ),
         encoding="utf-8",
     )
-    for filename in ("implementation-report.json", "implementation-report.md"):
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
         (loop_dir / filename).write_text("{}", encoding="utf-8")
     evidence_file = tmp_path / "artifacts" / "test-results.log"
     evidence_file.parent.mkdir(parents=True)
@@ -1003,7 +1063,12 @@ def test_implementation_review_rejects_escaped_evidence_symlink(
         ),
         encoding="utf-8",
     )
-    for filename in ("implementation-report.json", "implementation-report.md"):
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
         (loop_dir / filename).write_text("{}", encoding="utf-8")
 
     external = tmp_path.parent / "external-evidence.log"
@@ -1134,6 +1199,8 @@ def _write_predecessor_fixture(
         "implementation-report.json",
         "implementation-report.md",
         "verification-evidence.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
     }
     for filename in implementation_files - {"implementation-input.json"}:
         content = "{}" if filename.endswith(".json") else filename
