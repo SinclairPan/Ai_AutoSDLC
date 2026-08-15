@@ -659,10 +659,12 @@ def _matching_risk_signals(
 def _git_risk_signals(root: Path) -> list[str]:
     head = _git_bytes(root, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
     index = _git_bytes(root, "ls-files", "--stage", "-z")
+    index_flags = _git_bytes(root, "ls-files", "-v", "-z")
     staged = _git_bytes(root, "diff", "--cached", "--binary", "--no-ext-diff", "--")
     return [
         f"git-head:{head}",
         f"git-index:{hashlib.sha256(index).hexdigest()}",
+        f"git-index-flags:{hashlib.sha256(index_flags).hexdigest()}",
         f"git-staged-diff:{hashlib.sha256(staged).hexdigest()}",
     ]
 

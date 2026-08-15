@@ -288,6 +288,9 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     assert "final-report.md" not in result.output
     assert any(item.startswith("git-head:") for item in payload["risk_signals"])
     assert any(item.startswith("git-index:") for item in payload["risk_signals"])
+    assert any(
+        item.startswith("git-index-flags:") for item in payload["risk_signals"]
+    )
     assert any(item.startswith("git-staged-diff:") for item in payload["risk_signals"])
     reviewed = resolve_review_input(
         tmp_path,
@@ -388,6 +391,63 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     assert not (
         tmp_path / ".ai-sdlc" / "loops" / "local-pr-review" / "loop-pr-001"
     ).exists()
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_local_pr_review_binds_index_flags(
+    tmp_path: Path,
+    index_flag: str,
+) -> None:
+    _init_git_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("reviewed staged content\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-flags"
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps(
+            {
+                "review_id": "review-flags",
+                "loop_id": "loop-pr-flags",
+                "current_round": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-flags",
+        loop_id="loop-pr-flags",
+    )
+    diff = review_dir / "diff.patch"
+    diff.write_text("reviewed staged diff\n", encoding="utf-8")
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": (
+                    f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}"
+                ),
+                "diff_source": {"source_kind": "local-staged"},
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-flags",
+    )
+    _git(tmp_path, "update-index", index_flag, "tracked.txt")
+    changed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-flags",
+    )
+
+    assert changed.input_digest != reviewed.input_digest
 
 
 @pytest.mark.parametrize("malformed_bytes", [b"{", b"\xff"])
