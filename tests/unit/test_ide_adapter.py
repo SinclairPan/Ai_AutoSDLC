@@ -232,6 +232,27 @@ class TestApplyAdapter:
             assert "--provider-id" in text
             assert "--style-pack-id" in text
             assert "enterprise-vue2" in text
+            assert "五类结果的内置动态专家复核" in text
+            assert "Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review" in text
+            assert "ai-sdlc loop review --type" in text
+            assert "一个主专家" in text
+            assert "最多增加一个交叉风险专家" in text
+            assert "全新且只读的独立上下文" in text
+            assert "不要求用户选择专家" in text
+            assert "最多进行一次修复后复审" in text
+            assert "--expect-digest" in text
+            assert "保持 `needs_review`" in text
+            assert "Local PR Review" in text
+            assert "禁止继续评审该复核结果" in text
+            for retired_term in (
+                "prepare -> record -> close",
+                "review-input.json",
+                "review-execution.json",
+                "certificate",
+                "attestation",
+                "quorum",
+            ):
+                assert retired_term not in text
             assert "先检查接入真值" not in text
             assert "宿主加载证明" not in text
             assert "verified_loaded" not in text
