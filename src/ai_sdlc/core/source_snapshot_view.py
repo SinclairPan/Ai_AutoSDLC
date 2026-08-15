@@ -28,6 +28,7 @@ from ai_sdlc.core.source_snapshot import (
     SourceSnapshot,
     _filtered_index_records,
     _is_runtime_artifact,
+    _patch_path,
     _runtime_pathspecs,
 )
 from ai_sdlc.core.source_snapshot import (
@@ -265,8 +266,7 @@ def _index_python_sources(
 def _patched_index(root: Path, snapshot: SourceSnapshot) -> Iterator[dict[str, str]]:
     if not snapshot.patch_file:
         raise ValueError("patch source has no patch_file")
-    patch_path = (root / snapshot.patch_file).resolve()
-    patch_path.relative_to(root.resolve())
+    patch_path = _patch_path(root.resolve(), snapshot.patch_file)
     patch = patch_path.read_bytes()
     expected_digest = snapshot.source_input_digest or snapshot.diff_hash
     if _payload_digest(patch) != expected_digest:
@@ -310,8 +310,7 @@ def patch_diff_metadata(
 ) -> tuple[bytes, bytes]:
     """Read status and numstat from one isolated patched source view."""
 
-    patch_path = (root / patch_file).resolve()
-    patch_path.relative_to(root.resolve())
+    patch_path = _patch_path(root.resolve(), patch_file)
     with (
         _patch_index(root, patch_path, base_commit) as env,
         _index_worktree(root, env) as selected_env,

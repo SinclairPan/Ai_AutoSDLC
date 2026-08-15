@@ -651,6 +651,68 @@ def test_local_pr_review_binds_live_patch_source(
     assert changed.input_digest != reviewed.input_digest
 
 
+def test_local_pr_review_accepts_external_absolute_patch_source(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("reviewed external patch\n", encoding="utf-8")
+    external_patch = tmp_path.parent / f"{tmp_path.name}-external.patch"
+    external_patch.write_text(
+        _git(tmp_path, "diff", "--binary", "--", "tracked.txt") + "\n",
+        encoding="utf-8",
+    )
+    _git(tmp_path, "checkout", "--", "tracked.txt")
+
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-external"
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps(
+            {
+                "review_id": "review-external",
+                "loop_id": "loop-pr-external",
+                "current_round": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-external",
+        loop_id="loop-pr-external",
+    )
+    copied_diff = review_dir / "diff.patch"
+    copied_diff.write_bytes(external_patch.read_bytes())
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": copied_diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": (
+                    f"sha256:{hashlib.sha256(copied_diff.read_bytes()).hexdigest()}"
+                ),
+                "diff_source": {
+                    "source_kind": "patch",
+                    "patch_file": str(external_patch.resolve()),
+                    "head_ref": "HEAD",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-external",
+    )
+
+    assert any(
+        signal.startswith("git-selected-patch:")
+        for signal in reviewed.risk_signals
+    )
+
+
 def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> None:
     requirement_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"

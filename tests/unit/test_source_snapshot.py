@@ -526,6 +526,34 @@ def test_patch_snapshot_separates_raw_input_from_filtered_runtime_view(
     assert freshness.reason == "source_content_changed"
 
 
+def test_patch_snapshot_reconstructs_external_absolute_patch(tmp_path: Path) -> None:
+    root = tmp_path / "repo"
+    root.mkdir()
+    _init_repo(root)
+    _write(root, "README.md", "# Reviewed external patch\n")
+    external_patch = tmp_path / "selected.patch"
+    external_patch.write_text(
+        _git(root, "diff", "--binary", "--", "README.md") + "\n",
+        encoding="utf-8",
+    )
+    _git(root, "checkout", "--", "README.md")
+
+    snapshot = build_source_snapshot(
+        SourceSnapshotOptions(
+            root=root,
+            source_kind="patch",
+            patch_file=str(external_patch.resolve()),
+        )
+    )
+
+    assert snapshot.patch_file == str(external_patch.resolve())
+    assert revalidate_source_snapshot(root, snapshot).fresh is True
+    with materialized_source_view(root, snapshot) as source:
+        assert (source / "README.md").read_text("utf-8") == (
+            "# Reviewed external patch\n"
+        )
+
+
 def test_unstaged_snapshot_becomes_stale_when_only_index_changes(
     tmp_path: Path,
 ) -> None:
