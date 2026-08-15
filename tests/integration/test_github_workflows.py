@@ -175,7 +175,11 @@ def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
                     "overall_gate_status": "passed_with_advisories",
                     "execute_gate_state": "ready",
                     "blocker_count": 0,
-                    "next_action": "Review, then close with --allow-warnings.",
+                    "warning_count": 6,
+                    "next_action": (
+                        "Run ai-sdlc loop review --type frontend-evidence "
+                        "--loop-id frontend-e2e."
+                    ),
                 }
             elif slug.endswith("_review_input") or slug.endswith("_review_recheck"):
                 payload = {"input_digest": "stable-review-input"}

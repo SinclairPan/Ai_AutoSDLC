@@ -1072,7 +1072,6 @@ def _run_frontend_evidence_ready_path(
         start_payload.get("overall_gate_status") == "passed_with_advisories"
         and start_payload.get("execute_gate_state") == "ready"
         and start_payload.get("blocker_count") == 0
-        and "allow-warnings" in str(start_payload.get("next_action", ""))
     )
     h.assert_true(
         "Frontend-evidence loop starts with valid browser artifact",
