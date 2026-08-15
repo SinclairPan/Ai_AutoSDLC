@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
+import subprocess
+import sys
 import tomllib
+import types
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -324,6 +329,79 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "ai-sdlc run --dry-run",
     ),
 }
+WI010_PHASE_MARKER_PREFIX = "<!-- WI010_RELEASE_PHASE:"
+WI010_PHASE_MARKER_RE = re.compile(
+    r"<!-- WI010_RELEASE_PHASE: (?P<payload>\{[^\r\n]*\}) -->"
+)
+WI010_PHASE_STATE_MARKERS = {
+    "S0": "v1.0.5 release candidate / not published / prepared-disabled",
+    "S1": "v1.0.5 release candidate / release-enabled / outcome-pending-closure",
+    "S2-success": (
+        "v1.0.5 Permanent Release Truth / published / immutable / "
+        "Certificate-trusted"
+    ),
+    "S2-burn": (
+        "v1.0.5 Permanent Release Truth / terminal-generation-burn / "
+        "non-authoritative"
+    ),
+}
+WI010_PHASE_SURFACES = (
+    "README.md",
+    "USER_GUIDE.zh-CN.md",
+    "docs/product-contract.md",
+    "docs/pull-request-checklist.zh.md",
+    "packaging/offline/README.md",
+    "packaging/offline/RELEASE_CHECKLIST.md",
+)
+WI010_PHASE_FLAGS = (
+    "RELEASE_BOOTSTRAP_ENABLED",
+    "RELEASE_ENVIRONMENT_PROTECTION_VERIFIED",
+    "RELEASE_TAG_RULESET_PROTECTION_VERIFIED",
+)
+WI010_PHASE_PAYLOAD_KEYS = {
+    "S0": frozenset({"phase"}),
+    "S1": frozenset({"phase"}),
+    "S2-success": frozenset(
+        {
+            "archive_commit_sha",
+            "certificate_commit_sha",
+            "certificate_digest",
+            "certificate_tag",
+            "certificate_tree_sha",
+            "generation",
+            "immutable",
+            "phase",
+            "proof_commit_sha",
+            "proof_digest",
+            "release_attestation_digest",
+            "release_id",
+            "tag_name",
+            "tag_peel_sha",
+            "target_commitish_resolved_sha",
+            "workflow_run_attempt",
+            "workflow_run_id",
+        }
+    ),
+    "S2-burn": frozenset(
+        {
+            "authority_id",
+            "authority_kind",
+            "candidate_commit_sha",
+            "candidate_tree_sha",
+            "generation",
+            "phase",
+            "terminal_stage",
+            "workflow_run_attempt",
+            "workflow_run_id",
+        }
+    ),
+}
+WI010_VALIDATOR_REL = Path("scripts") / "validate_public_release_identity.py"
+WI010_CONSTRAINTS_REL = Path("src") / "ai_sdlc" / "core" / "verify_constraints.py"
+# foundation 最终冻结时由同一提交写入 validator 的 Git blob OID。
+WI010_VALIDATOR_BLOB_OID = "8fd98e5ef6b859cc7f6f41e598a75dec6cf3b1a9"
+# PR23 合并后冻结且不属于 foundation / PR2 / PR3 可变路径的合同 blob。
+WI010_CONTRACT_BLOB_OID = "d8336b23ee1861de27c5a70f40387de6835781b0"
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "# AI-SDLC 1.0.2 中文用户指南",
     "v1.0.4 未发布",
@@ -2165,6 +2243,17 @@ def build_verification_governance_bundle(
 
 def collect_constraint_blockers(root: Path) -> list[str]:
     """Return human-readable BLOCKER lines (empty list if none)."""
+    try:
+        return _collect_constraint_blockers_unchecked(root)
+    except (OSError, UnicodeError) as exc:
+        return [
+            "BLOCKER: constraint input is unreadable as strict UTF-8: "
+            f"{type(exc).__name__}: {exc}"
+        ]
+
+
+def _collect_constraint_blockers_unchecked(root: Path) -> list[str]:
+    """Collect blockers after the public fail-closed input boundary."""
     blockers: list[str] = []
     cp = load_checkpoint(root)
 
@@ -4557,6 +4646,425 @@ def _release_version_truth_blockers(root: Path) -> list[str]:
     return blockers
 
 
+def _wi010_phase_payload(text: str) -> tuple[str, dict[str, object]]:
+    """解析 constraints 使用的最小 canonical phase schema。"""
+
+    matches = tuple(WI010_PHASE_MARKER_RE.finditer(text))
+    if text.count(WI010_PHASE_MARKER_PREFIX) != 1 or len(matches) != 1:
+        raise ValueError("phase marker must appear exactly once")
+
+    def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate phase key: {key}")
+            result[key] = value
+        return result
+
+    payload_text = matches[0].group("payload")
+    payload = json.loads(payload_text, object_pairs_hook=_unique_object)
+    if not isinstance(payload, dict):
+        raise ValueError("phase payload must be an object")
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if canonical != payload_text:
+        raise ValueError("phase payload must be canonical JSON")
+    phase = payload.get("phase")
+    if not isinstance(phase, str) or phase not in WI010_PHASE_PAYLOAD_KEYS:
+        raise ValueError("phase is unknown")
+    if frozenset(payload) != WI010_PHASE_PAYLOAD_KEYS[phase]:
+        raise ValueError("phase payload key set differs")
+    return phase, payload
+
+
+def _wi010_release_phase_blockers_from_files(files: dict[str, str]) -> list[str]:
+    """独立校验 phase、六面 token 与三 flag；seal 由 identity gate负责。"""
+
+    try:
+        phase, _payload = _wi010_phase_payload(files.get("README.md", ""))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        return [f"BLOCKER: WI010 release phase invalid: {exc}"]
+    expected_marker = WI010_PHASE_STATE_MARKERS[phase]
+    other_markers = {
+        marker
+        for name, marker in WI010_PHASE_STATE_MARKERS.items()
+        if name != phase
+    }
+    blockers: list[str] = []
+    for relative in WI010_PHASE_SURFACES:
+        text = re.sub(r"<!--.*?(?:-->|$)", "", files.get(relative, ""), flags=re.DOTALL)
+        if text.count(expected_marker) != 1 or any(
+            marker in text for marker in other_markers
+        ):
+            blockers.append(
+                "BLOCKER: WI010 release phase surface mismatch: "
+                f"{relative} expected {phase}"
+            )
+    expected_flag = "true" if phase == "S1" else "false"
+    workflow = files.get(".github/workflows/release-build.yml", "")
+    for flag in WI010_PHASE_FLAGS:
+        pattern = re.compile(
+            rf'^\s*{re.escape(flag)}:\s*"(?P<value>true|false)"\s*$',
+            re.MULTILINE,
+        )
+        values = tuple(match.group("value") for match in pattern.finditer(workflow))
+        if values != (expected_flag,):
+            blockers.append(
+                "BLOCKER: WI010 release phase flag mismatch: "
+                f"{flag} expected {expected_flag}, got {values}"
+            )
+    return blockers
+
+
+def _wi010_release_phase_blockers(root: Path) -> list[str]:
+    policy = root / RELEASE_POLICY_REL
+    if not policy.is_file() or "S0 seal foundation PR" not in policy.read_text(
+        encoding="utf-8"
+    ):
+        return ["BLOCKER: WI010 foundation contract marker is missing"]
+    relative_paths = {
+        *WI010_PHASE_SURFACES,
+        ".github/workflows/release-build.yml",
+        "tests/integration/test_github_workflows.py",
+        "packaging/install_online.sh",
+        "packaging/install_online.ps1",
+    }
+    files: dict[str, str] = {}
+    for relative in relative_paths:
+        path = root / relative
+        if path.is_file():
+            files[relative] = path.read_text(encoding="utf-8")
+    return _wi010_release_phase_blockers_from_files(files)
+
+
+WI010_GIT_LOCAL_ENVIRONMENT_VARIABLES = frozenset(
+    {
+        "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+        "GIT_ATTR_NOSYSTEM",
+        "GIT_ATTR_SOURCE",
+        "GIT_COMMON_DIR",
+        "GIT_CONFIG",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_CONFIG_PARAMETERS",
+        "GIT_CONFIG_SYSTEM",
+        "GIT_DIR",
+        "GIT_GRAFT_FILE",
+        "GIT_IMPLICIT_WORK_TREE",
+        "GIT_INDEX_FILE",
+        "GIT_INTERNAL_SUPER_PREFIX",
+        "GIT_NO_REPLACE_OBJECTS",
+        "GIT_OBJECT_DIRECTORY",
+        "GIT_PREFIX",
+        "GIT_REPLACE_REF_BASE",
+        "GIT_SHALLOW_FILE",
+        "GIT_WORK_TREE",
+    }
+)
+
+
+def _wi010_git_environment() -> dict[str, str]:
+    """保留用户 clean 规则，但拒绝 ambient 环境重定向可信仓库。"""
+
+    environment = {
+        name: value
+        for name, value in os.environ.items()
+        if name not in WI010_GIT_LOCAL_ENVIRONMENT_VARIABLES
+    }
+    environment["GIT_NO_LAZY_FETCH"] = "1"
+    environment["GIT_TERMINAL_PROMPT"] = "0"
+    return environment
+
+
+def _wi010_git_root_matches(root: Path) -> bool:
+    try:
+        discovered = (
+            subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "rev-parse",
+                    "--show-toplevel",
+                ],
+                cwd=root,
+                env=_wi010_git_environment(),
+                check=True,
+                capture_output=True,
+            )
+            .stdout.decode("utf-8")
+            .strip()
+        )
+    except (OSError, subprocess.CalledProcessError, UnicodeDecodeError):
+        return False
+    return Path(discovered).resolve() == root.resolve()
+
+
+def _wi010_foundation_contract_active(root: Path) -> bool:
+    """以 candidate 或其可信父提交的冻结对象识别 WI010 自托管仓库。"""
+
+    # 自托管约束正由候选树内的这个模块执行时，不允许候选通过删除身份文件
+    # 或让 shallow fetch 失败来关闭自身 gate。普通用户项目从已安装包执行，
+    # 模块路径不位于其项目根目录，因此不会误激活。
+    if Path(__file__).absolute() == (root / WI010_CONSTRAINTS_REL).absolute():
+        return True
+
+    identities = (
+        (
+            RELEASE_POLICY_REL,
+            "100644",
+            WI010_CONTRACT_BLOB_OID,
+        ),
+        (
+            WI010_VALIDATOR_REL,
+            "100755",
+            WI010_VALIDATOR_BLOB_OID,
+        ),
+    )
+    expected_records = {
+        f"{mode} blob {oid}\t{path.as_posix()}".encode()
+        for path, mode, oid in identities
+    }
+    identity_paths = {path.as_posix().encode() for path, _, _ in identities}
+
+    def tree_records(revision: str) -> set[bytes]:
+        listed = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                revision,
+                "--",
+                *(path.as_posix() for path, _, _ in identities),
+            ],
+            cwd=root,
+            env=_wi010_git_environment(),
+            check=True,
+            capture_output=True,
+        ).stdout
+        return set(listed.rstrip(b"\0").split(b"\0")) if listed else set()
+
+    head_records: set[bytes] = set()
+    try:
+        head_oid = (
+            subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "rev-parse",
+                    "--verify",
+                    "HEAD^{commit}",
+                ],
+                cwd=root,
+                env=_wi010_git_environment(),
+                check=True,
+                capture_output=True,
+            )
+            .stdout.decode("ascii")
+            .strip()
+        )
+        head_records = tree_records(head_oid)
+        if head_records & expected_records:
+            return True
+        commit_object = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "cat-file",
+                "commit",
+                head_oid,
+            ],
+            cwd=root,
+            env=_wi010_git_environment(),
+            check=True,
+            capture_output=True,
+        ).stdout
+        parents = tuple(
+            line.removeprefix(b"parent ").decode("ascii")
+            for line in commit_object.split(b"\n\n", 1)[0].splitlines()
+            if line.startswith(b"parent ")
+        )
+        if any(re.fullmatch(r"[0-9a-f]{40}", parent) is None for parent in parents):
+            raise ValueError("WI010 activation parent is not a canonical object ID")
+        missing = tuple(
+            parent
+            for parent in parents
+            if subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "cat-file",
+                    "-e",
+                    parent + "^{commit}",
+                ],
+                cwd=root,
+                env=_wi010_git_environment(),
+                check=False,
+                capture_output=True,
+            ).returncode
+            != 0
+        )
+        if missing:
+            shallow = subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "rev-parse",
+                    "--is-shallow-repository",
+                ],
+                cwd=root,
+                env=_wi010_git_environment(),
+                check=True,
+                capture_output=True,
+            ).stdout.strip()
+            if shallow != b"true":
+                raise ValueError("WI010 activation parent object is missing")
+            subprocess.run(
+                [
+                    "git",
+                    "--no-replace-objects",
+                    "fetch",
+                    "--no-tags",
+                    "--no-recurse-submodules",
+                    "--no-write-fetch-head",
+                    "--deepen=1",
+                    "origin",
+                    head_oid,
+                ],
+                cwd=root,
+                env=_wi010_git_environment(),
+                check=True,
+                capture_output=True,
+                timeout=60,
+            )
+        return any(tree_records(parent) & expected_records for parent in parents)
+    except (
+        AttributeError,
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        TypeError,
+        UnicodeDecodeError,
+        ValueError,
+    ):
+        tracked_paths = {
+            record.split(b"\t", 1)[1]
+            for record in head_records
+            if b"\t" in record
+        }
+        if identity_paths <= tracked_paths:
+            return True
+        # 无 Git 上下文时仅两个精确内容同时匹配才证明是当前自托管仓库。
+        actual_oids: list[str] = []
+        for path, _, _ in identities:
+            try:
+                content = (root / path).read_bytes().replace(b"\r\n", b"\n")
+            except OSError:
+                return False
+            actual_oids.append(
+                hashlib.sha1(
+                    f"blob {len(content)}\0".encode("ascii") + content
+                ).hexdigest()
+            )
+        return actual_oids == [oid for _, _, oid in identities]
+
+
+def _wi010_raw_blob_oid(content: bytes) -> str:
+    """仅显式兼容 checkout CRLF；不允许 attributes/filter 改写可信源码。"""
+
+    normalized = content.replace(b"\r\n", b"\n")
+    return hashlib.sha1(
+        f"blob {len(normalized)}\0".encode("ascii") + normalized
+    ).hexdigest()
+
+
+def _wi010_validator_blockers(root: Path) -> list[str]:
+    """只执行 foundation 冻结的 validator blob，并消费其完整状态结论。"""
+
+    if not _wi010_git_root_matches(root):
+        return ["BLOCKER: WI010 Git root differs from requested project root"]
+    validator_path = root / WI010_VALIDATOR_REL
+    if not validator_path.is_file():
+        return ["BLOCKER: WI010 validator is missing"]
+    try:
+        listed = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "ls-tree",
+                "-z",
+                "--full-tree",
+                "HEAD",
+                "--",
+                WI010_VALIDATOR_REL.as_posix(),
+            ],
+            cwd=root,
+            env=_wi010_git_environment(),
+            check=True,
+            capture_output=True,
+        ).stdout
+        expected_record = (
+            f"100755 blob {WI010_VALIDATOR_BLOB_OID}\t"
+            f"{WI010_VALIDATOR_REL.as_posix()}\0"
+        ).encode()
+        if listed != expected_record:
+            return [
+                "BLOCKER: WI010 validator Git blob/mode differs from foundation"
+            ]
+        worktree_oid = _wi010_raw_blob_oid(validator_path.read_bytes())
+        if worktree_oid != WI010_VALIDATOR_BLOB_OID:
+            return ["BLOCKER: WI010 validator worktree differs from HEAD blob"]
+
+        validator_blob = subprocess.run(
+            [
+                "git",
+                "--no-replace-objects",
+                "cat-file",
+                "blob",
+                WI010_VALIDATOR_BLOB_OID,
+            ],
+            cwd=root,
+            env=_wi010_git_environment(),
+            check=True,
+            capture_output=True,
+        ).stdout
+        if _wi010_raw_blob_oid(validator_blob) != WI010_VALIDATOR_BLOB_OID:
+            return ["BLOCKER: WI010 validator object bytes differ from foundation"]
+        module_name = "_ai_sdlc_wi010_release_identity"
+        module = types.ModuleType(module_name)
+        module.__file__ = (
+            f"git:{WI010_VALIDATOR_BLOB_OID}:{WI010_VALIDATOR_REL.as_posix()}"
+        )
+        module.__package__ = ""
+        sys.modules[module_name] = module
+        try:
+            code = compile(validator_blob, module.__file__, "exec", dont_inherit=True)
+            exec(code, module.__dict__)
+            findings = module.scan_public_tree(root)
+        finally:
+            sys.modules.pop(module_name, None)
+    except (
+        AttributeError,
+        OSError,
+        subprocess.CalledProcessError,
+        SyntaxError,
+        UnicodeDecodeError,
+        ValueError,
+    ) as exc:
+        return [f"BLOCKER: WI010 validator execution failed: {exc}"]
+    return [
+        "BLOCKER: WI010 validator finding: "
+        f"{finding.path}:{finding.marker}:{finding.excerpt}"
+        for finding in findings
+    ]
+
+
 def _release_docs_consistency_blockers(root: Path) -> list[str]:
     """Validate the fixed release entry docs for the current staged release."""
     activation_surfaces = (
@@ -4565,10 +5073,19 @@ def _release_docs_consistency_blockers(root: Path) -> list[str]:
         OFFLINE_README_REL,
         RELEASE_POLICY_REL,
     )
-    if not any((root / rel).is_file() for rel in activation_surfaces):
+    wi010_active = _wi010_foundation_contract_active(root)
+    if not wi010_active and not any(
+        (root / rel).is_file() for rel in activation_surfaces
+    ):
         return []
 
     blockers = _release_version_truth_blockers(root)
+    if wi010_active:
+        return [
+            *blockers,
+            *_wi010_release_phase_blockers(root),
+            *_wi010_validator_blockers(root),
+        ]
     for rel, required_tokens in RELEASE_DOCS_CONSISTENCY_SURFACES.items():
         path = root / rel
         if not path.is_file():
@@ -4594,8 +5111,44 @@ def _beginner_guide_cli_path_blockers(root: Path) -> list[str]:
         return []
     text = path.read_text(encoding="utf-8")
 
+    required_tokens = BEGINNER_GUIDE_REQUIRED_TOKENS
+    phase = "S0"
+    readme = root / README_REL
+    if readme.is_file() and WI010_PHASE_MARKER_PREFIX in readme.read_text(
+        encoding="utf-8"
+    ):
+        try:
+            phase, _payload = _wi010_phase_payload(
+                readme.read_text(encoding="utf-8")
+            )
+        except (TypeError, ValueError, json.JSONDecodeError):
+            phase = "S0"
+        replacements = {
+            "v1.0.5 release candidate / not published / prepared-disabled": (
+                WI010_PHASE_STATE_MARKERS[phase]
+            )
+        }
+        if phase == "S2-success":
+            replacements.update(
+                {
+                    "# AI-SDLC 1.0.2 中文用户指南": (
+                        "# AI-SDLC 1.0.5 中文用户指南"
+                    ),
+                    "ai-sdlc-offline-1.0.2-windows-amd64.zip": (
+                        "ai-sdlc-offline-1.0.5-windows-amd64.zip"
+                    ),
+                    "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz": (
+                        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz"
+                    ),
+                    "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz": (
+                        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz"
+                    ),
+                }
+            )
+        required_tokens = tuple(replacements.get(token, token) for token in required_tokens)
+
     blockers: list[str] = []
-    missing = [token for token in BEGINNER_GUIDE_REQUIRED_TOKENS if token not in text]
+    missing = [token for token in required_tokens if token not in text]
     if missing:
         blockers.append(
             "BLOCKER: beginner guide CLI path missing required current-flow markers: "
@@ -4612,7 +5165,14 @@ def _beginner_guide_cli_path_blockers(root: Path) -> list[str]:
             "from the offline bundle directory: "
             f"{', '.join(missing_existing_init)}"
         )
-    forbidden = [token for token in BEGINNER_GUIDE_FORBIDDEN_TOKENS if token in text]
+    forbidden_tokens = BEGINNER_GUIDE_FORBIDDEN_TOKENS
+    if phase == "S2-success":
+        forbidden_tokens = tuple(
+            token
+            for token in forbidden_tokens
+            if token != "releases/download/v1.0.5/"
+        )
+    forbidden = [token for token in forbidden_tokens if token in text]
     if forbidden:
         blockers.append(
             "BLOCKER: beginner guide CLI path contains out-of-scope content: "

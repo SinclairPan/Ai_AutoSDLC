@@ -1,5 +1,8 @@
 # AI-SDLC 1.0.5
 
+<!-- WI010_RELEASE_PHASE: {"phase":"S0"} -->
+<!-- WI010_RELEASE_TREE_SEAL: a46e0ac0059a7025d6356ce96beb089b300c16255f460cec4348ebbd47eacc1a -->
+
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
