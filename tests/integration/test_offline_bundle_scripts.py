@@ -23,6 +23,15 @@ _OFFLINE_DIR = _REPO_ROOT / "packaging" / "offline"
 _PACKAGING_DIR = _REPO_ROOT / "packaging"
 
 
+def test_release_checklist_matches_the_standard_release_workflow() -> None:
+    checklist = (_OFFLINE_DIR / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+
+    assert "`v1.0.5`" in checklist
+    assert "`upload_to_release`" in checklist
+    assert "PR1 的三个发布开关" not in checklist
+    assert "v1.0.4 上传与发布动作保持禁止" not in checklist
+
+
 def _load_verify_offline_bundle_module():
     spec = importlib.util.spec_from_file_location(
         "verify_offline_bundle",

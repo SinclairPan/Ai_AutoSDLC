@@ -51,8 +51,7 @@
 ## 发布与复验
 
 - [ ] README、用户指南和打包说明中的包名一致；
-- [ ] GitHub Actions 默认候选标识为 `v1.0.5`，且 PR1 的三个发布开关均为字符串 `false`；
+- [ ] GitHub Actions 候选标识为 `v1.0.5`；仅在准备把已通过 smoke 的制品上传到既有 GitHub Release 时，将 `upload_to_release` 设为字符串 `"true"`；
 - [ ] 平台工作流 artifact 完整；
-- [x] v1.0.4 上传与发布动作保持禁止，未补传、替换或复用制品；
 - [ ] 从全新目录安装正式制品并重复 smoke；
 - [ ] 日志、制品和仓库不包含令牌或本地绝对路径。
