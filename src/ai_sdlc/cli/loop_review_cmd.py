@@ -61,6 +61,12 @@ _STAGE_PREDECESSORS: dict[str, tuple[str, str, str]] = {
         "implementation",
     ),
 }
+_STAGE_POINTER_NAMES = {
+    "requirement": "current-requirement.json",
+    "design-contract": "current-design-contract.json",
+    "implementation": "current-implementation.json",
+    "frontend-evidence": "current-frontend-evidence.json",
+}
 _LOCAL_REQUIRED = ("review-pack.json", "findings.json")
 _LOCAL_OPTIONAL = ("resolution.yaml", "verification-evidence.json")
 _CURRENT_LOCAL_REVIEW = (
@@ -224,8 +230,15 @@ def resolve_review_input(
         round_number = _read_round_number(run_path)
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
+        pointer_path, run_path = _resolve_current_stage_state(
+            root,
+            loop_type,
+            safe_loop_id,
+        )
         artifacts = _unique_paths(
             [
+                pointer_path,
+                run_path,
                 *(loop_dir / name for name in _STAGE_ARTIFACTS[loop_type]),
                 *_stage_source_material(root, loop_type, loop_dir),
             ]
@@ -235,7 +248,7 @@ def resolve_review_input(
             excluded=artifacts,
         )
         risk_signals = _content_risk_signals([*artifacts, *upstream_context])
-        round_number = _read_round_number(loop_dir / "loop-run.json")
+        round_number = _read_round_number(run_path)
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
 
@@ -478,6 +491,45 @@ def _exclude_paths(paths: list[Path], *, excluded: list[Path]) -> list[Path]:
 
 def _lexical_path(path: Path) -> Path:
     return Path(os.path.abspath(path))
+
+
+def _resolve_current_stage_state(
+    root: Path,
+    loop_type: str,
+    loop_id: str,
+) -> tuple[Path, Path]:
+    pointer_path = (
+        root
+        / ".ai-sdlc"
+        / "loops"
+        / loop_type
+        / _STAGE_POINTER_NAMES[loop_type]
+    )
+    pointer = _read_json_object(pointer_path)
+    if pointer.get("loop_id") != loop_id:
+        raise ValueError(
+            f"Current {loop_type} review does not identify Loop {loop_id}."
+        )
+    raw_run_path = pointer.get("loop_run_path", "")
+    if not isinstance(raw_run_path, str) or not raw_run_path.strip():
+        raise ValueError(f"Current {loop_type} Loop run path is missing.")
+    run_path = _repo_path(root, raw_run_path, "loop_run_path")
+    expected_run_path = (
+        root
+        / ".ai-sdlc"
+        / "loops"
+        / loop_type
+        / loop_id
+        / "loop-run.json"
+    )
+    if _lexical_path(run_path) != _lexical_path(expected_run_path):
+        raise ValueError(f"Current {loop_type} Loop run path is not canonical.")
+    run = _read_json_object(run_path)
+    if run.get("loop_id") != loop_id or run.get("loop_type") != loop_type:
+        raise ValueError(
+            f"Current {loop_type} Loop run does not identify Loop {loop_id}."
+        )
+    return pointer_path, run_path
 
 
 def _find_local_review_dir(

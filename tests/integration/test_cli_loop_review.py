@@ -18,6 +18,12 @@ from ai_sdlc.cli.main import app
 
 runner = CliRunner()
 pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
+_STAGE_POINTER_NAMES = {
+    "requirement": "current-requirement.json",
+    "design-contract": "current-design-contract.json",
+    "implementation": "current-implementation.json",
+    "frontend-evidence": "current-frontend-evidence.json",
+}
 
 
 @pytest.mark.parametrize(
@@ -76,9 +82,16 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / loop_type / loop_id
     loop_dir.mkdir(parents=True)
     (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 2}),
+        json.dumps(
+            {
+                "loop_id": loop_id,
+                "loop_type": loop_type,
+                "current_round": 2,
+            }
+        ),
         encoding="utf-8",
     )
+    pointer = _write_stage_current_pointer(tmp_path, loop_type, loop_id)
     for filename in [*filenames, excluded]:
         content = "{}" if filename.endswith(".json") else f"{filename}\n"
         (loop_dir / filename).write_text(content, encoding="utf-8")
@@ -105,11 +118,56 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
     assert payload["loop_id"] == loop_id
     assert payload["loop_type"] == loop_type
     assert payload["round_number"] == 2
-    assert {Path(path).name for path in payload["artifact_paths"]} == set(filenames)
+    assert {Path(path).name for path in payload["artifact_paths"]} == {
+        *filenames,
+        "loop-run.json",
+        _STAGE_POINTER_NAMES[loop_type],
+    }
     assert {Path(path).name for path in payload["upstream_context_paths"]} == (
         expected_upstream
     )
     assert excluded not in result.output
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type=loop_type,
+        loop_id=loop_id,
+    )
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps(
+            {
+                "loop_id": loop_id,
+                "loop_type": loop_type,
+                "current_round": 2,
+                "status": "changed-after-review",
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_drift = resolve_review_input(
+        tmp_path,
+        loop_type=loop_type,
+        loop_id=loop_id,
+    )
+    assert run_drift.input_digest != reviewed.input_digest
+
+    pointer.write_text(
+        json.dumps(
+            {
+                "loop_id": "another-loop",
+                "loop_run_path": (
+                    f".ai-sdlc/loops/{loop_type}/{loop_id}/loop-run.json"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match=f"does not identify Loop {loop_id}"):
+        resolve_review_input(
+            tmp_path,
+            loop_type=loop_type,
+            loop_id=loop_id,
+        )
 
 
 @pytest.mark.parametrize(
@@ -124,7 +182,14 @@ def test_implementation_review_binds_generated_task_state(
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "implementation" / loop_id
     loop_dir.mkdir(parents=True)
     (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+        json.dumps(
+            {
+                "loop_id": loop_id,
+                "loop_type": "implementation",
+                "current_round": 1,
+            }
+        ),
+        encoding="utf-8",
     )
     _write_predecessor_fixture(tmp_path, "implementation", loop_dir)
     for artifact in (
@@ -599,17 +664,24 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
     frontend_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "frontend-evidence" / "frontend-001"
     )
-    for loop_dir in (
-        requirement_dir,
-        design_dir,
-        implementation_dir,
-        frontend_dir,
+    for loop_type, loop_dir in (
+        ("requirement", requirement_dir),
+        ("design-contract", design_dir),
+        ("implementation", implementation_dir),
+        ("frontend-evidence", frontend_dir),
     ):
         loop_dir.mkdir(parents=True)
         (loop_dir / "loop-run.json").write_text(
-            json.dumps({"current_round": 1}),
+            json.dumps(
+                {
+                    "loop_id": loop_dir.name,
+                    "loop_type": loop_type,
+                    "current_round": 1,
+                }
+            ),
             encoding="utf-8",
         )
+        _write_stage_current_pointer(tmp_path, loop_type, loop_dir.name)
 
     for filename in (
         "requirement-intake.json",
@@ -718,8 +790,16 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         loop_dir = tmp_path / ".ai-sdlc" / "loops" / loop_type / loop_id
         loop_dir.mkdir(parents=True)
         (loop_dir / "loop-run.json").write_text(
-            json.dumps({"current_round": 1}), encoding="utf-8"
+            json.dumps(
+                {
+                    "loop_id": loop_id,
+                    "loop_type": loop_type,
+                    "current_round": 1,
+                }
+            ),
+            encoding="utf-8",
         )
+        _write_stage_current_pointer(tmp_path, loop_type, loop_id)
         loop_dirs[loop_type] = loop_dir
 
     requirement_dir = loop_dirs["requirement"]
@@ -847,10 +927,8 @@ def test_frontend_review_skips_large_binary_artifacts_before_risk_scan(
     tmp_path: Path,
 ) -> None:
     loop_id = "frontend-large-binary"
-    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "frontend-evidence" / loop_id
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+    loop_dir = _write_stage_current_state(
+        tmp_path, "frontend-evidence", loop_id
     )
     _write_predecessor_fixture(tmp_path, "frontend-evidence", loop_dir)
     for filename in ("frontend-evidence-report.json", "frontend-evidence-report.md"):
@@ -894,11 +972,7 @@ def test_frontend_review_skips_large_binary_artifacts_before_risk_scan(
 
 def test_review_streams_large_text_artifacts_during_risk_scan(tmp_path: Path) -> None:
     loop_id = "requirement-large-text"
-    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / loop_id
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
-    )
+    loop_dir = _write_stage_current_state(tmp_path, "requirement", loop_id)
     for filename in (
         "requirement-intake.json",
         "clarification-questions.md",
@@ -937,12 +1011,10 @@ def test_stage_review_rejects_symlink_source_material(tmp_path: Path) -> None:
     linked_spec = work_item / "spec.md"
     linked_spec.symlink_to(target.name)
 
-    loop_dir = (
-        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-symlink-001"
-    )
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "design-contract",
+        "design-symlink-001",
     )
     (loop_dir / "design-contract-input.json").write_text(
         json.dumps(
@@ -982,12 +1054,10 @@ def test_stage_review_keeps_symlink_when_scope_also_matches_target(
     target.write_text("VALUE = 1\n", encoding="utf-8")
     (source_dir / "z.py").symlink_to(target.name)
 
-    loop_dir = (
-        tmp_path / ".ai-sdlc" / "loops" / "implementation" / "implementation-001"
-    )
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-001",
     )
     (loop_dir / "implementation-input.json").write_text(
         json.dumps(
@@ -1025,16 +1095,10 @@ def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path)
     )
     for filename in ("design-contract-report.json", "design-contract-report.md"):
         (design_dir / filename).write_text("{}", encoding="utf-8")
-    loop_dir = (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "implementation"
-        / "implementation-delete-001"
-    )
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-delete-001",
     )
     (loop_dir / "implementation-input.json").write_text(
         json.dumps(
@@ -1080,16 +1144,10 @@ def test_implementation_review_binds_repository_evidence_files(tmp_path: Path) -
     for filename in ("design-contract-report.json", "design-contract-report.md"):
         (design_dir / filename).write_text("{}", encoding="utf-8")
 
-    loop_dir = (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "implementation"
-        / "implementation-evidence-001"
-    )
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-evidence-001",
     )
     (loop_dir / "implementation-input.json").write_text(
         json.dumps(
@@ -1154,16 +1212,10 @@ def test_implementation_review_rejects_escaped_evidence_symlink(
     for filename in ("design-contract-report.json", "design-contract-report.md"):
         (design_dir / filename).write_text("{}", encoding="utf-8")
 
-    loop_dir = (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "implementation"
-        / "implementation-evidence-symlink"
-    )
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}), encoding="utf-8"
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-evidence-symlink",
     )
     (loop_dir / "implementation-input.json").write_text(
         json.dumps(
@@ -1204,11 +1256,10 @@ def test_implementation_review_rejects_escaped_evidence_symlink(
 
 
 def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> None:
-    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}),
-        encoding="utf-8",
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "requirement",
+        "requirement-001",
     )
     (loop_dir / "requirement-brief.md").write_text(
         '{"blocker_count": 0, "required": true, "build": "complete"}',
@@ -1228,11 +1279,10 @@ def test_risk_signals_ignore_substrings_in_structural_words(tmp_path: Path) -> N
 
 
 def test_risk_signals_detect_standalone_short_terms(tmp_path: Path) -> None:
-    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
-    loop_dir.mkdir(parents=True)
-    (loop_dir / "loop-run.json").write_text(
-        json.dumps({"current_round": 1}),
-        encoding="utf-8",
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "requirement",
+        "requirement-001",
     )
     (loop_dir / "requirement-brief.md").write_text(
         "UI state requires a lock",
@@ -1282,11 +1332,63 @@ def _write_current_review_pointer(
     )
 
 
+def _write_stage_current_pointer(
+    root: Path,
+    loop_type: str,
+    loop_id: str,
+) -> Path:
+    pointer = (
+        root
+        / ".ai-sdlc"
+        / "loops"
+        / loop_type
+        / _STAGE_POINTER_NAMES[loop_type]
+    )
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(
+        json.dumps(
+            {
+                "loop_id": loop_id,
+                "loop_run_path": (
+                    f".ai-sdlc/loops/{loop_type}/{loop_id}/loop-run.json"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    return pointer
+
+
+def _write_stage_current_state(
+    root: Path,
+    loop_type: str,
+    loop_id: str,
+    *,
+    current_round: int = 1,
+) -> Path:
+    loop_dir = root / ".ai-sdlc" / "loops" / loop_type / loop_id
+    loop_dir.mkdir(parents=True, exist_ok=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps(
+            {
+                "loop_id": loop_id,
+                "loop_type": loop_type,
+                "current_round": current_round,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_stage_current_pointer(root, loop_type, loop_id)
+    return loop_dir
+
+
 def _write_predecessor_fixture(
     root: Path,
     loop_type: str,
     loop_dir: Path,
 ) -> set[str]:
+    loop_id = loop_dir.name
+    _write_stage_current_pointer(root, loop_type, loop_id)
     if loop_type == "requirement":
         return set()
     if loop_type == "design-contract":
