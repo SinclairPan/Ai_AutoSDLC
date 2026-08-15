@@ -408,8 +408,7 @@ def _implementation_evidence_material(root: Path, loop_dir: Path) -> list[Path]:
                 lexical.relative_to(resolved_root)
             except ValueError:
                 continue
-            if lexical.is_symlink() or lexical.is_file():
-                referenced.append(lexical)
+            referenced.extend(_expand_review_material(lexical))
     return _unique_paths(referenced)
 
 
@@ -466,17 +465,22 @@ def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
         matches = sorted(root.glob(pattern))
         for match in matches:
             resolved = _repo_path(root, str(match), "declared_scope")
-            if resolved.is_symlink():
-                expanded.append(resolved)
-            elif resolved.is_dir():
-                expanded.extend(
-                    path
-                    for path in sorted(resolved.rglob("*"))
-                    if path.is_symlink() or path.is_file()
-                )
-            elif resolved.is_file():
-                expanded.append(resolved)
+            expanded.extend(_expand_review_material(resolved))
     return _unique_paths(expanded)
+
+
+def _expand_review_material(path: Path) -> list[Path]:
+    if path.is_symlink():
+        return [path]
+    if path.is_dir():
+        return [
+            nested
+            for nested in sorted(path.rglob("*"))
+            if nested.is_symlink() or nested.is_file()
+        ]
+    if path.is_file():
+        return [path]
+    return []
 
 
 def _unique_paths(paths: list[Path]) -> list[Path]:

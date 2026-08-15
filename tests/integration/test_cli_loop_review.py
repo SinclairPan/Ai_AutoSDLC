@@ -1419,6 +1419,122 @@ def test_implementation_review_binds_repository_evidence_files(tmp_path: Path) -
     assert changed.input_digest != reviewed.input_digest
 
 
+def test_implementation_review_binds_repository_evidence_directories(
+    tmp_path: Path,
+) -> None:
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-evidence-directory",
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {"design_contract_loop_id": "design-001", "declared_scope": []}
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    evidence_dir = tmp_path / "artifacts" / "test-results"
+    evidence_file = evidence_dir / "nested" / "pytest.log"
+    evidence_file.parent.mkdir(parents=True)
+    evidence_file.write_text("3470 passed\n", encoding="utf-8")
+    (loop_dir / "verification-evidence.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {"evidence": [evidence_dir.relative_to(tmp_path).as_posix()]}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="implementation-evidence-directory",
+    )
+    assert evidence_file.relative_to(tmp_path).as_posix() in reviewed.artifact_paths
+
+    evidence_file.write_text("1 failed\n", encoding="utf-8")
+    changed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="implementation-evidence-directory",
+    )
+    assert changed.input_digest != reviewed.input_digest
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+def test_implementation_review_rejects_nested_evidence_directory_symlink(
+    tmp_path: Path,
+) -> None:
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-evidence-directory-symlink",
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {"design_contract_loop_id": "design-001", "declared_scope": []}
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    external = tmp_path.parent / "external-evidence.log"
+    external.write_text("external result\n", encoding="utf-8")
+    evidence_dir = tmp_path / "artifacts" / "test-results"
+    evidence_dir.mkdir(parents=True)
+    (evidence_dir / "escaped.log").symlink_to(external)
+    (loop_dir / "verification-evidence.json").write_text(
+        json.dumps(
+            {
+                "tasks": [
+                    {"evidence": [evidence_dir.relative_to(tmp_path).as_posix()]}
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="not a regular file"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="implementation",
+            loop_id="implementation-evidence-directory-symlink",
+        )
+
+
 @pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
 def test_implementation_review_rejects_escaped_evidence_symlink(
     tmp_path: Path,
