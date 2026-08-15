@@ -141,6 +141,30 @@ def test_local_pr_review_close_check_blocks_tampered_review_artifacts(
     assert "review-pack.json changed" in summary["detail"]
 
 
+def test_local_pr_review_close_check_ignores_legacy_lean_fields(tmp_path: Path) -> None:
+    _write_local_pr_review(tmp_path, "review-legacy-lean", "fully_clean")
+    review_run_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "reviews"
+        / "pr"
+        / "review-legacy-lean"
+        / "review-run.json"
+    )
+    payload = json.loads(review_run_path.read_text(encoding="utf-8"))
+    payload.update(
+        {
+            "lean_report_path": "missing/legacy-report.json",
+            "lean_report_digest": "sha256:" + "f" * 64,
+        }
+    )
+    review_run_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    summary = _local_pr_review_close_check_summary(tmp_path)
+
+    assert summary["ok"] is True
+
+
 def test_local_pr_review_close_check_blocks_unclosed_clean_verdict(
     tmp_path: Path,
 ) -> None:

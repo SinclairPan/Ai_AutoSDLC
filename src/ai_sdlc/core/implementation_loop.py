@@ -60,6 +60,7 @@ from ai_sdlc.core.implementation_store import (
     append_unique,
     build_implementation_input,
     implementation_artifacts,
+    implementation_input_digest,
     read_input,
     read_loop_run,
     read_progress,
@@ -72,13 +73,6 @@ from ai_sdlc.core.implementation_store import (
 from ai_sdlc.core.implementation_store import (
     read_report as read_implementation_report,
 )
-from ai_sdlc.core.lean_code_policy import stable_artifact_digest
-from ai_sdlc.core.lean_code_review_scope_models import (
-    IMPLEMENTATION_CLOSE_PROOF_CREATOR,
-    IMPLEMENTATION_CLOSE_PROOF_NAME,
-    FrozenArtifact,
-    ImplementationCloseProof,
-)
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import (
     LoopRound,
@@ -87,7 +81,7 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
-from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
+from ai_sdlc.core.slimming_advice import collect_slimming_advice
 from ai_sdlc.core.stable_file_read import read_stable_bytes
 
 _TASK_ID = re.compile(r"\bT\d{2,}\b")
@@ -160,13 +154,6 @@ def start_implementation_loop(
             design_contract_loop_id=design_contract_loop_id,
             design_contract_report_path=design_report_path,
             task_items=task_items,
-        )
-    except LoopPolicyError as exc:
-        return _blocked_result(
-            str(exc),
-            loop_id=loop_id,
-            next_action=f"Fix {LOOP_POLICY_PATH.as_posix()} and retry.",
-            artifacts=planned_refs,
         )
     except ValueError as exc:
         return _blocked_result(
@@ -451,7 +438,6 @@ def _write_implementation_close(
     )
     close = ImplementationClose(
         loop_id=loop_run.loop_id,
-        created_by=IMPLEMENTATION_CLOSE_PROOF_CREATOR,
         closed_by=closed_by.strip() or "local-user",
         report_path=repo_relative_path(root, artifacts.report_json_path),
         required_task_count=report.required_task_count,
@@ -481,15 +467,10 @@ def _record_close_outputs(
     execution_round: LoopRound,
     artifacts: ImplementationArtifacts,
 ) -> None:
-    paths = (
-        artifacts.close_path,
-        artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME),
+    execution_round.output_artifacts = append_unique(
+        execution_round.output_artifacts,
+        repo_relative_path(root, artifacts.close_path),
     )
-    for path in paths:
-        execution_round.output_artifacts = append_unique(
-            execution_round.output_artifacts,
-            repo_relative_path(root, path),
-        )
 
 
 def _persist_close_artifacts(
@@ -505,34 +486,7 @@ def _persist_close_artifacts(
         artifacts.report_md_path, _render_report_markdown(report)
     )
     store.write_json_artifact(artifacts.close_path, close)
-    store.write_json_artifact(
-        artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME),
-        _close_proof(root, artifacts, report),
-    )
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
-
-
-def _close_proof(
-    root: Path,
-    artifacts: ImplementationArtifacts,
-    report: ImplementationReport,
-) -> ImplementationCloseProof:
-    return ImplementationCloseProof(
-        implementation_loop_id=report.loop_id,
-        work_item_id=report.work_item_id,
-        close=FrozenArtifact(
-            path=repo_relative_path(root, artifacts.close_path),
-            digest=_raw_file_digest(artifacts.close_path),
-        ),
-        implementation_report=FrozenArtifact(
-            path=repo_relative_path(root, artifacts.report_json_path),
-            digest=_raw_file_digest(artifacts.report_json_path),
-        ),
-    )
-
-
-def _raw_file_digest(path: Path) -> str:
-    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
 
 def _write_artifacts(
@@ -590,7 +544,7 @@ def _read_current_state(
             result="Implementation loop artifact is malformed.",
             artifacts=artifacts.refs(root),
         )
-    if input_digest and stable_artifact_digest(impl_input) != input_digest:
+    if input_digest and implementation_input_digest(impl_input) != input_digest:
         return _blocked_result(
             "Implementation input digest mismatch; the frozen input was modified.",
             loop_id=loop_id,
@@ -966,11 +920,7 @@ def _build_report(
     if blockers:
         status = LoopStatus.NEEDS_FIX
     elif len(done_required) == len(required):
-        status = (
-            LoopStatus.NEEDS_REVIEW
-            if "lean-code" in impl_input.quality_profiles
-            else LoopStatus.PASSED
-        )
+        status = LoopStatus.PASSED
     evidence_count = sum(
         len(item.evidence) + len(item.verification_commands) for item in progress.tasks
     )
@@ -985,6 +935,7 @@ def _build_report(
         evidence_count=evidence_count,
         blocker_count=len(blockers),
         blockers=blockers,
+        advisories=_implementation_slimming_advisories(root, impl_input),
         requires_frontend_evidence=_requires_frontend_evidence(root, impl_input),
         next_action=_next_action_for_progress(
             tasks,
@@ -999,8 +950,6 @@ def _next_action_for_progress(
     progress: ImplementationProgress,
     status: LoopStatus,
 ) -> str:
-    if status == LoopStatus.NEEDS_REVIEW:
-        return "Run ai-sdlc loop implementation lean-check."
     if status == LoopStatus.PASSED:
         return "Run ai-sdlc loop implementation close --yes."
     return _record_next_action(tasks, progress)
@@ -1034,6 +983,31 @@ def _record_next_action(
                 '--verification "<command>" --evidence <path>.'
             )
     return "Run ai-sdlc loop implementation close --yes."
+
+
+def _implementation_slimming_advisories(
+    root: Path,
+    impl_input: ImplementationInput,
+) -> list[str]:
+    root = root.resolve()
+    paths: list[Path] = []
+    for path_text in impl_input.declared_scope:
+        candidate = (root / path_text).resolve(strict=False)
+        try:
+            candidate.relative_to(root)
+        except ValueError:
+            continue
+        paths.append(candidate)
+    rendered: list[str] = []
+    for advice in collect_slimming_advice(paths):
+        path = Path(advice.path)
+        try:
+            path_text = path.relative_to(root).as_posix()
+        except ValueError:
+            path_text = path.as_posix()
+        location = f"{path_text}:{advice.line}" if advice.line else path_text
+        rendered.append(f"{location}: {advice.message}")
+    return rendered
 
 
 def _close_blockers(
@@ -1102,7 +1076,7 @@ def _build_loop_run(
         loop_type=LoopType.IMPLEMENTATION,
         status=report.status,
         work_item_id=impl_input.work_item_id,
-        input_digest=stable_artifact_digest(impl_input),
+        input_digest=implementation_input_digest(impl_input),
         current_round=1,
         rounds=[
             LoopRound(
@@ -1155,6 +1129,7 @@ def _result_from_report(
         blocked_count=report.blocked_count,
         evidence_count=report.evidence_count,
         blocker_count=report.blocker_count,
+        advisories=list(report.advisories),
         closed=closed,
         dry_run=dry_run,
         blocker=blocker,
@@ -1310,6 +1285,9 @@ def _render_report_markdown(report: ImplementationReport) -> str:
     if report.blockers:
         lines.extend(["", "## Blockers"])
         lines.extend(f"- {blocker}" for blocker in report.blockers)
+    if report.advisories:
+        lines.extend(["", "## Slimming advice"])
+        lines.extend(f"- {advice}" for advice in report.advisories)
     return "\n".join(lines) + "\n"
 
 

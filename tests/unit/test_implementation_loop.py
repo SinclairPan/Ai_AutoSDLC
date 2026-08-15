@@ -33,8 +33,6 @@ from ai_sdlc.core.stage_review.artifacts import (
     resolve_canonical_shared_state,
     resolve_repository_project_id,
 )
-from ai_sdlc.core.state_machine import save_work_item
-from ai_sdlc.models.work import WorkItem, WorkType
 
 
 def test_start_implementation_loop_writes_artifacts(tmp_path: Path) -> None:
@@ -200,7 +198,7 @@ def test_start_implementation_loop_prefers_canonical_task_scope(
     ]
 
 
-def test_direct_formal_work_item_enables_lean_profile_from_spec_metadata(
+def test_direct_formal_work_item_does_not_enable_blocking_quality_profile(
     tmp_path: Path,
 ) -> None:
     work_item = _write_ready_work_item(tmp_path)
@@ -232,7 +230,7 @@ def test_direct_formal_work_item_enables_lean_profile_from_spec_metadata(
         ).read_text("utf-8")
     )
     assert impl_input["work_type"] == "new_requirement"
-    assert impl_input["quality_profiles"] == ["lean-code"]
+    assert impl_input["quality_profiles"] == []
 
 
 def test_direct_formal_work_item_rejects_invalid_work_type_metadata(
@@ -287,19 +285,11 @@ def test_start_implementation_loop_dry_run_does_not_write(tmp_path: Path) -> Non
     ).exists()
 
 
-def test_start_implementation_loop_blocks_malformed_loop_policy(
+def test_start_implementation_loop_ignores_legacy_lean_policy(
     tmp_path: Path,
 ) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
-    save_work_item(
-        tmp_path,
-        WorkItem(
-            work_item_id=work_item.name,
-            work_type=WorkType.NEW_REQUIREMENT,
-            title="Implementation demo",
-        ),
-    )
     policy = tmp_path / ".ai-sdlc" / "project" / "config" / "loop-policy.yaml"
     policy.parent.mkdir(parents=True, exist_ok=True)
     policy.write_text("remote_model_policy: strict\n", encoding="utf-8")
@@ -312,12 +302,10 @@ def test_start_implementation_loop_blocks_malformed_loop_policy(
         )
     )
 
-    assert result.status == "blocked"
-    assert "Loop policy is malformed" in result.blocker
-    assert "loop-policy.yaml" in result.next_action
-    assert not (
+    assert result.status == "ready"
+    assert (
         tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-malformed-policy"
-    ).exists()
+    ).is_dir()
 
 
 def test_start_implementation_loop_blocks_unclosed_design_contract(
@@ -432,6 +420,35 @@ def test_record_implementation_progress_updates_evidence_and_report(
     assert task["verification_commands"] == [
         "uv run pytest tests/unit/test_implementation_loop.py -q"
     ]
+
+
+def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    source = tmp_path / "src" / "ai_sdlc" / "core" / "implementation_loop.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("\n".join(f"line_{index} = {index}" for index in range(510)))
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-advisory-only",
+        )
+    )
+
+    result = record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id="impl-advisory-only",
+            task_id="T11",
+            status="done",
+            verification=("pytest -q",),
+        )
+    )
+
+    assert result.loop_status == "passed"
+    assert result.next_action == "Run ai-sdlc loop implementation close --yes."
+    assert any("510 lines" in advice for advice in result.advisories)
 
 
 def test_record_implementation_progress_blocks_unknown_task(tmp_path: Path) -> None:

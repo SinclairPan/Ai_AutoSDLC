@@ -21,6 +21,14 @@ def _no_ide_adapter_hook() -> None:
         yield
 
 
+def test_implementation_cli_does_not_expose_legacy_lean_governance() -> None:
+    result = runner.invoke(app, ["loop", "implementation", "--help"])
+
+    assert result.exit_code == 0
+    for command in ("lean-check", "lean-verify", "lean-regression", "lean-no-go"):
+        assert command not in result.output
+
+
 def test_rules_materialize_frontend_mvp_writes_canonical_governance_artifacts(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

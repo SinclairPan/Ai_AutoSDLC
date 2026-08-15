@@ -149,6 +149,7 @@ class ImplementationReport(LoopArtifactModel):
     evidence_count: int = 0
     blocker_count: int = 0
     blockers: list[str] = Field(default_factory=list)
+    advisories: list[str] = Field(default_factory=list)
     requires_frontend_evidence: bool = False
     next_action: str = ""
 
@@ -230,6 +231,7 @@ class ImplementationCommandResult(BaseModel):
     blocked_count: int = 0
     evidence_count: int = 0
     blocker_count: int = 0
+    advisories: list[str] = Field(default_factory=list)
     closed: bool = False
     dry_run: bool = False
     blocker: str = ""
