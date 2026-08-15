@@ -163,7 +163,14 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
         json.dumps({"review_id": "review-001", "loop_id": "loop-pr-001"}),
         encoding="utf-8",
     )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-001",
+        loop_id="loop-pr-001",
+    )
     included = [
+        "current-review.json",
+        "review-run.json",
         "review-pack.json",
         "diff.patch",
         "findings.json",
@@ -182,7 +189,12 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
         encoding="utf-8",
     )
     for filename in included:
-        if filename not in {"review-pack.json", "diff.patch"}:
+        if filename not in {
+            "current-review.json",
+            "review-run.json",
+            "review-pack.json",
+            "diff.patch",
+        }:
             (review_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
     (review_dir / "final-report.md").write_text("must be excluded\n", encoding="utf-8")
     tracked = tmp_path / "tracked.txt"
@@ -212,6 +224,58 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     assert any(item.startswith("git-head:") for item in payload["risk_signals"])
     assert any(item.startswith("git-index:") for item in payload["risk_signals"])
     assert any(item.startswith("git-staged-diff:") for item in payload["risk_signals"])
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-001",
+    )
+
+    review_run = review_dir / "review-run.json"
+    review_run.write_text(
+        json.dumps(
+            {
+                "review_id": "review-001",
+                "loop_id": "loop-pr-001",
+                "findings_path": "unreviewed-findings.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+    run_drift = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-001",
+    )
+    assert run_drift.input_digest != reviewed.input_digest
+    review_run.write_text(
+        json.dumps({"review_id": "review-001", "loop_id": "loop-pr-001"}),
+        encoding="utf-8",
+    )
+
+    pointer = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "current-review.json"
+    pointer.write_text(
+        json.dumps(
+            {
+                "review_id": "review-001",
+                "loop_id": "another-loop",
+                "review_run_path": (
+                    ".ai-sdlc/reviews/pr/review-001/review-run.json"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="does not identify Loop loop-pr-001"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id="loop-pr-001",
+        )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-001",
+        loop_id="loop-pr-001",
+    )
 
     diff.write_text("tampered diff\n", encoding="utf-8")
     with patch(
@@ -275,8 +339,19 @@ def test_local_pr_review_ignores_malformed_unrelated_history(
     review_dir = reviews_root / "review-current"
     review_dir.mkdir()
     (review_dir / "review-run.json").write_text(
-        json.dumps({"loop_id": "loop-pr-current", "current_round": 1}),
+        json.dumps(
+            {
+                "review_id": "review-current",
+                "loop_id": "loop-pr-current",
+                "current_round": 1,
+            }
+        ),
         encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-current",
+        loop_id="loop-pr-current",
     )
     diff = review_dir / "diff.patch"
     diff.write_text("reviewed diff\n", encoding="utf-8")
@@ -311,8 +386,19 @@ def test_local_pr_review_binds_live_unstaged_and_untracked_source(
     review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-unstaged"
     review_dir.mkdir(parents=True)
     (review_dir / "review-run.json").write_text(
-        json.dumps({"loop_id": "loop-pr-unstaged", "current_round": 1}),
+        json.dumps(
+            {
+                "review_id": "review-unstaged",
+                "loop_id": "loop-pr-unstaged",
+                "current_round": 1,
+            }
+        ),
         encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-unstaged",
+        loop_id="loop-pr-unstaged",
     )
     diff = review_dir / "diff.patch"
     diff.write_text("reviewed local-unstaged diff\n", encoding="utf-8")
@@ -368,8 +454,19 @@ def test_local_pr_review_binds_movable_git_range_refs(tmp_path: Path) -> None:
     review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-range"
     review_dir.mkdir(parents=True)
     (review_dir / "review-run.json").write_text(
-        json.dumps({"loop_id": "loop-pr-range", "current_round": 1}),
+        json.dumps(
+            {
+                "review_id": "review-range",
+                "loop_id": "loop-pr-range",
+                "current_round": 1,
+            }
+        ),
         encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-range",
+        loop_id="loop-pr-range",
     )
     diff = review_dir / "diff.patch"
     diff.write_text("reviewed local-git-range diff\n", encoding="utf-8")
@@ -431,8 +528,19 @@ def test_local_pr_review_binds_live_patch_source(
     review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-patch"
     review_dir.mkdir(parents=True)
     (review_dir / "review-run.json").write_text(
-        json.dumps({"loop_id": "loop-pr-patch", "current_round": 1}),
+        json.dumps(
+            {
+                "review_id": "review-patch",
+                "loop_id": "loop-pr-patch",
+                "current_round": 1,
+            }
+        ),
         encoding="utf-8",
+    )
+    _write_current_review_pointer(
+        tmp_path,
+        review_id="review-patch",
+        loop_id="loop-pr-patch",
     )
     copied_diff = review_dir / "diff.patch"
     copied_diff.write_bytes(patch_file.read_bytes())
@@ -1150,6 +1258,28 @@ def _init_git_repo(root: Path) -> None:
     (root / "tracked.txt").write_text("initial\n", encoding="utf-8")
     _git(root, "add", "tracked.txt")
     _git(root, "commit", "-m", "initial")
+
+
+def _write_current_review_pointer(
+    root: Path,
+    *,
+    review_id: str,
+    loop_id: str,
+) -> None:
+    pointer = root / ".ai-sdlc" / "reviews" / "pr" / "current-review.json"
+    pointer.parent.mkdir(parents=True, exist_ok=True)
+    pointer.write_text(
+        json.dumps(
+            {
+                "review_id": review_id,
+                "loop_id": loop_id,
+                "review_run_path": (
+                    f".ai-sdlc/reviews/pr/{review_id}/review-run.json"
+                ),
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_predecessor_fixture(

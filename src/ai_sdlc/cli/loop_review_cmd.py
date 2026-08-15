@@ -63,6 +63,9 @@ _STAGE_PREDECESSORS: dict[str, tuple[str, str, str]] = {
 }
 _LOCAL_REQUIRED = ("review-pack.json", "findings.json")
 _LOCAL_OPTIONAL = ("resolution.yaml", "verification-evidence.json")
+_CURRENT_LOCAL_REVIEW = (
+    Path(".ai-sdlc") / "reviews" / "pr" / "current-review.json"
+)
 _RISK_TERMS: dict[str, tuple[str, ...]] = {
     "public-api": ("public api", "public-api", "schema", "contract"),
     "security": ("security", "authorization", "permission", "secret"),
@@ -197,8 +200,14 @@ def resolve_review_input(
 
     safe_loop_id = _safe_identifier(loop_id)
     if loop_type == "local-pr-review":
-        loop_dir = _find_local_review_dir(root, safe_loop_id)
-        artifacts = [loop_dir / name for name in _LOCAL_REQUIRED]
+        loop_dir, pointer_path, run_path = _find_local_review_dir(
+            root, safe_loop_id
+        )
+        artifacts = [
+            pointer_path,
+            run_path,
+            *(loop_dir / name for name in _LOCAL_REQUIRED),
+        ]
         artifacts.extend(
             loop_dir / name
             for name in _LOCAL_OPTIONAL
@@ -212,7 +221,7 @@ def resolve_review_input(
                 root, loop_dir / "review-pack.json"
             ),
         ]
-        round_number = _read_round_number(loop_dir / "review-run.json")
+        round_number = _read_round_number(run_path)
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
         artifacts = _unique_paths(
@@ -471,24 +480,40 @@ def _lexical_path(path: Path) -> Path:
     return Path(os.path.abspath(path))
 
 
-def _find_local_review_dir(root: Path, loop_id: str) -> Path:
-    reviews_root = root / ".ai-sdlc" / "reviews" / "pr"
-    matches: list[Path] = []
-    unreadable: list[Path] = []
-    for run_path in sorted(reviews_root.glob("*/review-run.json")):
-        try:
-            payload = json.loads(run_path.read_text(encoding="utf-8"))
-        except (OSError, UnicodeError, json.JSONDecodeError):
-            unreadable.append(run_path)
-            continue
-        if isinstance(payload, dict) and payload.get("loop_id") == loop_id:
-            matches.append(run_path.parent)
-    if len(matches) != 1:
-        suffix = f"; unreadable histories: {len(unreadable)}" if unreadable else ""
+def _find_local_review_dir(
+    root: Path,
+    loop_id: str,
+) -> tuple[Path, Path, Path]:
+    pointer_path = root / _CURRENT_LOCAL_REVIEW
+    pointer = _read_json_object(pointer_path)
+    if pointer.get("loop_id") != loop_id:
         raise ValueError(
-            f"Expected one local PR review for Loop {loop_id}, found {len(matches)}{suffix}."
+            f"Current local PR review does not identify Loop {loop_id}."
         )
-    return matches[0]
+    raw_review_id = pointer.get("review_id", "")
+    raw_run_path = pointer.get("review_run_path", "")
+    if not isinstance(raw_review_id, str) or not raw_review_id.strip():
+        raise ValueError("Current local PR review id is missing.")
+    if not isinstance(raw_run_path, str) or not raw_run_path.strip():
+        raise ValueError("Current local PR review run path is missing.")
+    review_id = _safe_identifier(raw_review_id)
+    run_path = _repo_path(root, raw_run_path, "review_run_path")
+    expected_run_path = (
+        root
+        / ".ai-sdlc"
+        / "reviews"
+        / "pr"
+        / review_id
+        / "review-run.json"
+    )
+    if _lexical_path(run_path) != _lexical_path(expected_run_path):
+        raise ValueError("Current local PR review run path is not canonical.")
+    run = _read_json_object(run_path)
+    if run.get("review_id") != review_id or run.get("loop_id") != loop_id:
+        raise ValueError(
+            f"Current local PR review run does not identify Loop {loop_id}."
+        )
+    return run_path.parent, pointer_path, run_path
 
 
 def _read_round_number(path: Path) -> int:
