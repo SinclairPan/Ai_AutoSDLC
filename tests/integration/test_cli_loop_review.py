@@ -680,6 +680,55 @@ def test_stage_review_rejects_symlink_source_material(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+def test_stage_review_keeps_symlink_when_scope_also_matches_target(
+    tmp_path: Path,
+) -> None:
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    source_dir = tmp_path / "scripts"
+    source_dir.mkdir()
+    target = source_dir / "a.py"
+    target.write_text("VALUE = 1\n", encoding="utf-8")
+    (source_dir / "z.py").symlink_to(target.name)
+
+    loop_dir = (
+        tmp_path / ".ai-sdlc" / "loops" / "implementation" / "implementation-001"
+    )
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps({"current_round": 1}), encoding="utf-8"
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps(
+            {
+                "design_contract_loop_id": "design-001",
+                "declared_scope": ["scripts/*.py"],
+            }
+        ),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "verification-evidence.json",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="review path is not a regular file"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="implementation",
+            loop_id="implementation-001",
+        )
+
+
 def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path) -> None:
     design_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-delete-001"

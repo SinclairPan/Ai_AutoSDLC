@@ -451,15 +451,19 @@ def _expand_repo_patterns(root: Path, patterns: list[str]) -> list[Path]:
 def _unique_paths(paths: list[Path]) -> list[Path]:
     unique: dict[Path, Path] = {}
     for path in paths:
-        unique.setdefault(path.resolve(strict=False), path)
+        unique.setdefault(_lexical_path(path), path)
     return list(unique.values())
 
 
 def _exclude_paths(paths: list[Path], *, excluded: list[Path]) -> list[Path]:
-    excluded_keys = {path.resolve(strict=False) for path in excluded}
+    excluded_keys = {_lexical_path(path) for path in excluded}
     return [
-        path for path in paths if path.resolve(strict=False) not in excluded_keys
+        path for path in paths if _lexical_path(path) not in excluded_keys
     ]
+
+
+def _lexical_path(path: Path) -> Path:
+    return Path(os.path.abspath(path))
 
 
 def _find_local_review_dir(root: Path, loop_id: str) -> Path:
