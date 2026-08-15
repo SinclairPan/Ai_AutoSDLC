@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import stat
-import sys
 from collections.abc import Sequence
 from pathlib import Path
 from typing import Literal
@@ -245,7 +244,7 @@ def _read_paths(
         before = resolved.stat(follow_symlinks=False)
         if not stat.S_ISREG(before.st_mode) or resolved.is_symlink():
             raise ValueError(f"review path is not a regular file: {relative}")
-        descriptor = os.open(resolved, os.O_RDONLY)
+        descriptor = os.open(resolved, os.O_RDONLY | getattr(os, "O_BINARY", 0))
         try:
             opened = os.fstat(descriptor)
             content = b""
@@ -279,15 +278,8 @@ def _file_snapshot_is_stable(
     def identity(item: os.stat_result) -> tuple[int, int, int, int]:
         return (item.st_dev, item.st_ino, item.st_size, item.st_mtime_ns)
 
-    if content_size != opened.st_size:
-        return False
-    if sys.platform == "win32":
-        return (
-            identity(before) == identity(closed)
-            and identity(opened) == identity(after)
-            and before.st_size == opened.st_size
-        )
-    return len({identity(item) for item in (before, opened, after, closed)}) == 1
+    identities = {identity(item) for item in (before, opened, after, closed)}
+    return len(identities) == 1 and content_size == opened.st_size
 
 
 def _digest_record(path: str, content: bytes) -> dict[str, object]:
