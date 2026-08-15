@@ -240,3 +240,27 @@ def test_merge_expert_findings_deduplicates_without_deciding_close() -> None:
         "failure_kind",
         "failure_reason",
     }
+
+
+def test_merge_expert_findings_deduplicates_across_severities() -> None:
+    important = _finding()
+    advisory = important.model_copy(update={"severity": "advisory"})
+    merged = merge_expert_findings(
+        [
+            ReviewExecution(
+                status="completed",
+                roles=["API compatibility reviewer"],
+                role_reasons={"API compatibility reviewer": "public schema"},
+                findings=[advisory],
+            ),
+            ReviewExecution(
+                status="completed",
+                roles=["API compatibility reviewer"],
+                role_reasons={"API compatibility reviewer": "public schema"},
+                findings=[important],
+            ),
+        ]
+    )
+
+    assert len(merged.findings) == 1
+    assert merged.findings[0].severity == "important"

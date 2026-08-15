@@ -535,6 +535,47 @@ def _local_review_source_risk_signals(
     if not isinstance(diff_source, dict):
         raise ValueError(f"Review pack diff_source is invalid: {review_pack_path}")
     source_kind = diff_source.get("source_kind", "")
+    if source_kind == "local-git-range":
+        base_ref = diff_source.get("base_ref", payload.get("base_ref", ""))
+        head_ref = diff_source.get("head_ref", payload.get("head_ref", "HEAD"))
+        if not isinstance(base_ref, str) or not base_ref.strip():
+            raise ValueError(
+                f"Review pack local-git-range base_ref is invalid: {review_pack_path}"
+            )
+        if not isinstance(head_ref, str) or not head_ref.strip():
+            raise ValueError(
+                f"Review pack local-git-range head_ref is invalid: {review_pack_path}"
+            )
+        base_ref = base_ref.strip()
+        head_ref = head_ref.strip()
+        snapshot = build_source_snapshot(
+            SourceSnapshotOptions(
+                root=root,
+                source_kind=source_kind,
+                base_ref=base_ref,
+                head_ref=head_ref,
+            )
+        )
+        base_tip = _git_bytes(
+            root,
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{base_ref}^{{commit}}",
+        ).decode("ascii").strip()
+        head_tip = _git_bytes(
+            root,
+            "rev-parse",
+            "--verify",
+            "--end-of-options",
+            f"{head_ref}^{{commit}}",
+        ).decode("ascii").strip()
+        return [
+            f"git-selected-source:{source_kind}",
+            f"git-selected-base-tip:{base_tip}",
+            f"git-selected-head-tip:{head_tip}",
+            f"git-selected-diff:{snapshot.diff_hash}",
+        ]
     if source_kind not in {"local-staged", "local-unstaged"}:
         return []
     snapshot = build_source_snapshot(

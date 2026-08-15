@@ -23,6 +23,11 @@ ReviewSeverity = Literal["blocker", "important", "advisory"]
 ReviewExecutionStatus = Literal["completed", "failed"]
 
 _ROLE_BRIEF = "Choose one primary expert and at most one cross-risk expert."
+_SEVERITY_RANK: dict[ReviewSeverity, int] = {
+    "advisory": 0,
+    "important": 1,
+    "blocker": 2,
+}
 
 
 class ReviewInput(BaseModel):
@@ -203,18 +208,24 @@ def merge_expert_findings(executions: Sequence[ReviewExecution]) -> ReviewExecut
 
     roles, reasons = _merge_roles(executions)
     findings: list[ReviewFinding] = []
-    seen: set[tuple[str, str, str, str]] = set()
+    seen: dict[tuple[str, str, str], int] = {}
     for execution in executions:
         for finding in execution.findings:
             identity = (
-                finding.severity,
                 finding.role,
                 finding.location,
                 finding.summary,
             )
-            if identity not in seen:
-                seen.add(identity)
+            existing_index = seen.get(identity)
+            if existing_index is None:
+                seen[identity] = len(findings)
                 findings.append(finding)
+                continue
+            existing = findings[existing_index]
+            if _SEVERITY_RANK[finding.severity] > _SEVERITY_RANK[existing.severity]:
+                findings[existing_index] = existing.model_copy(
+                    update={"severity": finding.severity}
+                )
     return ReviewExecution(
         status="completed",
         roles=roles,

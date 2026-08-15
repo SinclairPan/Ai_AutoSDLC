@@ -266,6 +266,58 @@ def test_local_pr_review_binds_live_unstaged_and_untracked_source(
     assert untracked_drift.input_digest != reviewed.input_digest
 
 
+def test_local_pr_review_binds_movable_git_range_refs(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    base_branch = _git(tmp_path, "branch", "--show-current")
+    _git(tmp_path, "checkout", "-b", "feature")
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("feature step one\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "feature step one")
+    advanced_base = _git(tmp_path, "rev-parse", "HEAD")
+    tracked.write_text("feature step two\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    _git(tmp_path, "commit", "-m", "feature step two")
+
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-range"
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps({"loop_id": "loop-pr-range", "current_round": 1}),
+        encoding="utf-8",
+    )
+    diff = review_dir / "diff.patch"
+    diff.write_text("reviewed local-git-range diff\n", encoding="utf-8")
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+                "diff_source": {
+                    "source_kind": "local-git-range",
+                    "base_ref": base_branch,
+                    "head_ref": "HEAD",
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-range",
+    )
+
+    _git(tmp_path, "update-ref", f"refs/heads/{base_branch}", advanced_base)
+    changed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id="loop-pr-range",
+    )
+    assert changed.input_digest != reviewed.input_digest
+
+
 def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> None:
     requirement_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
