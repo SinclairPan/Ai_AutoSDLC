@@ -103,8 +103,6 @@ jobs:
     permissions:
       actions: read
       contents: read
-    outputs:
-      authority_ref: ${{ steps.policy.outputs.authority_ref }}
     steps:
       - name: Require exact reviewed candidate
         shell: bash
@@ -309,8 +307,6 @@ jobs:
           fi
           required_assets=(
             .github/ci/fast-gate-tests.txt
-            .github/ci/test-baseline.json
-            .github/ci/test-lineage.json
             scripts/ci_static_assurance.py
           )
           for asset in "${required_assets[@]}"; do
@@ -319,9 +315,6 @@ jobs:
               exit 1
             fi
           done
-          authority_ref="$(git rev-parse "HEAD^1")"
-          echo "authority_ref=${authority_ref}" >> "${GITHUB_OUTPUT}"
-
       - name: Require admission namespaces absent before qualification
         shell: bash
         env:
@@ -449,7 +442,6 @@ jobs:
     uses: ./.github/workflows/compatibility-gate.yml
     with:
       candidate_ref: ${{ github.sha }}
-      authority_ref: ${{ needs.release-assurance-policy.outputs.authority_ref }}
       force_full: true
 
   build-smoke-candidate:

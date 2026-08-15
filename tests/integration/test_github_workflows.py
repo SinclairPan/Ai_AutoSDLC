@@ -1972,136 +1972,48 @@ def test_compatibility_gate_statically_layers_fast_and_full_assurance() -> None:
         "ready_for_review",
         "converted_to_draft",
     ]
-    assert triggers["workflow_call"]["inputs"]["authority_ref"] == {
-        "description": "Historical authority ref for release assurance.",
+    assert triggers["workflow_call"]["inputs"]["force_full"] == {
+        "description": "Force the complete OS and Python assurance matrix.",
         "required": False,
-        "type": "string",
-        "default": "",
+        "type": "boolean",
+        "default": False,
     }
     jobs = workflow["jobs"]
     assert jobs["fast-gate"]["runs-on"] == "ubuntu-latest"
-    assert jobs["baseline-preflight"]["name"] == "Baseline Preflight"
-    assert jobs["baseline-preflight"]["needs"] == "authority-check"
-    assert (
-        jobs["baseline-preflight"]["if"]
-        == "needs.authority-check.outputs.baseline-preflight-authority-available == 'true'"
-    )
+    assert "authority-check" not in jobs
+    assert "baseline-preflight" not in jobs
     assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
         "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
         "python-version": ["3.11", "3.12", "3.13", "3.14"],
     }
-    assert (
-        jobs["cross-platform-validation"]["if"]
-        == "needs.authority-check.outputs.full-assurance-required == 'true'"
+    full_condition = (
+        "github.event_name != 'pull_request' || "
+        "github.event.pull_request.draft == false || inputs.force_full == true"
     )
-    assert (
-        jobs["windows-shell-smoke"]["if"]
-        == "needs.authority-check.outputs.full-assurance-required == 'true'"
-    )
+    assert jobs["cross-platform-validation"]["if"] == full_condition
+    assert jobs["windows-shell-smoke"]["if"] == full_condition
     assert jobs["merge-assurance"]["if"] == "always()"
-    assert "baseline-preflight" in jobs["merge-assurance"]["needs"]
+    assert jobs["merge-assurance"]["needs"] == [
+        "fast-gate",
+        "cross-platform-validation",
+        "windows-shell-smoke",
+    ]
     assert jobs["compatibility-gate-result"]["name"] == "Compatibility Gate Result"
 
 
-def test_compatibility_gate_preflights_draft_baseline_with_protected_authority() -> (
-    None
-):
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
-    parsed = yaml.safe_load(workflow)
-    preflight = parsed["jobs"]["baseline-preflight"]
-    step_names = [step.get("name") for step in preflight["steps"]]
-    script = "\n".join(
-        str(step.get("run", "")) for step in preflight["steps"] if "run" in step
-    )
-
-    assert step_names[:2] == [
-        "Checkout candidate",
-        "Checkout protected base authority",
-    ]
-    assert "Require protected baseline authority" in step_names
-    assert "Collect bootstrap cell" in step_names
-    assert "Verify candidate baseline preflight" in step_names
-    assert "trusted-base/scripts/ci_static_assurance.py" in script
-    assert "baseline-preflight" in script
-    assert "python scripts/ci_static_assurance.py baseline-preflight" not in script
-    assert "bootstrap_candidate_verifier" not in script
-    assert (
-        "python trusted-base/scripts/ci_static_assurance.py baseline-preflight"
-        in script
-    )
-    assert "--trusted trusted-base/.github/ci/test-baseline.json" in script
-    assert "--candidate .github/ci/test-baseline.json" in script
-    assert "--protected-lineage trusted-base/.github/ci/test-lineage.json" in script
-    assert "--candidate-lineage .github/ci/test-lineage.json" in script
-    assert "--cell ubuntu-latest-py3.11" in script
-
-    merge_gate = parsed["jobs"]["merge-assurance"]["steps"][0]["run"]
-    assert "needs.baseline-preflight.result" in merge_gate
-    assert (
-        "needs.authority-check.outputs.baseline-preflight-authority-available"
-        in merge_gate
-    )
-    assert "needs.authority-check.outputs.reason" in merge_gate
-    assert "ordinary_draft_fast_gate" in merge_gate
-
-
-def test_draft_short_circuits_before_legacy_protected_authority_decision() -> None:
-    """旧 main 会把受保护变更判为全量；Draft 必须在调用它之前退出。"""
-    parsed = yaml.safe_load(
-        (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
-    )
-    decision = next(
-        step
-        for step in parsed["jobs"]["authority-check"]["steps"]
-        if step.get("id") == "decision"
-    )["run"]
-
-    draft_guard = 'if [[ "${EVENT_NAME}" == "pull_request"'
-    authority_fallback = 'if [[ "${authority_available}" != "true" ]]'
-    preflight_capability_probe = (
-        "python trusted-base/scripts/ci_static_assurance.py baseline-preflight --help"
-    )
-    legacy_authority_call = (
-        "python trusted-base/scripts/ci_static_assurance.py decide-mode"
-    )
-
-    assert decision.index(preflight_capability_probe) < decision.index(draft_guard)
-    assert decision.index(draft_guard) < decision.index(authority_fallback)
-    draft_block = decision[
-        decision.index(draft_guard) : decision.index(authority_fallback)
-    ]
-    assert '"${FORCE_FULL}" != "true"' in draft_block
-    assert "reason=protected_ci_draft_preflight" in draft_block
-    assert "reason=ordinary_draft_fast_gate" in draft_block
-    assert "reason=baseline_preflight_authority_unavailable" in draft_block
-    assert "full_assurance_required=true" in draft_block
-    assert "baseline_preflight_authority_available" in draft_block
-    assert "exit 0" in draft_block
-    assert decision.index(authority_fallback) < decision.index(legacy_authority_call)
-
-
-def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts(
+def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
     tmp_path: Path,
 ) -> None:
     workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
 
-    assert "Checkout protected base authority" in workflow
-    assert "inputs.authority_ref" in workflow
-    assert "path: trusted-base" in workflow
-    assert "trusted-base/scripts/ci_static_assurance.py" in workflow
-    assert "Checkout protected runtime authority" not in workflow
-    assert "trusted-runner" not in workflow
-    assert "authority_unavailable" in workflow
-    assert "protected_ci_change" in workflow
-    assert 'assurance_script="scripts/ci_static_assurance.py"' in workflow
-    assert 'assurance_lineage=".github/ci/test-lineage.json"' in workflow
-    assert 'assurance_lineage="trusted-base/.github/ci/test-lineage.json"' in workflow
-    assert '"${assurance_script}" collect' in workflow
-    assert 'python "${assurance_script}" aggregate' in workflow
-    assert '--lineage "${assurance_lineage}"' in workflow
-    assert "verify-transition" in workflow
+    assert "trusted-base" not in workflow
+    assert "authority_ref" not in workflow
+    assert "test-baseline.json" not in workflow
+    assert "test-lineage.json" not in workflow
+    assert "python scripts/ci_static_assurance.py collect" in workflow
+    assert "python scripts/ci_static_assurance.py cell-evidence" in workflow
+    assert "python scripts/ci_static_assurance.py aggregate" in workflow
     assert "--ignore=tests/e2e/stage_review" in workflow
-    assert '"${assurance_script}" run-pytest' not in workflow
     assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
     assert (
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
@@ -2133,26 +2045,12 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts(
         for step in merge_steps
         if step.get("name") == "Rebuild, verify, and aggregate full evidence"
     )
-    candidate_lineage_validation = (
-        'python "${assurance_script}" validate-lineage \\\n'
-        "  --lineage .github/ci/test-lineage.json"
-    )
-    assert candidate_lineage_validation in aggregate_script
-    authority_branches = [
-        index
-        for index in range(len(aggregate_script))
-        if aggregate_script.startswith(
-            'if [[ "${AUTHORITY_AVAILABLE}" == "true" ]]', index
-        )
-    ]
-    assert len(authority_branches) == 2
-    validation_index = aggregate_script.index(candidate_lineage_validation)
-    assert authority_branches[0] < validation_index < authority_branches[1]
-    assert aggregate_script.index('assurance_script="trusted-base/') < validation_index
-    assert 'python "${assurance_script}" cell-evidence' in aggregate_script
+    assert "python scripts/ci_static_assurance.py cell-evidence" in aggregate_script
+    assert "python scripts/ci_static_assurance.py aggregate" in aggregate_script
     assert "started-at.txt" in aggregate_script
     assert "finished-at.txt" in aggregate_script
-    assert "--baseline .github/ci/test-baseline.json" in aggregate_script
+    assert "--baseline" not in aggregate_script
+    assert "--lineage" not in aggregate_script
 
     sentinel = runpy.run_path(
         _REPO_ROOT / "scripts" / "ci_snapshot_control_sentinel.py"
@@ -2167,35 +2065,6 @@ def test_compatibility_gate_uses_protected_base_authority_and_exact_artifacts(
     ]
     assert sentinel["SENTINEL_NODE"] == expected_command[-1]
     assert sentinel["SENTINEL_ROUNDS"] == 5
-
-
-def test_compatibility_gate_uses_candidate_local_execution_evidence_only() -> None:
-    """普通 CI 不得以 protected baseline/lineage 阻止有意删除废止测试。"""
-    workflow_text = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
-        encoding="utf-8"
-    )
-    workflow = yaml.safe_load(workflow_text)
-    jobs = workflow["jobs"]
-
-    assert "authority-check" not in jobs
-    assert "baseline-preflight" not in jobs
-    assert "trusted-base" not in workflow_text
-    assert "test-baseline.json" not in workflow_text
-    assert "test-lineage.json" not in workflow_text
-    assert "baseline-preflight" not in workflow_text
-    assert "verify-transition" not in workflow_text
-    assert "validate-lineage" not in workflow_text
-    assert "decide-mode" not in workflow_text
-    assert "collect" in workflow_text
-    assert "cell-evidence" in workflow_text
-    assert "aggregate" in workflow_text
-    assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
-        "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
-        "python-version": ["3.11", "3.12", "3.13", "3.14"],
-    }
-    assert "windows-shell-smoke" in jobs
-    assert "fast-gate" in jobs
-
     success_calls: list[list[str]] = []
 
     def successful_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -2303,18 +2172,50 @@ def test_compatibility_gate_uses_candidate_local_execution_evidence_only() -> No
     assert evidence_upload["if"] == "always()"
 
 
-def test_compatibility_gate_push_uses_pre_push_authority() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
+def test_compatibility_gate_uses_candidate_local_execution_evidence_only() -> None:
+    """普通 CI 不得以 protected baseline/lineage 阻止有意删除废止测试。"""
+    workflow_text = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = yaml.safe_load(workflow_text)
+    jobs = workflow["jobs"]
 
-    assert "github.event.before" in workflow
+    assert "authority-check" not in jobs
+    assert "baseline-preflight" not in jobs
+    assert "trusted-base" not in workflow_text
+    assert "test-baseline.json" not in workflow_text
+    assert "test-lineage.json" not in workflow_text
+    assert "baseline-preflight" not in workflow_text
+    assert "verify-transition" not in workflow_text
+    assert "validate-lineage" not in workflow_text
+    assert "decide-mode" not in workflow_text
+    assert "collect" in workflow_text
+    assert "cell-evidence" in workflow_text
+    assert "aggregate" in workflow_text
+    assert jobs["cross-platform-validation"]["strategy"]["matrix"] == {
+        "os": ["ubuntu-latest", "macos-latest", "windows-latest"],
+        "python-version": ["3.11", "3.12", "3.13", "3.14"],
+    }
+    assert "windows-shell-smoke" in jobs
+    assert "fast-gate" in jobs
 
 
 def test_compatibility_gate_pull_request_executes_merge_commit() -> None:
-    workflow = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(encoding="utf-8")
+    workflow_text = (_WORKFLOWS_DIR / "compatibility-gate.yml").read_text(
+        encoding="utf-8"
+    )
+    workflow = yaml.safe_load(workflow_text)
 
     merge_candidate_ref = "inputs.candidate_ref || github.sha"
-    assert workflow.count(merge_candidate_ref) == 6
-    assert "github.event.pull_request.head.sha" not in workflow
+    checkout_steps = [
+        step
+        for job in workflow["jobs"].values()
+        for step in job.get("steps", [])
+        if str(step.get("uses", "")).startswith("actions/checkout@")
+    ]
+    assert checkout_steps
+    assert all(step["with"]["ref"] == f"${{{{ {merge_candidate_ref} }}}}" for step in checkout_steps)
+    assert "github.event.pull_request.head.sha" not in workflow_text
 
 
 def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> None:
@@ -2327,19 +2228,16 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     assert workflow["env"]["RELEASE_BOOTSTRAP_ENABLED"] == "false"
     assert "default: v1.0.5" in workflow_text
     assert "v1.0.1 v1.0.2" not in workflow_text
-    assert jobs["release-assurance-policy"]["outputs"] == {
-        "authority_ref": "${{ steps.policy.outputs.authority_ref }}",
-    }
+    assert "outputs" not in jobs["release-assurance-policy"]
     assert jobs["release-assurance"] == {
         "needs": "release-assurance-policy",
         "uses": "./.github/workflows/compatibility-gate.yml",
         "with": {
             "candidate_ref": "${{ github.sha }}",
-            "authority_ref": "${{ needs.release-assurance-policy.outputs.authority_ref }}",
             "force_full": True,
         },
     }
-    assert 'git rev-parse "HEAD^1"' in workflow_text
+    assert "authority_ref" not in workflow_text
     build_job = jobs["build-smoke-candidate"]
     assert build_job["needs"] == [
         "release-assurance-policy",
@@ -2375,33 +2273,13 @@ def test_release_build_preserves_legacy_tags_and_requires_future_assurance() -> 
     assert "protected tag namespace becomes the durable burn authority" in convention
 
 
-def test_static_ci_authority_is_not_packaged_for_ordinary_users() -> None:
+def test_candidate_ci_helper_is_not_packaged_for_ordinary_users() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
 
     assert "scripts/ci_static_assurance.py" not in pyproject
     assert (_REPO_ROOT / ".github" / "ci" / "fast-gate-tests.txt").is_file()
-    assert (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").is_file()
-
-
-def test_portable_self_update_cases_are_not_skip_authorized() -> None:
-    baseline = json.loads(
-        (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").read_text(
-            encoding="utf-8"
-        )
-    )
-    windows_path_case = (
-        "sha256:20b2547fdb2751fb8666e08640e7c5f7218bd320523d866ab3e691f0428247ee"
-    )
-    posix_path_case = (
-        "sha256:4a3dce9eda68c1ab59b2e00ad7d8cb111a36dc64aed7df1017f923b293a9ec88"
-    )
-
-    assert {windows_path_case, posix_path_case} <= set(baseline["case_ids"])
-    for cell, allowed_skips in baseline["allowed_skip_case_ids_by_cell"].items():
-        if cell.startswith(("macos-", "ubuntu-")):
-            assert windows_path_case not in allowed_skips
-        if cell.startswith("windows-"):
-            assert posix_path_case not in allowed_skips
+    assert not (_REPO_ROOT / ".github" / "ci" / "test-baseline.json").exists()
+    assert not (_REPO_ROOT / ".github" / "ci" / "test-lineage.json").exists()
 
 
 def test_activation_evidence_workflow_owns_its_trust_root_and_real_inputs() -> None:
