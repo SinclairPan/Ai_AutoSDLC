@@ -302,6 +302,15 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
         step for step in build_job["steps"] if step.get("name") == "Checkout"
     )
     assert checkout["with"]["persist-credentials"] is False
+    stage_assets = next(
+        step
+        for step in build_job["steps"]
+        if step.get("name") == "Stage smoke-passed release assets"
+    )
+    assert stage_assets["with"]["path"].splitlines() == [
+        "dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}",
+        "dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}.sha256",
+    ]
     assert upload_job["permissions"] == {"contents": "write"}
     assert upload_job["needs"] == "build-smoke"
     assert not any("actions/checkout" in step.get("uses", "") for step in upload_job["steps"])
