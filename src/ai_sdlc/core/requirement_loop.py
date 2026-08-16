@@ -25,12 +25,13 @@ from ai_sdlc.core.stable_file_read import read_stable_text
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REQUIREMENT_PATH = (
-    Path(AI_SDLC_DIR) / "loops" / LoopType.REQUIREMENT.value / "current-requirement.json"
+    Path(AI_SDLC_DIR)
+    / "loops"
+    / LoopType.REQUIREMENT.value
+    / "current-requirement.json"
 )
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
-_DESIGN_SCOPE_FAMILIES = frozenset(
-    {"frontend-evidence", "implementation", "pr-review"}
-)
+_DESIGN_SCOPE_FAMILIES = frozenset({"frontend-evidence", "implementation", "pr-review"})
 
 
 class RequirementSourceKind(StrEnum):
@@ -80,9 +81,7 @@ class RequirementIntake(LoopArtifactModel):
             raise ValueError("design scope families must be unique")
         invalid = sorted(set(value) - _DESIGN_SCOPE_FAMILIES)
         if invalid:
-            raise ValueError(
-                f"unknown design scope families: {', '.join(invalid)}"
-            )
+            raise ValueError(f"unknown design scope families: {', '.join(invalid)}")
         return value
 
 
@@ -186,7 +185,9 @@ class _RequirementArtifacts:
     freeze_path: Path
     pointer_path: Path
 
-    def refs(self, root: Path, *, include_freeze: bool = False) -> list[RequirementArtifactRef]:
+    def refs(
+        self, root: Path, *, include_freeze: bool = False
+    ) -> list[RequirementArtifactRef]:
         paths = (
             ("loop-run", self.loop_run_path),
             ("requirement-intake", self.intake_path),
@@ -342,20 +343,24 @@ def _build_requirement_intake(
     summary = _summarize_requirement(source_text)
     loop_status = LoopStatus.NEEDS_REVIEW if acceptance else LoopStatus.NEEDS_USER
     next_action = _next_action_for_requirement(loop_status, loop_id)
-    return RequirementIntake(
-        loop_id=loop_id,
-        work_item_id=options.work_item_id.strip()
-        or (existing_intake.work_item_id if existing_intake is not None else ""),
-        source_kind=source_kind,
-        source_path=source_path,
-        raw_text=source_text,
-        summary=summary,
-        clarification_questions=questions,
-        acceptance_criteria=acceptance,
-        design_scope_families=_clean_scope_families(
-            (*existing_scope_families, *options.design_scope_families)
+    return (
+        RequirementIntake(
+            loop_id=loop_id,
+            work_item_id=options.work_item_id.strip()
+            or (existing_intake.work_item_id if existing_intake is not None else ""),
+            source_kind=source_kind,
+            source_path=source_path,
+            raw_text=source_text,
+            summary=summary,
+            clarification_questions=questions,
+            acceptance_criteria=acceptance,
+            design_scope_families=_clean_scope_families(
+                (*existing_scope_families, *options.design_scope_families)
+            ),
         ),
-    ), loop_status, next_action
+        loop_status,
+        next_action,
+    )
 
 
 def _write_requirement_start(
@@ -368,7 +373,9 @@ def _write_requirement_start(
     store = LoopArtifactStore(root)
     store.create_loop_run_dir(intake.loop_id, loop_type=LoopType.REQUIREMENT.value)
     store.write_json_artifact(artifacts.intake_path, intake)
-    store.write_markdown_artifact(artifacts.brief_path, _render_requirement_brief(intake))
+    store.write_markdown_artifact(
+        artifacts.brief_path, _render_requirement_brief(intake)
+    )
     store.write_markdown_artifact(
         artifacts.questions_path,
         _render_clarification_questions(intake),
@@ -488,9 +495,11 @@ def _prepare_requirement_freeze_request(
     options: RequirementFreezeOptions,
 ) -> tuple[Path, Path, str] | RequirementLoopCommandResult:
     root = options.root.resolve()
-    loop_run_path, expected_loop_id, pointer_blocker = _resolve_requirement_loop_run_path(
-        root,
-        options.loop_id,
+    loop_run_path, expected_loop_id, pointer_blocker = (
+        _resolve_requirement_loop_run_path(
+            root,
+            options.loop_id,
+        )
     )
     if pointer_blocker:
         return RequirementLoopCommandResult(
@@ -504,7 +513,7 @@ def _prepare_requirement_freeze_request(
             status=RequirementCommandStatus.BLOCKED,
             result="Requirement freeze requires explicit confirmation.",
             blocker="Pass --yes after confirming the requirement and acceptance criteria.",
-            next_action="Run ai-sdlc loop requirement freeze --yes.",
+            next_action="Repeat the same guarded requirement freeze command with --yes.",
         )
     return root, loop_run_path, expected_loop_id
 
@@ -649,9 +658,7 @@ def _refreeze_closed_requirement(
     try:
         freeze = _read_freeze(artifacts.freeze_path)
     except ValueError as exc:
-        return _malformed_requirement_freeze_result(
-            root, loop_run, artifacts, str(exc)
-        )
+        return _malformed_requirement_freeze_result(root, loop_run, artifacts, str(exc))
     if freeze.loop_id != loop_run.loop_id:
         return _malformed_requirement_freeze_result(
             root,
@@ -826,7 +833,12 @@ def _read_requirement_source(
     idea = options.idea.strip()
     input_file = options.input_file.strip()
     if idea and input_file:
-        return "", RequirementSourceKind.IDEA, "", "Use either --idea or --input-file, not both."
+        return (
+            "",
+            RequirementSourceKind.IDEA,
+            "",
+            "Use either --idea or --input-file, not both.",
+        )
     if idea:
         return idea, RequirementSourceKind.IDEA, "", ""
     if input_file:
@@ -854,7 +866,12 @@ def _read_requirement_source(
                 _repo_relative_path(root, path),
                 "Requirement input file is empty.",
             )
-        return text, RequirementSourceKind.INPUT_FILE, _repo_relative_path(root, path), ""
+        return (
+            text,
+            RequirementSourceKind.INPUT_FILE,
+            _repo_relative_path(root, path),
+            "",
+        )
     if existing_intake is not None:
         return (
             existing_intake.raw_text,
@@ -862,7 +879,12 @@ def _read_requirement_source(
             existing_intake.source_path,
             "",
         )
-    return "", RequirementSourceKind.IDEA, "", "Requirement input requires --idea or --input-file."
+    return (
+        "",
+        RequirementSourceKind.IDEA,
+        "",
+        "Requirement input requires --idea or --input-file.",
+    )
 
 
 def _existing_intake_for_start(
@@ -1124,9 +1146,7 @@ def _clean_scope_families(values: tuple[str, ...]) -> list[str]:
     scopes = _clean_items(values)
     invalid = sorted(set(scopes) - _DESIGN_SCOPE_FAMILIES)
     if invalid:
-        raise ValueError(
-            f"unknown design scope families: {', '.join(invalid)}"
-        )
+        raise ValueError(f"unknown design scope families: {', '.join(invalid)}")
     return scopes
 
 
@@ -1164,7 +1184,9 @@ def _artifact_root(path: Path) -> Path:
 
 
 def _summarize_requirement(text: str) -> str:
-    first_line = next((line.strip() for line in text.splitlines() if line.strip()), text)
+    first_line = next(
+        (line.strip() for line in text.splitlines() if line.strip()), text
+    )
     if len(first_line) <= 140:
         return first_line
     return f"{first_line[:137]}..."
@@ -1173,11 +1195,21 @@ def _summarize_requirement(text: str) -> str:
 def _derive_clarification_questions(text: str, acceptance: list[str]) -> list[str]:
     lowered = text.lower()
     questions: list[str] = []
-    if not any(marker in text for marker in ("用户", "客户", "管理员", "工程师", "运营")) and "user" not in lowered:
+    if (
+        not any(
+            marker in text for marker in ("用户", "客户", "管理员", "工程师", "运营")
+        )
+        and "user" not in lowered
+    ):
         questions.append("主要使用者是谁？请补充用户角色或操作者。")
     if not acceptance:
         questions.append("如何验收这个需求？请补充至少一条可验证的验收标准。")
-    if not any(marker in text for marker in ("不", "不得", "不能", "边界", "范围", "只")) and "non-goal" not in lowered:
+    if (
+        not any(
+            marker in text for marker in ("不", "不得", "不能", "边界", "范围", "只")
+        )
+        and "non-goal" not in lowered
+    ):
         questions.append("本需求明确不覆盖什么？请补充范围边界或非目标。")
     if len(text) < 20:
         questions.append("需求描述较短，请补充关键流程、输入输出或异常场景。")
@@ -1186,14 +1218,11 @@ def _derive_clarification_questions(text: str, acceptance: list[str]) -> list[st
 
 def _next_action_for_requirement(loop_status: LoopStatus, loop_id: str) -> str:
     if loop_status == LoopStatus.NEEDS_REVIEW:
-        return (
-            "Run ai-sdlc loop review --type requirement "
-            f"--loop-id {loop_id}."
-        )
+        return f"Run ai-sdlc loop review --type requirement --loop-id {loop_id}."
     if loop_status == LoopStatus.NEEDS_USER:
         return (
             "Add acceptance criteria, then run ai-sdlc loop requirement start "
-            f"--loop-id {loop_id} --acceptance \"<验收标准>\"."
+            f'--loop-id {loop_id} --acceptance "<验收标准>".'
         )
     if loop_status == LoopStatus.CLOSED:
         return _design_contract_next_action(loop_id)
@@ -1251,7 +1280,11 @@ def _artifact_ref(root: Path, kind: str, path: Path) -> RequirementArtifactRef:
 
 def _repo_relative_path(root: Path, path: Path) -> str:
     try:
-        return path.resolve(strict=False).relative_to(root.resolve(strict=False)).as_posix()
+        return (
+            path.resolve(strict=False)
+            .relative_to(root.resolve(strict=False))
+            .as_posix()
+        )
     except ValueError:
         return path.as_posix()
 

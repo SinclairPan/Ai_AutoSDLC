@@ -185,9 +185,9 @@ git commit -m "feat: expose read-only loop review inputs"
   2. choose one primary expert from the actual result content and at most one cross-risk expert;
   3. run each expert in a fresh read-only context separate from the result writer;
   4. if findings exist, the normal writer fixes the underlying result and reruns the normal Loop check; experts never edit;
-  5. rerun `loop review --expect-digest` immediately before acting on the review; discard/review once more if the result changed;
-  6. if experts fail, do not call close and report that the existing Loop still needs review;
-  7. only after no actionable finding and no drift may the active agent invoke the existing close command;
+  5. invoke the existing close/freeze command with the reviewed `--loop-id` and `--expect-review-digest`; Local PR Review also passes `--review-id`, so the close process itself rebuilds and binds the reviewed input;
+  6. if the current identity or digest changed, discard the old conclusion and review once more; if experts fail, do not call close and report that the existing Loop still needs review;
+  7. only after no actionable finding may the active agent invoke the guarded existing close command;
   8. after Local PR Review's one cross-stage expert pass, stop—no reviewer-of-reviewer.
 - [ ] State explicitly that ordinary users remain in the AI conversation and are not asked to choose experts, run commands, inspect review files, or approve the review. Experts reconcile ordinary disagreement in one bounded re-review; only a product-boundary change returns to the user.
 - [ ] Do not add a provider registry, model selector, role catalog/profile, score, quorum, session, finding history, optimizer, or persistence instruction.

@@ -72,8 +72,14 @@ def test_check_design_contract_loop_waits_for_expert_review(tmp_path: Path) -> N
     assert result.design_contract.report_path.endswith(
         ".ai-sdlc/loops/design-contract/dc-001/design-contract-report.json"
     )
-    assert result.next_action == "Run ai-sdlc loop review --type design-contract --loop-id dc-001."
-    assert result.next_guidance.command == "ai-sdlc loop review --type design-contract --loop-id dc-001"
+    assert (
+        result.next_action
+        == "Run ai-sdlc loop review --type design-contract --loop-id dc-001."
+    )
+    assert (
+        result.next_guidance.command
+        == "ai-sdlc loop review --type design-contract --loop-id dc-001"
+    )
     assert result.next_guidance.requires_model is True
     assert result.next_guidance.writes_artifacts is False
     assert result.next_guidance.writes_code is False
@@ -172,8 +178,6 @@ def test_check_design_contract_loop_allows_fix_and_recheck_in_same_loop(
     )
     assert closed.status == "ready"
     assert closed.closed is True
-
-
 
 
 def test_check_design_contract_loop_recovers_initial_partial_artifact_write(
@@ -331,12 +335,7 @@ def test_check_design_contract_loop_rejects_invalid_previous_loop_run(
         encoding="utf-8",
     )
     loop_run = (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "design-contract"
-        / loop_id
-        / "loop-run.json"
+        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id / "loop-run.json"
     )
     loop_run.unlink()
     if replacement_kind == "broken_symlink":
@@ -370,12 +369,7 @@ def test_close_design_contract_loop_rejects_symlinked_loop_run(
     assert checked.status == "ready"
 
     loop_run = (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "design-contract"
-        / loop_id
-        / "loop-run.json"
+        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id / "loop-run.json"
     )
     backing = loop_run.with_name("backing-loop-run.json")
     backing.write_bytes(loop_run.read_bytes())
@@ -416,9 +410,7 @@ def test_closed_design_contract_recheck_rejects_untrusted_close_artifact(
         DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
     )
     assert closed.closed is True
-    loop_dir = (
-        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
-    )
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
     close_path = loop_dir / "design-contract-close.json"
     backing = loop_dir / "backing-design-contract-close.json"
     if replacement_kind == "valid_symlink":
@@ -450,13 +442,16 @@ def test_closed_design_contract_recheck_rejects_fifo_close_artifact(
 ) -> None:
     _write_work_item(tmp_path)
     loop_id = "dc-closed-fifo-close"
-    assert check_design_contract_loop(
-        DesignContractCheckOptions(
-            root=tmp_path,
-            work_item="specs/demo-contract",
-            loop_id=loop_id,
-        )
-    ).status == "ready"
+    assert (
+        check_design_contract_loop(
+            DesignContractCheckOptions(
+                root=tmp_path,
+                work_item="specs/demo-contract",
+                loop_id=loop_id,
+            )
+        ).status
+        == "ready"
+    )
     assert close_design_contract_loop(
         DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
     ).closed
@@ -484,13 +479,16 @@ def test_current_closed_recheck_rejects_untrusted_close_artifact(
 ) -> None:
     work_item = _write_work_item(tmp_path)
     loop_id = "dc-current-closed-untrusted-close"
-    assert check_design_contract_loop(
-        DesignContractCheckOptions(
-            root=tmp_path,
-            work_item="specs/demo-contract",
-            loop_id=loop_id,
-        )
-    ).status == "ready"
+    assert (
+        check_design_contract_loop(
+            DesignContractCheckOptions(
+                root=tmp_path,
+                work_item="specs/demo-contract",
+                loop_id=loop_id,
+            )
+        ).status
+        == "ready"
+    )
     assert close_design_contract_loop(
         DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
     ).closed
@@ -619,7 +617,7 @@ def test_check_design_contract_loop_blocks_unfrozen_current_requirement_loop(
         "design-contract check."
     )
     assert result.next_action == (
-        "Run ai-sdlc loop requirement freeze --loop-id req-current-unfrozen --yes."
+        "Run ai-sdlc loop review --type requirement --loop-id req-current-unfrozen."
     )
 
 
@@ -673,7 +671,7 @@ def test_check_design_contract_loop_blocks_unfrozen_requirement_loop(
     )
     assert (
         result.next_action
-        == "Run ai-sdlc loop requirement freeze --loop-id req-unfrozen --yes."
+        == "Run ai-sdlc loop review --type requirement --loop-id req-unfrozen."
     )
 
 
@@ -1920,9 +1918,7 @@ def test_close_design_contract_loop_recovers_close_written_before_loop_run(
 
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
     assert (loop_dir / "design-contract-close.json").is_file()
-    persisted_run = json.loads(
-        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
-    )
+    persisted_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
     assert persisted_run["status"] == "needs_review"
     unchanged_artifacts = {
         name: (loop_dir / name).read_bytes()
@@ -1945,35 +1941,11 @@ def test_close_design_contract_loop_recovers_close_written_before_loop_run(
     assert recovered.status == "ready", recovered.blocker
     assert recovered.closed is True
     assert recovered.loop_status == "closed"
-    persisted_run = json.loads(
-        (loop_dir / "loop-run.json").read_text(encoding="utf-8")
-    )
+    persisted_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
     assert persisted_run["status"] == "closed"
     assert unchanged_artifacts == {
         name: (loop_dir / name).read_bytes() for name in unchanged_artifacts
     }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_close_design_contract_loop_revalidates_changed_docs(
@@ -2245,8 +2217,6 @@ def test_close_design_contract_loop_blocks_non_current_explicit_loop_id(
     ).exists()
 
 
-
-
 def test_close_design_contract_loop_blocks_pointer_and_run_identity_mismatch(
     tmp_path: Path,
 ) -> None:
@@ -2355,13 +2325,16 @@ def test_close_design_contract_loop_blocks_current_pointer_file_symlink(
 ) -> None:
     _write_work_item(tmp_path)
     loop_id = "dc-pointer-file-symlink"
-    assert check_design_contract_loop(
-        DesignContractCheckOptions(
-            root=tmp_path,
-            work_item="specs/demo-contract",
-            loop_id=loop_id,
-        )
-    ).status == "ready"
+    assert (
+        check_design_contract_loop(
+            DesignContractCheckOptions(
+                root=tmp_path,
+                work_item="specs/demo-contract",
+                loop_id=loop_id,
+            )
+        ).status
+        == "ready"
+    )
     pointer_path = tmp_path / CURRENT_DESIGN_CONTRACT_PATH
     backing = pointer_path.with_name("backing-current-design-contract.json")
     backing.write_bytes(pointer_path.read_bytes())

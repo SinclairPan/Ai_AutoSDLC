@@ -403,6 +403,87 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
     ).exists()
 
 
+@pytest.mark.parametrize(
+    ("command", "required_options"),
+    [
+        (
+            ["loop", "requirement", "freeze"],
+            ("--loop-id", "--expect-review-digest"),
+        ),
+        (
+            ["loop", "design-contract", "close"],
+            ("--loop-id", "--expect-review-digest"),
+        ),
+        (
+            ["loop", "implementation", "close"],
+            ("--loop-id", "--expect-review-digest"),
+        ),
+        (
+            ["loop", "frontend-evidence", "close"],
+            ("--loop-id", "--expect-review-digest"),
+        ),
+        (
+            ["pr-review", "close"],
+            ("--review-id", "--loop-id", "--expect-review-digest"),
+        ),
+    ],
+)
+def test_close_commands_require_reviewed_identity_and_digest(
+    command: list[str],
+    required_options: tuple[str, ...],
+) -> None:
+    result = runner.invoke(app, [*command, "--help"])
+
+    assert result.exit_code == 0, result.output
+    for option in required_options:
+        assert option in result.output
+
+
+def test_close_rebuilds_review_input_and_blocks_digest_drift(tmp_path: Path) -> None:
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        started = runner.invoke(
+            app,
+            [
+                "loop",
+                "requirement",
+                "start",
+                "--loop-id",
+                "req-close-digest-guard",
+                "--idea",
+                "Ops users need an approval report.",
+                "--acceptance",
+                "The approval report can be exported.",
+                "--json",
+            ],
+        )
+        closed = runner.invoke(
+            app,
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                "--loop-id",
+                "req-close-digest-guard",
+                "--expect-review-digest",
+                "0" * 64,
+                "--yes",
+                "--json",
+            ],
+        )
+
+    assert started.exit_code == 0, started.output
+    assert closed.exit_code == 1
+    assert json.loads(closed.output)["reason"] == "review-input-drift"
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "requirement"
+        / "req-close-digest-guard"
+        / "requirement-freeze.json"
+    ).exists()
+
+
 @pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
 def test_local_pr_review_binds_index_flags(
     tmp_path: Path,

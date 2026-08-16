@@ -146,6 +146,73 @@ _GIT_ROUTING_ENV = {
 }
 
 
+class ReviewInputGuardError(ValueError):
+    """A close request no longer matches the input selected for review."""
+
+    def __init__(
+        self,
+        reason: str,
+        *,
+        detail: str = "",
+        expected_digest: str = "",
+        actual_digest: str = "",
+    ) -> None:
+        super().__init__(detail or reason)
+        self.reason = reason
+        self.detail = detail
+        self.expected_digest = expected_digest
+        self.actual_digest = actual_digest
+
+    def payload(self) -> dict[str, object]:
+        result: dict[str, object] = {
+            "status": "blocked",
+            "reason": self.reason,
+        }
+        if self.detail:
+            result["detail"] = self.detail
+        if self.expected_digest:
+            result["expected_digest"] = self.expected_digest
+        if self.actual_digest:
+            result["actual_digest"] = self.actual_digest
+        return result
+
+
+def validate_review_input_for_close(
+    root: Path,
+    *,
+    loop_type: str,
+    loop_id: str,
+    expected_digest: str,
+) -> ReviewInput:
+    """Rebuild the reviewed input inside the close process and fail on drift."""
+
+    expected = expected_digest.strip().lower()
+    if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
+        raise ReviewInputGuardError(
+            "review-input-unavailable",
+            detail="Expected review input digest must be 64 lowercase hexadecimal characters.",
+        )
+    try:
+        review_input = resolve_review_input(
+            root,
+            loop_type=loop_type,
+            loop_id=loop_id,
+        )
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        raise ReviewInputGuardError(
+            "review-input-unavailable",
+            detail=str(exc),
+            expected_digest=expected,
+        ) from exc
+    if review_input.input_digest != expected:
+        raise ReviewInputGuardError(
+            "review-input-drift",
+            expected_digest=expected,
+            actual_digest=review_input.input_digest,
+        )
+    return review_input
+
+
 def loop_review(
     loop_type: str = typer.Option(..., "--type", help="Loop result type."),
     loop_id: str = typer.Option(..., "--loop-id", help="Existing Loop id."),

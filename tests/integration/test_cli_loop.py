@@ -12,6 +12,7 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+from ai_sdlc.cli.loop_review_cmd import resolve_review_input
 from ai_sdlc.cli.main import app
 from ai_sdlc.core.implementation_models import (
     ImplementationClose,
@@ -38,6 +39,20 @@ from ai_sdlc.core.requirement_loop import (
 
 runner = CliRunner()
 pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
+
+
+def _review_close_args(root: Path, loop_type: str, loop_id: str) -> list[str]:
+    digest = resolve_review_input(
+        root,
+        loop_type=loop_type,
+        loop_id=loop_id,
+    ).input_digest
+    return [
+        "--loop-id",
+        loop_id,
+        "--expect-review-digest",
+        digest,
+    ]
 
 
 def test_loop_help_lists_status_and_list() -> None:
@@ -90,8 +105,9 @@ def test_loop_status_json_guides_post_fix_review_to_rerun(tmp_path: Path) -> Non
     assert payload["next_guidance"]["command"] == "ai-sdlc pr-review rerun"
     assert payload["next_guidance"]["requires_model"] is True
     assert payload["next_guidance"]["safety"] == "may_call_local_review_agent"
-    assert ".ai-sdlc/reviews/pr/review-001/resolution.yaml" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/review-001/resolution.yaml"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -332,7 +348,14 @@ def test_loop_requirement_freeze_triggers_ide_adapter_hook(
         adapter_hook.reset_mock()
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-adapter-freeze"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -370,7 +393,14 @@ def test_loop_requirement_freeze_json_suppresses_adapter_notice(
         )
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-adapter-freeze-json"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -461,8 +491,9 @@ def test_loop_list_json_guides_no_current_pointer_with_history_to_doctor(
     )
     assert payload["next_guidance"]["requires_model"] is False
     assert payload["next_guidance"]["writes_artifacts"] is False
-    assert "ai-sdlc pr-review start --base <branch>" in (
-        payload["next_guidance"]["alternatives"]
+    assert (
+        "ai-sdlc pr-review start --base <branch>"
+        in (payload["next_guidance"]["alternatives"])
     )
     assert payload["items"][0]["next_guidance"]["command"] == (
         "ai-sdlc loop list --json"
@@ -499,8 +530,9 @@ def test_loop_list_json_reports_malformed_current_pointer(
     assert payload["next_guidance"]["command"] == (
         "ai-sdlc pr-review start --base <branch>"
     )
-    assert ".ai-sdlc/reviews/pr/current-review.json" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/current-review.json"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -526,8 +558,9 @@ def test_loop_list_json_reports_missing_current_pointer_target(
         ".ai-sdlc/reviews/pr/missing/review-run.json"
     )
     assert payload["next_guidance"]["safety"] == "blocked"
-    assert ".ai-sdlc/reviews/pr/missing/review-run.json" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/missing/review-run.json"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -554,8 +587,9 @@ def test_loop_list_json_reports_malformed_current_review_run_guidance(
         ".ai-sdlc/reviews/pr/review-bad-current/review-run.json"
     )
     assert payload["next_guidance"]["safety"] == "blocked"
-    assert ".ai-sdlc/reviews/pr/review-bad-current/review-run.json" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/review-bad-current/review-run.json"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -632,7 +666,14 @@ def test_loop_requirement_start_status_and_freeze_json(tmp_path: Path) -> None:
         )
         freeze = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -706,7 +747,13 @@ def test_loop_requirement_freeze_requires_yes(tmp_path: Path) -> None:
         )
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-freeze-cli"),
+                "--json",
+            ],
         )
 
     assert result.exit_code == 1
@@ -733,7 +780,14 @@ def test_loop_requirement_freeze_without_acceptance_exits_nonzero(
         )
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-freeze-needs-user"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -804,7 +858,14 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
         )
         close = runner.invoke(
             app,
-            ["loop", "design-contract", "close", "--yes", "--json"],
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert check.exit_code == 0
@@ -921,7 +982,14 @@ def test_loop_design_contract_close_with_blockers_exits_nonzero(
         )
         close = runner.invoke(
             app,
-            ["loop", "design-contract", "close", "--yes", "--json"],
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-blocked"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert check.exit_code == 0
@@ -982,7 +1050,14 @@ def test_loop_implementation_start_record_status_and_close_json(
         )
         design_close = runner.invoke(
             app,
-            ["loop", "design-contract", "close", "--yes", "--json"],
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-cli"),
+                "--yes",
+                "--json",
+            ],
         )
         start = runner.invoke(
             app,
@@ -1022,7 +1097,14 @@ def test_loop_implementation_start_record_status_and_close_json(
         )
         close = runner.invoke(
             app,
-            ["loop", "implementation", "close", "--loop-id", "impl-cli", "--yes", "--json"],
+            [
+                "loop",
+                "implementation",
+                "close",
+                *_review_close_args(tmp_path, "implementation", "impl-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert design_check.exit_code == 0
@@ -1074,7 +1156,17 @@ def test_loop_implementation_start_dry_run_skips_adapter_hook(
                 "--json",
             ],
         )
-        runner.invoke(app, ["loop", "design-contract", "close", "--yes", "--json"])
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-dry-run"),
+                "--yes",
+                "--json",
+            ],
+        )
     with (
         patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
         patch("ai_sdlc.cli.loop_cmd.run_ide_adapter_if_initialized") as adapter_hook,
@@ -1111,7 +1203,9 @@ def test_loop_frontend_evidence_start_status_and_close_json(
 ) -> None:
     work_item = _write_frontend_work_item(tmp_path)
     _write_closed_frontend_implementation(tmp_path, work_item)
-    _write_frontend_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    _write_frontend_browser_gate_artifact(
+        tmp_path, work_item_path="specs/demo-frontend"
+    )
 
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
         start = runner.invoke(
@@ -1135,7 +1229,14 @@ def test_loop_frontend_evidence_start_status_and_close_json(
         )
         close = runner.invoke(
             app,
-            ["loop", "frontend-evidence", "close", "--loop-id", "fe-cli", "--yes", "--json"],
+            [
+                "loop",
+                "frontend-evidence",
+                "close",
+                *_review_close_args(tmp_path, "frontend-evidence", "fe-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -1169,7 +1270,9 @@ def test_loop_frontend_evidence_start_needs_fix_exits_nonzero(
 ) -> None:
     work_item = _write_frontend_work_item(tmp_path)
     _write_closed_frontend_implementation(tmp_path, work_item)
-    _write_frontend_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    _write_frontend_browser_gate_artifact(
+        tmp_path, work_item_path="specs/demo-frontend"
+    )
     artifact_path = (
         tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
     )
@@ -1359,6 +1462,29 @@ def _write_closed_frontend_implementation(root: Path, work_item: Path) -> None:
         "impl-frontend-cli",
         loop_type=LoopType.IMPLEMENTATION.value,
     )
+    design_dir = root / ".ai-sdlc" / "loops" / "design-contract" / "dc-frontend-cli"
+    design_dir.mkdir(parents=True)
+    store.write_json_artifact(
+        design_dir / "design-contract-input.json",
+        {
+            "requirement_loop_id": "",
+            "spec_path": f"specs/{work_item.name}/spec.md",
+            "plan_path": f"specs/{work_item.name}/plan.md",
+            "tasks_path": f"specs/{work_item.name}/tasks.md",
+        },
+    )
+    store.write_json_artifact(design_dir / "design-contract-report.json", {})
+    (design_dir / "design-contract-report.md").write_text(
+        "# Design contract\n", encoding="utf-8"
+    )
+    store.write_json_artifact(
+        artifacts.input_path,
+        {"design_contract_loop_id": "dc-frontend-cli"},
+    )
+    store.write_json_artifact(artifacts.tasks_path, {})
+    store.write_json_artifact(artifacts.progress_path, {})
+    store.write_json_artifact(artifacts.evidence_path, {})
+    artifacts.report_md_path.write_text("# Implementation\n", encoding="utf-8")
     report = ImplementationReport(
         loop_id="impl-frontend-cli",
         work_item_id=work_item.name,
@@ -1510,7 +1636,9 @@ def _write_frontend_browser_gate_artifact(
             "playwright_trace_refs": [trace_ref],
             "screenshot_refs": [screenshot_ref],
             "check_receipts": [
-                _browser_gate_receipt("playwright_smoke", ["smoke-screenshot", "smoke-trace"]),
+                _browser_gate_receipt(
+                    "playwright_smoke", ["smoke-screenshot", "smoke-trace"]
+                ),
                 _browser_gate_receipt("visual_expectation", ["smoke-screenshot"]),
                 _browser_gate_receipt("basic_a11y", ["smoke-screenshot"]),
                 _browser_gate_receipt(
@@ -1540,7 +1668,9 @@ def _write_frontend_browser_gate_artifact(
     )
 
 
-def _browser_gate_receipt(check_name: str, artifact_ids: list[str]) -> dict[str, object]:
+def _browser_gate_receipt(
+    check_name: str, artifact_ids: list[str]
+) -> dict[str, object]:
     return {
         "check_name": check_name,
         "started_at": "2026-07-01T00:00:00Z",

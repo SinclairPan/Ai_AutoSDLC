@@ -7,6 +7,10 @@ from pathlib import Path
 import typer
 
 from ai_sdlc.branch.git_client import GitClient, GitError
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    validate_review_input_for_close,
+)
 from ai_sdlc.cli.pr_review_rendering import (
     emit_pr_review_result as _emit_result,
 )
@@ -299,6 +303,15 @@ def pr_review_record_evidence(
 
 @pr_review_app.command(name="close")
 def pr_review_close(
+    review_id: str = typer.Option(
+        ..., "--review-id", help="Reviewed local PR review id."
+    ),
+    loop_id: str = typer.Option(..., "--loop-id", help="Reviewed local PR loop id."),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed local PR input.",
+    ),
     require_no_blockers: bool = typer.Option(
         False,
         "--require-no-blockers",
@@ -309,9 +322,21 @@ def pr_review_close(
     """Close the local PR review with a final verdict."""
 
     root = _project_root_or_exit(json_output=json_output)
+    try:
+        validate_review_input_for_close(
+            root,
+            loop_type="local-pr-review",
+            loop_id=loop_id,
+            expected_digest=expect_review_digest,
+        )
+    except ReviewInputGuardError as exc:
+        _emit_result(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
     result = close_pr_review(
         root,
         require_no_blockers=require_no_blockers,
+        expected_review_id=review_id,
+        expected_loop_id=loop_id,
     )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.CLOSED else 1)

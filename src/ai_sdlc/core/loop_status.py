@@ -362,9 +362,7 @@ def list_loops(
             next_guidance=_init_guidance(),
         )
 
-    normalized_loop_type = (
-        _normalize_loop_type(loop_type)
-    )
+    normalized_loop_type = _normalize_loop_type(loop_type)
     if normalized_loop_type == LoopType.REQUIREMENT.value:
         return _list_requirement_loops(resolved_root)
     if normalized_loop_type == LoopType.DESIGN_CONTRACT.value:
@@ -491,7 +489,9 @@ def list_loops(
             next_action="Inspect or remove malformed review-run.json artifacts.",
             next_guidance=_blocked_guidance(
                 "All discovered local PR review loop artifacts are malformed.",
-                evidence=[error.path for error in artifact_errors if error.path.strip()],
+                evidence=[
+                    error.path for error in artifact_errors if error.path.strip()
+                ],
             ),
         )
 
@@ -532,7 +532,9 @@ def list_loops(
         status=LoopStatusCommandStatus.READY,
         result="Local PR review loops found.",
         current_loop_id=current_loop.loop_id if current_loop is not None else "",
-        current_review_id=current_review.review_id if current_review is not None else "",
+        current_review_id=current_review.review_id
+        if current_review is not None
+        else "",
         items=loops,
         malformed_count=len(artifact_errors),
         artifact_errors=artifact_errors,
@@ -564,7 +566,9 @@ def _summary_from_review_run(
     )
     for kind, path_text in optional_artifacts:
         if path_text.strip():
-            artifacts.append(_artifact_ref(root, kind, _resolve_repo_path(root, path_text)))
+            artifacts.append(
+                _artifact_ref(root, kind, _resolve_repo_path(root, path_text))
+            )
 
     return LoopSummary(
         loop_id=review_run.loop_id,
@@ -604,7 +608,7 @@ def _get_requirement_loop_status(root: Path) -> LoopStatusResult:
         return LoopStatusResult(
             status=LoopStatusCommandStatus.NO_CURRENT,
             result="No current requirement loop.",
-            next_action="Run ai-sdlc loop requirement start --idea \"<需求描述>\".",
+            next_action='Run ai-sdlc loop requirement start --idea "<需求描述>".',
             next_guidance=_no_current_requirement_guidance(),
         )
     loop_run_path, pointer_error = _read_current_requirement_loop_run_path(
@@ -702,7 +706,7 @@ def _list_requirement_loops(root: Path) -> LoopListResult:
         return LoopListResult(
             status=LoopStatusCommandStatus.NO_CURRENT,
             result="No requirement loops found.",
-            next_action="Run ai-sdlc loop requirement start --idea \"<需求描述>\".",
+            next_action='Run ai-sdlc loop requirement start --idea "<需求描述>".',
             next_guidance=_no_current_requirement_guidance(),
         )
 
@@ -763,7 +767,9 @@ def _list_requirement_loops(root: Path) -> LoopListResult:
         if error.kind in {"current-requirement-pointer", "current-requirement-target"}
     ]
     if current_loop is None and pointer_errors:
-        blocker = "Current requirement pointer is malformed or references missing artifacts."
+        blocker = (
+            "Current requirement pointer is malformed or references missing artifacts."
+        )
         next_action = "Inspect or remove malformed current-requirement.json artifacts."
         guidance = _requirement_blocked_guidance(
             blocker,
@@ -771,7 +777,7 @@ def _list_requirement_loops(root: Path) -> LoopListResult:
         )
     elif current_loop is None:
         blocker = ""
-        next_action = "Run ai-sdlc loop requirement start --idea \"<需求描述>\"."
+        next_action = 'Run ai-sdlc loop requirement start --idea "<需求描述>".'
         guidance = _no_current_requirement_guidance()
     else:
         blocker = ""
@@ -995,7 +1001,9 @@ def _list_design_contract_loops(root: Path) -> LoopListResult:
             "Current design-contract pointer is malformed or references "
             "missing artifacts."
         )
-        next_action = "Inspect or remove malformed current-design-contract.json artifacts."
+        next_action = (
+            "Inspect or remove malformed current-design-contract.json artifacts."
+        )
         guidance = _design_contract_blocked_guidance(
             blocker,
             evidence=[error.path for error in pointer_errors if error.path],
@@ -1218,14 +1226,17 @@ def _list_implementation_loops(root: Path) -> LoopListResult:
     pointer_errors = [
         error
         for error in artifact_errors
-        if error.kind in {"current-implementation-pointer", "current-implementation-target"}
+        if error.kind
+        in {"current-implementation-pointer", "current-implementation-target"}
     ]
     if current_loop is None and pointer_errors:
         blocker = (
             "Current implementation pointer is malformed or references "
             "missing artifacts."
         )
-        next_action = "Inspect or remove malformed current-implementation.json artifacts."
+        next_action = (
+            "Inspect or remove malformed current-implementation.json artifacts."
+        )
         guidance = _implementation_blocked_guidance(
             blocker,
             evidence=[error.path for error in pointer_errors if error.path],
@@ -1289,7 +1300,9 @@ def _get_frontend_evidence_loop_status(root: Path) -> LoopStatusResult:
             ),
         )
     if loop_run_path is None or not loop_run_path.is_file():
-        blocker = "Current frontend-evidence pointer references a missing loop-run.json."
+        blocker = (
+            "Current frontend-evidence pointer references a missing loop-run.json."
+        )
         return LoopStatusResult(
             status=LoopStatusCommandStatus.BLOCKED,
             result="Current frontend-evidence loop artifact is missing.",
@@ -1337,9 +1350,11 @@ def _list_frontend_evidence_loops(root: Path) -> LoopListResult:
     loop_run_paths = sorted(loop_root.glob("*/loop-run.json"))
     artifact_errors: list[LoopArtifactError] = []
     pointer_path = root / CURRENT_FRONTEND_EVIDENCE_PATH
-    current_loop_run_path, pointer_error = _read_current_frontend_evidence_loop_run_path(
-        root,
-        pointer_path,
+    current_loop_run_path, pointer_error = (
+        _read_current_frontend_evidence_loop_run_path(
+            root,
+            pointer_path,
+        )
     )
     if pointer_error is not None:
         artifact_errors.append(pointer_error)
@@ -1456,7 +1471,9 @@ def _list_frontend_evidence_loops(root: Path) -> LoopListResult:
             "Current frontend-evidence pointer is malformed or references "
             "missing artifacts."
         )
-        next_action = "Inspect or remove malformed current-frontend-evidence.json artifacts."
+        next_action = (
+            "Inspect or remove malformed current-frontend-evidence.json artifacts."
+        )
         guidance = _frontend_evidence_blocked_guidance(
             blocker,
             evidence=[error.path for error in pointer_errors if error.path],
@@ -1821,7 +1838,7 @@ def _no_current_requirement_guidance() -> LoopNextActionGuidance:
         safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
         evidence=[str(CURRENT_REQUIREMENT_PATH).replace("\\", "/")],
         alternatives=[
-            'ai-sdlc loop requirement start --input-file <path>',
+            "ai-sdlc loop requirement start --input-file <path>",
         ],
     )
 
@@ -1932,7 +1949,7 @@ def _requirement_blocked_guidance(
         evidence=evidence or [str(CURRENT_REQUIREMENT_PATH).replace("\\", "/")],
         alternatives=[
             "Inspect or remove malformed requirement loop artifacts.",
-            'ai-sdlc loop requirement start --input-file <path>',
+            "ai-sdlc loop requirement start --input-file <path>",
         ],
     )
 
@@ -1949,8 +1966,7 @@ def _design_contract_blocked_guidance(
         writes_artifacts=True,
         writes_code=False,
         safety=LoopNextActionSafety.BLOCKED,
-        evidence=evidence
-        or [str(CURRENT_DESIGN_CONTRACT_PATH).replace("\\", "/")],
+        evidence=evidence or [str(CURRENT_DESIGN_CONTRACT_PATH).replace("\\", "/")],
         alternatives=[
             "Inspect or remove malformed design-contract loop artifacts.",
         ],
@@ -1969,8 +1985,7 @@ def _implementation_blocked_guidance(
         writes_artifacts=True,
         writes_code=False,
         safety=LoopNextActionSafety.BLOCKED,
-        evidence=evidence
-        or [str(CURRENT_IMPLEMENTATION_PATH).replace("\\", "/")],
+        evidence=evidence or [str(CURRENT_IMPLEMENTATION_PATH).replace("\\", "/")],
         alternatives=[
             "Inspect or remove malformed implementation loop artifacts.",
         ],
@@ -1989,8 +2004,7 @@ def _frontend_evidence_blocked_guidance(
         writes_artifacts=True,
         writes_code=False,
         safety=LoopNextActionSafety.BLOCKED,
-        evidence=evidence
-        or [str(CURRENT_FRONTEND_EVIDENCE_PATH).replace("\\", "/")],
+        evidence=evidence or [str(CURRENT_FRONTEND_EVIDENCE_PATH).replace("\\", "/")],
         alternatives=[
             "ai-sdlc program browser-gate-probe --execute",
             "Inspect or remove malformed frontend-evidence loop artifacts.",
@@ -2210,13 +2224,17 @@ def _guidance_for_requirement_loop(
             writes_artifacts=True,
             writes_code=False,
             safety=LoopNextActionSafety.NEEDS_USER,
-            evidence=[*evidence, _repo_relative_path(root, loop_run_path.parent / "acceptance-checklist.md")],
+            evidence=[
+                *evidence,
+                _repo_relative_path(
+                    root, loop_run_path.parent / "acceptance-checklist.md"
+                ),
+            ],
         )
     if loop_run.status == LoopStatus.NEEDS_REVIEW:
         return LoopNextActionGuidance(
             command=(
-                "ai-sdlc loop review --type requirement "
-                f"--loop-id {loop_run.loop_id}"
+                f"ai-sdlc loop review --type requirement --loop-id {loop_run.loop_id}"
             ),
             reason="Requirement evidence is ready for bounded adversarial review.",
             requires_model=True,
@@ -2235,7 +2253,9 @@ def _guidance_for_requirement_loop(
             safety=LoopNextActionSafety.NO_ACTION,
             evidence=[
                 *evidence,
-                _repo_relative_path(root, loop_run_path.parent / "requirement-freeze.json"),
+                _repo_relative_path(
+                    root, loop_run_path.parent / "requirement-freeze.json"
+                ),
             ],
             alternatives=[
                 f"Start design-contract loop from requirement {loop_run.loop_id}."
@@ -2465,7 +2485,9 @@ def _guidance_for_frontend_evidence_loop(
 ) -> LoopNextActionGuidance:
     evidence = [
         _repo_relative_path(root, loop_run_path),
-        _repo_relative_path(root, loop_run_path.parent / "frontend-evidence-report.json"),
+        _repo_relative_path(
+            root, loop_run_path.parent / "frontend-evidence-report.json"
+        ),
     ]
     if not is_current:
         return LoopNextActionGuidance(
@@ -2496,15 +2518,18 @@ def _guidance_for_frontend_evidence_loop(
         )
     if loop_run.status == LoopStatus.NEEDS_USER:
         return LoopNextActionGuidance(
-            command="ai-sdlc loop frontend-evidence close --yes --allow-warnings",
+            command=(
+                "ai-sdlc loop review --type frontend-evidence "
+                f"--loop-id {loop_run.loop_id}"
+            ),
             reason=(
                 "Frontend browser gate evidence has advisory warnings; close only "
                 "after explicitly recording acceptance."
             ),
-            requires_model=False,
-            writes_artifacts=True,
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety=LoopNextActionSafety.NEEDS_USER,
+            safety=LoopNextActionSafety.SAFE_READ_ONLY,
             evidence=evidence,
         )
     if loop_run.status == LoopStatus.NEEDS_FIX:
@@ -2536,7 +2561,8 @@ def _guidance_for_frontend_evidence_loop(
     if loop_run.status in {LoopStatus.BLOCKED, LoopStatus.NEEDS_USER}:
         return LoopNextActionGuidance(
             command="ai-sdlc loop frontend-evidence status",
-            reason=loop_run.next_action or "Inspect the blocked frontend-evidence loop.",
+            reason=loop_run.next_action
+            or "Inspect the blocked frontend-evidence loop.",
             requires_model=False,
             writes_artifacts=False,
             writes_code=False,
@@ -2795,9 +2821,9 @@ def _frontend_evidence_pointer_error(
 
 
 def _is_design_contract_loop_run_path(root: Path, loop_run_path: Path) -> bool:
-    loop_root = (
-        root / AI_SDLC_DIR / "loops" / LoopType.DESIGN_CONTRACT.value
-    ).resolve(strict=False)
+    loop_root = (root / AI_SDLC_DIR / "loops" / LoopType.DESIGN_CONTRACT.value).resolve(
+        strict=False
+    )
     try:
         relative = loop_run_path.resolve(strict=False).relative_to(loop_root)
     except ValueError:
@@ -2806,9 +2832,9 @@ def _is_design_contract_loop_run_path(root: Path, loop_run_path: Path) -> bool:
 
 
 def _is_implementation_loop_run_path(root: Path, loop_run_path: Path) -> bool:
-    loop_root = (
-        root / AI_SDLC_DIR / "loops" / LoopType.IMPLEMENTATION.value
-    ).resolve(strict=False)
+    loop_root = (root / AI_SDLC_DIR / "loops" / LoopType.IMPLEMENTATION.value).resolve(
+        strict=False
+    )
     try:
         relative = loop_run_path.resolve(strict=False).relative_to(loop_root)
     except ValueError:

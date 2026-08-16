@@ -161,11 +161,7 @@ def _archive_codex_adapter_files(project_root: Path, evidence_root: Path) -> Non
     sources = {
         "AGENTS.md": project_root / "AGENTS.md",
         ".ai-sdlc/project/config/project-config.yaml": (
-            project_root
-            / ".ai-sdlc"
-            / "project"
-            / "config"
-            / "project-config.yaml"
+            project_root / ".ai-sdlc" / "project" / "config" / "project-config.yaml"
         ),
     }
     archive_root = evidence_root / "codex-adapter-files"
@@ -314,9 +310,36 @@ def _run_requirement_and_workitem_flow(
         '"result": "Current requirement loop found."',
         '"status": "needs_review"',
     )
+    requirement_payload = json.loads(start_output)
+    requirement_loop_id = str(requirement_payload["loop_id"])
+    review_output = _run_cli(
+        cli_path,
+        [
+            "loop",
+            "review",
+            "--type",
+            "requirement",
+            "--loop-id",
+            requirement_loop_id,
+            "--json",
+        ],
+        cwd=project_root,
+        evidence_path=evidence_root / "requirement-review.json",
+    )
+    requirement_review_digest = str(json.loads(review_output)["input_digest"])
     freeze_output = _run_cli(
         cli_path,
-        ["loop", "requirement", "freeze", "--yes", "--json"],
+        [
+            "loop",
+            "requirement",
+            "freeze",
+            "--loop-id",
+            requirement_loop_id,
+            "--expect-review-digest",
+            requirement_review_digest,
+            "--yes",
+            "--json",
+        ],
         cwd=project_root,
         evidence_path=evidence_root / "requirement-freeze.json",
     )

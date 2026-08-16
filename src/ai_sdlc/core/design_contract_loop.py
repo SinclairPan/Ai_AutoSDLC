@@ -264,7 +264,7 @@ def close_design_contract_loop(
         return _blocked_result(
             "Pass --yes after confirming the design contract report.",
             result="Design-contract close requires explicit confirmation.",
-            next_action="Run ai-sdlc loop design-contract close --yes.",
+            next_action="Repeat the same guarded design-contract close command with --yes.",
         )
     context = _load_design_close_context(
         root,
@@ -570,9 +570,10 @@ def _refresh_report_before_close(
             next_action=requirement_next_action,
             artifacts=artifacts.refs(root),
         )
-    if contract_input.authorized_scope_families != prerequisite[
-        "authorized_scope_families"
-    ]:
+    if (
+        contract_input.authorized_scope_families
+        != prerequisite["authorized_scope_families"]
+    ):
         return _blocked_result(
             "Frozen requirement scope changed after design-contract check.",
             loop_id=loop_run.loop_id,
@@ -720,8 +721,6 @@ def _closed_design_loop_run(
     return successor
 
 
-
-
 def _closed_recheck_result(
     root: Path,
     artifacts: DesignContractArtifacts,
@@ -841,7 +840,9 @@ def _trusted_close_artifact_exists(
     try:
         return _stable_regular_file_exists(root, artifacts.close_path)
     except ValueError as exc:
-        raise ValueError("Existing closed design-contract artifact is unavailable.") from exc
+        raise ValueError(
+            "Existing closed design-contract artifact is unavailable."
+        ) from exc
 
 
 def _requirement_loop_gate(
@@ -904,7 +905,7 @@ def _load_requirement_freeze(
     artifacts: _RequirementArtifacts,
 ) -> tuple[RequirementFreeze | None, str, str]:
     freeze_next_action = (
-        f"Run ai-sdlc loop requirement freeze --loop-id {loop_id} --yes."
+        f"Run ai-sdlc loop review --type requirement --loop-id {loop_id}."
     )
     try:
         loop_run = _read_requirement_loop_run(artifacts.loop_run_path)
@@ -957,7 +958,7 @@ def _requirement_freeze_identity_issue(
     if freeze.loop_id != loop_id:
         return (
             f"Requirement freeze artifact id mismatch: expected {loop_id}, found {freeze.loop_id}.",
-            f"Run ai-sdlc loop requirement freeze --loop-id {loop_id} --yes.",
+            f"Run ai-sdlc loop review --type requirement --loop-id {loop_id}.",
         )
     expected_intake_path = repo_relative_path(root, artifacts.intake_path)
     if freeze.intake_path != expected_intake_path:
@@ -1236,10 +1237,7 @@ def _next_action_for_report(report: DesignContractReport) -> str:
             "Fix design-contract blockers, then run "
             f"ai-sdlc loop design-contract check --wi {report.work_item_path}."
         )
-    return (
-        "Run ai-sdlc loop review --type design-contract "
-        f"--loop-id {report.loop_id}."
-    )
+    return f"Run ai-sdlc loop review --type design-contract --loop-id {report.loop_id}."
 
 
 def _next_guidance_for_result(
@@ -1273,8 +1271,7 @@ def _next_guidance_for_result(
         )
     return DesignContractNextGuidance(
         command=(
-            "ai-sdlc loop review --type design-contract "
-            f"--loop-id {report.loop_id}"
+            f"ai-sdlc loop review --type design-contract --loop-id {report.loop_id}"
         ),
         reason="The design contract is ready for bounded adversarial review.",
         requires_model=True,

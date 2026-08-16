@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
+from ai_sdlc.cli.loop_review_cmd import resolve_review_input
 from ai_sdlc.cli.main import app
 
 runner = CliRunner()
@@ -21,30 +22,6 @@ def test_pr_review_help_omits_removed_authority_commands() -> None:
     assert result.exit_code == 0
     assert "attest" not in result.output
     assert "certificate" not in result.output
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 def test_pr_review_help_lists_p0_commands() -> None:
@@ -289,9 +266,26 @@ def test_pr_review_fix_and_close_require_no_blockers_json(tmp_path: Path) -> Non
             ],
         )
         fix = runner.invoke(app, ["pr-review", "fix", "--json"])
+        started = json.loads(start.output)
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
         close = runner.invoke(
             app,
-            ["pr-review", "close", "--require-no-blockers", "--json"],
+            [
+                "pr-review",
+                "close",
+                "--review-id",
+                started["review_id"],
+                "--loop-id",
+                started["loop_id"],
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--require-no-blockers",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 10
@@ -306,8 +300,6 @@ def test_pr_review_fix_and_close_require_no_blockers_json(tmp_path: Path) -> Non
     assert close_payload["status"] == "closed"
     assert close_payload["verdict"] == "risk_accepted"
     assert Path(close_payload["final_report_path"]).is_file()
-
-
 
 
 def test_pr_review_fix_dry_run_json_does_not_write_artifacts(tmp_path: Path) -> None:

@@ -1165,6 +1165,8 @@ def close_pr_review(
     root: Path,
     *,
     require_no_blockers: bool = False,
+    expected_review_id: str = "",
+    expected_loop_id: str = "",
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
@@ -1183,14 +1185,27 @@ def close_pr_review(
     )
     try:
         review_run, review_run_path = _load_current_review_run(root)
+        if (
+            expected_review_id.strip()
+            and review_run.review_id != expected_review_id.strip()
+        ) or (
+            expected_loop_id.strip() and review_run.loop_id != expected_loop_id.strip()
+        ):
+            return PRReviewCloseResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                verdict=ReviewVerdict.BLOCKED,
+                blocker=(
+                    "Current PR review does not match the reviewed identity; "
+                    "rerun expert review for the current pointer before closing."
+                ),
+                next_action="Rerun local PR expert review before closing.",
+            )
         not_closeable = _not_closeable_review_result(root.resolve(), review_run)
         if not_closeable is not None:
             return not_closeable
         findings = _load_findings(root.resolve(), review_run)
         review_pack = _load_review_pack(root.resolve(), review_run.review_pack_path)
-        verification_evidence = _load_verification_evidence(
-            root.resolve(), review_run
-        )
+        verification_evidence = _load_verification_evidence(root.resolve(), review_run)
     except FileNotFoundError as exc:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.NO_REVIEW,
@@ -2431,9 +2446,7 @@ def _count_findings(findings: ReviewFindings | None, severity: FindingSeverity) 
 
 def _next_action_for_provider(result: ProviderRunResult) -> str:
     if result.status == ProviderRunStatus.SUCCESS:
-        return (
-            "Record verification evidence, then run bounded local PR expert review."
-        )
+        return "Record verification evidence, then run bounded local PR expert review."
     if result.status == ProviderRunStatus.CHANGES_REQUIRED:
         return "Run ai-sdlc pr-review fix."
     if result.status == ProviderRunStatus.NEEDS_USER:

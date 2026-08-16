@@ -103,7 +103,9 @@ def update_handoff(
         scoped.write_text(content, encoding="utf-8")
 
     _refresh_resume_pack_summary(root, summary)
-    return HandoffUpdateResult(canonical_path=canonical, scoped_path=scoped, summary=summary)
+    return HandoffUpdateResult(
+        canonical_path=canonical, scoped_path=scoped, summary=summary
+    )
 
 
 def show_handoff(root: Path) -> str:
@@ -240,18 +242,23 @@ def _local_pr_review_handoff_lines(root: Path) -> list[str]:
     except (OSError, json.JSONDecodeError) as exc:
         return [f"unavailable: {exc}"]
     review_id = str(review_run.get("review_id", "") or "")
+    loop_id = str(review_run.get("loop_id", "") or "")
     verdict = str(review_run.get("verdict", "") or "none")
     blockers = int(review_run.get("unresolved_blockers", 0) or 0)
     required = int(review_run.get("unresolved_required", 0) or 0)
     advisory = int(review_run.get("unresolved_advisory", 0) or 0)
     next_action = str(review_run.get("next_action", "") or "")
+    if next_action.startswith("ai-sdlc pr-review close"):
+        next_action = f"ai-sdlc loop review --type local-pr-review --loop-id {loop_id}"
     if not next_action:
         if blockers or required:
             next_action = "ai-sdlc pr-review fix"
         elif verdict in {"fully_clean", "risk_accepted"}:
             next_action = "ai-sdlc pr-review status"
         else:
-            next_action = "ai-sdlc pr-review close"
+            next_action = (
+                f"ai-sdlc loop review --type local-pr-review --loop-id {loop_id}"
+            )
     return [
         f"review_id: {review_id}",
         f"verdict: {verdict}",

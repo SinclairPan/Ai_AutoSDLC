@@ -22,7 +22,7 @@ Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Re
 1. 对当前 Loop 执行 `ai-sdlc loop review --type <类型> --loop-id <ID> --json`，读取实质结果和风险信号。Local PR Review 在此之前先用 `ai-sdlc pr-review record-evidence --evidence "<命令和结果>"` 记录本次验证证据，使其进入同一次复核输入。
 2. 按结果内容临时选择一个主专家；仅在存在明确交叉风险时，最多增加一个交叉风险专家。每位专家必须使用独立于结果编写者的全新且只读的独立上下文，不继承编写过程的推理历史。
 3. 专家只返回有证据位置的问题和建议，不修改代码或工件。存在问题时交回原结果编写者修复并重跑该 Loop 的正常检查；同一结果最多进行一次修复后复审。
-4. 准备执行现有 close 命令前，用 `ai-sdlc loop review --type <类型> --loop-id <ID> --expect-digest <摘要> --json` 复核输入未漂移。若输入变化，废弃旧结论并按上述上限复审。
+4. 执行现有 close / freeze 命令时，必须把已审的 `--loop-id <ID>` 和 `--expect-review-digest <input_digest>` 直接传入；Local PR Review 还必须传 `--review-id <ID>`。命令会在同一进程重建输入，若输入或当前身份变化则废弃旧结论并按上述上限复审。
 5. 专家不可用、超时或输出无效时，不得解释为无问题，也不得调用 close；原 Loop 保持 `needs_review`，由当前代理报告失败原因。
 6. 只有没有可操作问题且摘要未漂移时，当前代理才调用该 Loop 已有的 close 命令。复核本身不写状态，也不拥有关闭权。
 7. Local PR Review 在 close 前读取 Review Pack、Findings、resolution、验证证据和当前 HEAD/index/staged diff；完成这次跨阶段复核后即停止，禁止继续评审该复核结果或最终报告。

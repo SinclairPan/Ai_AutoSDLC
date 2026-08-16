@@ -329,7 +329,7 @@ def close_implementation_loop(
         return _blocked_result(
             "Pass --yes after confirming implementation evidence.",
             result="Implementation close requires explicit confirmation.",
-            next_action="Run ai-sdlc loop implementation close --yes.",
+            next_action="Repeat the same guarded implementation close command with --yes.",
         )
     try:
         loop_run = read_loop_run(loop_run_path)
@@ -599,7 +599,8 @@ def _design_contract_gate(
                 f"Design-contract loop {loop_run.loop_id} must be closed before "
                 "implementation start."
             ),
-            "Run ai-sdlc loop design-contract close --yes.",
+            "Run ai-sdlc loop review --type design-contract "
+            f"--loop-id {loop_run.loop_id}.",
         )
     try:
         report = read_design_contract_report(artifacts.report_json_path)
@@ -621,7 +622,13 @@ def _design_contract_gate(
         work_item_id,
     )
     if blocker:
-        return "", "", blocker, "Run ai-sdlc loop design-contract close --yes."
+        return (
+            "",
+            "",
+            blocker,
+            "Run ai-sdlc loop review --type design-contract "
+            f"--loop-id {loop_run.loop_id}.",
+        )
     input_issue = _design_close_input_issue(
         root,
         loop_run,

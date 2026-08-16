@@ -186,8 +186,6 @@ def test_start_rejects_unsafe_review_id_without_traceback(tmp_path) -> None:
     assert not (tmp_path / ".ai-sdlc" / "reviews").exists()
 
 
-
-
 def test_start_dry_run_uses_policy_default_provider_when_omitted(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     policy_path = tmp_path / ".ai-sdlc" / "project" / "config" / "loop-policy.yaml"
@@ -826,6 +824,49 @@ def test_fix_does_not_trust_provider_supplied_resolution(tmp_path) -> None:
     assert fix.selected_findings_count == 1
 
 
+def test_close_rejects_a_new_current_review_after_reviewed_identity_was_selected(
+    tmp_path: Path,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    reviewed = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-selected-for-close",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    replacement = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-started-concurrently",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    result = close_pr_review(
+        tmp_path,
+        expected_review_id=reviewed.review_id,
+        expected_loop_id=reviewed.loop_id,
+    )
+
+    assert replacement.review_id != reviewed.review_id
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "reviewed identity" in result.blocker
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "reviews"
+        / "pr"
+        / reviewed.review_id
+        / "final-report.md"
+    ).exists()
+
+
 def test_fix_preserves_existing_resolved_resolution_records(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
@@ -1366,30 +1407,6 @@ def test_close_fully_clean_after_resolution_marks_required_fixed(tmp_path) -> No
     assert "tests passed" in report
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_close_blocks_malformed_findings_artifact(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
@@ -1437,8 +1454,6 @@ def test_close_blocks_provider_blocked_run_even_with_valid_findings(tmp_path) ->
     assert result.verdict == "blocked"
     assert "provider run is blocked" in result.blocker
     assert result.final_report_path == ""
-
-
 
 
 def test_close_treats_invalid_waiver_as_unresolved(tmp_path) -> None:
@@ -1572,8 +1587,6 @@ def test_rerun_regenerates_review_for_same_scope_changes(tmp_path) -> None:
     ]
     assert result.status == PRReviewCommandStatus.STARTED
     assert new_head != old_head
-
-
 
 
 def test_rerun_uses_patch_source_scope(tmp_path) -> None:

@@ -10,7 +10,11 @@ import typer
 from rich.console import Console
 
 from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
-from ai_sdlc.cli.loop_review_cmd import loop_review
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    loop_review,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
     DesignContractCloseOptions,
@@ -187,7 +191,12 @@ def requirement_status(
 
 @requirement_app.command(name="freeze")
 def requirement_freeze(
-    loop_id: str = typer.Option("", "--loop-id", help="Requirement loop id."),
+    loop_id: str = typer.Option(..., "--loop-id", help="Reviewed requirement loop id."),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed requirement input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm requirement freeze."),
     accepted_by: str = typer.Option(
         "local-user",
@@ -200,6 +209,13 @@ def requirement_freeze(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    _require_review_close_guard(
+        root,
+        loop_type="requirement",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+    )
     result = freeze_requirement_loop(
         RequirementFreezeOptions(
             root=root,
@@ -260,7 +276,14 @@ def design_contract_status(
 
 @design_contract_app.command(name="close")
 def design_contract_close(
-    loop_id: str = typer.Option("", "--loop-id", help="Design-contract loop id."),
+    loop_id: str = typer.Option(
+        ..., "--loop-id", help="Reviewed design-contract loop id."
+    ),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed design-contract input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm design-contract close."),
     closed_by: str = typer.Option(
         "local-user",
@@ -273,6 +296,13 @@ def design_contract_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    _require_review_close_guard(
+        root,
+        loop_type="design-contract",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+    )
     result = close_design_contract_loop(
         DesignContractCloseOptions(
             root=root,
@@ -374,7 +404,14 @@ def implementation_status(
 
 @implementation_app.command(name="close")
 def implementation_close(
-    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
+    loop_id: str = typer.Option(
+        ..., "--loop-id", help="Reviewed implementation loop id."
+    ),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed implementation input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm implementation close."),
     closed_by: str = typer.Option(
         "local-user",
@@ -387,6 +424,13 @@ def implementation_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    _require_review_close_guard(
+        root,
+        loop_type="implementation",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+    )
     result = close_implementation_loop(
         ImplementationCloseOptions(
             root=root,
@@ -535,7 +579,14 @@ def frontend_evidence_status(
 
 @frontend_evidence_app.command(name="close")
 def frontend_evidence_close(
-    loop_id: str = typer.Option("", "--loop-id", help="Frontend-evidence loop id."),
+    loop_id: str = typer.Option(
+        ..., "--loop-id", help="Reviewed frontend-evidence loop id."
+    ),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed frontend-evidence input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm frontend evidence close."),
     allow_warnings: bool = typer.Option(
         False,
@@ -553,6 +604,13 @@ def frontend_evidence_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    _require_review_close_guard(
+        root,
+        loop_type="frontend-evidence",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+    )
     result = close_frontend_evidence_loop(
         FrontendEvidenceCloseOptions(
             root=root,
@@ -564,6 +622,26 @@ def frontend_evidence_close(
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
+
+
+def _require_review_close_guard(
+    root: Path,
+    *,
+    loop_type: str,
+    loop_id: str,
+    expected_digest: str,
+    json_output: bool,
+) -> None:
+    try:
+        validate_review_input_for_close(
+            root,
+            loop_type=loop_type,
+            loop_id=loop_id,
+            expected_digest=expected_digest,
+        )
+    except ReviewInputGuardError as exc:
+        _emit_payload(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
 
 
 def _project_root_or_exit(*, json_output: bool = False) -> Path:

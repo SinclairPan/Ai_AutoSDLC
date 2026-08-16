@@ -328,7 +328,10 @@ def test_start_implementation_loop_blocks_unclosed_design_contract(
 
     assert result.status == "blocked"
     assert "must be closed" in result.blocker
-    assert result.next_action == "Run ai-sdlc loop design-contract close --yes."
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type design-contract "
+        "--loop-id dc-demo-implementation-loop."
+    )
 
 
 def test_start_implementation_loop_blocks_cross_loop_design_artifacts(

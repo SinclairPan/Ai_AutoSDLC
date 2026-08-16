@@ -138,7 +138,8 @@ def start_frontend_evidence_loop(
             implementation_blocker,
             loop_id=loop_id,
             next_action=(
-                f"Run ai-sdlc loop implementation close --yes for {work_item_dir.name}."
+                "Run ai-sdlc loop review --type implementation "
+                f"--loop-id {implementation_loop_id or '<implementation-loop-id>'}."
             ),
             artifacts=planned_refs,
         )
@@ -376,7 +377,8 @@ def skip_frontend_evidence_loop(
             implementation_blocker,
             loop_id=loop_id,
             next_action=(
-                f"Run ai-sdlc loop implementation close --yes for {work_item_dir.name}."
+                "Run ai-sdlc loop review --type implementation "
+                f"--loop-id {implementation_loop_id or '<implementation-loop-id>'}."
             ),
             artifacts=planned_refs,
         )
@@ -513,7 +515,7 @@ def close_frontend_evidence_loop(
         return _blocked_result(
             "Pass --yes after confirming frontend evidence.",
             result="Frontend evidence close requires explicit confirmation.",
-            next_action="Run ai-sdlc loop frontend-evidence close --yes.",
+            next_action="Repeat the same guarded frontend-evidence close command with --yes.",
         )
     try:
         loop_run = read_loop_run(loop_run_path)
@@ -561,7 +563,10 @@ def close_frontend_evidence_loop(
             result="Frontend evidence warnings require explicit confirmation.",
             status=FrontendEvidenceCommandStatus.NEEDS_USER,
             blocker="Pass --allow-warnings to close with advisory warnings recorded.",
-            next_action="Run ai-sdlc loop frontend-evidence close --yes --allow-warnings.",
+            next_action=(
+                "Repeat the same guarded frontend-evidence close command with "
+                "--yes --allow-warnings."
+            ),
         )
     return _write_close(
         root,
@@ -646,9 +651,7 @@ def _implementation_gate_state_issue(
             f"work item is {work_item_id}."
         )
     if not report.requires_frontend_evidence:
-        return (
-            f"Implementation loop {loop_run.loop_id} does not require frontend evidence."
-        )
+        return f"Implementation loop {loop_run.loop_id} does not require frontend evidence."
     return ""
 
 
@@ -1482,12 +1485,9 @@ def _next_action_for_status(
     loop_id: str,
 ) -> str:
     if status == LoopStatus.NEEDS_REVIEW:
-        return (
-            "Run ai-sdlc loop review --type frontend-evidence "
-            f"--loop-id {loop_id}."
-        )
+        return f"Run ai-sdlc loop review --type frontend-evidence --loop-id {loop_id}."
     if status == LoopStatus.NEEDS_USER:
-        return "Run ai-sdlc loop frontend-evidence close --yes --allow-warnings."
+        return f"Run ai-sdlc loop review --type frontend-evidence --loop-id {loop_id}."
     if status == LoopStatus.NEEDS_FIX:
         return "Run ai-sdlc program browser-gate-probe --execute."
     return f"Fix frontend evidence blockers, then run ai-sdlc loop frontend-evidence start --wi {work_item_path}."
@@ -1609,9 +1609,7 @@ def _write_frontend_close(
         ),
         skipped=skipped,
         skip_reason=skip_reason,
-        skip_risk_acknowledgement=(
-            _FRONTEND_EVIDENCE_SKIP_RISK if skipped else ""
-        ),
+        skip_risk_acknowledgement=(_FRONTEND_EVIDENCE_SKIP_RISK if skipped else ""),
     )
     loop_run.status = LoopStatus.CLOSED
     loop_run.updated_at = utc_now_iso()
@@ -1859,12 +1857,18 @@ def _next_guidance_for_result(
         )
     if report.status == LoopStatus.NEEDS_USER:
         return FrontendEvidenceNextGuidance(
-            command="ai-sdlc loop frontend-evidence close --yes --allow-warnings",
-            reason="Browser gate evidence passed with advisory warnings that must be explicitly recorded.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type frontend-evidence "
+                f"--loop-id {report.loop_id}"
+            ),
+            reason=(
+                "Browser gate evidence has advisory warnings; bounded review must "
+                "bind the input before warnings can be accepted during close."
+            ),
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety="needs_user",
+            safety="safe_read_only",
             evidence=evidence,
         )
     if report.status == LoopStatus.NEEDS_FIX:

@@ -163,7 +163,8 @@ ai-sdlc pr-review start --diff-source local-git-range --base main --head HEAD --
 ai-sdlc pr-review status
 ai-sdlc pr-review fix
 ai-sdlc pr-review rerun
-ai-sdlc pr-review close
+ai-sdlc loop review --type local-pr-review --loop-id <loop-id> --json
+ai-sdlc pr-review close --review-id <review-id> --loop-id <loop-id> --expect-review-digest <input_digest>
 ```
 
 Local PR Review 在 close 前由独立的本地只读代理检查 Review Pack、findings、修复结果和当前 Git 变更。若代理执行失败或发现仍未解决，审查保持未关闭；通过后直接生成普通最终报告。该流程不生成 CI 证书、attestation、authority pointer 或持久化专家会话。
