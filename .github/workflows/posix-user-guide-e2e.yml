@@ -6,7 +6,7 @@ on:
       tag:
         description: Published release tag described by the user guide.
         required: true
-        default: "v1.0.2"
+        default: "v2.0.0"
   pull_request:
     paths:
       - "src/**"
@@ -45,7 +45,7 @@ jobs:
             runner: ubuntu-latest
             project_shell: bash
     env:
-      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v1.0.5' || inputs.tag }}
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v2.0.0' || inputs.tag }}
       ASSET_OS: ${{ matrix.asset_os }}
       ASSET_MACHINE: ${{ matrix.asset_machine }}
       PROJECT_SHELL: ${{ matrix.project_shell }}

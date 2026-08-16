@@ -210,7 +210,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v1.0.5" in workflow
+    assert "default: v2.0.0" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -273,7 +273,7 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v1.0.5" in workflow
+    assert "default: v2.0.0" in workflow
     assert "ref: ${{ inputs.tag }}" in workflow
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert all(
@@ -292,6 +292,19 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     assert "release-certificate" not in workflow
     assert "terminal-generation-burn" not in workflow
     assert "actions/attest" not in workflow
+    parsed = yaml.safe_load(workflow)
+    assert parsed["permissions"] == {"contents": "read"}
+    build_job = parsed["jobs"]["build-smoke"]
+    upload_job = parsed["jobs"]["upload-release-assets"]
+    assert build_job["permissions"] == {"contents": "read"}
+    assert "GH_TOKEN" not in build_job.get("env", {})
+    checkout = next(
+        step for step in build_job["steps"] if step.get("name") == "Checkout"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert upload_job["permissions"] == {"contents": "write"}
+    assert upload_job["needs"] == "build-smoke"
+    assert not any("actions/checkout" in step.get("uses", "") for step in upload_job["steps"])
 
 
 def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
@@ -301,12 +314,12 @@ def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
     workflow = yaml.safe_load(
         (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
     )
-    steps = workflow["jobs"]["build-smoke-upload"]["steps"]
+    steps = workflow["jobs"]["upload-release-assets"]["steps"]
     upload_script = next(
         step["run"]
         for step in steps
-        if step.get("name") == "Upload smoke-passed asset to release"
-    ).replace("${{ matrix.archive }}", "tar.gz")
+        if step.get("name") == "Upload smoke-passed assets to release"
+    )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
@@ -352,18 +365,28 @@ fi
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz"
+    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz"
     asset.parent.mkdir()
     asset.write_bytes(b"archive")
     sidecar = Path(f"{asset}.sha256")
     sidecar.write_text("digest  archive\n", encoding="utf-8")
+    other_assets = []
+    for name in (
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256",
+    ):
+        path = asset.parent / name
+        path.write_bytes(name.encode("utf-8"))
+        other_assets.append(path)
     remote_assets = tmp_path / "remote-assets"
     remote_assets.mkdir()
     log_path = tmp_path / "gh.log"
     base_env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "RELEASE_TAG": "v1.0.5",
+        "RELEASE_TAG": "v2.0.0",
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
         "AI_SDLC_RELEASE_ASSET_OS": "linux",
         "AI_SDLC_RELEASE_ASSET_MACHINE": "amd64",
@@ -425,13 +448,18 @@ fi
     transitioned_upload = log_path.exists()
     log_path.unlink(missing_ok=True)
     (remote_assets / sidecar.name).write_bytes(sidecar.read_bytes())
+    for other_asset in other_assets:
+        (remote_assets / other_asset.name).write_bytes(other_asset.read_bytes())
+    complete_asset_names = "\n".join(
+        [asset.name, sidecar.name, *(item.name for item in other_assets)]
+    )
     complete = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
         env={
             **base_env,
             "FAKE_RELEASE_IS_DRAFT": "true",
-            "FAKE_RELEASE_ASSETS": f"{asset.name}\n{sidecar.name}",
+            "FAKE_RELEASE_ASSETS": complete_asset_names,
         },
         text=True,
         capture_output=True,
@@ -473,14 +501,14 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v1.0.2" in workflow
+    assert "default: v2.0.0" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "v1.0.5" in workflow
+    assert "v2.0.0" in workflow
     assert "ai-sdlc-offline-$releaseVersion-windows-amd64" in workflow
     assert "releases/download/$env:RELEASE_TAG" in workflow
     assert "Invoke-WebRequest" in workflow
@@ -521,8 +549,8 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v1.0.2"' in workflow
-    assert "v1.0.5" in workflow
+    assert 'default: "v2.0.0"' in workflow
+    assert "v2.0.0" in workflow
     for path_filter in (
         '      - "src/**"',
         '      - "pyproject.toml"',

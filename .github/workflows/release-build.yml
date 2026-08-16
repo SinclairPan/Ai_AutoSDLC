@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag that will receive the platform assets.
         required: true
-        default: v1.0.5
+        default: v2.0.0
       upload_to_release:
         description: Upload smoke-passed assets to the existing GitHub Release.
         required: true
@@ -17,17 +17,19 @@ on:
           - "false"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-build-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  build-smoke-upload:
+  build-smoke:
     name: ${{ matrix.asset_os }} ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +49,6 @@ jobs:
 
     env:
       RELEASE_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
 
@@ -57,6 +58,7 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate exact release tag source
         shell: bash
@@ -326,20 +328,44 @@ jobs:
           path: ${{ runner.temp }}/ai-sdlc-release-build-evidence
           if-no-files-found: error
 
-      - name: Upload smoke-passed asset to release
+      - name: Stage smoke-passed release assets
         if: inputs.upload_to_release == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-${{ matrix.asset_os }}-${{ matrix.archive }}
+          path: |
+            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.*
+          if-no-files-found: error
+
+  upload-release-assets:
+    name: Upload smoke-passed release assets
+    if: inputs.upload_to_release == 'true'
+    needs: build-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download smoke-passed release assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-assets-*
+          path: dist-offline
+          merge-multiple: true
+
+      - name: Upload smoke-passed assets to release
         shell: bash
         run: |
           set -euo pipefail
-          release_version="${RELEASE_TAG#v}"
-          asset_base="dist-offline/ai-sdlc-offline-${release_version}-${AI_SDLC_RELEASE_ASSET_OS}-${AI_SDLC_RELEASE_ASSET_MACHINE}"
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            asset="${asset_base}.zip"
-          else
-            asset="${asset_base}.tar.gz"
-          fi
-          if [[ ! -f "${asset}" || ! -f "${asset}.sha256" ]]; then
-            echo "Release asset or SHA256 sidecar is missing: ${asset}" >&2
+          local_paths=()
+          while IFS= read -r local_path; do
+            local_paths+=("${local_path}")
+          done < <(find dist-offline -maxdepth 1 -type f -name 'ai-sdlc-offline-*' -print | sort)
+          if [[ "${#local_paths[@]}" -ne 6 ]]; then
+            printf 'Expected exactly six release files, found %s.\n' "${#local_paths[@]}" >&2
             exit 1
           fi
           release_is_draft="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')"
@@ -347,15 +373,13 @@ jobs:
             echo "Release ${RELEASE_TAG} is not a draft; refusing to upload or replace assets." >&2
             exit 1
           fi
-          asset_name="$(basename "${asset}")"
-          sidecar_name="$(basename "${asset}.sha256")"
           existing_asset_names="$(
             gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name'
           )"
           download_dir="$(mktemp -d)"
           trap 'rm -rf -- "${download_dir}"' EXIT
           upload_paths=()
-          for local_path in "${asset}" "${asset}.sha256"; do
+          for local_path in "${local_paths[@]}"; do
             local_name="$(basename "${local_path}")"
             exists="false"
             while IFS= read -r existing_name; do

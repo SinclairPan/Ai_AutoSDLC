@@ -151,6 +151,9 @@ README_REL = Path("README.md")
 USER_GUIDE_REL = Path("USER_GUIDE.zh-CN.md")
 AGENTS_REL = Path("AGENTS.md")
 OFFLINE_README_REL = Path("packaging") / "offline" / "README.md"
+ONLINE_INSTALL_PS_REL = Path("packaging") / "install_online.ps1"
+ONLINE_INSTALL_SH_REL = Path("packaging") / "install_online.sh"
+V2_MIGRATION_REL = Path("docs") / "v2-migration.zh-CN.md"
 PYPROJECT_REL = Path("pyproject.toml")
 PACKAGE_INIT_REL = Path("src") / "ai_sdlc" / "__init__.py"
 RELEASE_BUILD_WORKFLOW_REL = Path(".github") / "workflows" / "release-build.yml"
@@ -252,27 +255,27 @@ RECONCILE_SMOKE_CONTRACT_SURFACES: dict[Path, tuple[str, ...]] = {
 }
 RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     README_REL: (
-        "# AI-SDLC 1.0.5",
+        "# AI-SDLC 2.0.0",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.2",
-        "git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
-        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0",
+        "git clone --branch v2.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
         "ai-sdlc init . --agent-target codex --shell powershell",
         "uv run python scripts/validate_public_release_identity.py .",
     ),
     USER_GUIDE_REL: (
-        "# AI-SDLC 1.0.2 中文用户指南",
+        "# AI-SDLC 2.0.0 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "Windows",
         "macOS",
         "Linux",
-        "ai-sdlc-offline-1.0.2-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
         "-AddToPath",
         "--add-to-path",
         "ai-sdlc init .",
@@ -281,17 +284,30 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "下一步 / Next",
     ),
     OFFLINE_README_REL: (
-        "# AI-SDLC 1.0.5 离线打包说明",
+        "# AI-SDLC 2.0.0 离线打包说明",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
-        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
+        "git clone --branch v2.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
         "SHA256SUMS",
         ".sha256",
         "-AddToPath",
         "--add-to-path",
         "verify_offline_bundle.py",
+    ),
+    ONLINE_INSTALL_PS_REL: (
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0",
+    ),
+    ONLINE_INSTALL_SH_REL: (
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0",
+    ),
+    V2_MIGRATION_REL: (
+        "v1.0.2",
+        "v2.0.0",
+        "Local PR Review",
+        "代码精简分析只给出建议",
+        "最多两名只读专家",
     ),
     RELEASE_POLICY_REL: (
         "README.md",
@@ -299,9 +315,9 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "packaging/offline/README.md",
         "docs/pull-request-checklist.zh.md",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "ai-sdlc-offline-1.0.5-windows-amd64.zip",
-        "ai-sdlc-offline-1.0.5-macos-arm64.tar.gz",
-        "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
         "SHA256SUMS",
         ".sha256",
     ),
@@ -309,11 +325,11 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
         "README.md",
         "USER_GUIDE.zh-CN.md",
         "packaging/offline/README.md",
-        "1.0.5",
+        "2.0.0",
         "python scripts/validate_public_release_identity.py .",
     ),
-    RELEASE_BUILD_WORKFLOW_REL: ("default: v1.0.5",),
-    RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v1.0.5",),
+    RELEASE_BUILD_WORKFLOW_REL: ("default: v2.0.0",),
+    RELEASE_ARTIFACT_SMOKE_WORKFLOW_REL: ("default: v2.0.0",),
     WINDOWS_OFFLINE_SMOKE_WORKFLOW_REL: (
         "build_offline_bundle.sh",
         "install_offline.ps1 -AddToPath",
@@ -322,7 +338,7 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     ),
 }
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
-    "# AI-SDLC 1.0.2 中文用户指南",
+    "# AI-SDLC 2.0.0 中文用户指南",
     "## 第一章：全新用户 + 全新空项目",
     "## 第二章：全新用户 + 已有项目",
     "### 1.1 Windows",
@@ -331,9 +347,9 @@ BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "### 1.4 选择 AI 适配器和 Shell",
     "### 2.4 选择 AI 适配器和 Shell",
     "## 异常情况速查",
-    "ai-sdlc-offline-1.0.2-windows-amd64.zip",
-    "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
-    "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
+    "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+    "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+    "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
     "Get-FileHash -Algorithm SHA256",
     "shasum -a 256 -c",
     "sha256sum -c",
@@ -366,6 +382,7 @@ BEGINNER_GUIDE_FORBIDDEN_TOKENS = (
     "git clone --branch",
     "开发版",
     "Codex + PowerShell 为默认组合",
+    "releases/download/v1.0.2/",
     "releases/download/v1.0.4/",
     "releases/download/v1.0.5/",
 )
@@ -4491,7 +4508,7 @@ def _package_init_fallback_version(root: Path) -> str | None:
 
 
 def _release_version_truth_blockers(root: Path) -> list[str]:
-    expected_version = "1.0.5"
+    expected_version = "2.0.0"
     blockers: list[str] = []
     pyproject_version = _pyproject_version(root)
     if pyproject_version and pyproject_version != expected_version:

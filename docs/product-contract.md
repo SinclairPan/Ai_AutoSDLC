@@ -1,4 +1,4 @@
-# AI-SDLC 1.0.5 产品能力契约
+# AI-SDLC 2.0.0 产品能力契约
 
 ## 产品定位
 
@@ -70,10 +70,11 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 
 ## 当前源码与公开版本
 
-- Python 源码版本：`1.0.5`；
+- Python 源码版本：`2.0.0`；
 - Git 仓库：`https://github.com/SinclairPan/Ai_AutoSDLC`；
-- 当前公开稳定版本：`v1.0.2`，其安装与校验入口见 `USER_GUIDE.zh-CN.md`；
-- `ai-sdlc-offline-1.0.5-windows-amd64.zip`、`ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`、`ai-sdlc-offline-1.0.5-linux-amd64.tar.gz` 是当前源码的候选产物名；
+- 当前公开稳定版本：`v2.0.0`，其安装与校验入口见 `USER_GUIDE.zh-CN.md`；
+- `ai-sdlc-offline-2.0.0-windows-amd64.zip`、`ai-sdlc-offline-2.0.0-macos-arm64.tar.gz`、`ai-sdlc-offline-2.0.0-linux-amd64.tar.gz` 是正式离线产物名；
+- `v2.0.0` 删除了 `v1.0.2` 中已公开但已退出产品边界的命令；升级说明见 `docs/v2-migration.zh-CN.md`；
 - 新版本只通过普通 GitHub Release、tag、跨平台 smoke 和分支保护发布，不建立 Release Proof、Certificate、attestation、generation burn 或额外 authority/store。
 
 ## 验收接口

@@ -1,6 +1,6 @@
 param(
   [string]$VenvPath = ".venv",
-  [string]$PackageSpec = "ai-sdlc==1.0.2",
+  [string]$PackageSpec = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0",
   [switch]$AddToPath
 )
 
