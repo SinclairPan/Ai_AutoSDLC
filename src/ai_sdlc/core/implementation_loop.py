@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 import stat
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -99,6 +102,89 @@ _INDENTED_LIST_ITEM = re.compile(r"^\s{2,}-\s+(.+?)\s*$")
 _FRONTEND_SIGNAL = re.compile(
     r"(?i)(\b(?:frontend|browser|playwright|vue|react|ui|css)\b|前端|浏览器|页面|组件)"
 )
+
+
+class _ImplementationWriteLockError(RuntimeError):
+    """实现循环写操作无法取得互斥锁。"""
+
+
+@contextmanager
+def _implementation_write_guard(root: Path, loop_id: str) -> Iterator[None]:
+    """跨进程串行化同一实现循环的读取、校验与写入。"""
+
+    lock_dir = root / ".ai-sdlc" / "locks"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock_name = hashlib.sha256(loop_id.encode("utf-8")).hexdigest()
+    lock_path = lock_dir / f"implementation-{lock_name}.lock"
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    file_descriptor = -1
+    try:
+        file_descriptor = os.open(lock_path, flags, 0o600)
+        _acquire_implementation_file_lock(file_descriptor)
+    except OSError as exc:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        raise _ImplementationWriteLockError(
+            f"Implementation loop write lock is unavailable: {loop_id}."
+        ) from exc
+    try:
+        yield
+    finally:
+        _release_implementation_file_lock(file_descriptor)
+        os.close(file_descriptor)
+
+
+def _acquire_implementation_file_lock(file_descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - Windows CI exercises this branch
+        import msvcrt
+
+        if os.fstat(file_descriptor).st_size == 0:
+            os.write(file_descriptor, b"\0")
+        os.lseek(file_descriptor, 0, os.SEEK_SET)
+        msvcrt.__dict__["locking"](
+            file_descriptor,
+            msvcrt.__dict__["LK_LOCK"],
+            1,
+        )
+        return
+
+    import fcntl
+
+    fcntl.flock(file_descriptor, fcntl.LOCK_EX)
+
+
+def _release_implementation_file_lock(file_descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - Windows CI exercises this branch
+        import msvcrt
+
+        os.lseek(file_descriptor, 0, os.SEEK_SET)
+        msvcrt.__dict__["locking"](
+            file_descriptor,
+            msvcrt.__dict__["LK_UNLCK"],
+            1,
+        )
+        return
+
+    import fcntl
+
+    fcntl.flock(file_descriptor, fcntl.LOCK_UN)
+
+
+def _implementation_write_loop_id(root: Path, requested_loop_id: str) -> str:
+    requested = requested_loop_id.strip()
+    if requested:
+        validate_explicit_loop_id(requested)
+        return requested
+    loop_run_path, blocker = resolve_implementation_loop_run_path(root, "")
+    if blocker:
+        raise ValueError(blocker)
+    if not loop_run_path.is_file():
+        raise ValueError("Implementation loop-run.json does not exist.")
+    loop_run = read_loop_run(loop_run_path)
+    validate_explicit_loop_id(loop_run.loop_id)
+    return loop_run.loop_id
 
 
 def start_implementation_loop(
@@ -218,6 +304,23 @@ def record_implementation_progress(
     """Record local implementation progress for one task."""
 
     root = options.root.resolve()
+    try:
+        loop_id = _implementation_write_loop_id(root, options.loop_id)
+    except ValueError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+    try:
+        with _implementation_write_guard(root, loop_id):
+            return _record_implementation_progress_locked(
+                replace(options, loop_id=loop_id)
+            )
+    except _ImplementationWriteLockError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+
+
+def _record_implementation_progress_locked(
+    options: ImplementationRecordOptions,
+) -> ImplementationCommandResult:
+    root = options.root.resolve()
     loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
         root,
         options.loop_id,
@@ -333,6 +436,28 @@ def close_implementation_loop(
             result="Implementation close requires explicit confirmation.",
             next_action="Repeat the same guarded implementation close command with --yes.",
         )
+    try:
+        loop_id = _implementation_write_loop_id(root, options.loop_id)
+    except ValueError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+    try:
+        with _implementation_write_guard(root, loop_id):
+            return _close_implementation_loop_locked(
+                replace(options, loop_id=loop_id),
+                review_input_validator=review_input_validator,
+                reviewed_artifacts=reviewed_artifacts,
+            )
+    except _ImplementationWriteLockError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+
+
+def _close_implementation_loop_locked(
+    options: ImplementationCloseOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> ImplementationCommandResult:
+    root = options.root.resolve()
     expected_loop_id = options.loop_id.strip()
     if reviewed_artifacts is None:
         loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(

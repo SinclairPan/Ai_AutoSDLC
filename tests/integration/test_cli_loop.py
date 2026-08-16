@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1625,6 +1626,7 @@ def test_loop_implementation_failed_close_persists_reviewed_decision(
 
 def test_loop_implementation_close_does_not_overwrite_newer_progress(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_design_contract_work_item(tmp_path)
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
@@ -1675,12 +1677,21 @@ def test_loop_implementation_close_does_not_overwrite_newer_progress(
         loop_id="impl-concurrent",
     )
     validation_count = 0
+    worker: threading.Thread | None = None
+    worker_reached_write = threading.Event()
+    allow_worker_write = threading.Event()
+    worker_finished = threading.Event()
+    worker_errors: list[BaseException] = []
+    original_write_artifacts = implementation_loop._write_artifacts
 
-    def validate_then_complete(*args, **kwargs):
-        nonlocal validation_count
-        validation_count += 1
-        result = validate_review_input_for_close(*args, **kwargs)
-        if validation_count == 1:
+    def coordinated_write(*args, **kwargs):
+        if threading.current_thread() is worker:
+            worker_reached_write.set()
+            assert allow_worker_write.wait(timeout=5)
+        return original_write_artifacts(*args, **kwargs)
+
+    def complete_task() -> None:
+        try:
             recorded = record_implementation_progress(
                 ImplementationRecordOptions(
                     root=tmp_path,
@@ -1691,8 +1702,29 @@ def test_loop_implementation_close_does_not_overwrite_newer_progress(
                 )
             )
             assert recorded.status == "ready"
+        except BaseException as exc:
+            worker_errors.append(exc)
+        finally:
+            worker_finished.set()
+
+    def validate_then_complete(*args, **kwargs):
+        nonlocal validation_count, worker
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 2:
+            worker = threading.Thread(target=complete_task)
+            worker.start()
+            reached_before_close_write = worker_reached_write.wait(timeout=0.25)
+            allow_worker_write.set()
+            if reached_before_close_write:
+                assert worker_finished.wait(timeout=5)
         return result
 
+    monkeypatch.setattr(
+        implementation_loop,
+        "_write_artifacts",
+        coordinated_write,
+    )
     with (
         patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
         patch(
@@ -1715,6 +1747,10 @@ def test_loop_implementation_close_does_not_overwrite_newer_progress(
             ],
         )
 
+    assert worker is not None
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert worker_errors == []
     progress_path = (
         tmp_path
         / ".ai-sdlc"
