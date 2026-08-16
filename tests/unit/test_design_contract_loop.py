@@ -2118,7 +2118,15 @@ def test_close_design_contract_loop_revalidates_docs_before_partial_recovery(
     assert recovered.closed is False
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
     persisted_run = json.loads((loop_dir / "loop-run.json").read_text("utf-8"))
-    assert persisted_run["status"] != "closed"
+    persisted_report = json.loads(
+        (loop_dir / "design-contract-report.json").read_text(encoding="utf-8")
+    )
+    assert persisted_run["status"] == "needs_fix"
+    assert persisted_report["status"] == "needs_fix"
+    assert "task_verification_gap" in {
+        finding["code"] for finding in persisted_report["findings"]
+    }
+    assert (loop_dir / "design-contract-close.json").is_file()
 
 
 def test_close_design_contract_loop_revalidates_changed_docs(
