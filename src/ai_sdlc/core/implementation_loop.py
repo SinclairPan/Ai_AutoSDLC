@@ -153,7 +153,11 @@ def _implementation_lock_dir(root: Path) -> Path:
             if not git_dir.is_absolute():
                 git_dir = root / git_dir
             return git_dir.resolve() / "ai-sdlc-locks"
-    return Path(tempfile.gettempdir()) / "ai-sdlc-loop-locks"
+    if hasattr(os, "getuid"):
+        user_key = str(os.getuid())
+    else:  # pragma: no cover - Windows temp directories are already user-scoped
+        user_key = hashlib.sha256(str(Path.home()).encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"ai-sdlc-loop-locks-{user_key}"
 
 
 def _acquire_implementation_file_lock(file_descriptor: int) -> None:

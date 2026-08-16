@@ -37,6 +37,32 @@ from ai_sdlc.core.requirement_loop import (
 )
 
 
+def test_non_git_implementation_lock_dir_is_user_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        implementation_loop_module.tempfile,
+        "gettempdir",
+        lambda: str(tmp_path / "shared-temp"),
+    )
+    monkeypatch.setattr(
+        implementation_loop_module.os,
+        "getuid",
+        lambda: 1001,
+        raising=False,
+    )
+    first = implementation_loop_module._implementation_lock_dir(project)
+    monkeypatch.setattr(implementation_loop_module.os, "getuid", lambda: 1002)
+    second = implementation_loop_module._implementation_lock_dir(project)
+
+    assert first.name == "ai-sdlc-loop-locks-1001"
+    assert second.name == "ai-sdlc-loop-locks-1002"
+    assert first != second
+
+
 def test_start_implementation_loop_writes_artifacts(tmp_path: Path) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
