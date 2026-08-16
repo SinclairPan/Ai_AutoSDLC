@@ -11,6 +11,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from click import Command, Group, Option
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from ai_sdlc.cli.loop_review_cmd import resolve_review_input
@@ -530,11 +532,19 @@ def test_close_commands_require_reviewed_identity_and_digest(
     command: list[str],
     required_options: tuple[str, ...],
 ) -> None:
-    result = runner.invoke(app, [*command, "--help"])
+    command_model: Command = get_command(app)
+    for command_name in command:
+        assert isinstance(command_model, Group)
+        command_model = command_model.commands[command_name]
 
-    assert result.exit_code == 0, result.output
+    declared_options = {
+        option
+        for parameter in command_model.params
+        if isinstance(parameter, Option)
+        for option in parameter.opts
+    }
     for option in required_options:
-        assert option in result.output
+        assert option in declared_options
 
 
 def test_close_rebuilds_review_input_and_blocks_digest_drift(tmp_path: Path) -> None:
