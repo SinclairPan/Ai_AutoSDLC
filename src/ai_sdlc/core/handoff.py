@@ -9,6 +9,7 @@ from pathlib import Path
 
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.context.state import (
+    CHECKPOINT_PATH,
     ResumePackError,
     active_work_item_id,
     build_resume_pack,
@@ -142,6 +143,9 @@ def check_handoff(
 
 
 def _refresh_resume_pack_summary(root: Path, summary: str) -> None:
+    if not (root / CHECKPOINT_PATH).exists():
+        return
+
     pack = None
     try:
         pack = load_resume_pack(root)

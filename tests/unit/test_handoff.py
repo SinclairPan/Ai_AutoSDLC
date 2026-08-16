@@ -76,6 +76,48 @@ def test_update_handoff_writes_canonical_scoped_copy_and_resume_summary(
     assert "Add continuity handoff runtime" in result.summary
 
 
+def test_update_handoff_without_checkpoint_writes_only_canonical(
+    tmp_path: Path,
+) -> None:
+    result = update_handoff(
+        tmp_path,
+        goal="Preserve work before initialization",
+        state="No checkpoint exists",
+        next_steps=["Initialize when ready"],
+        reason="before project initialization",
+    )
+
+    canonical = tmp_path / HANDOFF_PATH
+    assert result.canonical_path == canonical
+    assert result.scoped_path is None
+    assert "Preserve work before initialization" in canonical.read_text(
+        encoding="utf-8"
+    )
+    assert not (tmp_path / ".ai-sdlc/state/checkpoint.yml").exists()
+    assert not (tmp_path / ".ai-sdlc/state/resume-pack.yaml").exists()
+    assert not (tmp_path / ".ai-sdlc/work-items").exists()
+
+
+def test_update_handoff_without_checkpoint_can_be_repeated(tmp_path: Path) -> None:
+    first = update_handoff(
+        tmp_path,
+        goal="First handoff",
+        state="Initial state",
+    )
+    second = update_handoff(
+        tmp_path,
+        goal="Second handoff",
+        state="Updated state",
+    )
+
+    assert first.canonical_path == second.canonical_path == tmp_path / HANDOFF_PATH
+    assert first.scoped_path is second.scoped_path is None
+    content = second.canonical_path.read_text(encoding="utf-8")
+    assert "Second handoff" in content
+    assert "Updated state" in content
+    assert "First handoff" not in content
+
+
 def test_check_handoff_reports_missing_ready_and_stale(tmp_path: Path) -> None:
     missing = check_handoff(tmp_path, max_age_minutes=20)
     assert missing.state == "missing"
