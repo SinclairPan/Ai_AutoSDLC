@@ -314,7 +314,13 @@ def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
         """#!/usr/bin/env bash
 set -euo pipefail
 if [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json isDraft"* ]]; then
-  printf '%s\n' "${FAKE_RELEASE_IS_DRAFT}"
+  if [[ -n "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE:-}" && -s "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE}" ]]; then
+    head -n 1 "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE}"
+    tail -n +2 "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE}" > "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE}.next"
+    mv "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE}.next" "${FAKE_RELEASE_DRAFT_SEQUENCE_FILE}"
+  else
+    printf '%s\n' "${FAKE_RELEASE_IS_DRAFT}"
+  fi
 elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json assets"* ]]; then
   printf '%s' "${FAKE_RELEASE_ASSETS}"
 elif [[ "$1" == "release" && "$2" == "download" ]]; then
@@ -346,11 +352,7 @@ fi
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    asset = (
-        tmp_path
-        / "dist-offline"
-        / "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz"
-    )
+    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz"
     asset.parent.mkdir()
     asset.write_bytes(b"archive")
     sidecar = Path(f"{asset}.sha256")
@@ -403,9 +405,24 @@ fi
         capture_output=True,
         check=False,
     )
-    partial_upload = (
-        log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    partial_upload = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    log_path.unlink(missing_ok=True)
+    draft_sequence = tmp_path / "draft-sequence.txt"
+    draft_sequence.write_text("true\nfalse\n", encoding="utf-8")
+    published_during_retry = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": asset.name,
+            "FAKE_RELEASE_DRAFT_SEQUENCE_FILE": str(draft_sequence),
+        },
+        text=True,
+        capture_output=True,
+        check=False,
     )
+    transitioned_upload = log_path.exists()
     log_path.unlink(missing_ok=True)
     (remote_assets / sidecar.name).write_bytes(sidecar.read_bytes())
     complete = subprocess.run(
@@ -436,6 +453,8 @@ fi
     partial_tokens = partial_upload.split()
     assert asset.relative_to(tmp_path).as_posix() not in partial_tokens
     assert sidecar.relative_to(tmp_path).as_posix() in partial_tokens
+    assert published_during_retry.returncode != 0
+    assert not transitioned_upload
     assert complete.returncode == 0, complete.stderr
     assert not complete_uploaded
     assert allowed.returncode == 0, allowed.stderr
@@ -806,8 +825,7 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
     assert "--ignore=tests/e2e/stage_review" not in workflow
     assert "--junitxml=ci-evidence/${CELL}/compatibility-results.xml" in workflow
     assert (
-        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
-        in workflow
+        "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a" in workflow
     )
     assert "if-no-files-found: error" in workflow
     assert "--maxfail" not in workflow
@@ -878,7 +896,9 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
 
     def failing_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
         failure_calls.append(command)
-        return subprocess.CompletedProcess(command, 17 if len(failure_calls) == 2 else 0)
+        return subprocess.CompletedProcess(
+            command, 17 if len(failure_calls) == 2 else 0
+        )
 
     failure = sentinel["run_snapshot_control_sentinel"](failing_runner)
     assert failure["success"] is False
@@ -889,7 +909,9 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
     assert [attempt["returncode"] for attempt in failure["attempts"]] == [0, 17]
 
     cli_success_output = tmp_path / "nested" / "success.json"
-    assert sentinel["main"](["--output", str(cli_success_output)], successful_runner) == 0
+    assert (
+        sentinel["main"](["--output", str(cli_success_output)], successful_runner) == 0
+    )
     cli_success_text = cli_success_output.read_text(encoding="utf-8")
     cli_success = json.loads(cli_success_text)
     assert cli_success_output.parent.is_dir()
@@ -911,10 +933,15 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
 
     def cli_failing_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
         cli_failure_calls.append(command)
-        return subprocess.CompletedProcess(command, 23 if len(cli_failure_calls) == 2 else 0)
+        return subprocess.CompletedProcess(
+            command, 23 if len(cli_failure_calls) == 2 else 0
+        )
 
     cli_failure_output = tmp_path / "nested" / "failure.json"
-    assert sentinel["main"](["--output", str(cli_failure_output)], cli_failing_runner) == 23
+    assert (
+        sentinel["main"](["--output", str(cli_failure_output)], cli_failing_runner)
+        == 23
+    )
     cli_failure = json.loads(cli_failure_output.read_text(encoding="utf-8"))
     assert cli_failure_calls == [expected_command, expected_command]
     assert cli_failure["success"] is False
@@ -927,7 +954,10 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
         raise OSError("secret-token=/private/ci/runner")
 
     runner_error_output = tmp_path / "nested" / "runner-error.json"
-    assert sentinel["main"](["--output", str(runner_error_output)], unavailable_runner) == 1
+    assert (
+        sentinel["main"](["--output", str(runner_error_output)], unavailable_runner)
+        == 1
+    )
     runner_error_text = runner_error_output.read_text(encoding="utf-8")
     runner_error = json.loads(runner_error_text)
     assert runner_error["success"] is False
@@ -954,11 +984,15 @@ def test_compatibility_gate_uses_candidate_artifacts_and_exact_results(
         "uv run python scripts/ci_snapshot_control_sentinel.py "
         "--output ci-evidence/${{ env.CELL }}/snapshot-control-sentinel.json"
     )
-    assert step_names.index("Run full pytest suite") < step_names.index(
-        "Run fixed SnapshotControl stability sentinel"
-    ) < step_names.index("Record raw cell completion")
+    assert (
+        step_names.index("Run full pytest suite")
+        < step_names.index("Run fixed SnapshotControl stability sentinel")
+        < step_names.index("Record raw cell completion")
+    )
     evidence_upload = next(
-        step for step in matrix_steps if step.get("name") == "Upload compatibility evidence"
+        step
+        for step in matrix_steps
+        if step.get("name") == "Upload compatibility evidence"
     )
     assert evidence_upload["if"] == "always()"
 
@@ -1005,7 +1039,10 @@ def test_compatibility_gate_pull_request_executes_merge_commit() -> None:
         if str(step.get("uses", "")).startswith("actions/checkout@")
     ]
     assert checkout_steps
-    assert all(step["with"]["ref"] == f"${{{{ {merge_candidate_ref} }}}}" for step in checkout_steps)
+    assert all(
+        step["with"]["ref"] == f"${{{{ {merge_candidate_ref} }}}}"
+        for step in checkout_steps
+    )
     assert "github.event.pull_request.head.sha" not in workflow_text
 
 
@@ -1031,9 +1068,7 @@ def test_github_workflows_use_node24_compatible_core_actions() -> None:
                 f"{workflow_path.relative_to(_REPO_ROOT)} still uses {legacy_action}"
             )
 
-    release_build = (_WORKFLOWS_DIR / "release-build.yml").read_text(
-        encoding="utf-8"
-    )
+    release_build = (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
     assert "actions/checkout@v6" in release_build
     assert "actions/setup-python@v6" in release_build
     assert "astral-sh/setup-uv@v7" in release_build

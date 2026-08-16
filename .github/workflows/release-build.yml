@@ -375,5 +375,10 @@ jobs:
             fi
           done
           if (( ${#upload_paths[@]} > 0 )); then
+            release_is_draft="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')"
+            if [[ "${release_is_draft}" != "true" ]]; then
+              echo "Release ${RELEASE_TAG} is no longer a draft; refusing to upload assets." >&2
+              exit 1
+            fi
             gh release upload "${RELEASE_TAG}" "${upload_paths[@]}" --repo "${GITHUB_REPOSITORY}"
           fi

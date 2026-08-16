@@ -97,9 +97,7 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
         (loop_dir / filename).write_text(content, encoding="utf-8")
     expected_upstream = _write_predecessor_fixture(tmp_path, loop_type, loop_dir)
 
-    with patch(
-        "ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path
-    ):
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
         result = runner.invoke(
             app,
             [
@@ -220,7 +218,9 @@ def test_implementation_review_binds_generated_task_state(
     assert changed.input_digest != reviewed.input_digest
 
 
-def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path) -> None:
+def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
+    tmp_path: Path,
+) -> None:
     _init_git_repo(tmp_path)
     review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-001"
     review_dir.mkdir(parents=True)
@@ -266,9 +266,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     tracked.write_text("changed\n", encoding="utf-8")
     _git(tmp_path, "add", "tracked.txt")
 
-    with patch(
-        "ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path
-    ):
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
         result = runner.invoke(
             app,
             [
@@ -288,9 +286,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     assert "final-report.md" not in result.output
     assert any(item.startswith("git-head:") for item in payload["risk_signals"])
     assert any(item.startswith("git-index:") for item in payload["risk_signals"])
-    assert any(
-        item.startswith("git-index-flags:") for item in payload["risk_signals"]
-    )
+    assert any(item.startswith("git-index-flags:") for item in payload["risk_signals"])
     assert any(item.startswith("git-staged-diff:") for item in payload["risk_signals"])
     reviewed = resolve_review_input(
         tmp_path,
@@ -326,9 +322,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
             {
                 "review_id": "review-001",
                 "loop_id": "another-loop",
-                "review_run_path": (
-                    ".ai-sdlc/reviews/pr/review-001/review-run.json"
-                ),
+                "review_run_path": (".ai-sdlc/reviews/pr/review-001/review-run.json"),
             }
         ),
         encoding="utf-8",
@@ -346,9 +340,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     )
 
     diff.write_text("tampered diff\n", encoding="utf-8")
-    with patch(
-        "ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path
-    ):
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
         tampered = runner.invoke(
             app,
             [
@@ -368,9 +360,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(tmp_path: Path)
     digest = payload["input_digest"]
     tracked.write_text("changed again\n", encoding="utf-8")
     _git(tmp_path, "add", "tracked.txt")
-    with patch(
-        "ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path
-    ):
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
         drift = runner.invoke(
             app,
             [
@@ -768,8 +758,7 @@ def test_local_pr_review_accepts_external_absolute_patch_source(
     )
 
     assert any(
-        signal.startswith("git-selected-patch:")
-        for signal in reviewed.risk_signals
+        signal.startswith("git-selected-patch:") for signal in reviewed.risk_signals
     )
 
 
@@ -827,9 +816,7 @@ def test_stage_review_binds_recursive_predecessor_evidence(tmp_path: Path) -> No
     requirement_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "requirement" / "requirement-001"
     )
-    design_dir = (
-        tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
-    )
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
     implementation_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "implementation" / "implementation-001"
     )
@@ -937,7 +924,9 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
     source_dir.mkdir(parents=True)
     source = source_dir / "feature.py"
     source.write_text("VALUE = 1\n", encoding="utf-8")
-    gate_source = tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    gate_source = (
+        tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    )
     gate_source.parent.mkdir(parents=True)
     gate_source.write_text("gate_run_id: gate-1\n", encoding="utf-8")
     screenshot = (
@@ -1059,7 +1048,12 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         },
         "design-contract": {
             "loop_id": "design-001",
-            "expected": {"design-contract-input.json", "spec.md", "plan.md", "tasks.md"},
+            "expected": {
+                "design-contract-input.json",
+                "spec.md",
+                "plan.md",
+                "tasks.md",
+            },
             "mutate": work_item / "spec.md",
         },
         "implementation": {
@@ -1069,7 +1063,11 @@ def test_stage_review_binds_each_stage_source_material(tmp_path: Path) -> None:
         },
         "frontend-evidence": {
             "loop_id": "frontend-001",
-            "expected": {"frontend-evidence-input.json", "latest.yaml", "screenshot.png"},
+            "expected": {
+                "frontend-evidence-input.json",
+                "latest.yaml",
+                "screenshot.png",
+            },
             "mutate": screenshot,
         },
     }
@@ -1099,9 +1097,7 @@ def test_frontend_review_skips_large_binary_artifacts_before_risk_scan(
     tmp_path: Path,
 ) -> None:
     loop_id = "frontend-large-binary"
-    loop_dir = _write_stage_current_state(
-        tmp_path, "frontend-evidence", loop_id
-    )
+    loop_dir = _write_stage_current_state(tmp_path, "frontend-evidence", loop_id)
     _write_predecessor_fixture(tmp_path, "frontend-evidence", loop_dir)
     for filename in ("frontend-evidence-report.json", "frontend-evidence-report.md"):
         (loop_dir / filename).write_text("{}", encoding="utf-8")
@@ -1174,7 +1170,9 @@ def test_review_streams_large_text_artifacts_during_risk_scan(tmp_path: Path) ->
     assert peak < artifact_size // 2
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+@pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires extra privileges"
+)
 def test_stage_review_rejects_symlink_source_material(tmp_path: Path) -> None:
     work_item = tmp_path / "specs" / "demo"
     work_item.mkdir(parents=True)
@@ -1208,7 +1206,9 @@ def test_stage_review_rejects_symlink_source_material(tmp_path: Path) -> None:
         )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+@pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires extra privileges"
+)
 @pytest.mark.parametrize("link_kind", ["directory", "broken"])
 def test_implementation_review_rejects_nested_directory_symlinks(
     tmp_path: Path,
@@ -1255,7 +1255,9 @@ def test_implementation_review_rejects_nested_directory_symlinks(
         )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+@pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires extra privileges"
+)
 def test_stage_review_keeps_symlink_when_scope_also_matches_target(
     tmp_path: Path,
 ) -> None:
@@ -1304,7 +1306,9 @@ def test_stage_review_keeps_symlink_when_scope_also_matches_target(
         )
 
 
-def test_implementation_review_represents_deleted_declared_scope(tmp_path: Path) -> None:
+def test_implementation_review_represents_deleted_declared_scope(
+    tmp_path: Path,
+) -> None:
     design_dir = (
         tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-delete-001"
     )
@@ -1436,9 +1440,7 @@ def test_implementation_review_binds_repository_evidence_directories(
         "implementation-evidence-directory",
     )
     (loop_dir / "implementation-input.json").write_text(
-        json.dumps(
-            {"design_contract_loop_id": "design-001", "declared_scope": []}
-        ),
+        json.dumps({"design_contract_loop_id": "design-001", "declared_scope": []}),
         encoding="utf-8",
     )
     for filename in (
@@ -1455,11 +1457,7 @@ def test_implementation_review_binds_repository_evidence_directories(
     evidence_file.write_text("3470 passed\n", encoding="utf-8")
     (loop_dir / "verification-evidence.json").write_text(
         json.dumps(
-            {
-                "tasks": [
-                    {"evidence": [evidence_dir.relative_to(tmp_path).as_posix()]}
-                ]
-            }
+            {"tasks": [{"evidence": [evidence_dir.relative_to(tmp_path).as_posix()]}]}
         ),
         encoding="utf-8",
     )
@@ -1480,7 +1478,9 @@ def test_implementation_review_binds_repository_evidence_directories(
     assert changed.input_digest != reviewed.input_digest
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+@pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires extra privileges"
+)
 def test_implementation_review_rejects_nested_evidence_directory_symlink(
     tmp_path: Path,
 ) -> None:
@@ -1498,9 +1498,7 @@ def test_implementation_review_rejects_nested_evidence_directory_symlink(
         "implementation-evidence-directory-symlink",
     )
     (loop_dir / "implementation-input.json").write_text(
-        json.dumps(
-            {"design_contract_loop_id": "design-001", "declared_scope": []}
-        ),
+        json.dumps({"design_contract_loop_id": "design-001", "declared_scope": []}),
         encoding="utf-8",
     )
     for filename in (
@@ -1518,11 +1516,7 @@ def test_implementation_review_rejects_nested_evidence_directory_symlink(
     (evidence_dir / "escaped.log").symlink_to(external)
     (loop_dir / "verification-evidence.json").write_text(
         json.dumps(
-            {
-                "tasks": [
-                    {"evidence": [evidence_dir.relative_to(tmp_path).as_posix()]}
-                ]
-            }
+            {"tasks": [{"evidence": [evidence_dir.relative_to(tmp_path).as_posix()]}]}
         ),
         encoding="utf-8",
     )
@@ -1535,7 +1529,9 @@ def test_implementation_review_rejects_nested_evidence_directory_symlink(
         )
 
 
-@pytest.mark.skipif(os.name == "nt", reason="symlink creation requires extra privileges")
+@pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires extra privileges"
+)
 def test_implementation_review_rejects_escaped_evidence_symlink(
     tmp_path: Path,
 ) -> None:
@@ -1553,9 +1549,7 @@ def test_implementation_review_rejects_escaped_evidence_symlink(
         "implementation-evidence-symlink",
     )
     (loop_dir / "implementation-input.json").write_text(
-        json.dumps(
-            {"design_contract_loop_id": "design-001", "declared_scope": []}
-        ),
+        json.dumps({"design_contract_loop_id": "design-001", "declared_scope": []}),
         encoding="utf-8",
     )
     for filename in (
@@ -1573,11 +1567,7 @@ def test_implementation_review_rejects_escaped_evidence_symlink(
     evidence.symlink_to(external)
     (loop_dir / "verification-evidence.json").write_text(
         json.dumps(
-            {
-                "tasks": [
-                    {"evidence": [evidence.relative_to(tmp_path).as_posix()]}
-                ]
-            }
+            {"tasks": [{"evidence": [evidence.relative_to(tmp_path).as_posix()]}]}
         ),
         encoding="utf-8",
     )
@@ -1587,6 +1577,69 @@ def test_implementation_review_rejects_escaped_evidence_symlink(
             tmp_path,
             loop_type="implementation",
             loop_id="implementation-evidence-symlink",
+        )
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="symlink creation requires extra privileges"
+)
+def test_implementation_review_does_not_scan_through_ancestor_symlink(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    design_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / "design-001"
+    design_dir.mkdir(parents=True)
+    (design_dir / "design-contract-input.json").write_text(
+        json.dumps({"requirement_loop_id": ""}), encoding="utf-8"
+    )
+    for filename in ("design-contract-report.json", "design-contract-report.md"):
+        (design_dir / filename).write_text("{}", encoding="utf-8")
+
+    loop_dir = _write_stage_current_state(
+        tmp_path,
+        "implementation",
+        "implementation-evidence-ancestor-symlink",
+    )
+    (loop_dir / "implementation-input.json").write_text(
+        json.dumps({"design_contract_loop_id": "design-001", "declared_scope": []}),
+        encoding="utf-8",
+    )
+    for filename in (
+        "implementation-report.json",
+        "implementation-report.md",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ):
+        (loop_dir / filename).write_text("{}", encoding="utf-8")
+
+    external_dir = tmp_path.with_name(f"{tmp_path.name}-external-evidence")
+    external_dir.mkdir()
+    external = external_dir / "report.txt"
+    external.write_text("security secret from outside\n", encoding="utf-8")
+    linked_dir = tmp_path / "artifacts" / "linked-results"
+    linked_dir.parent.mkdir()
+    linked_dir.symlink_to(external_dir, target_is_directory=True)
+    evidence = linked_dir / external.name
+    (loop_dir / "verification-evidence.json").write_text(
+        json.dumps(
+            {"tasks": [{"evidence": [evidence.relative_to(tmp_path).as_posix()]}]}
+        ),
+        encoding="utf-8",
+    )
+    original_open = Path.open
+
+    def reject_external_read(path: Path, *args, **kwargs):
+        if path == evidence:
+            raise AssertionError("risk scan followed an ancestor symlink")
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", reject_external_read)
+
+    with pytest.raises(ValueError, match="symlink|not a regular file"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="implementation",
+            loop_id="implementation-evidence-ancestor-symlink",
         )
 
 
@@ -1658,9 +1711,7 @@ def _write_current_review_pointer(
             {
                 "review_id": review_id,
                 "loop_id": loop_id,
-                "review_run_path": (
-                    f".ai-sdlc/reviews/pr/{review_id}/review-run.json"
-                ),
+                "review_run_path": (f".ai-sdlc/reviews/pr/{review_id}/review-run.json"),
             }
         ),
         encoding="utf-8",
@@ -1672,13 +1723,7 @@ def _write_stage_current_pointer(
     loop_type: str,
     loop_id: str,
 ) -> Path:
-    pointer = (
-        root
-        / ".ai-sdlc"
-        / "loops"
-        / loop_type
-        / _STAGE_POINTER_NAMES[loop_type]
-    )
+    pointer = root / ".ai-sdlc" / "loops" / loop_type / _STAGE_POINTER_NAMES[loop_type]
     pointer.parent.mkdir(parents=True, exist_ok=True)
     pointer.write_text(
         json.dumps(

@@ -15,6 +15,7 @@ import typer
 
 from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review_input
 from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
+from ai_sdlc.core.stable_file_read import consume_stable_chunks
 from ai_sdlc.utils.helpers import find_project_root
 
 _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
@@ -69,9 +70,7 @@ _STAGE_POINTER_NAMES = {
 }
 _LOCAL_REQUIRED = ("review-pack.json", "findings.json")
 _LOCAL_OPTIONAL = ("resolution.yaml", "verification-evidence.json")
-_CURRENT_LOCAL_REVIEW = (
-    Path(".ai-sdlc") / "reviews" / "pr" / "current-review.json"
-)
+_CURRENT_LOCAL_REVIEW = Path(".ai-sdlc") / "reviews" / "pr" / "current-review.json"
 _RISK_TERMS: dict[str, tuple[str, ...]] = {
     "public-api": ("public api", "public-api", "schema", "contract"),
     "security": ("security", "authorization", "permission", "secret"),
@@ -79,9 +78,9 @@ _RISK_TERMS: dict[str, tuple[str, ...]] = {
     "concurrency": ("concurrency", "parallel", "race", "lock"),
     "frontend": ("frontend", "browser", "accessibility", "ui", "ux"),
 }
-_RISK_SCAN_OVERLAP = max(
-    len(term) for terms in _RISK_TERMS.values() for term in terms
-) + 2
+_RISK_SCAN_OVERLAP = (
+    max(len(term) for terms in _RISK_TERMS.values() for term in terms) + 2
+)
 _TEXT_RISK_SUFFIXES = {
     ".bat",
     ".cfg",
@@ -206,26 +205,20 @@ def resolve_review_input(
 
     safe_loop_id = _safe_identifier(loop_id)
     if loop_type == "local-pr-review":
-        loop_dir, pointer_path, run_path = _find_local_review_dir(
-            root, safe_loop_id
-        )
+        loop_dir, pointer_path, run_path = _find_local_review_dir(root, safe_loop_id)
         artifacts = [
             pointer_path,
             run_path,
             *(loop_dir / name for name in _LOCAL_REQUIRED),
         ]
         artifacts.extend(
-            loop_dir / name
-            for name in _LOCAL_OPTIONAL
-            if (loop_dir / name).is_file()
+            loop_dir / name for name in _LOCAL_OPTIONAL if (loop_dir / name).is_file()
         )
         artifacts.append(_local_review_diff(root, loop_dir / "review-pack.json"))
         risk_signals = [
-            *_content_risk_signals(artifacts),
+            *_content_risk_signals(root, artifacts),
             *_git_risk_signals(root),
-            *_local_review_source_risk_signals(
-                root, loop_dir / "review-pack.json"
-            ),
+            *_local_review_source_risk_signals(root, loop_dir / "review-pack.json"),
         ]
         round_number = _read_round_number(run_path)
     elif loop_type in _STAGE_ARTIFACTS:
@@ -247,7 +240,10 @@ def resolve_review_input(
             _stage_upstream_context(root, loop_type, loop_dir),
             excluded=artifacts,
         )
-        risk_signals = _content_risk_signals([*artifacts, *upstream_context])
+        risk_signals = _content_risk_signals(
+            root,
+            [*artifacts, *upstream_context],
+        )
         round_number = _read_round_number(run_path)
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
@@ -258,7 +254,9 @@ def resolve_review_input(
         loop_type=cast(LoopReviewType, loop_type),
         round_number=round_number,
         artifact_paths=artifacts,
-        upstream_context_paths=upstream_context if loop_type != "local-pr-review" else [],
+        upstream_context_paths=upstream_context
+        if loop_type != "local-pr-review"
+        else [],
         risk_signals=risk_signals,
     )
 
@@ -292,13 +290,11 @@ def _stage_upstream_context(
     safe_predecessor_id = _safe_identifier(predecessor_id)
     identity = (predecessor_type, safe_predecessor_id)
     if identity in visited:
-        raise ValueError(f"Loop predecessor cycle detected: {predecessor_type}/{safe_predecessor_id}")
+        raise ValueError(
+            f"Loop predecessor cycle detected: {predecessor_type}/{safe_predecessor_id}"
+        )
     predecessor_dir = (
-        root
-        / ".ai-sdlc"
-        / "loops"
-        / predecessor_type
-        / safe_predecessor_id
+        root / ".ai-sdlc" / "loops" / predecessor_type / safe_predecessor_id
     )
     inherited = _stage_upstream_context(
         root,
@@ -354,7 +350,10 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
                 f"{loop_dir / 'frontend-evidence-snapshot.json'}"
             )
         for record in records:
-            if not isinstance(record, dict) or record.get("capture_status") != "captured":
+            if (
+                not isinstance(record, dict)
+                or record.get("capture_status") != "captured"
+            ):
                 continue
             artifact_ref = record.get("artifact_ref", "")
             if isinstance(artifact_ref, str) and artifact_ref.strip():
@@ -402,7 +401,9 @@ def _implementation_evidence_material(root: Path, loop_dir: Path) -> list[Path]:
             if not text:
                 continue
             candidate = Path(text)
-            unresolved = candidate if candidate.is_absolute() else resolved_root / candidate
+            unresolved = (
+                candidate if candidate.is_absolute() else resolved_root / candidate
+            )
             lexical = _lexical_path(unresolved)
             try:
                 lexical.relative_to(resolved_root)
@@ -426,7 +427,9 @@ def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
     except OSError as exc:
         raise ValueError(f"Review diff is unreadable: {diff_path}") from exc
     if diff_digest != f"sha256:{actual}":
-        raise ValueError(f"Review diff digest does not match review-pack.json: {diff_path}")
+        raise ValueError(
+            f"Review diff digest does not match review-pack.json: {diff_path}"
+        )
     return diff_path
 
 
@@ -500,9 +503,7 @@ def _file_sha256(path: Path) -> str:
 
 def _exclude_paths(paths: list[Path], *, excluded: list[Path]) -> list[Path]:
     excluded_keys = {_lexical_path(path) for path in excluded}
-    return [
-        path for path in paths if _lexical_path(path) not in excluded_keys
-    ]
+    return [path for path in paths if _lexical_path(path) not in excluded_keys]
 
 
 def _lexical_path(path: Path) -> Path:
@@ -515,11 +516,7 @@ def _resolve_current_stage_state(
     loop_id: str,
 ) -> tuple[Path, Path]:
     pointer_path = (
-        root
-        / ".ai-sdlc"
-        / "loops"
-        / loop_type
-        / _STAGE_POINTER_NAMES[loop_type]
+        root / ".ai-sdlc" / "loops" / loop_type / _STAGE_POINTER_NAMES[loop_type]
     )
     pointer = _read_json_object(pointer_path)
     if pointer.get("loop_id") != loop_id:
@@ -531,12 +528,7 @@ def _resolve_current_stage_state(
         raise ValueError(f"Current {loop_type} Loop run path is missing.")
     run_path = _repo_path(root, raw_run_path, "loop_run_path")
     expected_run_path = (
-        root
-        / ".ai-sdlc"
-        / "loops"
-        / loop_type
-        / loop_id
-        / "loop-run.json"
+        root / ".ai-sdlc" / "loops" / loop_type / loop_id / "loop-run.json"
     )
     if _lexical_path(run_path) != _lexical_path(expected_run_path):
         raise ValueError(f"Current {loop_type} Loop run path is not canonical.")
@@ -555,9 +547,7 @@ def _find_local_review_dir(
     pointer_path = root / _CURRENT_LOCAL_REVIEW
     pointer = _read_json_object(pointer_path)
     if pointer.get("loop_id") != loop_id:
-        raise ValueError(
-            f"Current local PR review does not identify Loop {loop_id}."
-        )
+        raise ValueError(f"Current local PR review does not identify Loop {loop_id}.")
     raw_review_id = pointer.get("review_id", "")
     raw_run_path = pointer.get("review_run_path", "")
     if not isinstance(raw_review_id, str) or not raw_review_id.strip():
@@ -567,12 +557,7 @@ def _find_local_review_dir(
     review_id = _safe_identifier(raw_review_id)
     run_path = _repo_path(root, raw_run_path, "review_run_path")
     expected_run_path = (
-        root
-        / ".ai-sdlc"
-        / "reviews"
-        / "pr"
-        / review_id
-        / "review-run.json"
+        root / ".ai-sdlc" / "reviews" / "pr" / review_id / "review-run.json"
     )
     if _lexical_path(run_path) != _lexical_path(expected_run_path):
         raise ValueError("Current local PR review run path is not canonical.")
@@ -597,7 +582,7 @@ def _read_round_number(path: Path) -> int:
     return value
 
 
-def _content_risk_signals(paths: list[Path]) -> list[str]:
+def _content_risk_signals(root: Path, paths: list[Path]) -> list[str]:
     detected: set[str] = set()
     for path in paths:
         if path.is_symlink():
@@ -608,6 +593,7 @@ def _content_risk_signals(paths: list[Path]) -> list[str]:
         try:
             detected.update(
                 _stream_text_risk_signals(
+                    root,
                     path,
                     strict_text=suffix in _TEXT_RISK_SUFFIXES,
                 )
@@ -618,28 +604,38 @@ def _content_risk_signals(paths: list[Path]) -> list[str]:
     return risks or ["general-correctness"]
 
 
-def _stream_text_risk_signals(path: Path, *, strict_text: bool) -> set[str]:
+def _stream_text_risk_signals(
+    root: Path,
+    path: Path,
+    *,
+    strict_text: bool,
+) -> set[str]:
     decoder = codecs.getincrementaldecoder("utf-8")("strict")
     detected: set[str] = set()
     tail = ""
     left_truncated = False
+
+    def scan_chunk(chunk: bytes) -> None:
+        nonlocal tail, left_truncated
+        combined = tail + decoder.decode(chunk).lower()
+        detected.update(
+            _matching_risk_signals(
+                combined,
+                eof=False,
+                left_truncated=left_truncated,
+            )
+        )
+        left_truncated = left_truncated or len(combined) > _RISK_SCAN_OVERLAP
+        tail = combined[-_RISK_SCAN_OVERLAP:]
+
     try:
-        with path.open("rb") as handle:
-            while chunk := handle.read(64 * 1024):
-                combined = tail + decoder.decode(chunk).lower()
-                detected.update(
-                    _matching_risk_signals(
-                        combined,
-                        eof=False,
-                        left_truncated=left_truncated,
-                    )
-                )
-                left_truncated = left_truncated or len(combined) > _RISK_SCAN_OVERLAP
-                tail = combined[-_RISK_SCAN_OVERLAP:]
+        consume_stable_chunks(root, path, scan_chunk)
         combined = tail + decoder.decode(b"", final=True).lower()
     except UnicodeDecodeError as exc:
         if strict_text:
-            raise ValueError(f"Review text artifact is not strict UTF-8: {path}") from exc
+            raise ValueError(
+                f"Review text artifact is not strict UTF-8: {path}"
+            ) from exc
         return set()
     detected.update(
         _matching_risk_signals(
@@ -685,9 +681,7 @@ def _git_risk_signals(root: Path) -> list[str]:
     ]
 
 
-def _local_review_source_risk_signals(
-    root: Path, review_pack_path: Path
-) -> list[str]:
+def _local_review_source_risk_signals(root: Path, review_pack_path: Path) -> list[str]:
     payload = _read_json_object(review_pack_path)
     diff_source = payload.get("diff_source")
     if diff_source is None:
@@ -699,9 +693,7 @@ def _local_review_source_risk_signals(
         patch_file = diff_source.get("patch_file", "")
         head_ref = diff_source.get("head_ref", payload.get("head_ref", "HEAD"))
         if not isinstance(patch_file, str) or not patch_file.strip():
-            raise ValueError(
-                f"Review pack patch_file is invalid: {review_pack_path}"
-            )
+            raise ValueError(f"Review pack patch_file is invalid: {review_pack_path}")
         if not isinstance(head_ref, str) or not head_ref.strip():
             raise ValueError(
                 f"Review pack patch head_ref is invalid: {review_pack_path}"
@@ -741,20 +733,28 @@ def _local_review_source_risk_signals(
                 head_ref=head_ref,
             )
         )
-        base_tip = _git_bytes(
-            root,
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            f"{base_ref}^{{commit}}",
-        ).decode("ascii").strip()
-        head_tip = _git_bytes(
-            root,
-            "rev-parse",
-            "--verify",
-            "--end-of-options",
-            f"{head_ref}^{{commit}}",
-        ).decode("ascii").strip()
+        base_tip = (
+            _git_bytes(
+                root,
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                f"{base_ref}^{{commit}}",
+            )
+            .decode("ascii")
+            .strip()
+        )
+        head_tip = (
+            _git_bytes(
+                root,
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                f"{head_ref}^{{commit}}",
+            )
+            .decode("ascii")
+            .strip()
+        )
         return [
             f"git-selected-source:{source_kind}",
             f"git-selected-base-tip:{base_tip}",
@@ -773,7 +773,9 @@ def _local_review_source_risk_signals(
 
 
 def _git_bytes(root: Path, *args: str) -> bytes:
-    env = {key: value for key, value in os.environ.items() if key not in _GIT_ROUTING_ENV}
+    env = {
+        key: value for key, value in os.environ.items() if key not in _GIT_ROUTING_ENV
+    }
     result = subprocess.run(
         [
             "git",
