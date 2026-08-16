@@ -302,6 +302,54 @@ def test_build_review_input_rejects_symlink_replacement_before_open(
         )
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable")
+def test_build_review_input_rejects_ancestor_symlink_retarget_during_open(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    scoped = tmp_path / "scoped"
+    scoped.mkdir()
+    artifact = scoped / "spec.md"
+    artifact.write_text("same reviewed bytes\n", encoding="utf-8")
+    alternate = tmp_path / "alternate"
+    alternate.mkdir()
+    os.link(artifact, alternate / artifact.name)
+    saved = tmp_path / "scoped-original"
+    original_open = os.open
+    swapped = False
+
+    def retarget_ancestor_before_file_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        nonlocal swapped
+        if not swapped and Path(path).name == artifact.name:
+            scoped.rename(saved)
+            scoped.symlink_to(alternate.name, target_is_directory=True)
+            swapped = True
+        if dir_fd is None:
+            return original_open(path, flags)
+        return original_open(path, flags, dir_fd=dir_fd)
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.review_kernel.os.open",
+        retarget_ancestor_before_file_open,
+    )
+
+    with pytest.raises(ValueError, match="not a regular file|changed while reading"):
+        build_review_input(
+            tmp_path,
+            loop_id="loop-1",
+            loop_type="implementation",
+            round_number=1,
+            artifact_paths=[artifact],
+            upstream_context_paths=[],
+            risk_signals=[],
+        )
+
+
 def test_build_review_input_reads_windows_files_in_binary_mode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -311,11 +359,18 @@ def test_build_review_input_reads_windows_files_in_binary_mode(
     binary_flag = 0x8000
     original_open = os.open
 
-    def windows_open(path: Path, flags: int) -> int:
+    def windows_open(
+        path: str | bytes | os.PathLike[str] | os.PathLike[bytes],
+        flags: int,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
         if not flags & binary_flag:
             raise AssertionError("Windows low-level reads must request binary mode")
         forwarded_flags = flags if os.name == "nt" else flags & ~binary_flag
-        return original_open(path, forwarded_flags)
+        if dir_fd is None:
+            return original_open(path, forwarded_flags)
+        return original_open(path, forwarded_flags, dir_fd=dir_fd)
 
     monkeypatch.setattr(
         "ai_sdlc.core.review_kernel.os.O_BINARY", binary_flag, raising=False

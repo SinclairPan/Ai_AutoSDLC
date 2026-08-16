@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
+import stat
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -986,8 +987,7 @@ def _record_next_action(
                 '--verification "<command>" --evidence <path>.'
             )
     return (
-        "Run ai-sdlc loop review --type implementation "
-        f"--loop-id {progress.loop_id}."
+        f"Run ai-sdlc loop review --type implementation --loop-id {progress.loop_id}."
     )
 
 
@@ -1002,15 +1002,19 @@ def _implementation_slimming_advisories(
         if pattern.is_absolute() or ".." in pattern.parts:
             continue
         for candidate in sorted(root.glob(path_text)):
-            resolved = candidate.resolve(strict=False)
             try:
-                resolved.relative_to(root)
+                candidate.relative_to(root)
             except ValueError:
                 continue
-            if resolved.is_dir():
-                paths.extend(path for path in sorted(resolved.rglob("*")) if path.is_file())
-            elif resolved.is_file():
-                paths.append(resolved)
+            kind = _slimming_path_kind(root, candidate)
+            if kind == "directory":
+                paths.extend(
+                    path
+                    for path in sorted(candidate.rglob("*"))
+                    if _slimming_path_kind(root, path) == "file"
+                )
+            elif kind == "file":
+                paths.append(candidate)
     rendered: list[str] = []
     for advice in collect_slimming_advice(paths):
         path = Path(advice.path)
@@ -1021,6 +1025,33 @@ def _implementation_slimming_advisories(
         location = f"{path_text}:{advice.line}" if advice.line else path_text
         rendered.append(f"{location}: {advice.message}")
     return rendered
+
+
+def _slimming_path_kind(root: Path, path: Path) -> str | None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    current = root
+    for index, part in enumerate(relative.parts):
+        current /= part
+        try:
+            metadata = current.lstat()
+        except OSError:
+            return None
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:
+            return None
+        is_leaf = index == len(relative.parts) - 1
+        if is_leaf:
+            if stat.S_ISREG(metadata.st_mode):
+                return "file"
+            if stat.S_ISDIR(metadata.st_mode):
+                return "directory"
+            return None
+        if not stat.S_ISDIR(metadata.st_mode):
+            return None
+    return None
 
 
 def _close_blockers(
@@ -1225,8 +1256,7 @@ def _next_guidance_for_result(
     if report.status == LoopStatus.NEEDS_REVIEW:
         return ImplementationNextGuidance(
             command=(
-                "ai-sdlc loop review --type implementation "
-                f"--loop-id {report.loop_id}"
+                f"ai-sdlc loop review --type implementation --loop-id {report.loop_id}"
             ),
             reason="Implementation evidence is ready for bounded adversarial review.",
             requires_model=True,

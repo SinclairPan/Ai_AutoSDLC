@@ -250,15 +250,11 @@ def _read_paths(
         unresolved = candidate if candidate.is_absolute() else root / candidate
         path = Path(os.path.abspath(unresolved))
         try:
-            relative = path.relative_to(root).as_posix()
+            relative_path = path.relative_to(root)
         except ValueError as exc:
             raise ValueError(f"review path escapes project: {raw_path}") from exc
-        try:
-            original = path.lstat()
-        except FileNotFoundError as exc:
-            raise ValueError(f"review path is missing: {raw_path}") from exc
-        if stat.S_ISLNK(original.st_mode):
-            raise ValueError(f"review path is not a regular file: {raw_path}")
+        relative = relative_path.as_posix()
+        original = _validate_review_path(root, relative_path, raw_path=raw_path)
         try:
             resolved = path.resolve(strict=True)
         except FileNotFoundError as exc:
@@ -269,21 +265,12 @@ def _read_paths(
             raise ValueError(f"review path escapes project: {raw_path}") from exc
 
         open_flags = (
-            os.O_RDONLY
-            | getattr(os, "O_BINARY", 0)
-            | getattr(os, "O_NOFOLLOW", 0)
+            os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         )
         try:
-            descriptor = os.open(path, open_flags)
+            descriptor = _open_review_descriptor(root, relative_path, open_flags)
         except OSError as exc:
-            try:
-                changed = path.lstat()
-            except OSError:
-                changed = None
-            if changed is not None and stat.S_ISLNK(changed.st_mode):
-                raise ValueError(
-                    f"review path is not a regular file: {relative}"
-                ) from exc
+            _validate_review_path(root, relative_path, raw_path=relative)
             raise ValueError(f"review path changed while opening: {relative}") from exc
         try:
             opened = os.fstat(descriptor)
@@ -297,7 +284,7 @@ def _read_paths(
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
-        closed = path.stat(follow_symlinks=False)
+        closed = _validate_review_path(root, relative_path, raw_path=relative)
         if not _file_snapshot_is_stable(
             original,
             opened,
@@ -311,6 +298,53 @@ def _read_paths(
         )
     records.sort(key=lambda item: item[0])
     return records
+
+
+def _validate_review_path(
+    root: Path,
+    relative: Path,
+    *,
+    raw_path: str | Path,
+) -> os.stat_result:
+    current = root
+    for index, part in enumerate(relative.parts):
+        current /= part
+        try:
+            metadata = current.lstat()
+        except FileNotFoundError as exc:
+            raise ValueError(f"review path is missing: {raw_path}") from exc
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:
+            raise ValueError(f"review path is not a regular file: {raw_path}")
+        is_leaf = index == len(relative.parts) - 1
+        if is_leaf:
+            if not stat.S_ISREG(metadata.st_mode):
+                raise ValueError(f"review path is not a regular file: {raw_path}")
+            return metadata
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise ValueError(f"review path is not a regular file: {raw_path}")
+    raise ValueError(f"review path is not a regular file: {raw_path}")
+
+
+def _open_review_descriptor(root: Path, relative: Path, file_flags: int) -> int:
+    if (
+        os.name == "nt"
+        or not hasattr(os, "O_DIRECTORY")
+        or not hasattr(os, "O_NOFOLLOW")
+        or os.open not in os.supports_dir_fd
+    ):
+        return os.open(root / relative, file_flags)
+
+    directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory_fd = os.open(root, directory_flags)
+    try:
+        for part in relative.parts[:-1]:
+            next_fd = os.open(part, directory_flags, dir_fd=directory_fd)
+            os.close(directory_fd)
+            directory_fd = next_fd
+        return os.open(relative.parts[-1], file_flags, dir_fd=directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _file_snapshot_is_stable(

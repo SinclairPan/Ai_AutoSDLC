@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -458,6 +459,51 @@ def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> No
     assert any("510 lines" in advice for advice in result.advisories)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable")
+def test_slimming_advice_skips_nested_external_symlinks(tmp_path: Path) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "src/ai_sdlc/core/implementation_loop.py",
+            "src/ai_sdlc/core",
+        ),
+        encoding="utf-8",
+    )
+    source_dir = tmp_path / "src" / "ai_sdlc" / "core"
+    source_dir.mkdir(parents=True)
+    external = tmp_path.with_name(f"{tmp_path.name}-external.py")
+    external.write_text(
+        "\n".join(f"secret_line_{index} = {index}" for index in range(510)),
+        encoding="utf-8",
+    )
+    (source_dir / "external.py").symlink_to(external)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-skip-external-symlink",
+        )
+    )
+
+    try:
+        result = record_implementation_progress(
+            ImplementationRecordOptions(
+                root=tmp_path,
+                loop_id="impl-skip-external-symlink",
+                task_id="T11",
+                status="done",
+                verification=("pytest -q",),
+            )
+        )
+    finally:
+        external.unlink(missing_ok=True)
+
+    assert not any("external.py" in advice for advice in result.advisories)
+    assert not any("secret_line" in advice for advice in result.advisories)
+
+
 def test_record_implementation_progress_blocks_unknown_task(tmp_path: Path) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
@@ -758,8 +804,6 @@ def test_start_implementation_loop_ignores_copied_legacy_authority_artifact(
 
     assert result.status == "ready"
     assert result.loop_status == "running"
-
-
 
 
 @pytest.mark.parametrize(
