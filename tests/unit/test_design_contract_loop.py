@@ -2126,7 +2126,31 @@ def test_close_design_contract_loop_revalidates_docs_before_partial_recovery(
     assert "task_verification_gap" in {
         finding["code"] for finding in persisted_report["findings"]
     }
-    assert (loop_dir / "design-contract-close.json").is_file()
+    assert not (loop_dir / "design-contract-close.json").exists()
+
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "- **验证**：\n",
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q\n",
+        ),
+        encoding="utf-8",
+    )
+    rechecked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert rechecked.status == "ready"
+    assert rechecked.loop_status == "needs_review"
+
+    closed = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+    assert closed.status == "ready"
+    assert closed.loop_status == "closed"
+    assert closed.closed is True
 
 
 def test_close_design_contract_loop_revalidates_changed_docs(

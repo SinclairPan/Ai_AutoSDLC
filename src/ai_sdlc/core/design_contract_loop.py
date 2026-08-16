@@ -490,6 +490,7 @@ def _recover_partially_written_design_close(
         return refreshed
     report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
+        artifacts.close_path.unlink()
         _write_check_artifacts(
             root,
             verified_input,
