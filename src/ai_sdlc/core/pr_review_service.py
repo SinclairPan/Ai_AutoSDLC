@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -17,10 +18,6 @@ import yaml  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from ai_sdlc.branch.git_client import GitClient, GitError
-from ai_sdlc.core.lean_code_review import (
-    resolve_lean_review_binding,
-    validate_review_run_lean_binding,
-)
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopPolicyProfile, LoopStatus, utc_now_iso
 from ai_sdlc.core.loop_policy import (
@@ -37,7 +34,6 @@ from ai_sdlc.core.pr_review_models import (
     ModelResolution,
     ModelResolutionStatus,
     ProviderMode,
-    ReviewAttestation,
     ReviewFinding,
     ReviewFindings,
     ReviewPack,
@@ -54,7 +50,6 @@ from ai_sdlc.core.pr_review_pack import (
     build_review_pack,
     decide_incomplete_review_pack,
     resolve_review_input_for_source,
-    scope_lean_review_binding,
 )
 from ai_sdlc.core.pr_review_provider import (
     MockReviewerFixture,
@@ -69,13 +64,9 @@ from ai_sdlc.core.pr_review_source import (
     DiffSourceResolutionOptions,
     resolve_diff_source,
 )
-from ai_sdlc.core.stage_review.adapters import LocalPRReviewStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_local_pr_stage_close,
-)
-from ai_sdlc.core.stage_review.close_gate_models import (
-    StageCloseExecutionIdentityResult,
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
 )
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
@@ -229,6 +220,19 @@ class PRReviewFixResult(BaseModel):
     next_action: str = ""
 
 
+class PRReviewEvidenceResult(BaseModel):
+    """Result for recording verification evidence before expert review."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    status: PRReviewCommandStatus
+    review_id: str = ""
+    evidence_path: str = ""
+    evidence_count: int = 0
+    blocker: str = ""
+    next_action: str = ""
+
+
 class PRReviewCloseResult(BaseModel):
     """Result for closing a local PR review."""
 
@@ -238,26 +242,6 @@ class PRReviewCloseResult(BaseModel):
     review_id: str = ""
     verdict: ReviewVerdict | None = None
     final_report_path: str = ""
-    unresolved_blockers: int = 0
-    unresolved_required: int = 0
-    unresolved_advisory: int = 0
-    blocker: str = ""
-    next_action: str = ""
-
-
-class PRReviewAttestResult(StageCloseExecutionIdentityResult):
-    """Result for writing a CI-readable local review attestation."""
-
-    model_config = ConfigDict(extra="forbid", use_enum_values=True)
-
-    status: PRReviewCommandStatus
-    review_id: str = ""
-    loop_id: str = ""
-    attestation_path: str = ""
-    ci_certificate_bundle_path: str = ""
-    head_commit: str = ""
-    diff_source_hash: str = ""
-    verdict: ReviewVerdict | None = None
     unresolved_blockers: int = 0
     unresolved_required: int = 0
     unresolved_advisory: int = 0
@@ -350,20 +334,6 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
     """Start or dry-run a local PR review."""
 
     root = options.root.resolve()
-    if not options.dry_run:
-        try:
-            _remove_latest_attestation(_latest_attestation_path(root))
-        except OSError as exc:
-            return PRReviewStartResult(
-                status=PRReviewCommandStatus.BLOCKED,
-                provider_id=options.provider_id,
-                review_id=options.review_id.strip(),
-                blocker=f"Unable to clear stale review attestation: {exc}",
-                next_action=(
-                    "Remove latest-attestation.json and rerun pr-review start."
-                ),
-            )
-
     review_id_blocker = _unsafe_explicit_review_id_blocker(options.review_id)
     if review_id_blocker:
         return PRReviewStartResult(
@@ -444,20 +414,6 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
     )
     review_id = _resolve_review_id(provider_options)
     loop_id = _resolve_loop_id(provider_options)
-    lean_binding, lean_blocker = resolve_lean_review_binding(
-        root,
-        allow_closed_source_mismatch=True,
-    )
-    if lean_blocker:
-        return PRReviewStartResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            provider_id=provider_options.provider_id,
-            review_id=review_id,
-            loop_id=loop_id,
-            review_dir=str(LoopArtifactStore(root).review_run_dir(review_id)),
-            blocker=lean_blocker,
-            next_action=_lean_binding_next_action(lean_blocker),
-        )
     provider_blocker = _unsupported_provider_blocker(provider_options.provider_id)
     if provider_blocker:
         return PRReviewStartResult(
@@ -490,7 +446,6 @@ def start_pr_review(options: PRReviewStartOptions) -> PRReviewStartResult:
                 loop_id=loop_id,
                 clear_stale_artifacts=provider_options.clear_stale_artifacts,
                 preserve_resolution_history=provider_options.preserve_resolution_history,
-                lean_binding=lean_binding,
             )
         )
     except GitError as exc:
@@ -645,8 +600,68 @@ def status_pr_review(root: Path) -> PRReviewStatusResult:
             blocker=f"Current review-run.json is malformed: {exc}",
             next_action="Rerun ai-sdlc pr-review start.",
         )
-    lean_blocker = validate_review_run_lean_binding(root.resolve(), review_run)
-    return _status_result(root, review_run_path, review_run, lean_blocker)
+    return _status_result(root, review_run_path, review_run, "")
+
+
+def record_pr_review_verification_evidence(
+    root: Path,
+    *,
+    evidence: list[str],
+) -> PRReviewEvidenceResult:
+    """Record ordinary verification output before bounded expert review."""
+
+    entries = list(dict.fromkeys(item.strip() for item in evidence if item.strip()))
+    if not entries:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker="At least one non-empty verification evidence line is required.",
+            next_action="Pass --evidence with the command and result to record.",
+        )
+    try:
+        review_run, _ = _load_current_review_run(root)
+    except FileNotFoundError as exc:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.NO_REVIEW,
+            blocker=str(exc),
+            next_action="Run ai-sdlc pr-review start --base <branch>.",
+        )
+    except (json.JSONDecodeError, ValidationError, ValueError, OSError) as exc:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker=f"Current PR review artifacts are malformed: {exc}",
+            next_action="Rerun ai-sdlc pr-review start.",
+        )
+    if review_run.status == LoopStatus.CLOSED:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker="Closed PR review evidence cannot be changed.",
+            next_action="Start a new local PR review for a changed diff.",
+        )
+    evidence_path = (
+        LoopArtifactStore(root.resolve()).review_run_dir(review_run.review_id)
+        / "verification-evidence.json"
+    )
+    LoopArtifactStore(root.resolve()).write_json_artifact(
+        evidence_path,
+        {
+            "schema_version": "1",
+            "artifact_kind": "review-verification-evidence",
+            "review_id": review_run.review_id,
+            "loop_id": review_run.loop_id,
+            "entries": entries,
+        },
+    )
+    return PRReviewEvidenceResult(
+        status=PRReviewCommandStatus.READY,
+        review_id=review_run.review_id,
+        evidence_path=str(evidence_path),
+        evidence_count=len(entries),
+        next_action=(
+            "Run ai-sdlc loop review --type local-pr-review "
+            f"--loop-id {review_run.loop_id}."
+        ),
+    )
 
 
 def _status_result(
@@ -675,23 +690,8 @@ def _status_result(
         unresolved_required=review_run.unresolved_required,
         unresolved_advisory=review_run.unresolved_advisory,
         blocker=blocker,
-        next_action=_lean_binding_next_action(blocker)
-        if blocker
-        else review_run.next_action,
+        next_action="Rerun local PR review." if blocker else review_run.next_action,
     )
-
-
-def _lean_binding_next_action(
-    blocker: str,
-    fallback: str = "Run a fresh passed Lean evaluation before local PR review.",
-) -> str:
-    if "Closed Lean review scope" in blocker:
-        return "Rerun PR review to rebuild the frozen review scope."
-    if "Implementation close" in blocker:
-        return "Restore the frozen Implementation close artifacts before PR review."
-    if "lean" in blocker.lower():
-        return "Run a fresh passed Lean evaluation before local PR review."
-    return fallback
 
 
 def fix_pr_review(
@@ -923,10 +923,7 @@ def rerun_pr_review(
             provider_id=review_run.provider_id,
             review_id=review_run.review_id,
             blocker=tamper_blocker,
-            next_action=_lean_binding_next_action(
-                tamper_blocker,
-                "Rerun PR review before resetting resolution artifacts.",
-            ),
+            next_action="Rerun PR review before resetting resolution artifacts.",
         )
 
     try:
@@ -1157,7 +1154,12 @@ def _reset_rerun_resolution_artifacts(root: Path, review_id: str) -> None:
                 "round_number": round_number,
             },
         )
-    for name in ("resolution.yaml", "fix-plan.md", "final-report.md"):
+    for name in (
+        "resolution.yaml",
+        "fix-plan.md",
+        "final-report.md",
+        "verification-evidence.json",
+    ):
         try:
             (review_dir / name).unlink()
         except FileNotFoundError:
@@ -1168,39 +1170,61 @@ def close_pr_review(
     root: Path,
     *,
     require_no_blockers: bool = False,
-    verification_evidence: list[str] | None = None,
+    expected_review_id: str = "",
+    expected_loop_id: str = "",
+    expected_review_digest: str = "",
+    review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
-    resolved_root = root.resolve()
     try:
-        _remove_latest_attestation(_latest_attestation_path(resolved_root))
-    except OSError as exc:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            verdict=ReviewVerdict.BLOCKED,
-            blocker=f"Unable to clear stale review attestation: {exc}",
-            next_action="Remove latest-attestation.json and rerun pr-review close.",
+        review_run, review_run_path = _load_current_review_run(
+            root,
+            reviewed_artifacts=reviewed_artifacts,
         )
-    try:
-        policy = load_loop_policy(resolved_root)
-    except LoopPolicyError as exc:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            verdict=ReviewVerdict.BLOCKED,
-            blocker=_policy_blocker(exc),
-            next_action=_policy_next_action(),
+        if (
+            expected_review_id.strip()
+            and review_run.review_id != expected_review_id.strip()
+        ) or (
+            expected_loop_id.strip() and review_run.loop_id != expected_loop_id.strip()
+        ):
+            return PRReviewCloseResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                verdict=ReviewVerdict.BLOCKED,
+                blocker=(
+                    "Current PR review does not match the reviewed identity; "
+                    "rerun expert review for the current pointer before closing."
+                ),
+                next_action="Rerun local PR expert review before closing.",
+            )
+        not_closeable = _not_closeable_review_result(
+            root.resolve(),
+            review_run,
+            reviewed_artifacts=reviewed_artifacts,
         )
-    effective_require_no_blockers = (
-        require_no_blockers or policy.default_close_mode == "require-no-blockers"
-    )
-    try:
-        review_run, review_run_path = _load_current_review_run(root)
-        not_closeable = _not_closeable_review_result(root.resolve(), review_run)
         if not_closeable is not None:
             return not_closeable
-        findings = _load_findings(root.resolve(), review_run)
-        review_pack = _load_review_pack(root.resolve(), review_run.review_pack_path)
+        findings = _load_findings(
+            root.resolve(),
+            review_run,
+            reviewed_artifacts=reviewed_artifacts,
+        )
+        review_pack = _load_review_pack(
+            root.resolve(),
+            review_run.review_pack_path,
+            reviewed_artifacts=reviewed_artifacts,
+        )
+        reviewed_close_mode = review_pack.policy_decisions.get("default_close_mode")
+        if reviewed_close_mode not in {"strict", "require-no-blockers"}:
+            raise ValueError(
+                "review-pack.json has an invalid default_close_mode policy decision"
+            )
+        verification_evidence = _load_verification_evidence(
+            root.resolve(),
+            review_run,
+            reviewed_artifacts=reviewed_artifacts,
+        )
     except FileNotFoundError as exc:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.NO_REVIEW,
@@ -1215,8 +1239,15 @@ def close_pr_review(
             next_action="Regenerate findings.json by rerunning PR review.",
         )
 
+    effective_require_no_blockers = (
+        require_no_blockers or reviewed_close_mode == "require-no-blockers"
+    )
+
     tamper_blocker = _reviewer_outputs_tamper_blocker(
-        root.resolve(), review_run, findings
+        root.resolve(),
+        review_run,
+        findings,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if tamper_blocker:
         return PRReviewCloseResult(
@@ -1227,10 +1258,7 @@ def close_pr_review(
             unresolved_required=review_run.unresolved_required,
             unresolved_advisory=review_run.unresolved_advisory,
             blocker=tamper_blocker,
-            next_action=_lean_binding_next_action(
-                tamper_blocker,
-                "Rerun PR review before closing.",
-            ),
+            next_action="Rerun PR review before closing.",
         )
 
     if (
@@ -1274,7 +1302,11 @@ def close_pr_review(
             next_action="Rerun PR review for the current diff source before closing.",
         )
 
-    dirty_blocker = _reviewed_worktree_dirty(root, review_run)
+    dirty_blocker = _reviewed_worktree_dirty(
+        root,
+        review_run,
+        review_pack=review_pack,
+    )
     if dirty_blocker:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.BLOCKED,
@@ -1308,8 +1340,28 @@ def close_pr_review(
         review_run.review_pack_path,
     ).with_name("resolution.yaml")
     try:
-        resolution_statuses = _load_resolution_statuses(resolution_path)
-        resolution_records = _load_resolution_records(resolution_path)
+        if reviewed_artifacts is not None:
+            resolution_bytes = _review_snapshot_optional_bytes(
+                root.resolve(),
+                resolution_path,
+                reviewed_artifacts,
+            )
+            resolution_payload = (
+                _parse_resolution_payload(
+                    resolution_bytes,
+                    name=resolution_path.name,
+                )
+                if resolution_bytes is not None
+                else {}
+            )
+        else:
+            resolution_payload = (
+                _load_resolution_payload(resolution_path)
+                if resolution_path.exists()
+                else {}
+            )
+        resolution_statuses = _resolution_statuses(resolution_payload)
+        resolution_records = _resolution_records(resolution_payload)
     except ResolutionFileError as exc:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.BLOCKED,
@@ -1337,10 +1389,6 @@ def close_pr_review(
         verdict = ReviewVerdict.RISK_ACCEPTED
         status = PRReviewCommandStatus.CLOSED
         next_action = "Risk accepted with unresolved REQUIRED findings disclosed."
-    elif review_run.lean_risk_accepted:
-        verdict = ReviewVerdict.RISK_ACCEPTED
-        status = PRReviewCommandStatus.CLOSED
-        next_action = "Risk accepted because the Lean evaluation used exceptions."
     elif FindingResolutionStatus.WAIVED in resolution_statuses.values():
         verdict = ReviewVerdict.RISK_ACCEPTED
         status = PRReviewCommandStatus.CLOSED
@@ -1372,28 +1420,21 @@ def close_pr_review(
             resolution_records=resolution_records,
             verdict=verdict,
             unresolved=unresolved,
-            verification_evidence=verification_evidence or [],
+            verification_evidence=verification_evidence,
             status=status,
             blocker=blocker,
             next_action=next_action,
             final_report_path=final_report_path,
         )
 
-    if status != PRReviewCommandStatus.CLOSED:
-        return writer()
-    prepared = prepare_local_pr_stage_close(
-        root=root.resolve(),
-        adapter=LocalPRReviewStageAdapter(),
-        review_run=review_run,
-        work_item_id=review_run.lean_work_item_id,
-        close_kind="local-pr-review-close",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=final_report_path,
+    revalidate_review_input_at_transition(
+        root.resolve(),
+        loop_type="local-pr-review",
+        loop_id=review_run.loop_id,
+        expected_digest=expected_review_digest,
+        validator=review_input_validator,
     )
-    return execute_stage_close(
-        prepared,
-        writer,
-    )
+    return writer()
 
 
 def _write_pr_review_close(
@@ -1494,252 +1535,25 @@ def _pr_review_close_result(
     )
 
 
-def attest_pr_review(root: Path) -> PRReviewAttestResult:
-    """Write a CI-readable attestation for the current closed local review."""
-
-    resolved_root = root.resolve()
-    attestation_path = _latest_attestation_path(resolved_root)
-    try:
-        _remove_latest_attestation(attestation_path)
-    except OSError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"Unable to clear stale review attestation: {exc}",
-            next_action="Remove latest-attestation.json and rerun pr-review attest.",
-        )
-    try:
-        review_run, review_run_path = _load_current_review_run(resolved_root)
-    except FileNotFoundError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.NO_REVIEW,
-            blocker=str(exc),
-            next_action="Run ai-sdlc pr-review start --base <branch>.",
-        )
-    except (json.JSONDecodeError, ValidationError, ValueError, OSError) as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            blocker=f"Current PR review artifacts are malformed: {exc}",
-            next_action="Rerun ai-sdlc pr-review start.",
-        )
-
-    diff_source_mismatch = _reviewed_diff_source_mismatch(resolved_root, review_run)
-    if diff_source_mismatch:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            head_commit=review_run.head_commit,
-            diff_source_hash=review_run.diff_source.patch_hash,
-            blocker=diff_source_mismatch,
-            next_action="Rerun local PR review for the current diff source.",
-        )
-    if review_run.status != LoopStatus.CLOSED:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Local PR review must be closed before attestation.",
-            next_action="Run ai-sdlc pr-review close after resolving findings.",
-        )
-    if review_run.unresolved_blockers > 0:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            unresolved_blockers=review_run.unresolved_blockers,
-            blocker="Unresolved BLOCKER findings cannot be attested.",
-            next_action="Fix blocker findings and rerun local PR review.",
-        )
-    if review_run.verdict is None:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Closed review is missing a verdict.",
-            next_action="Rerun ai-sdlc pr-review close.",
-        )
-    final_report_path = _resolve_repo_path(resolved_root, review_run.final_report_path)
-    if not review_run.final_report_path.strip() or not final_report_path.is_file():
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Final report is missing; attestation would be unverifiable.",
-            next_action="Rerun ai-sdlc pr-review close.",
-        )
-    final_report_blocker = _final_report_tamper_blocker(final_report_path, review_run)
-    if final_report_blocker:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=final_report_blocker,
-            next_action="Rerun ai-sdlc pr-review close.",
-        )
-    try:
-        findings = _load_findings(resolved_root, review_run)
-    except (
-        FileNotFoundError,
-        json.JSONDecodeError,
-        ValidationError,
-        ValueError,
-        OSError,
-    ) as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=f"Current PR review findings are not attestable: {exc}",
-            next_action="Rerun local PR review before writing review attestation.",
-        )
-    tamper_blocker = _reviewer_outputs_tamper_blocker(
-        resolved_root,
-        review_run,
-        findings,
-    )
-    if tamper_blocker:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=tamper_blocker,
-            next_action=_lean_binding_next_action(
-                tamper_blocker,
-                "Rerun local PR review before writing review attestation.",
-            ),
-        )
-    try:
-        current_head = _resolved_reviewed_head_commit(resolved_root, review_run)
-    except GitError as exc:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker=f"Unable to verify reviewed head for attestation: {exc}",
-            next_action="Fix Git state before writing review attestation.",
-        )
-    if review_run.head_commit and review_run.head_commit != current_head:
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            head_commit=review_run.head_commit,
-            blocker=(
-                "Reviewed head ref no longer matches the reviewed head commit; "
-                "attestation would be stale."
-            ),
-            next_action="Rerun local PR review for the current commit.",
-        )
-    if attestation_path.exists() and not attestation_path.is_file():
-        return PRReviewAttestResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            loop_id=review_run.loop_id,
-            blocker="Unable to replace stale review attestation: path is not a file.",
-            next_action="Remove latest-attestation.json and rerun pr-review attest.",
-        )
-
-    store = LoopArtifactStore(resolved_root)
-    attestation = ReviewAttestation(
-        review_id=review_run.review_id,
-        loop_id=review_run.loop_id,
-        head_commit=review_run.head_commit,
-        diff_source=review_run.diff_source,
-        diff_source_hash=review_run.diff_source.patch_hash,
-        verdict=review_run.verdict,
-        unresolved_blockers=review_run.unresolved_blockers,
-        unresolved_required=review_run.unresolved_required,
-        unresolved_advisory=review_run.unresolved_advisory,
-        review_run_path=_repo_relative_path(resolved_root, review_run_path),
-        review_pack_path=review_run.review_pack_path,
-        findings_path=review_run.findings_path,
-        final_report_path=review_run.final_report_path,
-        review_pack_digest=review_run.review_pack_digest,
-        findings_digest=review_run.findings_digest,
-        final_report_digest=review_run.final_report_digest,
-        lean_report_path=review_run.lean_report_path,
-        lean_report_digest=review_run.lean_report_digest,
-        lean_report_markdown_path=review_run.lean_report_markdown_path,
-        lean_report_markdown_digest=review_run.lean_report_markdown_digest,
-        lean_input_path=review_run.lean_input_path,
-        lean_input_digest=review_run.lean_input_digest,
-        lean_snapshot_path=review_run.lean_snapshot_path,
-        lean_snapshot_digest=review_run.lean_snapshot_digest,
-        lean_findings_path=review_run.lean_findings_path,
-        lean_findings_digest=review_run.lean_findings_digest,
-        lean_policy_path=review_run.lean_policy_path,
-        lean_policy_snapshot_digest=review_run.lean_policy_snapshot_digest,
-        lean_diff_hash=review_run.lean_diff_hash,
-        lean_policy_digest=review_run.lean_policy_digest,
-        lean_implementation_loop_id=review_run.lean_implementation_loop_id,
-        lean_work_item_id=review_run.lean_work_item_id,
-        lean_risk_accepted=review_run.lean_risk_accepted,
-        lean_exception_ids=review_run.lean_exception_ids,
-    )
-    prepared = prepare_local_pr_stage_close(
-        root=resolved_root,
-        adapter=LocalPRReviewStageAdapter(),
-        review_run=review_run,
-        work_item_id=review_run.lean_work_item_id,
-        close_kind="local-pr-review-attest",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=attestation_path,
-    )
-    return execute_stage_close(
-        prepared,
-        lambda: _write_pr_review_attestation(
-            store,
-            attestation_path,
-            attestation,
-            review_run,
-        ),
-    )
-
-
-def _write_pr_review_attestation(
-    store: LoopArtifactStore,
-    attestation_path: Path,
-    attestation: ReviewAttestation,
-    review_run: ReviewRun,
-) -> PRReviewAttestResult:
-    store.write_json_artifact(attestation_path, attestation)
-    return PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id=review_run.review_id,
-        loop_id=review_run.loop_id,
-        attestation_path=str(attestation_path),
-        head_commit=review_run.head_commit,
-        diff_source_hash=review_run.diff_source.patch_hash,
-        verdict=review_run.verdict,
-        unresolved_blockers=review_run.unresolved_blockers,
-        unresolved_required=review_run.unresolved_required,
-        unresolved_advisory=review_run.unresolved_advisory,
-        next_action=(
-            "Export the CI certificate bundle before pushing; "
-            "CI must not call any model."
-        ),
-    )
-
-
-def _latest_attestation_path(root: Path) -> Path:
-    return root / AI_SDLC_DIR / "reviews" / "pr" / "latest-attestation.json"
-
-
-def _remove_latest_attestation(path: Path) -> None:
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        return
-
-
 def _not_closeable_review_result(
     root: Path,
     review_run: ReviewRun,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> PRReviewCloseResult | None:
+    findings_exists = bool(review_run.findings_path.strip()) and (
+        _review_snapshot_contains(
+            root,
+            _resolve_repo_path(root, review_run.findings_path),
+            reviewed_artifacts,
+        )
+        if reviewed_artifacts is not None
+        else _resolve_repo_path(root, review_run.findings_path).is_file()
+    )
     if (
         review_run.status == LoopStatus.BLOCKED
         and review_run.findings_path.strip()
-        and not _resolve_repo_path(root, review_run.findings_path).is_file()
+        and not findings_exists
     ):
         return _blocked_not_closeable_review_result(review_run)
     if review_run.status != LoopStatus.NEEDS_USER and review_run.findings_path.strip():
@@ -1834,6 +1648,14 @@ def _reviewed_diff_source_mismatch(root: Path, review_run: ReviewRun) -> str:
                 f"{source_resolution.head_commit} != {review_run.head_commit}."
             )
         return ""
+    if source_kind in {
+        DiffSourceKind.LOCAL_STAGED,
+        DiffSourceKind.LOCAL_UNSTAGED,
+    }:
+        try:
+            resolve_review_input_for_source(root, source_resolution)
+        except GitError as exc:
+            return f"Reviewed diff source cannot be verified: {exc}"
     expected_hash = review_run.diff_source.patch_hash.strip()
     if not expected_hash:
         return "Reviewed diff source hash is missing; rerun PR review."
@@ -1872,9 +1694,18 @@ def _current_changed_paths_for_review_run(
     return list(resolve_review_input_for_source(root, source_resolution).changed_files)
 
 
-def _reviewed_worktree_dirty(root: Path, review_run: ReviewRun) -> str:
+def _reviewed_worktree_dirty(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    review_pack: ReviewPack | None = None,
+) -> str:
     try:
-        dirty_paths = _unreviewed_dirty_paths(root.resolve(), review_run)
+        dirty_paths = _unreviewed_dirty_paths(
+            root.resolve(),
+            review_run,
+            review_pack=review_pack,
+        )
     except GitError as exc:
         return f"Unable to verify clean worktree before closing PR review: {exc}"
     if dirty_paths:
@@ -1889,6 +1720,8 @@ def _reviewer_outputs_tamper_blocker(
     root: Path,
     review_run: ReviewRun,
     findings: ReviewFindings,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> str:
     if not review_run.review_pack_digest.strip():
         return (
@@ -1896,21 +1729,25 @@ def _reviewer_outputs_tamper_blocker(
         )
     review_pack_path = _resolve_repo_path(root, review_run.review_pack_path)
     try:
-        actual_pack_digest = _file_sha256(review_pack_path)
-    except OSError as exc:
+        actual_pack_digest = _review_artifact_sha256(
+            root,
+            review_pack_path,
+            reviewed_artifacts,
+        )
+    except (KeyError, OSError, ValueError) as exc:
         return f"Current review-pack.json cannot be verified: {exc}"
     if actual_pack_digest != review_run.review_pack_digest:
         return "Current review-pack.json changed after the reviewer run."
 
-    lean_blocker = validate_review_run_lean_binding(root, review_run)
-    if lean_blocker:
-        return lean_blocker
-
     if review_run.findings_digest.strip():
         findings_path = _resolve_repo_path(root, review_run.findings_path)
         try:
-            actual_digest = _file_sha256(findings_path)
-        except OSError as exc:
+            actual_digest = _review_artifact_sha256(
+                root,
+                findings_path,
+                reviewed_artifacts,
+            )
+        except (KeyError, OSError, ValueError) as exc:
             return f"Current findings.json cannot be verified: {exc}"
         if actual_digest != review_run.findings_digest:
             return "Current findings.json changed after the reviewer run."
@@ -1934,7 +1771,7 @@ def _final_report_tamper_blocker(
     review_run: ReviewRun,
 ) -> str:
     if not review_run.final_report_digest.strip():
-        return "Final report digest is missing; attestation would be unverifiable."
+        return "Final report digest is missing; the report cannot be verified."
     try:
         actual_digest = _file_sha256(final_report_path)
     except OSError as exc:
@@ -1944,7 +1781,12 @@ def _final_report_tamper_blocker(
     return ""
 
 
-def _unreviewed_dirty_paths(root: Path, review_run: ReviewRun) -> list[str]:
+def _unreviewed_dirty_paths(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    review_pack: ReviewPack | None = None,
+) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -1962,7 +1804,11 @@ def _unreviewed_dirty_paths(root: Path, review_run: ReviewRun) -> list[str]:
         raise GitError(result.stderr.strip() or "git status failed")
 
     source_kind = DiffSourceKind(review_run.diff_source.source_kind)
-    allowed_dirty = _reviewed_dirty_paths_for_review_run(root, review_run)
+    allowed_dirty = _reviewed_dirty_paths_for_review_run(
+        root,
+        review_run,
+        review_pack=review_pack,
+    )
     dirty: list[str] = []
     for status_xy, rel_path in _iter_porcelain_entries(result.stdout):
         normalized = rel_path.replace("\\", "/")
@@ -2001,6 +1847,8 @@ def _iter_porcelain_entries(output: str) -> list[tuple[str, str]]:
 def _reviewed_dirty_paths_for_review_run(
     root: Path,
     review_run: ReviewRun,
+    *,
+    review_pack: ReviewPack | None = None,
 ) -> frozenset[str]:
     source_kind = DiffSourceKind(review_run.diff_source.source_kind)
     if source_kind == DiffSourceKind.PATCH:
@@ -2014,16 +1862,17 @@ def _reviewed_dirty_paths_for_review_run(
         DiffSourceKind.LOCAL_UNSTAGED,
     }:
         return frozenset()
-    try:
-        review_pack = _load_review_pack(root, review_run.review_pack_path)
-    except (
-        FileNotFoundError,
-        json.JSONDecodeError,
-        ValidationError,
-        ValueError,
-        OSError,
-    ):
-        return frozenset()
+    if review_pack is None:
+        try:
+            review_pack = _load_review_pack(root, review_run.review_pack_path)
+        except (
+            FileNotFoundError,
+            json.JSONDecodeError,
+            ValidationError,
+            ValueError,
+            OSError,
+        ):
+            return frozenset()
     return frozenset(
         path.strip().replace("\\", "/")
         for path in review_pack.changed_files
@@ -2214,41 +2063,6 @@ def _preview(
         )
     provider_options = _normalize_provider_options(
         _apply_policy_provider_default(options, policy)
-    )
-    lean_binding, lean_blocker = resolve_lean_review_binding(
-        root,
-        allow_closed_source_mismatch=True,
-    )
-    if not lean_blocker:
-        lean_binding, lean_blocker, _scope_decisions = scope_lean_review_binding(
-            root,
-            lean_binding,
-            source_resolution,
-            changed_files,
-        )
-    if lean_blocker:
-        checks.append(
-            PRReviewCheck(
-                name="lean",
-                status=PRReviewCommandStatus.BLOCKED,
-                detail=lean_blocker,
-            )
-        )
-        return (
-            checks,
-            PRReviewCommandStatus.BLOCKED,
-            lean_blocker,
-            _lean_binding_next_action(lean_blocker),
-            None,
-            None,
-            source_resolution,
-        )
-    checks.append(
-        PRReviewCheck(
-            name="lean",
-            status=PRReviewCommandStatus.READY,
-            detail="Lean prerequisite is satisfied or not enabled.",
-        )
     )
     provider_blocker = _unsupported_provider_blocker(provider_options.provider_id)
     if provider_blocker:
@@ -2597,24 +2411,6 @@ def _write_review_run(
         findings_digest=_file_sha256(findings_path)
         if findings_path and findings_path.is_file()
         else "",
-        lean_report_path=review_pack.lean_report_path,
-        lean_report_digest=review_pack.lean_report_digest,
-        lean_report_markdown_path=review_pack.lean_report_markdown_path,
-        lean_report_markdown_digest=review_pack.lean_report_markdown_digest,
-        lean_input_path=review_pack.lean_input_path,
-        lean_input_digest=review_pack.lean_input_digest,
-        lean_snapshot_path=review_pack.lean_snapshot_path,
-        lean_snapshot_digest=review_pack.lean_snapshot_digest,
-        lean_findings_path=review_pack.lean_findings_path,
-        lean_findings_digest=review_pack.lean_findings_digest,
-        lean_policy_path=review_pack.lean_policy_path,
-        lean_policy_snapshot_digest=review_pack.lean_policy_snapshot_digest,
-        lean_diff_hash=review_pack.lean_diff_hash,
-        lean_policy_digest=review_pack.lean_policy_digest,
-        lean_implementation_loop_id=review_pack.lean_implementation_loop_id,
-        lean_work_item_id=review_pack.lean_work_item_id,
-        lean_risk_accepted=review_pack.lean_risk_accepted,
-        lean_exception_ids=review_pack.lean_exception_ids,
         verdict=findings.verdict if findings else None,
         unresolved_blockers=_count_findings(findings, FindingSeverity.BLOCKER),
         unresolved_required=_count_findings(findings, FindingSeverity.REQUIRED),
@@ -2733,7 +2529,7 @@ def _status_from_loop_status(status: LoopStatus) -> PRReviewCommandStatus:
 
 def _loop_status_from_provider(status: ProviderRunStatus) -> LoopStatus:
     if status == ProviderRunStatus.SUCCESS:
-        return LoopStatus.PASSED
+        return LoopStatus.NEEDS_REVIEW
     if status == ProviderRunStatus.CHANGES_REQUIRED:
         return LoopStatus.NEEDS_FIX
     if status == ProviderRunStatus.NEEDS_USER:
@@ -2749,7 +2545,7 @@ def _count_findings(findings: ReviewFindings | None, severity: FindingSeverity) 
 
 def _next_action_for_provider(result: ProviderRunResult) -> str:
     if result.status == ProviderRunStatus.SUCCESS:
-        return "Run ai-sdlc pr-review close."
+        return "Record verification evidence, then run bounded local PR expert review."
     if result.status == ProviderRunStatus.CHANGES_REQUIRED:
         return "Run ai-sdlc pr-review fix."
     if result.status == ProviderRunStatus.NEEDS_USER:
@@ -2757,41 +2553,196 @@ def _next_action_for_provider(result: ProviderRunResult) -> str:
     return result.next_action or "Fix the blocked review provider and rerun."
 
 
-def _load_current_review_run(root: Path) -> tuple[ReviewRun, Path]:
+def _load_current_review_run(
+    root: Path,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> tuple[ReviewRun, Path]:
     resolved_root = root.resolve()
     pointer_path = resolved_root / CURRENT_REVIEW_PATH
-    if not pointer_path.exists():
-        raise FileNotFoundError("Current PR review pointer is missing.")
-    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    if reviewed_artifacts is None:
+        if not pointer_path.exists():
+            raise FileNotFoundError("Current PR review pointer is missing.")
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    else:
+        pointer = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                resolved_root,
+                pointer_path,
+                reviewed_artifacts,
+                missing_message="Current PR review pointer is missing.",
+            ),
+            name=pointer_path.name,
+        )
     if not isinstance(pointer, dict):
         raise ValueError("Current review pointer is malformed: root must be an object.")
     review_run_path = _resolve_repo_path(
         resolved_root, str(pointer.get("review_run_path", ""))
     )
-    if not review_run_path.exists():
-        raise FileNotFoundError("Current review-run.json is missing.")
+    if reviewed_artifacts is None:
+        if not review_run_path.exists():
+            raise FileNotFoundError("Current review-run.json is missing.")
+        run_payload = json.loads(review_run_path.read_text(encoding="utf-8"))
+    else:
+        run_payload = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                resolved_root,
+                review_run_path,
+                reviewed_artifacts,
+                missing_message="Current review-run.json is missing.",
+            ),
+            name=review_run_path.name,
+        )
     return (
-        ReviewRun.model_validate(
-            json.loads(review_run_path.read_text(encoding="utf-8"))
-        ),
+        ReviewRun.model_validate(run_payload),
         review_run_path,
     )
 
 
-def _load_findings(root: Path, review_run: ReviewRun) -> ReviewFindings:
+def _load_findings(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> ReviewFindings:
     if not review_run.findings_path.strip():
         raise FileNotFoundError("Current findings.json is missing.")
     path = _resolve_repo_path(root, review_run.findings_path)
-    if not path.is_file():
-        raise FileNotFoundError("Current findings.json is missing.")
-    return ReviewFindings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if reviewed_artifacts is None:
+        if not path.is_file():
+            raise FileNotFoundError("Current findings.json is missing.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        payload = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                root,
+                path,
+                reviewed_artifacts,
+                missing_message="Current findings.json is missing.",
+            ),
+            name=path.name,
+        )
+    return ReviewFindings.model_validate(payload)
 
 
-def _load_review_pack(root: Path, path_text: str) -> ReviewPack:
+def _load_review_pack(
+    root: Path,
+    path_text: str,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> ReviewPack:
     path = _resolve_repo_path(root, path_text)
-    if not path.exists():
-        raise FileNotFoundError("Current review-pack.json is missing.")
-    return ReviewPack.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if reviewed_artifacts is None:
+        if not path.exists():
+            raise FileNotFoundError("Current review-pack.json is missing.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        payload = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                root,
+                path,
+                reviewed_artifacts,
+                missing_message="Current review-pack.json is missing.",
+            ),
+            name=path.name,
+        )
+    return ReviewPack.model_validate(payload)
+
+
+def _load_verification_evidence(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> list[str]:
+    path = LoopArtifactStore(root).review_run_dir(review_run.review_id) / (
+        "verification-evidence.json"
+    )
+    if reviewed_artifacts is None:
+        if not path.is_file():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        content = _review_snapshot_optional_bytes(root, path, reviewed_artifacts)
+        if content is None:
+            return []
+        payload = _parse_review_json_bytes(content, name=path.name)
+    if not isinstance(payload, dict):
+        raise ValueError("verification-evidence.json root must be an object")
+    if payload.get("artifact_kind") != "review-verification-evidence":
+        raise ValueError("verification-evidence.json artifact kind is invalid")
+    if payload.get("review_id") != review_run.review_id:
+        raise ValueError("verification-evidence.json review id does not match")
+    if payload.get("loop_id") != review_run.loop_id:
+        raise ValueError("verification-evidence.json loop id does not match")
+    entries = payload.get("entries")
+    if not isinstance(entries, list) or not all(
+        isinstance(item, str) and item.strip() for item in entries
+    ):
+        raise ValueError("verification-evidence.json entries must be non-empty strings")
+    return list(dict.fromkeys(item.strip() for item in entries))
+
+
+def _review_snapshot_key(root: Path, path: Path) -> str:
+    resolved_root = root.resolve(strict=True)
+    candidate = path if path.is_absolute() else resolved_root / path
+    lexical = Path(os.path.abspath(candidate))
+    try:
+        return lexical.relative_to(resolved_root).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"Reviewed artifact escapes project: {path}") from exc
+
+
+def _review_snapshot_required_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+    *,
+    missing_message: str,
+) -> bytes:
+    content = _review_snapshot_optional_bytes(root, path, reviewed_artifacts)
+    if content is None:
+        raise FileNotFoundError(missing_message)
+    return content
+
+
+def _review_snapshot_optional_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes | None:
+    return reviewed_artifacts.get(_review_snapshot_key(root, path))
+
+
+def _review_snapshot_contains(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bool:
+    return _review_snapshot_key(root, path) in reviewed_artifacts
+
+
+def _parse_review_json_bytes(content: bytes, *, name: str) -> object:
+    try:
+        return json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{name} is malformed: {exc}") from exc
+
+
+def _review_artifact_sha256(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes] | None,
+) -> str:
+    if reviewed_artifacts is None:
+        return _file_sha256(path)
+    content = _review_snapshot_required_bytes(
+        root,
+        path,
+        reviewed_artifacts,
+        missing_message=f"Reviewed artifact is missing: {path.name}",
+    )
+    return hashlib.sha256(content).hexdigest()
 
 
 def _repo_relative_path(root: Path, path: Path) -> str:
@@ -2834,7 +2785,10 @@ def _read_round_file(path: Path) -> int:
 def _load_resolution_statuses(path: Path) -> dict[str, FindingResolutionStatus]:
     if not path.exists():
         return {}
-    payload = _load_resolution_payload(path)
+    return _resolution_statuses(_load_resolution_payload(path))
+
+
+def _resolution_statuses(payload: object) -> dict[str, FindingResolutionStatus]:
     if not isinstance(payload, dict):
         return {}
     statuses: dict[str, FindingResolutionStatus] = {}
@@ -2855,7 +2809,10 @@ def _load_resolution_statuses(path: Path) -> dict[str, FindingResolutionStatus]:
 def _load_resolution_records(path: Path) -> dict[str, FindingResolution]:
     if not path.exists():
         return {}
-    payload = _load_resolution_payload(path)
+    return _resolution_records(_load_resolution_payload(path))
+
+
+def _resolution_records(payload: object) -> dict[str, FindingResolution]:
     if not isinstance(payload, dict):
         return {}
     records: dict[str, FindingResolution] = {}
@@ -2872,9 +2829,18 @@ def _load_resolution_records(path: Path) -> dict[str, FindingResolution]:
 
 def _load_resolution_payload(path: Path) -> object:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise ResolutionFileError(f"{path.name} is malformed: {exc}") from exc
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ResolutionFileError(f"{path.name} is unreadable: {exc}") from exc
+    return _parse_resolution_payload(content, name=path.name)
+
+
+def _parse_resolution_payload(content: bytes, *, name: str) -> object:
+    try:
+        text = content.decode("utf-8")
+        return yaml.safe_load(text) or {}
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ResolutionFileError(f"{name} is malformed: {exc}") from exc
 
 
 def _unresolved_counts(
@@ -2965,17 +2931,6 @@ def _render_final_report(
         f"- redacted_files: {coverage.get('redacted_files', 0)}",
         f"- omitted_files: {coverage.get('omitted_files', 0)}",
     ]
-    if review_run.lean_report_path:
-        lines.extend(
-            [
-                f"- lean_report: {review_run.lean_report_path}",
-                f"- lean_report_digest: {review_run.lean_report_digest}",
-                f"- lean_diff_hash: {review_run.lean_diff_hash}",
-                f"- lean_policy_digest: {review_run.lean_policy_digest}",
-                f"- lean_risk_accepted: {str(review_run.lean_risk_accepted).lower()}",
-                f"- lean_exception_ids: {','.join(review_run.lean_exception_ids) or '-'}",
-            ]
-        )
     lines.extend([f"- next_action: {next_action}", "", "## Verification Evidence"])
     lines.extend(f"- {item}" for item in evidence)
     lines.extend(
@@ -3041,20 +2996,20 @@ def _render_finding_outcome_lines(
 __all__ = [
     "CURRENT_REVIEW_PATH",
     "PRReviewCheck",
-    "PRReviewAttestResult",
     "PRReviewCommandStatus",
     "PRReviewCloseResult",
     "PRReviewDoctorResult",
+    "PRReviewEvidenceResult",
     "PRReviewFixResult",
     "PRReviewStartOptions",
     "PRReviewStartResult",
     "PRReviewStatusResult",
     "close_pr_review",
-    "attest_pr_review",
     "detect_current_model",
     "doctor_pr_review",
     "fix_pr_review",
     "parse_provider_command",
+    "record_pr_review_verification_evidence",
     "rerun_pr_review",
     "start_pr_review",
     "status_pr_review",

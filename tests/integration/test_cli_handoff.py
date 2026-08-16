@@ -47,7 +47,11 @@ def _seed_project(root: Path, linked_wi_id: str | None = None) -> None:
     )
     pack = build_resume_pack(root)
     assert pack is not None
-    pack.working_set_snapshot.spec_path, pack.working_set_snapshot.plan_path, pack.working_set_snapshot.tasks_path = str(spec_dir / "spec.md"), "", ""
+    (
+        pack.working_set_snapshot.spec_path,
+        pack.working_set_snapshot.plan_path,
+        pack.working_set_snapshot.tasks_path,
+    ) = str(spec_dir / "spec.md"), "", ""
     pack.current_branch = "feature/182-continuity"
     save_resume_pack(root, pack)
 
@@ -60,6 +64,7 @@ def _seed_current_pr_review(root: Path) -> None:
         json.dumps(
             {
                 "review_id": "review-001",
+                "loop_id": "loop-handoff",
                 "verdict": "risk_accepted",
                 "unresolved_blockers": 0,
                 "unresolved_required": 1,
@@ -118,7 +123,9 @@ def test_handoff_update_show_and_check(tmp_path: Path) -> None:
     assert "Local PR Review" in show.output
     assert "review_id: review-001" in show.output
     assert "unresolved: blockers=0, required=1, advisory=0" in show.output
-    assert "ai-sdlc pr-review close --require-no-blockers" in show.output
+    assert _squashed_output(
+        "ai-sdlc loop review --type local-pr-review --loop-id loop-handoff"
+    ) in _squashed_output(show.output)
     assert check.exit_code == 0
     assert "ready" in check.output.lower()
 
@@ -135,7 +142,13 @@ def test_handoff_update_prefers_linked_work_item_working_set(tmp_path: Path) -> 
     assert result.exit_code == 0
     assert f"Work Item: {linked}" in handoff
     assert handoff == (scoped_dir / "codex-handoff.md").read_text(encoding="utf-8")
-    assert tuple(Path(path) for path in (snapshot.spec_path, snapshot.plan_path, snapshot.tasks_path)) == tuple(tmp_path / "specs" / linked / name for name in ("spec.md", "plan.md", "tasks.md"))
+    assert tuple(
+        Path(path)
+        for path in (snapshot.spec_path, snapshot.plan_path, snapshot.tasks_path)
+    ) == tuple(
+        tmp_path / "specs" / linked / name
+        for name in ("spec.md", "plan.md", "tasks.md")
+    )
     assert root_pack == (scoped_dir / "resume-pack.yaml").read_text()
 
 

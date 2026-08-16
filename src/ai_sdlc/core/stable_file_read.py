@@ -17,10 +17,23 @@ _IS_WINDOWS = os.name == "nt"
 def read_stable_bytes(root: Path, path: Path) -> bytes:
     """读取普通文件，并拒绝越界、链接和读取期间发生的替换。"""
 
+    chunks: list[bytes] = []
+    consume_stable_chunks(root, path, chunks.append)
+    return b"".join(chunks)
+
+
+def consume_stable_chunks(
+    root: Path,
+    path: Path,
+    consumer: Callable[[bytes], None],
+) -> None:
+    """逐块消费稳定普通文件，避免为扫描一次性分配完整文件。"""
+
     canonical_root, relative = _lexical_relative(root, path)
     if os.name != "nt" and hasattr(os, "O_NOFOLLOW"):
-        return _read_posix(canonical_root, relative)
-    return _read_portable(canonical_root, relative)
+        _consume_posix(canonical_root, relative, consumer)
+        return
+    _consume_portable(canonical_root, relative, consumer)
 
 
 def read_stable_text(
@@ -71,6 +84,16 @@ def _lexical_relative(root: Path, path: Path) -> tuple[Path, Path]:
 
 
 def _read_posix(root: Path, relative: Path) -> bytes:
+    chunks: list[bytes] = []
+    _consume_posix(root, relative, chunks.append)
+    return b"".join(chunks)
+
+
+def _consume_posix(
+    root: Path,
+    relative: Path,
+    consumer: Callable[[bytes], None],
+) -> None:
     directory_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     directory_fd = os.open(root, directory_flags)
     try:
@@ -84,7 +107,7 @@ def _read_posix(root: Path, relative: Path) -> bytes:
             dir_fd=directory_fd,
         )
         try:
-            return _read_descriptor(file_fd, relative)
+            _consume_descriptor(file_fd, relative, consumer)
         finally:
             os.close(file_fd)
     except OSError as exc:
@@ -96,19 +119,42 @@ def _read_posix(root: Path, relative: Path) -> bytes:
 
 
 def _read_descriptor(file_fd: int, relative: Path) -> bytes:
-    before = os.fstat(file_fd)
-    if not stat.S_ISREG(before.st_mode):
-        raise ValueError(f"trusted file must be regular: {relative.as_posix()}")
     chunks: list[bytes] = []
-    while chunk := os.read(file_fd, _READ_SIZE):
-        chunks.append(chunk)
-    after = os.fstat(file_fd)
-    if _stat_identity(before) != _stat_identity(after):
-        raise ValueError(f"trusted file changed while reading: {relative.as_posix()}")
+    _consume_descriptor(file_fd, relative, chunks.append)
     return b"".join(chunks)
 
 
+def _consume_descriptor(
+    file_fd: int,
+    relative: Path,
+    consumer: Callable[[bytes], None],
+) -> None:
+    before = os.fstat(file_fd)
+    if not stat.S_ISREG(before.st_mode):
+        raise ValueError(f"trusted file must be regular: {relative.as_posix()}")
+    content_size = 0
+    while chunk := os.read(file_fd, _READ_SIZE):
+        consumer(chunk)
+        content_size += len(chunk)
+    after = os.fstat(file_fd)
+    if (
+        _stat_identity(before) != _stat_identity(after)
+        or content_size != before.st_size
+    ):
+        raise ValueError(f"trusted file changed while reading: {relative.as_posix()}")
+
+
 def _read_portable(root: Path, relative: Path) -> bytes:
+    chunks: list[bytes] = []
+    _consume_portable(root, relative, chunks.append)
+    return b"".join(chunks)
+
+
+def _consume_portable(
+    root: Path,
+    relative: Path,
+    consumer: Callable[[bytes], None],
+) -> None:
     candidate = root / relative
     _reject_link_path(root, relative)
     try:
@@ -116,20 +162,21 @@ def _read_portable(root: Path, relative: Path) -> bytes:
             _validate_opened_handle(root, candidate, stream.fileno(), relative)
             before = os.fstat(stream.fileno())
             if not stat.S_ISREG(before.st_mode):
-                raise ValueError(
-                    f"trusted file must be regular: {relative.as_posix()}"
-                )
-            data = stream.read()
+                raise ValueError(f"trusted file must be regular: {relative.as_posix()}")
+            content_size = 0
+            while chunk := stream.read(_READ_SIZE):
+                consumer(chunk)
+                content_size += len(chunk)
             after = os.fstat(stream.fileno())
             _validate_opened_handle(root, candidate, stream.fileno(), relative)
     except OSError as exc:
-        raise ValueError(
-            f"trusted file is unavailable: {relative.as_posix()}"
-        ) from exc
+        raise ValueError(f"trusted file is unavailable: {relative.as_posix()}") from exc
     _reject_link_path(root, relative)
-    if _stat_identity(before) != _stat_identity(after):
+    if (
+        _stat_identity(before) != _stat_identity(after)
+        or content_size != before.st_size
+    ):
         raise ValueError(f"trusted file changed while reading: {relative.as_posix()}")
-    return data
 
 
 def _validate_opened_handle(
@@ -210,9 +257,7 @@ def _reject_link_path(root: Path, relative: Path) -> None:
             ) from exc
         attributes = getattr(metadata, "st_file_attributes", 0)
         if stat.S_ISLNK(metadata.st_mode) or attributes & _REPARSE_POINT:
-            raise ValueError(
-                f"trusted file uses a symlink: {relative.as_posix()}"
-            )
+            raise ValueError(f"trusted file uses a symlink: {relative.as_posix()}")
 
 
 def _stat_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
@@ -225,4 +270,4 @@ def _stat_identity(metadata: os.stat_result) -> tuple[int, int, int, int, int]:
     )
 
 
-__all__ = ["read_stable_bytes", "read_stable_text"]
+__all__ = ["consume_stable_chunks", "read_stable_bytes", "read_stable_text"]

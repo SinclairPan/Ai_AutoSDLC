@@ -18,15 +18,34 @@ from ai_sdlc.core.pr_review_service import (
     PRReviewCommandStatus,
     PRReviewStartOptions,
     PRReviewStartResult,
-    attest_pr_review,
     close_pr_review,
     doctor_pr_review,
     fix_pr_review,
     parse_provider_command,
+    record_pr_review_verification_evidence,
     rerun_pr_review,
     start_pr_review,
     status_pr_review,
 )
+
+
+def test_start_ignores_legacy_attestation_artifacts(tmp_path: Path) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    legacy = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "latest-attestation.json"
+    legacy.mkdir(parents=True)
+
+    result = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-legacy-artifact",
+        )
+    )
+
+    assert result.status == PRReviewCommandStatus.STARTED
+    assert legacy.is_dir()
 
 
 def test_start_dry_run_does_not_create_review_artifacts(tmp_path) -> None:
@@ -94,7 +113,6 @@ def test_start_dry_run_rejects_unknown_provider(tmp_path) -> None:
     assert [check.name for check in result.checks] == [
         "init",
         "diff_source",
-        "lean",
         "provider",
     ]
     assert not (tmp_path / ".ai-sdlc" / "reviews").exists()
@@ -169,28 +187,6 @@ def test_start_rejects_unsafe_review_id_without_traceback(tmp_path) -> None:
     assert not (tmp_path / ".ai-sdlc" / "reviews").exists()
 
 
-def test_start_blocks_when_stale_attestation_cannot_be_removed(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    attestation_path = (
-        tmp_path / ".ai-sdlc" / "reviews" / "pr" / "latest-attestation.json"
-    )
-    attestation_path.mkdir(parents=True)
-
-    result = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attestation-unlink-blocked",
-        )
-    )
-
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "Unable to clear stale review attestation" in result.blocker
-    assert "pr-review start" in result.next_action
-
-
 def test_start_dry_run_uses_policy_default_provider_when_omitted(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     policy_path = tmp_path / ".ai-sdlc" / "project" / "config" / "loop-policy.yaml"
@@ -244,7 +240,6 @@ def test_start_dry_run_preserves_blocked_model_policy(tmp_path) -> None:
     assert [check.name for check in result.checks] == [
         "init",
         "diff_source",
-        "lean",
         "model",
     ]
     assert result.checks[-1].status == PRReviewCommandStatus.BLOCKED
@@ -278,7 +273,6 @@ def test_doctor_preserves_blocked_model_policy(tmp_path) -> None:
     assert [check.name for check in result.checks] == [
         "init",
         "diff_source",
-        "lean",
         "model",
     ]
     assert result.checks[-1].status == PRReviewCommandStatus.BLOCKED
@@ -831,6 +825,49 @@ def test_fix_does_not_trust_provider_supplied_resolution(tmp_path) -> None:
     assert fix.selected_findings_count == 1
 
 
+def test_close_rejects_a_new_current_review_after_reviewed_identity_was_selected(
+    tmp_path: Path,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    reviewed = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-selected-for-close",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    replacement = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-started-concurrently",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    result = close_pr_review(
+        tmp_path,
+        expected_review_id=reviewed.review_id,
+        expected_loop_id=reviewed.loop_id,
+    )
+
+    assert replacement.review_id != reviewed.review_id
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "reviewed identity" in result.blocker
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "reviews"
+        / "pr"
+        / reviewed.review_id
+        / "final-report.md"
+    ).exists()
+
+
 def test_fix_preserves_existing_resolved_resolution_records(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
@@ -878,15 +915,16 @@ def test_close_blocks_required_findings_then_allows_risk_accepted(
     )
 
     blocked = close_pr_review(tmp_path)
-    accepted = close_pr_review(
+    evidence = record_pr_review_verification_evidence(
         tmp_path,
-        require_no_blockers=True,
-        verification_evidence=["uv run pytest tests/unit/test_x.py -q"],
+        evidence=["uv run pytest tests/unit/test_x.py -q"],
     )
+    accepted = close_pr_review(tmp_path, require_no_blockers=True)
 
     assert blocked.status == PRReviewCommandStatus.BLOCKED
     assert blocked.verdict == "blocked"
     assert "REQUIRED" in blocked.blocker
+    assert evidence.status == PRReviewCommandStatus.READY
     assert accepted.status == PRReviewCommandStatus.CLOSED
     assert accepted.verdict == "risk_accepted"
     assert Path(accepted.final_report_path).is_file()
@@ -924,7 +962,29 @@ def test_close_honors_policy_default_require_no_blockers(tmp_path) -> None:
     assert result.unresolved_required == 1
 
 
-def test_close_blocks_malformed_loop_policy_without_traceback(tmp_path) -> None:
+def test_close_uses_reviewed_pack_policy_when_live_policy_changes(tmp_path) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-frozen-close-policy",
+            mock_fixture=MockReviewerFixture.CHANGES_REQUIRED,
+        )
+    )
+    with patch("ai_sdlc.core.pr_review_service.load_loop_policy") as live_policy_loader:
+        live_policy_loader.return_value.default_close_mode = "require-no-blockers"
+        result = close_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert result.verdict == "blocked"
+    assert result.blocker == "Unresolved REQUIRED findings remain."
+    live_policy_loader.assert_not_called()
+
+
+def test_close_does_not_reload_live_policy_after_review(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
     start_pr_review(
@@ -936,14 +996,15 @@ def test_close_blocks_malformed_loop_policy_without_traceback(tmp_path) -> None:
             mock_fixture=MockReviewerFixture.CLEAN,
         )
     )
-    _write_loop_policy(tmp_path, "remote_model_policy: strict\n")
+    with patch(
+        "ai_sdlc.core.pr_review_service.load_loop_policy",
+        side_effect=AssertionError("close must use the reviewed policy decision"),
+    ) as live_policy_loader:
+        result = close_pr_review(tmp_path)
 
-    result = close_pr_review(tmp_path)
-
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert result.verdict == "blocked"
-    assert "Loop policy is malformed" in result.blocker
-    assert "loop-policy.yaml" in result.next_action
+    assert result.status == PRReviewCommandStatus.CLOSED
+    assert result.verdict == "fully_clean"
+    live_policy_loader.assert_not_called()
 
 
 def test_close_blocks_tampered_reviewer_findings(tmp_path) -> None:
@@ -1102,9 +1163,6 @@ def test_close_uses_reviewed_head_ref_not_checked_out_head(tmp_path) -> None:
     )
     assert result.status == PRReviewCommandStatus.CLOSED
     assert result.verdict == "fully_clean"
-    attest = attest_pr_review(tmp_path)
-    assert attest.status == PRReviewCommandStatus.READY
-    assert attest.head_commit == feature_head
 
 
 def test_close_blocks_when_worktree_dirty_after_review(tmp_path) -> None:
@@ -1174,6 +1232,59 @@ def test_close_allows_reviewed_local_staged_path_with_space(tmp_path) -> None:
     assert start.status == PRReviewCommandStatus.STARTED
     assert result.status == PRReviewCommandStatus.CLOSED
     assert result.verdict == "fully_clean"
+
+
+@pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
+def test_local_staged_review_rejects_hidden_index_paths(
+    tmp_path,
+    index_flag: str,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('base')\n", "add app")
+    (tmp_path / "src/app.py").write_text("print('staged')\n", encoding="utf-8")
+    _git(tmp_path, "add", "src/app.py")
+    _git(tmp_path, "update-index", index_flag, "src/app.py")
+
+    result = start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="",
+            diff_source="local-staged",
+            provider_id="mock-reviewer",
+            review_id="review-local-staged-hidden-index",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "hidden index flags" in result.blocker
+
+
+def test_close_blocks_hidden_index_flag_added_after_local_staged_review(
+    tmp_path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('base')\n", "add app")
+    (tmp_path / "src/app.py").write_text("print('staged')\n", encoding="utf-8")
+    _git(tmp_path, "add", "src/app.py")
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref="",
+            diff_source="local-staged",
+            provider_id="mock-reviewer",
+            review_id="review-local-staged-hidden-after-start",
+            mock_fixture=MockReviewerFixture.CLEAN,
+        )
+    )
+    _git(tmp_path, "update-index", "--assume-unchanged", "src/app.py")
+    (tmp_path / "src/app.py").write_text("print('hidden')\n", encoding="utf-8")
+
+    result = close_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert "hidden index flags" in result.blocker
+    assert result.final_report_path == ""
 
 
 def test_close_blocks_changed_local_staged_diff_after_review(tmp_path) -> None:
@@ -1320,364 +1431,6 @@ def test_close_fully_clean_after_resolution_marks_required_fixed(tmp_path) -> No
     assert "tests passed" in report
 
 
-def test_attest_writes_latest_attestation_after_clean_close(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attest",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close = close_pr_review(tmp_path)
-
-    result = attest_pr_review(tmp_path)
-
-    assert close.status == PRReviewCommandStatus.CLOSED
-    assert result.status == PRReviewCommandStatus.READY
-    assert result.review_id == "review-attest"
-    assert "must not call any model" in result.next_action
-    payload = json.loads(Path(result.attestation_path).read_text(encoding="utf-8"))
-    assert payload["artifact_kind"] == "review-attestation"
-    assert payload["review_id"] == "review-attest"
-    assert payload["head_commit"] == _git(tmp_path, "rev-parse", "HEAD")
-    assert payload["diff_source"]["source_kind"] == "local-git-range"
-    assert payload["ci_may_call_model"] is False
-    assert payload["final_report_path"].endswith("final-report.md")
-
-
-def test_close_clears_existing_latest_attestation(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-close-clears-attestation",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    first_close = close_pr_review(tmp_path)
-    attest = attest_pr_review(tmp_path)
-
-    second_close = close_pr_review(tmp_path)
-
-    assert first_close.status == PRReviewCommandStatus.CLOSED
-    assert attest.status == PRReviewCommandStatus.READY
-    assert second_close.status == PRReviewCommandStatus.CLOSED
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
-def test_start_replacement_review_clears_latest_attestation(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attest-replacement",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close_pr_review(tmp_path)
-    attest = attest_pr_review(tmp_path)
-
-    replacement = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-replacement",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-
-    assert attest.status == PRReviewCommandStatus.READY
-    assert replacement.status == PRReviewCommandStatus.STARTED
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
-def test_blocked_replacement_review_clears_latest_attestation(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attest-blocked-replacement",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close_pr_review(tmp_path)
-    attest = attest_pr_review(tmp_path)
-
-    blocked = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref="",
-            diff_source="patch",
-            patch_file="missing.patch",
-            provider_id="mock-reviewer",
-            review_id="review-blocked-replacement",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-
-    assert attest.status == PRReviewCommandStatus.READY
-    assert blocked.status == PRReviewCommandStatus.BLOCKED
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
-def test_attest_blocks_tampered_review_pack_after_close(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attest-tamper-pack",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close = close_pr_review(tmp_path)
-    first_attest = attest_pr_review(tmp_path)
-    Path(start.review_pack_path).write_text("{}", encoding="utf-8")
-
-    result = attest_pr_review(tmp_path)
-
-    assert close.status == PRReviewCommandStatus.CLOSED
-    assert first_attest.status == PRReviewCommandStatus.READY
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "review-pack.json changed" in result.blocker
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
-def test_attest_blocks_tampered_final_report_after_close(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attest-tamper-report",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close = close_pr_review(tmp_path)
-    Path(close.final_report_path).write_text("tampered\n", encoding="utf-8")
-
-    result = attest_pr_review(tmp_path)
-
-    assert close.status == PRReviewCommandStatus.CLOSED
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "Final report changed after PR review close" in result.blocker
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
-def test_attest_blocks_changed_local_git_range_base_after_close(tmp_path) -> None:
-    _init_repo(tmp_path)
-    _git(tmp_path, "checkout", "-b", "feature")
-    _commit_file(tmp_path, "src/app.py", "print('feature')\n", "add app")
-    start = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref="main",
-            provider_id="mock-reviewer",
-            review_id="review-attest-stale-base",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close = close_pr_review(tmp_path)
-    _git(tmp_path, "branch", "-f", "main", "HEAD")
-
-    result = attest_pr_review(tmp_path)
-
-    assert start.status == PRReviewCommandStatus.STARTED
-    assert close.status == PRReviewCommandStatus.CLOSED
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "base commit does not match reviewed base commit" in result.blocker
-
-
-def test_attest_blocks_changed_patch_source_hash_after_close(tmp_path) -> None:
-    _init_repo(tmp_path)
-    _commit_file(
-        tmp_path,
-        "change.patch",
-        "diff --git a/src/app.py b/src/app.py\n"
-        "--- a/src/app.py\n"
-        "+++ b/src/app.py\n"
-        "@@ -0,0 +1 @@\n"
-        "+print('from patch')\n",
-        "add patch",
-    )
-    start = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref="",
-            diff_source="patch",
-            patch_file="change.patch",
-            provider_id="mock-reviewer",
-            review_id="review-patch-attest-hash",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close = close_pr_review(tmp_path)
-    (tmp_path / "change.patch").write_text(
-        "diff --git a/src/app.py b/src/app.py\n"
-        "--- a/src/app.py\n"
-        "+++ b/src/app.py\n"
-        "@@ -0,0 +1 @@\n"
-        "+print('changed patch')\n",
-        encoding="utf-8",
-    )
-
-    result = attest_pr_review(tmp_path)
-
-    assert start.status == PRReviewCommandStatus.STARTED
-    assert close.status == PRReviewCommandStatus.CLOSED
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "diff source hash does not match" in result.blocker
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
-def test_attest_writes_local_attestation_for_patch_source(
-    tmp_path,
-) -> None:
-    _init_repo(tmp_path)
-    _commit_file(
-        tmp_path,
-        "change.patch",
-        "diff --git a/src/app.py b/src/app.py\n"
-        "--- a/src/app.py\n"
-        "+++ b/src/app.py\n"
-        "@@ -0,0 +1 @@\n"
-        "+print('from patch')\n",
-        "add patch",
-    )
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            diff_source="patch",
-            patch_file="change.patch",
-            provider_id="mock-reviewer",
-            review_id="review-patch-non-exportable",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close = close_pr_review(tmp_path)
-    attestation_path = tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json"
-    prior_attestation = b'{"review_id":"prior-trusted-review"}\n'
-    attestation_path.write_bytes(prior_attestation)
-    result = attest_pr_review(tmp_path)
-
-    assert close.status == PRReviewCommandStatus.CLOSED
-    assert result.status == PRReviewCommandStatus.READY
-    assert result.diff_source_hash
-    assert attestation_path.read_bytes() != prior_attestation
-    payload = json.loads(attestation_path.read_text(encoding="utf-8"))
-    assert payload["diff_source"]["source_kind"] == "patch"
-    assert payload["diff_source_hash"]
-
-
-@pytest.mark.parametrize("diff_source", ["local-staged", "local-unstaged"])
-def test_attest_writes_local_attestation_for_worktree_source(
-    tmp_path,
-    diff_source: str,
-) -> None:
-    _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('before')\n", "add app")
-    (tmp_path / "src/app.py").write_text("print('after')\n", encoding="utf-8")
-    if diff_source == "local-staged":
-        _git(tmp_path, "add", "src/app.py")
-    start = start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            diff_source=diff_source,
-            provider_id="mock-reviewer",
-            review_id=f"review-{diff_source}-attestation",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-
-    close = close_pr_review(tmp_path)
-    result = attest_pr_review(tmp_path)
-
-    assert start.status == PRReviewCommandStatus.STARTED, start.blocker
-    assert close.status == PRReviewCommandStatus.CLOSED, close.blocker
-    assert result.status == PRReviewCommandStatus.READY, result.blocker
-    payload = json.loads(Path(result.attestation_path).read_text(encoding="utf-8"))
-    assert payload["diff_source"]["source_kind"] == diff_source
-    assert payload["diff_source_hash"]
-
-
-def test_attest_clears_stale_attestation_after_patch_source_drifts(
-    tmp_path,
-) -> None:
-    _init_repo(tmp_path)
-    patch_path = tmp_path / "change.patch"
-    patch_path.write_text(
-        "diff --git a/src/app.py b/src/app.py\n"
-        "--- a/src/app.py\n"
-        "+++ b/src/app.py\n"
-        "@@ -0,0 +1 @@\n"
-        "+print('from patch')\n",
-        encoding="utf-8",
-    )
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            diff_source="patch",
-            patch_file="change.patch",
-            provider_id="mock-reviewer",
-            review_id="review-patch-source-drift",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    assert close_pr_review(tmp_path).status == PRReviewCommandStatus.CLOSED
-    first = attest_pr_review(tmp_path)
-    assert first.status == PRReviewCommandStatus.READY
-    attestation_path = Path(first.attestation_path)
-    assert attestation_path.is_file()
-    patch_path.write_text(
-        patch_path.read_text(encoding="utf-8") + "\n",
-        encoding="utf-8",
-    )
-
-    result = attest_pr_review(tmp_path)
-
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "diff source hash does not match" in result.blocker
-    assert not attestation_path.exists()
-
-
-def test_attest_blocks_before_review_close(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-attest-open",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-
-    result = attest_pr_review(tmp_path)
-
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert "must be closed" in result.blocker
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
-
-
 def test_close_blocks_malformed_findings_artifact(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
@@ -1725,31 +1478,6 @@ def test_close_blocks_provider_blocked_run_even_with_valid_findings(tmp_path) ->
     assert result.verdict == "blocked"
     assert "provider run is blocked" in result.blocker
     assert result.final_report_path == ""
-
-
-def test_close_with_unresolved_findings_does_not_request_close_authorization(
-    tmp_path: Path,
-) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-blocked-without-authorization",
-            mock_fixture=MockReviewerFixture.CHANGES_REQUIRED,
-        )
-    )
-
-    with patch(
-        "ai_sdlc.core.pr_review_service.execute_stage_close",
-        side_effect=AssertionError("blocked review requested close authorization"),
-    ):
-        result = close_pr_review(tmp_path)
-
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert result.unresolved_required == 1
 
 
 def test_close_treats_invalid_waiver_as_unresolved(tmp_path) -> None:
@@ -1883,28 +1611,6 @@ def test_rerun_regenerates_review_for_same_scope_changes(tmp_path) -> None:
     ]
     assert result.status == PRReviewCommandStatus.STARTED
     assert new_head != old_head
-
-
-def test_rerun_clears_latest_attestation(tmp_path) -> None:
-    base_commit = _init_repo(tmp_path)
-    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
-    start_pr_review(
-        PRReviewStartOptions(
-            root=tmp_path,
-            base_ref=base_commit,
-            provider_id="mock-reviewer",
-            review_id="review-rerun-attestation",
-            mock_fixture=MockReviewerFixture.CLEAN,
-        )
-    )
-    close_pr_review(tmp_path)
-    attest = attest_pr_review(tmp_path)
-
-    result = rerun_pr_review(tmp_path, mock_fixture=MockReviewerFixture.CLEAN)
-
-    assert attest.status == PRReviewCommandStatus.READY
-    assert result.status == PRReviewCommandStatus.STARTED
-    assert not (tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json").exists()
 
 
 def test_rerun_uses_patch_source_scope(tmp_path) -> None:

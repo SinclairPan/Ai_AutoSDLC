@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the prepared-disabled 1.0.5 candidate and 1.0.2 public truth."""
+"""Validate the public AI-SDLC 1.0.2 release identity."""
 
 from __future__ import annotations
 
@@ -11,44 +11,19 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CURRENT_REPOSITORY_URL = "https://github.com/SinclairPan/Ai_AutoSDLC"
-CURRENT_VERSION = "1.0.5"
-PUBLISHED_VERSION = "1.0.2"
+CURRENT_VERSION = "1.0.2"
 STABLE_SOURCE_CLONE = (
     "git clone --branch v1.0.2 --depth 1 "
     "https://github.com/SinclairPan/Ai_AutoSDLC.git"
 )
 
-PUBLIC_DOC_PATHS = {
-    "docs/enterprise-agentops-setup.zh-CN.md",
-    "docs/framework-defect-backlog.zh-CN.md",
-    "docs/product-contract.md",
-    "docs/pull-request-checklist.zh.md",
-    "docs/框架自迭代开发与发布约定.md",
-}
-
 REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
-    "README.md": (
-        CURRENT_REPOSITORY_URL,
-        CURRENT_VERSION,
-        STABLE_SOURCE_CLONE,
-        "v1.0.5 release candidate / not published / prepared-disabled",
-        "last published version is v1.0.2",
-        "v1.0.4 terminal NO-GO / not released",
-        "WorkItem 010 three-PR release migration",
-        "active no-bypass tag ruleset protects software and Certificate tags",
-    ),
+    "README.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION, STABLE_SOURCE_CLONE),
     "USER_GUIDE.zh-CN.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
-        PUBLISHED_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
-        "last published version is v1.0.2",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
-        "v1.0.4 未发布",
-        "v1.0.4 terminal NO-GO / not released",
-        "WorkItem 010 three-PR release migration",
-        "active no-bypass tag ruleset protects software and Certificate tags",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-windows-amd64.zip",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-macos-arm64.tar.gz",
         "releases/download/v1.0.2/ai-sdlc-offline-1.0.2-linux-amd64.tar.gz",
@@ -65,125 +40,15 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "当前结果 / Result",
         "下一步 / Next",
     ),
-    "docs/product-contract.md": (
-        CURRENT_REPOSITORY_URL,
-        CURRENT_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
-        "last published version is v1.0.2",
-        "v1.0.4 terminal NO-GO / not released",
-        "WorkItem 010 three-PR release migration",
-        "active no-bypass tag ruleset protects software and Certificate tags",
-    ),
+    "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
-        PUBLISHED_VERSION,
         STABLE_SOURCE_CLONE,
-        "v1.0.5 release candidate / not published / prepared-disabled",
-        "last published version is v1.0.2",
-        "v1.0.4 terminal NO-GO / not released",
-        "WorkItem 010 three-PR release migration",
-        "不得 redispatch、rerun、上传或发布 v1.0.4",
-        "不得上传、发布或下载 v1.0.5 候选",
     ),
     "packaging/offline/RELEASE_CHECKLIST.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
-        PUBLISHED_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
-        "last published version is v1.0.2",
-        "v1.0.4 terminal NO-GO / not released",
-        "WorkItem 010 three-PR release migration",
-        "不得 redispatch、rerun、上传或发布 v1.0.4",
-        "不得上传、发布或下载 v1.0.5 候选",
-    ),
-    "docs/pull-request-checklist.zh.md": (
-        CURRENT_VERSION,
-        PUBLISHED_VERSION,
-        "v1.0.5 release candidate / not published / prepared-disabled",
-        "last published version is v1.0.2",
-        "v1.0.4 terminal NO-GO / not released",
-        "WorkItem 010 three-PR release migration",
-        "不得 redispatch、rerun、上传或发布 v1.0.4",
-        "不得上传、发布或下载 v1.0.5 候选",
-    ),
-    "packaging/install_online.sh": (
-        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc==1.0.2}"',
-    ),
-    "packaging/install_online.ps1": (
-        '[string]$PackageSpec = "ai-sdlc==1.0.2",',
-    ),
-    "docs/框架自迭代开发与发布约定.md": (
-        "## v1.0.4 bootstrap 终止记录（2026-08-09）",
-        "terminal NO-GO / not released / bootstrap budget exhausted",
-        "0776885aeb6299bad3c13fd6c47658ad17dad5e1",
-        "6125d7e80b1a66eead4ddf5654a578ec2a1e856e",
-        "a6a1f2ac463d9ca2dc1ea68af73271e679449015",
-        "367380686",
-        "31295426083",
-        "93199662116",
-        "93211087289",
-        "93211087697",
-        "1 failed / 6219 passed / 16 skipped",
-        "zero assets",
-        "UNKNOWN",
-        "pre-tag qualification",
-        "WorkItem 009",
-        "WorkItem 010",
-        "active no-bypass tag ruleset protects software and Certificate tags",
-        "## v1.0.5 prepared-disabled 候选记录",
-        "WorkItem 010 three-PR release migration",
-        "Actions history duplicate-run detector",
-        "retention and no-delete trust boundary",
-        "not an immutable authority",
-        "protected tag namespace becomes the durable burn authority",
-    ),
-}
-
-FORBIDDEN_SURFACE_MARKERS: dict[str, tuple[str, ...]] = {
-    "README.md": (
-        "WorkItem 008",
-        "only future WorkItem 010 may migrate to v1.0.5",
-        "releases/download/v1.0.5/",
-        "v1.0.5 已发布",
-    ),
-    "USER_GUIDE.zh-CN.md": (
-        "WorkItem 008",
-        "only future WorkItem 010 may migrate to v1.0.5",
-        "releases/download/v1.0.5/",
-        "v1.0.5 已发布",
-    ),
-    "docs/product-contract.md": (
-        "WorkItem 008",
-        "only future WorkItem 010 may migrate to v1.0.5",
-        "releases/download/v1.0.5/",
-        "v1.0.5 已发布",
-    ),
-    "packaging/offline/README.md": (
-        "上传动作必须由有权限的维护者明确触发",
-        "only future WorkItem 010 may migrate to v1.0.5",
-        "releases/download/v1.0.5/",
-        "v1.0.5 已发布",
-    ),
-    "packaging/offline/RELEASE_CHECKLIST.md": (
-        "上传动作由有权限维护者明确执行",
-        "only future WorkItem 010 may migrate to v1.0.5",
-        "releases/download/v1.0.5/",
-        "v1.0.5 已发布",
-    ),
-    "docs/pull-request-checklist.zh.md": (
-        "当前发布版本为 `1.0.4`",
-        "only future WorkItem 010 may migrate to v1.0.5",
-        "releases/download/v1.0.5/",
-        "v1.0.5 已发布",
-    ),
-    "packaging/install_online.sh": (
-        "AI_SDLC_PACKAGE_SPEC=ai-sdlc==1.0.5",
-        'PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-ai-sdlc}"',
-    ),
-    "packaging/install_online.ps1": (
-        '[string]$PackageSpec = "ai-sdlc",',
-        '[string]$PackageSpec = "ai-sdlc==1.0.5",',
     ),
 }
 
@@ -265,27 +130,17 @@ def scan_paths(root: Path, files: Mapping[str, str]) -> list[Finding]:
     del root
     findings: list[Finding] = []
     for path, text in files.items():
-        has_path_finding = False
         if (
             "/" not in path
             and path.lower().endswith(".md")
             and path not in PUBLIC_ROOT_MARKDOWN
         ):
             findings.append(Finding(path, None, "non-public-root-doc", path))
-            has_path_finding = True
         if "/" not in path and path.lower().endswith((".yaml", ".yml")):
             findings.append(Finding(path, None, "non-public-root-state", path))
-            has_path_finding = True
         for pattern, marker in PATH_RULES:
             if pattern.search(path):
                 findings.append(Finding(path, None, marker, path))
-                has_path_finding = True
-        if (
-            not has_path_finding
-            and path.startswith("docs/")
-            and path not in PUBLIC_DOC_PATHS
-        ):
-            findings.append(Finding(path, None, "non-public-doc", path))
 
         for line_number, line in enumerate(text.splitlines(), start=1):
             for pattern, marker in TEXT_RULES:
@@ -325,11 +180,6 @@ def validate_required_surfaces(files: Mapping[str, str]) -> list[Finding]:
             if marker not in text:
                 findings.append(
                     Finding(path, None, "required-identity-marker-missing", marker)
-                )
-        for marker in FORBIDDEN_SURFACE_MARKERS.get(path, ()):
-            if marker in text:
-                findings.append(
-                    Finding(path, None, "obsolete-release-authorization", marker)
                 )
     return findings
 

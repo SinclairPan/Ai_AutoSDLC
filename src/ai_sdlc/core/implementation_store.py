@@ -21,15 +21,22 @@ from ai_sdlc.core.implementation_models import (
     ImplementationTasks,
     ImplementationVerificationEvidence,
 )
-from ai_sdlc.core.lean_code_identifiers import is_safe_artifact_id
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun, LoopType, utc_now_iso
-from ai_sdlc.core.loop_policy import load_loop_policy
 from ai_sdlc.core.plan_check import parse_markdown_frontmatter
 from ai_sdlc.core.state_machine import load_work_item, work_item_path
 from ai_sdlc.models.work import WorkType
 
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
+_WINDOWS_DEVICE_NAMES = {
+    "AUX",
+    "CLOCK$",
+    "CON",
+    "NUL",
+    "PRN",
+    *(f"COM{index}" for index in range(1, 10)),
+    *(f"LPT{index}" for index in range(1, 10)),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,9 +134,7 @@ def _implementation_quality_profile(
             )
         except ValueError as exc:
             raise ValueError("formal work_type metadata is invalid") from exc
-    policy = load_loop_policy(root)
-    enabled = policy.lean_code_enabled and work_type != WorkType.UNCERTAIN
-    return work_type, ["lean-code"] if enabled else []
+    return work_type, []
 
 
 def _stable_digest(payload: object) -> str:
@@ -148,6 +153,24 @@ def implementation_task_items_digest(items: list[ImplementationTaskItem]) -> str
     return _stable_digest([item.model_dump(mode="json") for item in items])
 
 
+def implementation_input_digest(impl_input: ImplementationInput) -> str:
+    """Hash stable implementation input content without timestamp provenance."""
+
+    return _stable_digest(_without_provenance(impl_input.model_dump(mode="json")))
+
+
+def _without_provenance(value: object) -> object:
+    if isinstance(value, dict):
+        return {
+            key: _without_provenance(item)
+            for key, item in value.items()
+            if key not in {"created_at", "ai_sdlc_version"}
+        }
+    if isinstance(value, list):
+        return [_without_provenance(item) for item in value]
+    return value
+
+
 def resolve_loop_id(loop_id: str) -> str:
     """Resolve or generate a safe implementation loop id."""
 
@@ -161,8 +184,9 @@ def resolve_loop_id(loop_id: str) -> str:
 def validate_explicit_loop_id(loop_id: str) -> str:
     """Validate an explicit implementation loop id for shell-safe rendering."""
 
-    if not _SAFE_EXPLICIT_LOOP_ID.fullmatch(loop_id) or not is_safe_artifact_id(
-        loop_id
+    if (
+        not _SAFE_EXPLICIT_LOOP_ID.fullmatch(loop_id)
+        or loop_id.upper() in _WINDOWS_DEVICE_NAMES
     ):
         raise ValueError(
             "explicit loop id may contain only letters, digits, hyphen, and "
@@ -368,6 +392,7 @@ __all__ = [
     "artifact_ref",
     "build_implementation_input",
     "implementation_artifacts",
+    "implementation_input_digest",
     "implementation_task_items_digest",
     "read_evidence",
     "read_input",

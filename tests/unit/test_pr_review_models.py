@@ -27,7 +27,6 @@ from ai_sdlc.core.pr_review_models import (
     ProviderIsolationStatus,
     ProviderMode,
     ProviderRunnerInvocation,
-    ReviewAttestation,
     ReviewFinding,
     ReviewFindings,
     ReviewPack,
@@ -188,56 +187,6 @@ def test_source_resolution_embeds_descriptor() -> None:
     assert descriptor["source_kind"] == "local-git-range"
     assert descriptor["adapter_id"] == "local-git-range"
     assert descriptor["base_commit"] == "a" * 40
-
-
-def test_review_attestation_is_ci_read_only() -> None:
-    attestation = ReviewAttestation(
-        review_id="review-001",
-        loop_id="loop-001",
-        head_commit="b" * 40,
-        verdict=ReviewVerdict.FULLY_CLEAN,
-        review_run_path=".ai-sdlc/reviews/pr/review-001/review-run.json",
-        review_pack_path=".ai-sdlc/reviews/pr/review-001/review-pack.json",
-        final_report_path=".ai-sdlc/reviews/pr/review-001/final-report.md",
-    )
-
-    payload = attestation.model_dump(mode="json")
-
-    assert payload["artifact_kind"] == "review-attestation"
-    assert payload["ci_may_call_model"] is False
-    assert payload["diff_source"]["source_kind"] == "local-git-range"
-    assert payload["verdict"] == "fully_clean"
-
-
-def test_review_attestation_requires_non_git_range_diff_source_hash() -> None:
-    with pytest.raises(
-        ValidationError,
-        match="non-git-range review attestation requires diff_source_hash",
-    ):
-        ReviewAttestation(
-            review_id="review-001",
-            loop_id="loop-001",
-            head_commit="b" * 40,
-            diff_source=DiffSourceDescriptor(source_kind=DiffSourceKind.LOCAL_STAGED),
-            verdict=ReviewVerdict.FULLY_CLEAN,
-            review_run_path=".ai-sdlc/reviews/pr/review-001/review-run.json",
-            review_pack_path=".ai-sdlc/reviews/pr/review-001/review-pack.json",
-            final_report_path=".ai-sdlc/reviews/pr/review-001/final-report.md",
-        )
-
-
-def test_review_attestation_rejects_ci_model_calls() -> None:
-    with pytest.raises(ValidationError, match="cannot authorize CI model calls"):
-        ReviewAttestation(
-            review_id="review-001",
-            loop_id="loop-001",
-            head_commit="b" * 40,
-            verdict=ReviewVerdict.FULLY_CLEAN,
-            review_run_path=".ai-sdlc/reviews/pr/review-001/review-run.json",
-            review_pack_path=".ai-sdlc/reviews/pr/review-001/review-pack.json",
-            final_report_path=".ai-sdlc/reviews/pr/review-001/final-report.md",
-            ci_may_call_model=True,
-        )
 
 
 def test_review_finding_uses_stable_severity_and_resolution_values() -> None:

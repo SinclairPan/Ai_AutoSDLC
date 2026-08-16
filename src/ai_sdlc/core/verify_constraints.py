@@ -14,7 +14,6 @@ from ai_sdlc.branch.git_client import GitError
 from ai_sdlc.context.state import load_checkpoint
 from ai_sdlc.core.artifact_target_guard import detect_misplaced_formal_artifacts
 from ai_sdlc.core.backlog_breach_guard import collect_missing_backlog_entry_references
-from ai_sdlc.core.comment_policy import collect_comment_deletion_blockers
 from ai_sdlc.core.frontend_contract_observation_provider import (
     FRONTEND_CONTRACT_OBSERVATION_ARTIFACT_STATUS_ATTACHED,
     FRONTEND_CONTRACT_OBSERVATION_ARTIFACT_STATUS_INVALID_ARTIFACT,
@@ -266,8 +265,6 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
     USER_GUIDE_REL: (
         "# AI-SDLC 1.0.2 中文用户指南",
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "v1.0.4 未发布",
-        "v1.0.5 release candidate / not published / prepared-disabled",
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
         "Windows",
@@ -326,7 +323,6 @@ RELEASE_DOCS_CONSISTENCY_SURFACES: dict[Path, tuple[str, ...]] = {
 }
 BEGINNER_GUIDE_REQUIRED_TOKENS = (
     "# AI-SDLC 1.0.2 中文用户指南",
-    "v1.0.4 未发布",
     "## 第一章：全新用户 + 全新空项目",
     "## 第二章：全新用户 + 已有项目",
     "### 1.1 Windows",
@@ -780,7 +776,6 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                         "pr_review_fix",
                         "pr_review_rerun",
                         "pr_review_close",
-                        "pr_review_attest",
                     ),
                 ),
             ),
@@ -875,37 +870,6 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
             ),
         ),
         FeatureContractSurface(
-            label="local PR review attestation and finding history",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_models.py",
-                    ),
-                    required_tokens=(
-                        "ReviewAttestation",
-                        "ci_may_call_model",
-                        "diff_source_hash",
-                        "review-attestation",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_service.py",
-                    ),
-                    required_tokens=(
-                        "latest-attestation.json",
-                        "_reviewed_diff_source_mismatch",
-                        "_reviewer_outputs_tamper_blocker",
-                        "_remove_latest_attestation",
-                        "CI must not call any model",
-                        "finding-history.json",
-                        "review-finding-history",
-                        "_snapshot_previous_findings",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
             label="local PR review user docs",
             evidence_entries=(
                 FeatureContractEvidence(
@@ -913,7 +877,6 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                     required_tokens=(
                         "ai-sdlc pr-review doctor",
                         "ai-sdlc pr-review start",
-                        "ai-sdlc pr-review attest",
                         "model current",
                         "DiffSource",
                         "local-staged",
@@ -925,10 +888,7 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                     ),
                     required_tokens=(
                         "本地 PR review",
-                        "CI",
-                        "不得发起模型请求",
                         "DiffSource",
-                        "latest-attestation.json",
                     ),
                 ),
             ),
@@ -1142,9 +1102,9 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                     required_tokens=(
                         "ai-sdlc loop requirement start",
                         "ai-sdlc loop status --type requirement",
-                        "ai-sdlc loop requirement freeze --yes",
-                        "does not call any model service",
-                        "does not modify application code",
+                        "ai-sdlc loop review --type requirement",
+                        "ai-sdlc loop requirement freeze --loop-id <loop-id> "
+                        "--expect-review-digest <input_digest> --yes",
                         "design-contract",
                     ),
                 ),
@@ -1216,10 +1176,9 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                     required_tokens=(
                         "ai-sdlc loop design-contract check",
                         "ai-sdlc loop status --type design-contract",
-                        "ai-sdlc loop design-contract close --yes",
-                        "does not call any model service",
-                        "does not modify application code",
-                        "does not enter frontend evidence",
+                        "ai-sdlc loop review --type design-contract",
+                        "ai-sdlc loop design-contract close --loop-id <loop-id> "
+                        "--expect-review-digest <input_digest> --yes",
                         "implementation loop",
                     ),
                 ),
@@ -1294,9 +1253,9 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                         "ai-sdlc loop implementation start",
                         "ai-sdlc loop status --type implementation",
                         "ai-sdlc loop implementation record",
-                        "ai-sdlc loop implementation close --yes",
-                        "does not call any model service",
-                        "does not modify application code",
+                        "ai-sdlc loop review --type implementation",
+                        "ai-sdlc loop implementation close --loop-id <loop-id> "
+                        "--expect-review-digest <input_digest> --yes",
                         "frontend-evidence",
                         "local-pr-review",
                     ),
@@ -1380,16 +1339,11 @@ FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
                         "ai-sdlc loop frontend-evidence doctor --provider auto",
                         "ai-sdlc loop frontend-evidence start",
                         "ai-sdlc loop status --type frontend-evidence",
-                        "ai-sdlc loop frontend-evidence close --yes",
+                        "ai-sdlc loop review --type frontend-evidence",
+                        "ai-sdlc loop frontend-evidence close --loop-id <loop-id> "
+                        "--expect-review-digest <input_digest> --yes",
                         "ai-sdlc loop frontend-evidence skip",
                         "ai-sdlc program browser-gate-probe --execute",
-                        "Codex browser",
-                        "browser MCP",
-                        "optional Playwright",
-                        "skipped=true",
-                        "does not call any model service",
-                        "does not modify application code",
-                        "does not assume GitHub",
                         "--allow-warnings",
                         "local-pr-review",
                     ),
@@ -2189,7 +2143,6 @@ def collect_constraint_blockers(root: Path) -> list[str]:
     blockers.extend(_doc_first_surface_blockers(root))
     blockers.extend(_verification_profile_blockers(root))
     blockers.extend(_feature_regression_guard_blockers(root))
-    blockers.extend(collect_comment_deletion_blockers(root))
     blockers.extend(collect_text_quality_blockers(root))
 
     if cp is None or cp.feature is None:

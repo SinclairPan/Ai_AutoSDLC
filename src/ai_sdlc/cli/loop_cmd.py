@@ -3,14 +3,20 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable, MutableMapping
 from io import StringIO
 from pathlib import Path
+from typing import TypeVar
 
 import typer
 from rich.console import Console
 
 from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
-from ai_sdlc.cli.stage_review_guidance import execute_stage_close_for_cli
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    loop_review,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
     DesignContractCloseOptions,
@@ -39,23 +45,6 @@ from ai_sdlc.core.implementation_loop import (
     record_implementation_progress,
     start_implementation_loop,
 )
-from ai_sdlc.core.lean_code_execution import (
-    LeanExecutionOptions,
-    LeanExecutionResult,
-    run_lean_command,
-)
-from ai_sdlc.core.lean_code_regression import (
-    LeanRegressionOptions,
-    LeanRegressionResult,
-    capture_regression_phase,
-)
-from ai_sdlc.core.lean_code_runtime import (
-    LeanCheckOptions,
-    LeanCheckResult,
-    LeanNoGoOptions,
-    record_lean_no_go,
-    run_lean_check,
-)
 from ai_sdlc.core.loop_status import (
     LoopListResult,
     LoopNextActionGuidance,
@@ -73,6 +62,8 @@ from ai_sdlc.core.requirement_loop import (
     start_requirement_loop,
 )
 from ai_sdlc.utils.helpers import find_project_root
+
+_CloseResult = TypeVar("_CloseResult")
 
 loop_app = typer.Typer(
     help="Inspect read-only Loop Engine artifacts.",
@@ -204,7 +195,12 @@ def requirement_status(
 
 @requirement_app.command(name="freeze")
 def requirement_freeze(
-    loop_id: str = typer.Option("", "--loop-id", help="Requirement loop id."),
+    loop_id: str = typer.Option(..., "--loop-id", help="Reviewed requirement loop id."),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed requirement input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm requirement freeze."),
     accepted_by: str = typer.Option(
         "local-user",
@@ -217,18 +213,28 @@ def requirement_freeze(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
+    reviewed_artifacts: dict[str, bytes] = {}
+    _require_review_close_guard(
         root,
+        loop_type="requirement",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
+    )
+    result = _run_review_bound_close(
         lambda: freeze_requirement_loop(
             RequirementFreezeOptions(
                 root=root,
                 loop_id=loop_id,
                 yes=yes,
                 accepted_by=accepted_by,
-            )
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
-        emit=_emit_payload,
     )
     _emit_requirement_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" else 1)
@@ -282,7 +288,14 @@ def design_contract_status(
 
 @design_contract_app.command(name="close")
 def design_contract_close(
-    loop_id: str = typer.Option("", "--loop-id", help="Design-contract loop id."),
+    loop_id: str = typer.Option(
+        ..., "--loop-id", help="Reviewed design-contract loop id."
+    ),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed design-contract input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm design-contract close."),
     closed_by: str = typer.Option(
         "local-user",
@@ -295,18 +308,28 @@ def design_contract_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
+    reviewed_artifacts: dict[str, bytes] = {}
+    _require_review_close_guard(
         root,
+        loop_type="design-contract",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
+    )
+    result = _run_review_bound_close(
         lambda: close_design_contract_loop(
             DesignContractCloseOptions(
                 root=root,
                 loop_id=loop_id,
                 yes=yes,
                 closed_by=closed_by,
-            )
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
-        emit=_emit_payload,
     )
     _emit_design_contract_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -387,175 +410,6 @@ def implementation_record(
     raise typer.Exit(0 if result.status != "blocked" else 1)
 
 
-@implementation_app.command(name="lean-check")
-def implementation_lean_check(
-    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
-    diff_source: str = typer.Option(
-        "local-unstaged",
-        "--diff-source",
-        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
-    ),
-    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
-    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
-    patch_file: str = typer.Option(
-        "", "--patch-file", help="Project-local patch file."
-    ),
-    regression_evidence: list[str] = typer.Option(
-        [],
-        "--regression-evidence",
-        help="Project-local structured RED/GREEN JSON artifact. Repeat as needed.",
-    ),
-    exception: list[str] = typer.Option(
-        [],
-        "--exception",
-        help="Project-local structured Lean exception JSON. Repeat as needed.",
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
-) -> None:
-    """Run deterministic Lean evaluation without a model or code mutation."""
-
-    root = _project_root_or_exit(json_output=json_output)
-    result = run_lean_check(
-        LeanCheckOptions(
-            root=root,
-            loop_id=loop_id,
-            source_kind=diff_source,
-            base_ref=base_ref,
-            head_ref=head_ref,
-            patch_file=patch_file,
-            regression_evidence_paths=tuple(regression_evidence),
-            exception_paths=tuple(exception),
-        )
-    )
-    _emit_lean_result(result, json_output=json_output)
-    raise typer.Exit(0 if result.status == "ready" else 1)
-
-
-@implementation_app.command(name="lean-verify")
-def implementation_lean_verify(
-    command: list[str] = typer.Argument(
-        ..., help="Verification argv; place it after -- so no shell is used."
-    ),
-    loop_id: str = typer.Option(..., "--loop-id", help="Implementation loop id."),
-    test_source: str = typer.Option(
-        ..., "--test-source", help="Project-local test or verification source path."
-    ),
-    diff_source: str = typer.Option(
-        "local-unstaged",
-        "--diff-source",
-        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
-    ),
-    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
-    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
-    patch_file: str = typer.Option(
-        "", "--patch-file", help="Project-local patch file."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
-) -> None:
-    """Execute targeted verification and write a current-diff receipt."""
-
-    root = _project_root_or_exit(json_output=json_output)
-    result = run_lean_command(
-        LeanExecutionOptions(
-            root=root,
-            loop_id=loop_id,
-            purpose="targeted-verification",
-            command_argv=tuple(command),
-            test_source_ref=test_source,
-            source_kind=diff_source,
-            base_ref=base_ref,
-            head_ref=head_ref,
-            patch_file=patch_file,
-        )
-    )
-    _emit_controlled_result(result, json_output=json_output)
-    raise typer.Exit(0 if result.status == "ready" else 1)
-
-
-@implementation_app.command(name="lean-regression")
-def implementation_lean_regression(
-    command: list[str] = typer.Argument(
-        ..., help="Regression argv; place it after -- so no shell is used."
-    ),
-    loop_id: str = typer.Option(..., "--loop-id", help="Implementation loop id."),
-    phase: str = typer.Option(..., "--phase", help="Capture phase: red or green."),
-    test_id: str = typer.Option(..., "--test-id", help="Stable regression test id."),
-    test_source: str = typer.Option(
-        ..., "--test-source", help="Project-local executable test source."
-    ),
-    failure_signature: str = typer.Option(
-        ..., "--failure-signature", help="Exact assertion signature in RED output."
-    ),
-    test_symbol: str = typer.Option("", "--test-symbol", help="Optional test symbol."),
-    diff_source: str = typer.Option(
-        "local-unstaged",
-        "--diff-source",
-        help="Source: local-git-range, local-staged, local-unstaged, or patch.",
-    ),
-    base_ref: str = typer.Option("", "--base", help="Base ref for git-range."),
-    head_ref: str = typer.Option("HEAD", "--head", help="Head ref."),
-    patch_file: str = typer.Option(
-        "", "--patch-file", help="Project-local patch file."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
-) -> None:
-    """Capture the same regression command failing, then passing after the fix."""
-
-    root = _project_root_or_exit(json_output=json_output)
-    result = capture_regression_phase(
-        LeanRegressionOptions(
-            root=root,
-            loop_id=loop_id,
-            phase=phase,
-            test_id=test_id,
-            test_symbol=test_symbol,
-            command_argv=tuple(command),
-            test_source_ref=test_source,
-            failure_signature=failure_signature,
-            source_kind=diff_source,
-            base_ref=base_ref,
-            head_ref=head_ref,
-            patch_file=patch_file,
-        )
-    )
-    _emit_controlled_result(result, json_output=json_output)
-    raise typer.Exit(0 if result.status == "ready" else 1)
-
-
-@implementation_app.command(name="lean-no-go")
-def implementation_lean_no_go(
-    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
-    reason: str = typer.Option(
-        ..., "--reason", help="Why repair cost exceeds benefit."
-    ),
-    owner: str = typer.Option(..., "--owner", help="Decision owner."),
-    repair_cost: str = typer.Option(..., "--repair-cost", help="Bounded repair cost."),
-    expected_benefit: str = typer.Option(
-        ..., "--expected-benefit", help="Expected benefit being declined."
-    ),
-    evidence: list[str] = typer.Option(
-        [], "--evidence", help="Project-local evidence path. Repeat as needed."
-    ),
-    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
-) -> None:
-    """Record a structured No-Go without modifying application code."""
-
-    root = _project_root_or_exit(json_output=json_output)
-    result = record_lean_no_go(
-        LeanNoGoOptions(
-            root=root,
-            loop_id=loop_id,
-            reason=reason,
-            owner=owner,
-            repair_cost=repair_cost,
-            expected_benefit=expected_benefit,
-            evidence_refs=tuple(evidence),
-        )
-    )
-    _emit_lean_result(result, json_output=json_output)
-    raise typer.Exit(1 if result.status == "blocked" else 0)
-
-
 @implementation_app.command(name="status")
 def implementation_status(
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
@@ -570,7 +424,14 @@ def implementation_status(
 
 @implementation_app.command(name="close")
 def implementation_close(
-    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
+    loop_id: str = typer.Option(
+        ..., "--loop-id", help="Reviewed implementation loop id."
+    ),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed implementation input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm implementation close."),
     closed_by: str = typer.Option(
         "local-user",
@@ -583,18 +444,28 @@ def implementation_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
+    reviewed_artifacts: dict[str, bytes] = {}
+    _require_review_close_guard(
         root,
+        loop_type="implementation",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
+    )
+    result = _run_review_bound_close(
         lambda: close_implementation_loop(
             ImplementationCloseOptions(
                 root=root,
                 loop_id=loop_id,
                 yes=yes,
                 closed_by=closed_by,
-            )
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
-        emit=_emit_payload,
     )
     _emit_implementation_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -707,24 +578,19 @@ def frontend_evidence_skip(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
-        root,
-        lambda: skip_frontend_evidence_loop(
-            FrontendEvidenceSkipOptions(
-                root=root,
-                work_item=work_item,
-                implementation_loop_id=implementation_loop_id,
-                loop_id=loop_id,
-                reason=reason,
-                yes=yes,
-                closed_by=closed_by,
-            )
-        ),
-        json_output=json_output,
-        emit=_emit_payload,
+    result = skip_frontend_evidence_loop(
+        FrontendEvidenceSkipOptions(
+            root=root,
+            work_item=work_item,
+            implementation_loop_id=implementation_loop_id,
+            loop_id=loop_id,
+            reason=reason,
+            yes=yes,
+            closed_by=closed_by,
+        )
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
-    raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
+    raise typer.Exit(0 if result.status == "ready" else 1)
 
 
 @frontend_evidence_app.command(name="status")
@@ -741,7 +607,14 @@ def frontend_evidence_status(
 
 @frontend_evidence_app.command(name="close")
 def frontend_evidence_close(
-    loop_id: str = typer.Option("", "--loop-id", help="Frontend-evidence loop id."),
+    loop_id: str = typer.Option(
+        ..., "--loop-id", help="Reviewed frontend-evidence loop id."
+    ),
+    expect_review_digest: str = typer.Option(
+        ...,
+        "--expect-review-digest",
+        help="Digest returned by the reviewed frontend-evidence input.",
+    ),
     yes: bool = typer.Option(False, "--yes", help="Confirm frontend evidence close."),
     allow_warnings: bool = typer.Option(
         False,
@@ -759,8 +632,16 @@ def frontend_evidence_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
-    result = execute_stage_close_for_cli(
+    reviewed_artifacts: dict[str, bytes] = {}
+    _require_review_close_guard(
         root,
+        loop_type="frontend-evidence",
+        loop_id=loop_id,
+        expected_digest=expect_review_digest,
+        json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
+    )
+    result = _run_review_bound_close(
         lambda: close_frontend_evidence_loop(
             FrontendEvidenceCloseOptions(
                 root=root,
@@ -768,13 +649,49 @@ def frontend_evidence_close(
                 yes=yes,
                 allow_warnings=allow_warnings,
                 closed_by=closed_by,
-            )
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
-        emit=_emit_payload,
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
+
+
+def _require_review_close_guard(
+    root: Path,
+    *,
+    loop_type: str,
+    loop_id: str,
+    expected_digest: str,
+    json_output: bool,
+    captured_artifacts: MutableMapping[str, bytes] | None = None,
+) -> None:
+    try:
+        validate_review_input_for_close(
+            root,
+            loop_type=loop_type,
+            loop_id=loop_id,
+            expected_digest=expected_digest,
+            captured_artifacts=captured_artifacts,
+        )
+    except ReviewInputGuardError as exc:
+        _emit_payload(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
+
+
+def _run_review_bound_close(
+    operation: Callable[[], _CloseResult],
+    *,
+    json_output: bool,
+) -> _CloseResult:
+    try:
+        return operation()
+    except ReviewInputGuardError as exc:
+        _emit_payload(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
 
 
 def _project_root_or_exit(*, json_output: bool = False) -> Path:
@@ -926,44 +843,6 @@ def _emit_implementation_result(
         for artifact in result.artifacts:
             state = "exists" if artifact.exists else "planned"
             console.print(f"- {artifact.kind}: {artifact.path} ({state})")
-
-
-def _emit_lean_result(result: LeanCheckResult, *, json_output: bool) -> None:
-    payload = result.model_dump(mode="json")
-    if json_output:
-        _emit_payload(payload, json_output=True)
-        return
-    console.print(f"Result: {payload.get('status', '')}")
-    if result.blocker:
-        console.print(f"Blocker: {result.blocker}")
-    console.print(f"Next: {result.next_action or '-'}")
-    console.print(f"Loop ID: {result.loop_id or '-'}")
-    console.print(f"Loop status: {result.loop_status or '-'}")
-    console.print(f"Evaluation round: {result.evaluation_round}")
-    console.print(
-        "Findings: "
-        f"blocker={result.blocker_count}, required={result.required_count}, "
-        f"advisory={result.advisory_count}"
-    )
-    console.print("Model call: no")
-    console.print(f"Writes artifacts: {_yes_no(result.writes_artifacts)}")
-    console.print("Writes code: no")
-    if result.report_path:
-        console.print(f"Report: {result.report_path}")
-
-
-def _emit_controlled_result(
-    result: LeanExecutionResult | LeanRegressionResult, *, json_output: bool
-) -> None:
-    payload = result.model_dump(mode="json")
-    if json_output:
-        _emit_payload(payload, json_output=True)
-        return
-    _emit_header(payload)
-    if payload.get("receipt_path"):
-        console.print(f"Receipt: {payload['receipt_path']}")
-    if payload.get("evidence_path"):
-        console.print(f"Evidence: {payload['evidence_path']}")
 
 
 def _emit_frontend_evidence_result(
@@ -1189,5 +1068,6 @@ loop_app.add_typer(requirement_app, name="requirement")
 loop_app.add_typer(design_contract_app, name="design-contract")
 loop_app.add_typer(implementation_app, name="implementation")
 loop_app.add_typer(frontend_evidence_app, name="frontend-evidence")
+loop_app.command(name="review")(loop_review)
 
 __all__ = ["loop_app"]

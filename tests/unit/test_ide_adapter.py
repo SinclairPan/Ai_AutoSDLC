@@ -175,6 +175,42 @@ class TestApplyAdapter:
         assert f.read_text(encoding="utf-8") == "user content"
         assert str(f) in r.skipped_user_modified
 
+    @pytest.mark.parametrize(
+        ("ide", "destination"),
+        [
+            (IDEKind.CODEX, "AGENTS.md"),
+            (IDEKind.CURSOR, ".cursor/rules/ai-sdlc.mdc"),
+            (IDEKind.VSCODE, ".github/copilot-instructions.md"),
+            (IDEKind.CLAUDE_CODE, ".claude/CLAUDE.md"),
+        ],
+    )
+    def test_migrates_previous_managed_template(
+        self,
+        tmp_path: Path,
+        ide: IDEKind,
+        destination: str,
+    ) -> None:
+        (tmp_path / AI_SDLC_DIR).mkdir(parents=True)
+        apply_adapter(tmp_path, ide)
+        adapter = tmp_path / destination
+        bundle = adapter.read_text(encoding="utf-8")
+        start = "<!-- AI-SDLC managed review guidance start -->"
+        end = "<!-- AI-SDLC managed review guidance end -->"
+        before, separator, remainder = bundle.partition(start)
+        assert separator
+        _managed, separator, after = remainder.partition(end)
+        assert separator
+        previous = before + after.lstrip("\n")
+        adapter.write_text(previous, encoding="utf-8")
+
+        result = apply_adapter(tmp_path, ide)
+
+        migrated = adapter.read_text(encoding="utf-8")
+        assert "五类结果的内置动态专家复核" in migrated
+        assert start in migrated
+        assert str(adapter) in result.written
+        assert str(adapter) not in result.skipped_user_modified
+
     def test_migrates_alternate_vscode_adapter(self, tmp_path: Path) -> None:
         (tmp_path / AI_SDLC_DIR).mkdir(parents=True)
         alternate = tmp_path / ".vscode" / "AI-SDLC.md"
@@ -208,7 +244,9 @@ class TestApplyAdapter:
             assert "安全预演" in text
             assert "切换到 AI 对话" in text
             assert "ai-sdlc adapter status" in text
-            assert "内部诊断详情只在排查命令的 `--details` / `--json` 输出中查看" in text
+            assert (
+                "内部诊断详情只在排查命令的 `--details` / `--json` 输出中查看" in text
+            )
             assert "ai-sdlc run --dry-run" in text
             assert "后续 agent 或人工需要维护" in text
             assert "维护契约" in text
@@ -220,7 +258,10 @@ class TestApplyAdapter:
             assert "PrimeVue + @primeuix/themes + primeicons" in text
             assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in text
             assert "Vite + TypeScript + UnoCSS + CSS Variables" in text
-            assert "Playwright + ESLint + Prettier + husky + lint-staged + commitlint" in text
+            assert (
+                "Playwright + ESLint + Prettier + husky + lint-staged + commitlint"
+                in text
+            )
             assert "企业后台" in text
             assert "不得被当成 Vue2 信号" in text
             assert "高级可选方案" in text
@@ -232,6 +273,33 @@ class TestApplyAdapter:
             assert "--provider-id" in text
             assert "--style-pack-id" in text
             assert "enterprise-vue2" in text
+            assert "五类结果的内置动态专家复核" in text
+            assert (
+                "Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review"
+                in text
+            )
+            assert "ai-sdlc loop review --type" in text
+            assert "一个主专家" in text
+            assert "最多增加一个交叉风险专家" in text
+            assert "全新且只读的独立上下文" in text
+            assert "--read-path" in text
+            assert "不得重新读取 `artifact_paths`" in text
+            assert "不要求用户选择专家" in text
+            assert "最多进行一次修复后复审" in text
+            assert "--expect-review-digest" in text
+            assert "--review-id" in text
+            assert "保持 `needs_review`" in text
+            assert "Local PR Review" in text
+            assert "禁止继续评审该复核结果" in text
+            for retired_term in (
+                "prepare -> record -> close",
+                "review-input.json",
+                "review-execution.json",
+                "certificate",
+                "attestation",
+                "quorum",
+            ):
+                assert retired_term not in text
             assert "先检查接入真值" not in text
             assert "宿主加载证明" not in text
             assert "verified_loaded" not in text
@@ -274,7 +342,9 @@ class TestEnsureIdeAdaptation:
         assert cfg.adapter_verification_result == "degraded"
         assert cfg.adapter_degrade_reason == "generic_target_has_no_verify_protocol"
 
-    def test_explicit_agent_target_persists_installed_state(self, tmp_path: Path) -> None:
+    def test_explicit_agent_target_persists_installed_state(
+        self, tmp_path: Path
+    ) -> None:
         init_project(tmp_path)
         from ai_sdlc.core.config import load_project_config
 
@@ -319,8 +389,7 @@ class TestEnsureIdeAdaptation:
 
         assert cfg.adapter_activation_state == ActivationState.ACKNOWLEDGED.value
         assert (
-            cfg.adapter_support_tier
-            == AdapterSupportTier.ACKNOWLEDGED_ACTIVATION.value
+            cfg.adapter_support_tier == AdapterSupportTier.ACKNOWLEDGED_ACTIVATION.value
         )
         assert cfg.adapter_ingress_state == "materialized"
 
@@ -353,9 +422,15 @@ class TestEnsureIdeAdaptation:
 
         cfg = load_project_config(tmp_path)
         assert cfg.adapter_canonical_consumption_result == "unverified"
-        assert cfg.adapter_canonical_consumption_evidence == "transport:env:AI_SDLC_ADAPTER_CANONICAL_SHA256"
+        assert (
+            cfg.adapter_canonical_consumption_evidence
+            == "transport:env:AI_SDLC_ADAPTER_CANONICAL_SHA256"
+        )
         assert cfg.adapter_canonical_consumed_at == ""
-        save_project_config(tmp_path, cfg.model_copy(update={"adapter_canonical_consumption_result": "verified"}))
+        save_project_config(
+            tmp_path,
+            cfg.model_copy(update={"adapter_canonical_consumption_result": "verified"}),
+        )
         monkeypatch.delenv("AI_SDLC_ADAPTER_CANONICAL_SHA256")
         monkeypatch.delenv("AI_SDLC_ADAPTER_CANONICAL_PATH")
         ensure_ide_adaptation(tmp_path, agent_target=IDEKind.CODEX)
@@ -450,7 +525,9 @@ class TestCanonicalProofCarrier:
             tmp_path / "AGENTS.md"
         )
 
-    def test_build_canonical_proof_env_rejects_generic_target(self, tmp_path: Path) -> None:
+    def test_build_canonical_proof_env_rejects_generic_target(
+        self, tmp_path: Path
+    ) -> None:
         init_project(tmp_path)
 
         with pytest.raises(ValueError, match="do not support canonical proof carrier"):
@@ -462,5 +539,7 @@ class TestCanonicalProofCarrier:
         init_project(tmp_path, agent_target=IDEKind.CODEX.value)
         (tmp_path / "AGENTS.md").unlink()
 
-        with pytest.raises(FileNotFoundError, match="Canonical adapter content is not materialized"):
+        with pytest.raises(
+            FileNotFoundError, match="Canonical adapter content is not materialized"
+        ):
             build_canonical_proof_env(tmp_path)

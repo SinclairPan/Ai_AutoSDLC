@@ -23,6 +23,15 @@ _OFFLINE_DIR = _REPO_ROOT / "packaging" / "offline"
 _PACKAGING_DIR = _REPO_ROOT / "packaging"
 
 
+def test_release_checklist_matches_the_standard_release_workflow() -> None:
+    checklist = (_OFFLINE_DIR / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
+
+    assert "`v1.0.5`" in checklist
+    assert "`upload_to_release`" in checklist
+    assert "PR1 的三个发布开关" not in checklist
+    assert "v1.0.4 上传与发布动作保持禁止" not in checklist
+
+
 def _load_verify_offline_bundle_module():
     spec = importlib.util.spec_from_file_location(
         "verify_offline_bundle",
@@ -1800,7 +1809,6 @@ def test_user_guide_documents_published_assets_and_two_new_user_paths() -> None:
     assert "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz" in guide
     assert "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz" in guide
     assert "releases/download/v1.0.4/" not in guide
-    assert "v1.0.4 未发布" in guide
     assert "Get-FileHash -Algorithm SHA256" in guide
     assert "shasum -a 256 -c" in guide
     assert "sha256sum -c" in guide

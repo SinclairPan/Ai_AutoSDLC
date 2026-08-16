@@ -211,7 +211,7 @@ def _resolve_local_worktree_source(
 ) -> SourceAdapterResolution:
     root = options.root.resolve()
     try:
-        # 与 Lean 复用 snapshot，统一 index、未跟踪文件和 diff 身份。
+        # 复用统一 snapshot，保持 index、未跟踪文件和 diff 身份一致。
         snapshot = build_source_snapshot(
             SourceSnapshotOptions(root=root, source_kind=source_kind.value)
         )

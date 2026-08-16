@@ -7,7 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -18,8 +18,6 @@ from ai_sdlc.core.git_filter_safety import (
 )
 from ai_sdlc.core.source_change_capture import (
     CapturedPathChange,
-    affected_paths,
-    capture_index_changes,
     capture_path_changes,
     read_git_blobs,
     read_index_states,
@@ -30,15 +28,12 @@ from ai_sdlc.core.source_snapshot import (
     SourceSnapshot,
     _filtered_index_records,
     _is_runtime_artifact,
+    _patch_path,
     _runtime_pathspecs,
 )
 from ai_sdlc.core.source_snapshot import (
     _untracked_payload as _snapshot_untracked_payload,
 )
-
-_FileVersions = dict[str, tuple[bytes, bytes]]
-_SourceLoader = Callable[[], dict[str, bytes]]
-_MetricSource = tuple[_FileVersions, _SourceLoader]
 
 
 def _is_python_source_path(path: str) -> bool:
@@ -103,124 +98,6 @@ def python_sources(root: Path, snapshot: SourceSnapshot) -> dict[str, bytes]:
         and not _is_runtime_artifact(path)
         and ((root / path).is_symlink() or (root / path).is_file())
     }
-
-
-@contextmanager
-def lean_metric_source(
-    root: Path,
-    snapshot: SourceSnapshot,
-) -> Iterator[_MetricSource]:
-    """Yield batched file versions and a caller-source loader from one view."""
-    if snapshot.source_kind == "patch":
-        with _patched_index(root, snapshot) as env:
-            changes = capture_index_changes(
-                root,
-                snapshot.base_commit,
-                affected_paths(snapshot),
-                env,
-            )
-            yield _verified_metric_source(
-                snapshot,
-                changes,
-                lambda: _index_python_sources(root, env=env),
-            )
-        return
-    if snapshot.source_kind in {
-        "local-staged",
-        "local-unstaged",
-        "local-worktree",
-    }:
-        with _local_metric_source(root, snapshot) as source:
-            yield source
-        return
-    changes = capture_path_changes(root, snapshot)
-    yield _verified_metric_source(
-        snapshot,
-        changes,
-        lambda: _revision_python_sources(root, snapshot.head_commit),
-    )
-
-
-@contextmanager
-def _local_metric_source(
-    root: Path,
-    snapshot: SourceSnapshot,
-) -> Iterator[_MetricSource]:
-    if snapshot.source_kind == "local-worktree":
-        changes = capture_path_changes(
-            root,
-            snapshot,
-            git_config_args=external_filter_overrides(root),
-        )
-        yield _verified_metric_source(
-            snapshot,
-            changes,
-            lambda: _worktree_python_sources_from_head(
-                root,
-                snapshot,
-                changes,
-            ),
-        )
-        return
-    with _index_worktree(
-        root,
-        expected_index_identity=snapshot.index_identity,
-    ) as env:
-        if snapshot.source_kind == "local-staged":
-            changes = capture_index_changes(
-                root, snapshot.base_commit, affected_paths(snapshot), env
-            )
-            yield _verified_metric_source(
-                snapshot,
-                changes,
-                lambda: _index_python_sources(root, env=env),
-            )
-            return
-        changes = capture_path_changes(
-            root,
-            snapshot,
-            git_config_args=external_filter_overrides(root),
-        )
-        yield _verified_metric_source(
-            snapshot,
-            changes,
-            lambda: _unstaged_python_sources(root, snapshot, changes, env),
-        )
-
-
-def _verified_metric_source(
-    snapshot: SourceSnapshot,
-    changes: dict[str, CapturedPathChange],
-    load_sources: _SourceLoader,
-) -> _MetricSource:
-    _verify_captured_changes(snapshot, changes)
-    sources = load_sources()
-    return _version_map(snapshot, changes), lambda: sources
-
-
-def _unstaged_python_sources(
-    root: Path,
-    snapshot: SourceSnapshot,
-    changes: dict[str, CapturedPathChange],
-    env: dict[str, str],
-) -> dict[str, bytes]:
-    sources = _index_python_sources(root, env=env)
-    removed = set(snapshot.deleted_files) | set(snapshot.renamed_files.values())
-    for path in removed:
-        sources.pop(path, None)
-    for path in snapshot.changed_files:
-        change = changes.get(path)
-        if change is None:
-            raise ValueError(f"source state is missing for changed path: {path}")
-        if _is_python_source_path(path) and change.after.mode in {
-            "100644",
-            "100755",
-            "120000",
-        }:
-            sources[path] = change.after.payload
-        else:
-            sources.pop(path, None)
-    return sources
 
 
 def _worktree_python_sources_from_head(
@@ -389,8 +266,7 @@ def _index_python_sources(
 def _patched_index(root: Path, snapshot: SourceSnapshot) -> Iterator[dict[str, str]]:
     if not snapshot.patch_file:
         raise ValueError("patch source has no patch_file")
-    patch_path = (root / snapshot.patch_file).resolve()
-    patch_path.relative_to(root.resolve())
+    patch_path = _patch_path(root.resolve(), snapshot.patch_file)
     patch = patch_path.read_bytes()
     expected_digest = snapshot.source_input_digest or snapshot.diff_hash
     if _payload_digest(patch) != expected_digest:
@@ -434,8 +310,7 @@ def patch_diff_metadata(
 ) -> tuple[bytes, bytes]:
     """Read status and numstat from one isolated patched source view."""
 
-    patch_path = (root / patch_file).resolve()
-    patch_path.relative_to(root.resolve())
+    patch_path = _patch_path(root.resolve(), patch_file)
     with (
         _patch_index(root, patch_path, base_commit) as env,
         _index_worktree(root, env) as selected_env,
@@ -1002,7 +877,6 @@ def _decode_selected_path(payload: bytes) -> str:
 
 __all__ = [
     "file_versions",
-    "lean_metric_source",
     "materialized_source_view",
     "patch_diff_metadata",
     "python_sources",

@@ -27,6 +27,19 @@ from ai_sdlc.utils.helpers import AI_SDLC_DIR
 _SAFE_EXPLICIT_LOOP_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
+def design_contract_input_digest(contract_input: DesignContractInput) -> str:
+    """Hash the substantive design input without its creation timestamp."""
+
+    payload = contract_input.model_dump(mode="json", exclude={"created_at"})
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
 @dataclass(frozen=True, slots=True)
 class DesignContractArtifacts:
     """Resolved design-contract artifact paths for one loop id."""

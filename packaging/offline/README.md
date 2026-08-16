@@ -4,9 +4,7 @@
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-候选状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 的 PR1 只验证候选，三个发布开关保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`。`v1.0.4 terminal NO-GO / not released` 永久冻结，不得 redispatch、rerun、上传或发布 v1.0.4。
-
-下列 1.0.5 命令与制品名称只用于已审查 PR 的本地候选验证，不构成上传或发布授权。
+当前仓库源码版本为 `1.0.5`，公开稳定版本仍为 `v1.0.2`。下列 1.0.5 命令与制品名称用于本地候选验证；普通用户继续使用公开稳定版本。
 
 ## 包内容
 
@@ -139,7 +137,7 @@ cd smoke-project
 - `.github/workflows/windows-offline-smoke.yml`：验证 Windows 构建、安装、Codex 初始化和 dry-run；
 - `.github/workflows/posix-offline-smoke.yml`：验证 macOS 与 Linux 安装路径。
 
-工作流当前候选标识是 prepared-disabled 的 `v1.0.5`，PR1 只能运行只读 load-probe；`v1.0.4` 仅是被冻结候选的历史标识，其发布通道已终止。
+工作流默认验证当前源码候选 `v1.0.5`；只有普通跨平台 smoke 和发布检查全部通过后才上传公开制品。
 
 ## 交付要求
 

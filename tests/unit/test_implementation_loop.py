@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
 
+import ai_sdlc.core.implementation_loop as implementation_loop_module
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
     DesignContractCloseOptions,
@@ -29,12 +35,32 @@ from ai_sdlc.core.requirement_loop import (
     freeze_requirement_loop,
     start_requirement_loop,
 )
-from ai_sdlc.core.stage_review.artifacts import (
-    resolve_canonical_shared_state,
-    resolve_repository_project_id,
-)
-from ai_sdlc.core.state_machine import save_work_item
-from ai_sdlc.models.work import WorkItem, WorkType
+
+
+def test_non_git_implementation_lock_dir_is_user_scoped(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    monkeypatch.setattr(
+        implementation_loop_module.tempfile,
+        "gettempdir",
+        lambda: str(tmp_path / "shared-temp"),
+    )
+    monkeypatch.setattr(
+        implementation_loop_module.os,
+        "getuid",
+        lambda: 1001,
+        raising=False,
+    )
+    first = implementation_loop_module._implementation_lock_dir(project)
+    monkeypatch.setattr(implementation_loop_module.os, "getuid", lambda: 1002)
+    second = implementation_loop_module._implementation_lock_dir(project)
+
+    assert first.name == "ai-sdlc-loop-locks-1001"
+    assert second.name == "ai-sdlc-loop-locks-1002"
+    assert first != second
 
 
 def test_start_implementation_loop_writes_artifacts(tmp_path: Path) -> None:
@@ -200,7 +226,7 @@ def test_start_implementation_loop_prefers_canonical_task_scope(
     ]
 
 
-def test_direct_formal_work_item_enables_lean_profile_from_spec_metadata(
+def test_direct_formal_work_item_does_not_enable_blocking_quality_profile(
     tmp_path: Path,
 ) -> None:
     work_item = _write_ready_work_item(tmp_path)
@@ -216,7 +242,7 @@ def test_direct_formal_work_item_enables_lean_profile_from_spec_metadata(
         ImplementationStartOptions(
             root=tmp_path,
             work_item="specs/demo-implementation-loop",
-            loop_id="impl-direct-formal-lean-profile",
+            loop_id="impl-direct-formal-quality-profile",
         )
     )
 
@@ -227,12 +253,12 @@ def test_direct_formal_work_item_enables_lean_profile_from_spec_metadata(
             / ".ai-sdlc"
             / "loops"
             / "implementation"
-            / "impl-direct-formal-lean-profile"
+            / "impl-direct-formal-quality-profile"
             / "implementation-input.json"
         ).read_text("utf-8")
     )
     assert impl_input["work_type"] == "new_requirement"
-    assert impl_input["quality_profiles"] == ["lean-code"]
+    assert impl_input["quality_profiles"] == []
 
 
 def test_direct_formal_work_item_rejects_invalid_work_type_metadata(
@@ -287,19 +313,11 @@ def test_start_implementation_loop_dry_run_does_not_write(tmp_path: Path) -> Non
     ).exists()
 
 
-def test_start_implementation_loop_blocks_malformed_loop_policy(
+def test_start_implementation_loop_ignores_legacy_lean_policy(
     tmp_path: Path,
 ) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
-    save_work_item(
-        tmp_path,
-        WorkItem(
-            work_item_id=work_item.name,
-            work_type=WorkType.NEW_REQUIREMENT,
-            title="Implementation demo",
-        ),
-    )
     policy = tmp_path / ".ai-sdlc" / "project" / "config" / "loop-policy.yaml"
     policy.parent.mkdir(parents=True, exist_ok=True)
     policy.write_text("remote_model_policy: strict\n", encoding="utf-8")
@@ -312,12 +330,10 @@ def test_start_implementation_loop_blocks_malformed_loop_policy(
         )
     )
 
-    assert result.status == "blocked"
-    assert "Loop policy is malformed" in result.blocker
-    assert "loop-policy.yaml" in result.next_action
-    assert not (
+    assert result.status == "ready"
+    assert (
         tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-malformed-policy"
-    ).exists()
+    ).is_dir()
 
 
 def test_start_implementation_loop_blocks_unclosed_design_contract(
@@ -344,7 +360,10 @@ def test_start_implementation_loop_blocks_unclosed_design_contract(
 
     assert result.status == "blocked"
     assert "must be closed" in result.blocker
-    assert result.next_action == "Run ai-sdlc loop design-contract close --yes."
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type design-contract "
+        "--loop-id dc-demo-implementation-loop."
+    )
 
 
 def test_start_implementation_loop_blocks_cross_loop_design_artifacts(
@@ -418,10 +437,12 @@ def test_record_implementation_progress_updates_evidence_and_report(
     )
 
     assert result.status == "ready"
-    assert result.loop_status == "passed"
+    assert result.loop_status == "needs_review"
     assert result.done_count == 1
     assert result.evidence_count == 2
-    assert result.next_action == "Run ai-sdlc loop implementation close --yes."
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type implementation --loop-id impl-record."
+    )
     loop_dir = tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-record"
     progress = json.loads(
         (loop_dir / "implementation-progress.json").read_text("utf-8")
@@ -432,6 +453,90 @@ def test_record_implementation_progress_updates_evidence_and_report(
     assert task["verification_commands"] == [
         "uv run pytest tests/unit/test_implementation_loop.py -q"
     ]
+
+
+def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "src/ai_sdlc/core/implementation_loop.py",
+            "src/ai_sdlc/core/*.py",
+        ),
+        encoding="utf-8",
+    )
+    source = tmp_path / "src" / "ai_sdlc" / "core" / "implementation_loop.py"
+    source.parent.mkdir(parents=True)
+    source.write_text("\n".join(f"line_{index} = {index}" for index in range(510)))
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-advisory-only",
+        )
+    )
+
+    result = record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id="impl-advisory-only",
+            task_id="T11",
+            status="done",
+            verification=("pytest -q",),
+        )
+    )
+
+    assert result.loop_status == "needs_review"
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type implementation --loop-id impl-advisory-only."
+    )
+    assert any("510 lines" in advice for advice in result.advisories)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="symlink creation is not portable")
+def test_slimming_advice_skips_nested_external_symlinks(tmp_path: Path) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "src/ai_sdlc/core/implementation_loop.py",
+            "src/ai_sdlc/core",
+        ),
+        encoding="utf-8",
+    )
+    source_dir = tmp_path / "src" / "ai_sdlc" / "core"
+    source_dir.mkdir(parents=True)
+    external = tmp_path.with_name(f"{tmp_path.name}-external.py")
+    external.write_text(
+        "\n".join(f"secret_line_{index} = {index}" for index in range(510)),
+        encoding="utf-8",
+    )
+    (source_dir / "external.py").symlink_to(external)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-skip-external-symlink",
+        )
+    )
+
+    try:
+        result = record_implementation_progress(
+            ImplementationRecordOptions(
+                root=tmp_path,
+                loop_id="impl-skip-external-symlink",
+                task_id="T11",
+                status="done",
+                verification=("pytest -q",),
+            )
+        )
+    finally:
+        external.unlink(missing_ok=True)
+
+    assert not any("external.py" in advice for advice in result.advisories)
+    assert not any("secret_line" in advice for advice in result.advisories)
 
 
 def test_record_implementation_progress_blocks_unknown_task(tmp_path: Path) -> None:
@@ -546,6 +651,48 @@ def test_close_implementation_loop_blocks_incomplete_required_tasks(
     ).exists()
 
 
+def test_close_implementation_loop_rejects_replaced_loop_identity(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    for loop_id in ("impl-reviewed", "impl-unreviewed"):
+        start_implementation_loop(
+            ImplementationStartOptions(
+                root=tmp_path,
+                work_item="specs/demo-implementation-loop",
+                loop_id=loop_id,
+            )
+        )
+    record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id="impl-unreviewed",
+            task_id="T11",
+            status="done",
+            verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
+        )
+    )
+    reviewed_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "impl-reviewed"
+        / "loop-run.json"
+    )
+    unreviewed_run = reviewed_run.parent.parent / "impl-unreviewed" / "loop-run.json"
+    reviewed_run.write_bytes(unreviewed_run.read_bytes())
+
+    result = close_implementation_loop(
+        ImplementationCloseOptions(root=tmp_path, loop_id="impl-reviewed", yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "identity" in result.blocker.lower()
+    assert not (unreviewed_run.parent / "implementation-close.json").exists()
+
+
 def test_close_implementation_loop_writes_close_artifact(tmp_path: Path) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
@@ -599,6 +746,79 @@ def test_close_implementation_loop_writes_close_artifact(tmp_path: Path) -> None
     assert repeated.next_action == "Run ai-sdlc pr-review start."
     assert repeated.next_guidance.reason.endswith("local-pr-review.")
     assert repeated.next_guidance.requires_model is True
+
+
+def test_close_implementation_loop_rechecks_review_digest_at_final_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    loop_id = "impl-final-review-guard"
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id=loop_id,
+        )
+    )
+    record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            task_id="T11",
+            status="done",
+            verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
+        )
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id=loop_id,
+    )
+    original_blockers = implementation_loop_module._close_blockers
+
+    def mutate_after_state_validation(*args: object, **kwargs: object) -> list[str]:
+        blockers = original_blockers(*args, **kwargs)
+        report_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "implementation"
+            / loop_id
+            / "implementation-report.md"
+        )
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8") + "\n评审后发生变化。\n",
+            encoding="utf-8",
+        )
+        return blockers
+
+    monkeypatch.setattr(
+        implementation_loop_module,
+        "_close_blockers",
+        mutate_after_state_validation,
+    )
+
+    with pytest.raises(ReviewInputGuardError, match="review-input-drift"):
+        close_implementation_loop(
+            ImplementationCloseOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                yes=True,
+                expected_review_digest=reviewed.input_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        )
+
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / loop_id
+        / "implementation-close.json"
+    ).exists()
 
 
 def test_close_implementation_loop_routes_frontend_work_to_frontend_evidence(
@@ -715,172 +935,25 @@ def test_start_implementation_loop_blocks_mutated_design_snapshot(
     assert "changed" in result.blocker.lower()
 
 
-def test_start_implementation_loop_requires_committed_design_close_authority(
+def test_start_implementation_loop_ignores_copied_legacy_authority_artifact(
     tmp_path: Path,
 ) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)
-    project_id = resolve_repository_project_id(tmp_path)
-    shared = resolve_canonical_shared_state(tmp_path, project_id)
-    (
-        shared / "scope-authority" / "design-close" / "dc-demo-implementation-loop.json"
-    ).unlink()
+    legacy = tmp_path / ".ai-sdlc" / "state" / "shared" / "scope-authority"
+    legacy.mkdir(parents=True)
+    (legacy / "copied-design-close.json").write_text("{not-json", encoding="utf-8")
 
     result = start_implementation_loop(
         ImplementationStartOptions(
             root=tmp_path,
             work_item="specs/demo-implementation-loop",
-            loop_id="impl-missing-design-close-authority",
-        )
-    )
-
-    assert result.status == "blocked"
-    assert "design close authority" in result.blocker.lower()
-
-
-def test_enforced_design_close_authority_allows_implementation_start(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from ai_sdlc.core import design_close_enforce_authority as authority_module
-    from ai_sdlc.core import design_contract_loop as design_module
-    from ai_sdlc.core.stage_review.activation_models import (
-        ActivationSessionObservation,
-        ActivationSessionRecord,
-    )
-    from ai_sdlc.core.stage_review.close_gate_observation import (
-        stage_close_operation_id,
-    )
-    from ai_sdlc.core.stage_review.finding_models import FindingScope
-
-    candidate_digest = f"sha256:{'1' * 64}"
-    certificate_digest = f"sha256:{'2' * 64}"
-    records: list[ActivationSessionRecord] = []
-    receipt_close_digests: list[str] = []
-
-    def execute_enforced_close(prepared, writer, **kwargs):
-        assert kwargs == {"require_durable_shadow_intent": True}
-        result = writer()
-        operation_id = stage_close_operation_id(prepared)
-        marker = {
-            "schema_version": "stage-close-authorization.v1",
-            "artifact_kind": "stage-close-authorization",
-            "operation_id": operation_id,
-            "stage_key": prepared.stage_key,
-            "close_kind": prepared.close_kind,
-            "target_status": prepared.target_status,
-            "stage_input_digest": prepared.stage_input_digest,
-            "product_close_artifact_path": prepared.close_artifact_path,
-            "candidate_manifest_digest": candidate_digest,
-            "gate_decision_digest": f"sha256:{'3' * 64}",
-        }
-        marker_path = (
-            prepared.root
-            / ".ai-sdlc"
-            / "state"
-            / "stage-close-authorizations"
-            / f"{operation_id}.json"
-        )
-        marker_path.parent.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text(json.dumps(marker), encoding="utf-8")
-        project_id = resolve_repository_project_id(prepared.root)
-        scope = FindingScope(
-            project_id=project_id,
-            work_item_id=prepared.work_item_id,
-            stage_instance_id=prepared.stage_instance_id,
-            session_id="session-enforced-design-close",
-        )
-        records.append(
-            ActivationSessionRecord(
-                record_id="activation-enforced-design-close",
-                project_id=project_id,
-                close_proof_kind="enforce-certificate",
-                close_proof_id="certificate-enforced-design-close",
-                close_proof_digest=certificate_digest,
-                candidate_manifest_digest=candidate_digest,
-                panel_plan_digest=f"sha256:{'4' * 64}",
-                review_session_digest=f"sha256:{'5' * 64}",
-                review_completion_digest=f"sha256:{'6' * 64}",
-                scope=scope,
-                observation=ActivationSessionObservation(
-                    session_id=scope.session_id,
-                    stage_key=prepared.stage_key,
-                    risk_level="medium",
-                    mode="enforce",
-                    completed_at="2026-07-27T12:00:00Z",
-                ),
-            )
-        )
-        close_path = prepared.root / prepared.close_artifact_path
-        receipt_close_digests.append(
-            f"sha256:{hashlib.sha256(close_path.read_bytes()).hexdigest()}"
-        )
-        return result
-
-    monkeypatch.setattr(design_module, "execute_stage_close", execute_enforced_close)
-    monkeypatch.setattr(
-        authority_module,
-        "_read_activation_session_records",
-        lambda _root: tuple(records),
-    )
-
-    def trusted_candidate_artifacts(root, _scope, **_identity):
-        loop_dir = (
-            root
-            / ".ai-sdlc"
-            / "loops"
-            / "design-contract"
-            / "dc-demo-implementation-loop"
-        )
-        paths = (
-            loop_dir / "design-contract-input.json",
-            loop_dir / "design-contract-report.json",
-        )
-        return tuple(
-            (
-                path.relative_to(root).as_posix(),
-                f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}",
-            )
-            for path in paths
-        )
-
-    monkeypatch.setattr(
-        authority_module,
-        "_trusted_candidate_artifacts",
-        trusted_candidate_artifacts,
-    )
-    monkeypatch.setattr(
-        authority_module,
-        "_trusted_enforce_receipt",
-        lambda _root, _record, _project_id: receipt_close_digests[-1],
-        raising=False,
-    )
-    work_item = _write_ready_work_item(tmp_path)
-    _close_design_contract_for_work_item(tmp_path, work_item)
-
-    result = start_implementation_loop(
-        ImplementationStartOptions(
-            root=tmp_path,
-            work_item="specs/demo-implementation-loop",
-            loop_id="impl-after-enforced-design-close",
+            loop_id="impl-legacy-authority-artifact",
         )
     )
 
     assert result.status == "ready"
     assert result.loop_status == "running"
-    project_id = resolve_repository_project_id(tmp_path)
-    shared = resolve_canonical_shared_state(tmp_path, project_id)
-    authority = json.loads(
-        (
-            shared
-            / "scope-authority"
-            / "design-close"
-            / "dc-demo-implementation-loop.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert authority["stage_close_proof_kind"] == "enforce-certificate"
-    assert authority["stage_close_proof_digest"] == certificate_digest
-    assert authority["candidate_manifest_digest"] == candidate_digest
 
 
 @pytest.mark.parametrize(
@@ -891,7 +964,7 @@ def test_enforced_design_close_authority_allows_implementation_start(
         "design-contract-close.json",
     ),
 )
-def test_start_implementation_loop_rejects_tampered_design_close_artifact(
+def test_start_implementation_loop_rejects_malformed_design_close_artifact(
     tmp_path: Path,
     artifact_name: str,
 ) -> None:
@@ -905,7 +978,7 @@ def test_start_implementation_loop_rejects_tampered_design_close_artifact(
         / "dc-demo-implementation-loop"
         / artifact_name
     )
-    artifact.write_text(artifact.read_text("utf-8") + "\n", "utf-8")
+    artifact.write_text("{not-json", "utf-8")
 
     result = start_implementation_loop(
         ImplementationStartOptions(
@@ -916,7 +989,7 @@ def test_start_implementation_loop_rejects_tampered_design_close_artifact(
     )
 
     assert result.status == "blocked"
-    assert "design close authority" in result.blocker.lower()
+    assert "design" in result.blocker.lower()
 
 
 @pytest.mark.parametrize(

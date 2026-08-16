@@ -2,364 +2,33 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+import yaml
 from typer.testing import CliRunner
 
+from ai_sdlc.cli.loop_review_cmd import (
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.cli.main import app
-from ai_sdlc.core.pr_review_service import (
-    PRReviewAttestResult,
-    PRReviewCommandStatus,
-)
-from ai_sdlc.core.source_snapshot import (
-    SourceSnapshotOptions,
-    build_source_snapshot,
-)
-from ai_sdlc.core.stage_review.artifacts import (
-    resolve_canonical_shared_state,
-    resolve_repository_project_id,
-)
-from ai_sdlc.core.stage_review.ci_certificate import (
-    CI_CERTIFICATE_BUNDLE_PATH,
-)
-from ai_sdlc.core.stage_review.stage_review_execution import (
-    StageCloseGateUnavailableError,
-)
+from ai_sdlc.core import pr_review_service
 
 runner = CliRunner()
 
 
-def test_pr_close_reports_stage_review_result_and_one_next_action(
-    tmp_path: Path,
-) -> None:
-    failure = StageCloseGateUnavailableError("review-runtime-integrity-failure")
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.close_pr_review", side_effect=failure),
-    ):
-        result = runner.invoke(app, ["pr-review", "close", "--json"])
-
-    assert result.exit_code == 2
-    payload = json.loads(result.output)
-    assert payload["status"] == "blocked"
-    assert payload["reason_code"] == "review-runtime-integrity-failure"
-    assert payload["request_id"]
-    assert "ai-sdlc doctor" in payload["next_action"]
-
-
-def test_pr_attest_reports_stage_review_result_and_one_next_action(
-    tmp_path: Path,
-) -> None:
-    failure = StageCloseGateUnavailableError("review-provider-unavailable")
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", side_effect=failure),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 2
-    payload = json.loads(result.output)
-    assert payload["status"] == "needs_user"
-    assert payload["reason_code"] == "review-provider-unavailable"
-    assert payload["request_id"]
-    assert "Restore an eligible reviewer provider" in payload["next_action"]
-    assert "Traceback" not in result.output
-    assert not bundle.exists()
-
-
-def test_pr_attest_text_failure_has_one_result_and_next(tmp_path: Path) -> None:
-    failure = StageCloseGateUnavailableError("review-runtime-integrity-failure")
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", side_effect=failure),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest"])
-
-    assert result.exit_code == 2
-    assert result.output.count("Result:") == 1
-    assert result.output.count("Next:") == 1
-    assert "Traceback" not in result.output
-
-
-def test_pr_attest_json_requires_explicit_bundle_commit_and_push(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text("{}\n", encoding="utf-8")
-    ready = PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id="review.enforce",
-        stage_review_session_id="session.enforce",
-        stage_close_certificate_id="certificate.enforce",
-        next_action="stale",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
-            return_value=bundle,
-        ) as export_bundle,
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
+def test_pr_review_help_omits_removed_authority_commands() -> None:
+    result = runner.invoke(app, ["pr-review", "--help"])
 
     assert result.exit_code == 0
-    export_bundle.assert_called_once_with(
-        tmp_path,
-        close_kind="local-pr-review-attest",
-        stage_instance_id=ready.review_id,
-        review_session_id=ready.stage_review_session_id,
-        certificate_id=ready.stage_close_certificate_id,
-    )
-    payload = json.loads(result.output)
-    assert payload["ci_certificate_bundle_path"] == str(bundle)
-    assert f"git add -- {CI_CERTIFICATE_BUNDLE_PATH}" in payload["next_action"]
-    assert "commit it" in payload["next_action"]
-    assert "push the reviewed branch" in payload["next_action"]
-    assert "latest-attestation.json" not in payload["next_action"]
-
-
-def test_pr_attest_text_requires_explicit_bundle_commit_and_push(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text("{}\n", encoding="utf-8")
-    ready = PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id="review.enforce",
-        stage_review_session_id="session.enforce",
-        stage_close_certificate_id="certificate.enforce",
-        next_action="stale",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
-            return_value=bundle,
-        ),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest"])
-
-    assert result.exit_code == 0
-    assert f"git add -- {CI_CERTIFICATE_BUNDLE_PATH}" in result.output
-    assert "push the reviewed branch" in result.output
-    assert f"ci_certificate_bundle: {bundle}" in result.output
-
-
-def test_pr_attest_blocks_non_exportable_ci_bundle_without_traceback(
-    tmp_path: Path,
-) -> None:
-    ready = PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id="review.local-patch",
-        stage_review_session_id="session.local-patch",
-        stage_close_certificate_id="certificate.local-patch",
-        next_action="stale",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
-            side_effect=ValueError("CI certificate candidate source is not exportable"),
-        ),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "blocked"
-    assert "not exportable" in payload["blocker"]
-    assert "local-git-range" in payload["next_action"]
-    assert "Traceback" not in result.output
-
-
-def test_pr_attest_blocks_and_clears_stale_bundle_when_exact_proof_is_missing(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
-    ready = PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id="review.current",
-        stage_review_session_id="session.current",
-        stage_close_certificate_id="certificate.current",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
-            return_value=None,
-        ),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "blocked"
-    assert "exact certificate proof" in payload["blocker"]
-    assert not bundle.exists()
-
-
-def test_pr_attest_failure_clears_previous_exact_bundle_under_attest_lock(
-    tmp_path: Path,
-) -> None:
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text('{"published":"concurrently"}\n', encoding="utf-8")
-    ready = PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id="review.current",
-        stage_review_session_id="session.current",
-        stage_close_certificate_id="certificate.current",
-    )
-    current = SimpleNamespace(
-        certificate=SimpleNamespace(
-            certificate_id="certificate.current",
-            scope=SimpleNamespace(session_id="session.current"),
-        )
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=ready),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.export_ci_certificate_bundle",
-            return_value=None,
-        ),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.read_ci_certificate_bundle",
-            return_value=current,
-        ),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    assert not bundle.exists()
-    assert json.loads(result.output)["status"] == "blocked"
-
-
-def test_pr_attest_non_ready_result_clears_stale_ci_bundle(tmp_path: Path) -> None:
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
-    blocked = PRReviewAttestResult(
-        status=PRReviewCommandStatus.BLOCKED,
-        blocker="review evidence changed",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=blocked),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    assert not bundle.exists()
-
-
-def test_pr_attest_keeps_runtime_lock_out_of_candidate_source(
-    tmp_path: Path,
-) -> None:
-    _init_repo(tmp_path)
-    _write_file(tmp_path, "src/app.py", "print('candidate')\n")
-    blocked = PRReviewAttestResult(
-        status=PRReviewCommandStatus.BLOCKED,
-        blocker="review evidence changed",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch(
-            "ai_sdlc.cli.pr_review_cmd.attest_pr_review",
-            return_value=blocked,
-        ),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    shared = resolve_canonical_shared_state(
-        tmp_path,
-        resolve_repository_project_id(tmp_path),
-    )
-    assert (shared / "locks/pr-review-attest.lock").is_file()
-    assert not (
-        tmp_path / ".ai-sdlc/attestations/.pr-review-attest.lock"
-    ).exists()
-    assert not (tmp_path / ".ai-sdlc/local").exists()
-    assert _git(
-        tmp_path,
-        "status",
-        "--porcelain",
-        "--untracked-files=all",
-    ) == "?? src/app.py"
-    snapshot = build_source_snapshot(
-        SourceSnapshotOptions(root=tmp_path, source_kind="local-unstaged")
-    )
-    assert snapshot.changed_files == ["src/app.py"]
-
-
-def test_pr_attest_blocks_when_shared_lock_identity_is_corrupt(
-    tmp_path: Path,
-) -> None:
-    _init_repo(tmp_path)
-    attestation = (
-        tmp_path / ".ai-sdlc/reviews/pr/latest-attestation.json"
-    )
-    attestation.parent.mkdir(parents=True)
-    attestation.write_text('{"review_id":"stale"}\n', encoding="utf-8")
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True, exist_ok=True)
-    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
-    identity = (
-        tmp_path / ".git/ai-sdlc-shared-state/repository-project.json"
-    )
-    identity.parent.mkdir(parents=True)
-    identity.write_text("{not-json", encoding="utf-8")
-
-    with patch(
-        "ai_sdlc.cli.pr_review_cmd.find_project_root",
-        return_value=tmp_path,
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    payload = json.loads(result.output)
-    assert payload["status"] == "blocked"
-    assert "shared lock state is unavailable" in payload["blocker"]
-    assert "ai-sdlc doctor" in payload["next_action"]
-    assert "Traceback" not in result.output
-    assert not attestation.exists()
-    assert not bundle.exists()
-
-
-def test_pr_attest_incomplete_identity_clears_stale_ci_bundle(tmp_path: Path) -> None:
-    bundle = tmp_path / CI_CERTIFICATE_BUNDLE_PATH
-    bundle.parent.mkdir(parents=True)
-    bundle.write_text('{"certificate_id":"stale"}\n', encoding="utf-8")
-    incomplete = PRReviewAttestResult(
-        status=PRReviewCommandStatus.READY,
-        review_id="review.current",
-        stage_review_session_id="session.current",
-    )
-    with (
-        patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.pr_review_cmd.attest_pr_review", return_value=incomplete),
-    ):
-        result = runner.invoke(app, ["pr-review", "attest", "--json"])
-
-    assert result.exit_code == 1
-    assert not bundle.exists()
+    assert "attest" not in result.output
+    assert "certificate" not in result.output
 
 
 def test_pr_review_help_lists_p0_commands() -> None:
@@ -371,8 +40,9 @@ def test_pr_review_help_lists_p0_commands() -> None:
     assert "status" in result.output
     assert "fix" in result.output
     assert "rerun" in result.output
+    assert "record-evidence" in result.output
     assert "close" in result.output
-    assert "attest" in result.output
+    assert "attest" not in result.output
 
 
 def test_pr_review_start_dry_run_json_is_read_only(tmp_path: Path) -> None:
@@ -603,9 +273,26 @@ def test_pr_review_fix_and_close_require_no_blockers_json(tmp_path: Path) -> Non
             ],
         )
         fix = runner.invoke(app, ["pr-review", "fix", "--json"])
+        started = json.loads(start.output)
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
         close = runner.invoke(
             app,
-            ["pr-review", "close", "--require-no-blockers", "--json"],
+            [
+                "pr-review",
+                "close",
+                "--review-id",
+                started["review_id"],
+                "--loop-id",
+                started["loop_id"],
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--require-no-blockers",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 10
@@ -622,7 +309,7 @@ def test_pr_review_fix_and_close_require_no_blockers_json(tmp_path: Path) -> Non
     assert Path(close_payload["final_report_path"]).is_file()
 
 
-def test_pr_review_attest_json_writes_latest_attestation(tmp_path: Path) -> None:
+def test_pr_review_close_revalidates_resolution_at_transition(tmp_path: Path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
 
@@ -636,27 +323,270 @@ def test_pr_review_attest_json_writes_latest_attestation(tmp_path: Path) -> None
                 base_commit,
                 "--provider",
                 "mock-reviewer",
+                "--mock-fixture",
+                "changes_required",
                 "--review-id",
-                "review-attest-cli",
+                "review-resolution-transition-cli",
                 "--json",
             ],
         )
-        close = runner.invoke(app, ["pr-review", "close", "--json"])
-        attest = runner.invoke(app, ["pr-review", "attest", "--json"])
+        fix = runner.invoke(app, ["pr-review", "fix", "--json"])
+        started = json.loads(start.output)
+        fixed = json.loads(fix.output)
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
+        resolution_path = Path(fixed["resolution_path"])
+        validation_count = 0
 
-    assert start.exit_code == 0
-    assert close.exit_code == 0
-    payload = json.loads(attest.output)
-    assert attest.exit_code == 0
-    assert payload["status"] == "ready"
-    assert payload["review_id"] == "review-attest-cli"
-    assert "must not call any model" in payload["next_action"]
-    attestation = json.loads(
-        Path(payload["attestation_path"]).read_text(encoding="utf-8")
-    )
-    assert attestation["review_id"] == "review-attest-cli"
-    assert attestation["diff_source"]["source_kind"] == "local-git-range"
-    assert attestation["ci_may_call_model"] is False
+        def validate_then_replace_resolution(*args, **kwargs):
+            nonlocal validation_count
+            validation_count += 1
+            result = validate_review_input_for_close(*args, **kwargs)
+            if validation_count == 1:
+                resolution = yaml.safe_load(resolution_path.read_text(encoding="utf-8"))
+                resolution["finding_resolutions"][0].update(
+                    {
+                        "status": "waived",
+                        "reason": "Concurrent unreviewed waiver.",
+                        "operator": "other-process",
+                        "resolved_at": "2026-08-16T00:00:00Z",
+                    }
+                )
+                resolution_path.write_text(
+                    yaml.safe_dump(resolution),
+                    encoding="utf-8",
+                )
+            return result
+
+        with patch(
+            "ai_sdlc.cli.pr_review_cmd.validate_review_input_for_close",
+            side_effect=validate_then_replace_resolution,
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "pr-review",
+                    "close",
+                    "--review-id",
+                    started["review_id"],
+                    "--loop-id",
+                    started["loop_id"],
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--json",
+                ],
+            )
+
+    payload = json.loads(close.output)
+    assert validation_count == 2
+    assert close.exit_code == 1
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "review-input-drift"
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "reviews"
+        / "pr"
+        / started["review_id"]
+        / "final-report.md"
+    ).exists()
+
+
+@pytest.mark.parametrize("reviewed_resolution_exists", [False, True])
+def test_pr_review_close_uses_validated_resolution_across_aba(
+    tmp_path: Path,
+    reviewed_resolution_exists: bool,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+
+    with patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "pr-review",
+                "start",
+                "--base",
+                base_commit,
+                "--provider",
+                "mock-reviewer",
+                "--mock-fixture",
+                "changes_required",
+                "--review-id",
+                "review-resolution-aba-cli",
+                "--json",
+            ],
+        )
+        fix = runner.invoke(app, ["pr-review", "fix", "--json"])
+        started = json.loads(start.output)
+        fixed = json.loads(fix.output)
+        resolution_path = Path(fixed["resolution_path"])
+        reviewed_bytes = resolution_path.read_bytes()
+        if not reviewed_resolution_exists:
+            resolution_path.unlink()
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
+        validation_count = 0
+
+        def validate_then_replace_resolution(*args, **kwargs):
+            nonlocal validation_count
+            validation_count += 1
+            result = validate_review_input_for_close(*args, **kwargs)
+            if validation_count == 1:
+                resolution = yaml.safe_load(reviewed_bytes)
+                resolution["finding_resolutions"][0].update(
+                    {
+                        "status": "fixed",
+                        "evidence_refs": ["transient unreviewed evidence"],
+                        "operator": "other-process",
+                        "resolved_at": "2026-08-16T00:00:00Z",
+                    }
+                )
+                resolution_path.write_bytes(yaml.safe_dump(resolution).encode("utf-8"))
+            return result
+
+        original_revalidate = pr_review_service.revalidate_review_input_at_transition
+
+        def restore_then_revalidate(*args, **kwargs):
+            if reviewed_resolution_exists:
+                resolution_path.write_bytes(reviewed_bytes)
+            else:
+                resolution_path.unlink()
+            return original_revalidate(*args, **kwargs)
+
+        with (
+            patch(
+                "ai_sdlc.cli.pr_review_cmd.validate_review_input_for_close",
+                side_effect=validate_then_replace_resolution,
+            ),
+            patch(
+                "ai_sdlc.core.pr_review_service.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "pr-review",
+                    "close",
+                    "--review-id",
+                    started["review_id"],
+                    "--loop-id",
+                    started["loop_id"],
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--json",
+                ],
+            )
+
+    payload = json.loads(close.output)
+    assert validation_count == 2
+    assert close.exit_code == 1
+    assert payload["status"] == "blocked"
+    assert payload["verdict"] == "blocked"
+    assert payload["blocker"] == "Unresolved REQUIRED findings remain."
+    assert resolution_path.exists() is reviewed_resolution_exists
+    if reviewed_resolution_exists:
+        resolution = yaml.safe_load(resolution_path.read_text(encoding="utf-8"))
+        assert resolution["finding_resolutions"][0]["status"] == "unresolved"
+
+
+def test_pr_review_close_uses_all_validated_artifacts_across_aba(
+    tmp_path: Path,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+
+    with patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "pr-review",
+                "start",
+                "--base",
+                base_commit,
+                "--provider",
+                "mock-reviewer",
+                "--mock-fixture",
+                "changes_required",
+                "--review-id",
+                "review-artifact-aba-cli",
+                "--json",
+            ],
+        )
+        started = json.loads(start.output)
+        review_run_path = Path(started["review_pack_path"]).with_name("review-run.json")
+        findings_path = Path(started["findings_path"])
+        reviewed_run = review_run_path.read_bytes()
+        reviewed_findings = findings_path.read_bytes()
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
+        validation_count = 0
+
+        def validate_then_replace_outputs(*args, **kwargs):
+            nonlocal validation_count
+            validation_count += 1
+            result = validate_review_input_for_close(*args, **kwargs)
+            if validation_count == 1:
+                findings = json.loads(reviewed_findings)
+                findings["verdict"] = "clean"
+                findings["findings"] = []
+                transient_findings = json.dumps(findings).encode("utf-8")
+                review_run = json.loads(reviewed_run)
+                review_run["findings_digest"] = hashlib.sha256(
+                    transient_findings
+                ).hexdigest()
+                findings_path.write_bytes(transient_findings)
+                review_run_path.write_text(json.dumps(review_run), encoding="utf-8")
+            return result
+
+        original_revalidate = pr_review_service.revalidate_review_input_at_transition
+
+        def restore_then_revalidate(*args, **kwargs):
+            review_run_path.write_bytes(reviewed_run)
+            findings_path.write_bytes(reviewed_findings)
+            return original_revalidate(*args, **kwargs)
+
+        with (
+            patch(
+                "ai_sdlc.cli.pr_review_cmd.validate_review_input_for_close",
+                side_effect=validate_then_replace_outputs,
+            ),
+            patch(
+                "ai_sdlc.core.pr_review_service.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "pr-review",
+                    "close",
+                    "--review-id",
+                    started["review_id"],
+                    "--loop-id",
+                    started["loop_id"],
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--json",
+                ],
+            )
+
+    payload = json.loads(close.output)
+    assert validation_count == 2
+    assert close.exit_code == 1
+    assert payload["status"] == "blocked"
+    assert payload["verdict"] == "blocked"
+    assert payload["blocker"] == "Unresolved REQUIRED findings remain."
 
 
 def test_pr_review_fix_dry_run_json_does_not_write_artifacts(tmp_path: Path) -> None:

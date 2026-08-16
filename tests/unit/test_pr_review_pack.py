@@ -73,6 +73,7 @@ def test_build_review_pack_writes_required_artifacts(tmp_path) -> None:
     assert review_payload["redaction_report_path"].endswith(
         ".ai-sdlc/reviews/pr/review-001/redaction-report.json"
     )
+    assert not (Path(result.review_pack_path).parent / "lean-closed-scope.json").exists()
     assert "src/app.py" in changed_files
     assert "+print('review me')" in diff_text
 

@@ -1,8 +1,6 @@
 # AI-SDLC 1.0.5 离线发布检查清单
 
-状态：`v1.0.5 release candidate / not published / prepared-disabled`。`WorkItem 010 three-PR release migration` 的 PR1 只准备候选，三个发布开关保持 `false`；不得上传、发布或下载 v1.0.5 候选。`last published version is v1.0.2`。`v1.0.4 terminal NO-GO / not released` 永久冻结，不得 redispatch、rerun、上传或发布 v1.0.4。
-
-以下条目只用于 PR1 候选验证；它不授权实际 generation、发布或上传步骤。
+当前仓库源码版本为 `1.0.5`，公开稳定版本仍为 `v1.0.2`。以下条目用于普通候选构建与发布前验证。
 
 ## 版本与源码
 
@@ -53,8 +51,7 @@
 ## 发布与复验
 
 - [ ] README、用户指南和打包说明中的包名一致；
-- [ ] GitHub Actions 默认候选标识为 `v1.0.5`，且 PR1 的三个发布开关均为字符串 `false`；
+- [ ] GitHub Actions 候选标识为 `v1.0.5`；仅在准备把已通过 smoke 的制品上传到既有 GitHub Release 时，将 `upload_to_release` 设为字符串 `"true"`；
 - [ ] 平台工作流 artifact 完整；
-- [x] v1.0.4 上传与发布动作保持禁止，未补传、替换或复用制品；
 - [ ] 从全新目录安装正式制品并重复 smoke；
 - [ ] 日志、制品和仓库不包含令牌或本地绝对路径。

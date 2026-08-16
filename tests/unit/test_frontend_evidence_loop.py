@@ -6,8 +6,13 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
+import ai_sdlc.core.frontend_evidence_loop as frontend_evidence_loop_module
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+)
 from ai_sdlc.core.frontend_evidence_loop import (
     CURRENT_FRONTEND_EVIDENCE_PATH,
     FrontendEvidenceCloseOptions,
@@ -29,7 +34,7 @@ from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
 
 
-def test_start_frontend_evidence_loop_writes_passed_artifacts(tmp_path: Path) -> None:
+def test_start_frontend_evidence_loop_waits_for_expert_review(tmp_path: Path) -> None:
     work_item = _write_work_item(tmp_path)
     _write_closed_implementation_loop(tmp_path, work_item)
     _write_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
@@ -43,16 +48,20 @@ def test_start_frontend_evidence_loop_writes_passed_artifacts(tmp_path: Path) ->
     )
 
     assert result.status == "ready"
-    assert result.loop_status == "passed"
+    assert result.loop_status == "needs_review"
     assert result.work_item_id == "demo-frontend"
     assert result.gate_run_id == "gate-run-001"
     assert result.overall_gate_status == "passed"
     assert result.warning_count == 0
     assert result.blocker_count == 0
-    assert result.next_action == "Run ai-sdlc loop frontend-evidence close --yes."
-    assert result.next_guidance.command == "ai-sdlc loop frontend-evidence close --yes"
-    assert result.next_guidance.requires_model is False
-    assert result.next_guidance.writes_artifacts is True
+    assert result.next_action == (
+        "Run ai-sdlc loop review --type frontend-evidence --loop-id fe-001."
+    )
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-001"
+    )
+    assert result.next_guidance.requires_model is True
+    assert result.next_guidance.writes_artifacts is False
     assert result.next_guidance.writes_code is False
     assert result.frontend_evidence is not None
     assert result.frontend_evidence.report_path.endswith(
@@ -71,7 +80,7 @@ def test_start_frontend_evidence_loop_writes_passed_artifacts(tmp_path: Path) ->
         (loop_dir / "frontend-evidence-report.json").read_text(encoding="utf-8")
     )
     assert report["artifact_kind"] == "frontend-evidence-report"
-    assert report["status"] == "passed"
+    assert report["status"] == "needs_review"
     assert report["screenshot_refs"] == [
         ".ai-sdlc/artifacts/frontend-browser-gate/gate-run-001/shared-runtime/navigation-screenshot.png"
     ]
@@ -291,7 +300,7 @@ def test_skip_frontend_evidence_loop_requires_confirmation(tmp_path: Path) -> No
     ).exists()
 
 
-def test_skip_frontend_evidence_loop_closes_with_audit_without_browser_artifact(
+def test_skip_frontend_evidence_loop_waits_for_review_before_close(
     tmp_path: Path,
 ) -> None:
     work_item = _write_work_item(tmp_path)
@@ -310,11 +319,14 @@ def test_skip_frontend_evidence_loop_closes_with_audit_without_browser_artifact(
     )
 
     assert result.status == "ready"
-    assert result.closed is True
+    assert result.closed is False
     assert result.skipped is True
-    assert result.loop_status == "closed"
+    assert result.loop_status == "needs_review"
     assert result.skip_reason == reason
-    assert result.next_guidance.command == "ai-sdlc pr-review start"
+    assert result.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence "
+        "--loop-id fe-skip-browser-unavailable"
+    )
     loop_dir = (
         tmp_path
         / ".ai-sdlc"
@@ -322,18 +334,34 @@ def test_skip_frontend_evidence_loop_closes_with_audit_without_browser_artifact(
         / "frontend-evidence"
         / "fe-skip-browser-unavailable"
     )
-    close_payload = json.loads(
-        (loop_dir / "frontend-evidence-close.json").read_text(encoding="utf-8")
-    )
+    assert not (loop_dir / "frontend-evidence-close.json").exists()
     report_payload = json.loads(
         (loop_dir / "frontend-evidence-report.json").read_text(encoding="utf-8")
+    )
+    assert report_payload["status"] == "needs_review"
+    assert report_payload["overall_gate_status"] == "skipped"
+    assert "frontend_browser_e2e_skipped" in report_payload["advisory_reason_codes"]
+
+    close = close_frontend_evidence_loop(
+        FrontendEvidenceCloseOptions(
+            root=tmp_path,
+            loop_id="fe-skip-browser-unavailable",
+            yes=True,
+            allow_warnings=True,
+            closed_by="tester",
+        )
+    )
+
+    assert close.closed is True
+    assert close.skipped is True
+    assert close.loop_status == "closed"
+    assert close.next_guidance.command == "ai-sdlc pr-review start"
+    close_payload = json.loads(
+        (loop_dir / "frontend-evidence-close.json").read_text(encoding="utf-8")
     )
     assert close_payload["skipped"] is True
     assert close_payload["skip_reason"] == reason
     assert close_payload["closed_by"] == "tester"
-    assert report_payload["status"] == "closed"
-    assert report_payload["overall_gate_status"] == "skipped"
-    assert "frontend_browser_e2e_skipped" in report_payload["advisory_reason_codes"]
 
 
 def test_start_frontend_evidence_loop_blocks_scope_mismatch(tmp_path: Path) -> None:
@@ -792,12 +820,18 @@ def test_close_frontend_evidence_loop_requires_allow_warnings(
         advisory_reason_codes=["low_contrast_text"],
         remediation_hints=["review generated frontend visual/accessibility warnings"],
     )
-    start_frontend_evidence_loop(
+    start = start_frontend_evidence_loop(
         FrontendEvidenceStartOptions(
             root=tmp_path,
             work_item="specs/demo-frontend",
             loop_id="fe-advisory",
         )
+    )
+
+    assert start.status == "ready"
+    assert start.loop_status == "needs_review"
+    assert start.next_guidance.command == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-advisory"
     )
 
     blocked_close = close_frontend_evidence_loop(
@@ -834,6 +868,124 @@ def test_close_frontend_evidence_loop_requires_allow_warnings(
     assert close_payload["allow_warnings"] is True
     assert close_payload["warning_count"] == 3
     assert close_payload["accepted_warning_reason_codes"] == ["low_contrast_text"]
+
+
+def test_close_frontend_evidence_loop_rechecks_review_digest_at_final_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _write_work_item(tmp_path)
+    _write_closed_implementation_loop(tmp_path, work_item)
+    _write_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    loop_id = "fe-final-review-guard"
+    started = start_frontend_evidence_loop(
+        FrontendEvidenceStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-frontend",
+            loop_id=loop_id,
+        )
+    )
+    assert started.status == "ready"
+    expected_digest = "a" * 64
+    original_read_snapshot = frontend_evidence_loop_module.read_snapshot
+
+    def mutate_after_state_validation(*args: object, **kwargs: object) -> object:
+        snapshot = original_read_snapshot(*args, **kwargs)
+        report_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "frontend-evidence"
+            / loop_id
+            / "frontend-evidence-report.md"
+        )
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8") + "\n评审后发生变化。\n",
+            encoding="utf-8",
+        )
+        return snapshot
+
+    monkeypatch.setattr(
+        frontend_evidence_loop_module,
+        "read_snapshot",
+        mutate_after_state_validation,
+    )
+
+    def reject_changed_report(
+        root: Path,
+        *,
+        loop_type: str,
+        loop_id: str,
+        expected_digest: str,
+    ) -> None:
+        assert root == tmp_path
+        assert loop_type == "frontend-evidence"
+        assert loop_id == "fe-final-review-guard"
+        assert expected_digest == "a" * 64
+        report_path = (
+            root
+            / ".ai-sdlc"
+            / "loops"
+            / "frontend-evidence"
+            / loop_id
+            / "frontend-evidence-report.md"
+        )
+        assert "评审后发生变化" in report_path.read_text(encoding="utf-8")
+        raise ReviewInputGuardError("review-input-drift")
+
+    with pytest.raises(ReviewInputGuardError, match="review-input-drift"):
+        close_frontend_evidence_loop(
+            FrontendEvidenceCloseOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                yes=True,
+                expected_review_digest=expected_digest,
+            ),
+            review_input_validator=reject_changed_report,
+        )
+
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "frontend-evidence"
+        / loop_id
+        / "frontend-evidence-close.json"
+    ).exists()
+
+
+def test_close_frontend_evidence_loop_rejects_replaced_loop_identity(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_work_item(tmp_path)
+    _write_closed_implementation_loop(tmp_path, work_item)
+    _write_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    for loop_id in ("fe-reviewed", "fe-unreviewed"):
+        start_frontend_evidence_loop(
+            FrontendEvidenceStartOptions(
+                root=tmp_path,
+                work_item="specs/demo-frontend",
+                loop_id=loop_id,
+            )
+        )
+    reviewed_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "frontend-evidence"
+        / "fe-reviewed"
+        / "loop-run.json"
+    )
+    unreviewed_run = reviewed_run.parent.parent / "fe-unreviewed" / "loop-run.json"
+    reviewed_run.write_bytes(unreviewed_run.read_bytes())
+
+    result = close_frontend_evidence_loop(
+        FrontendEvidenceCloseOptions(root=tmp_path, loop_id="fe-reviewed", yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "identity" in result.blocker.lower()
+    assert not (unreviewed_run.parent / "frontend-evidence-close.json").exists()
 
 
 def test_frontend_evidence_loop_needs_fix_for_missing_evidence(

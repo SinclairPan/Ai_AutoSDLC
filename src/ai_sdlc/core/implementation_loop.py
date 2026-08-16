@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
-from collections.abc import Callable
+import stat
+import tempfile
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import replace
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from ai_sdlc.core.design_close_authority_store import (
-    _verify_design_close_authority,
-)
 from ai_sdlc.core.design_contract_checks import _verify_design_document_snapshot
 from ai_sdlc.core.design_contract_models import (
     DesignContractClose,
@@ -23,6 +25,7 @@ from ai_sdlc.core.design_contract_store import (
     _design_contract_loop_identity_issue,
     _resolve_design_contract_loop_run_identity,
     design_contract_artifacts,
+    design_contract_input_digest,
     resolve_work_item_dir,
 )
 from ai_sdlc.core.design_contract_store import (
@@ -63,6 +66,7 @@ from ai_sdlc.core.implementation_store import (
     append_unique,
     build_implementation_input,
     implementation_artifacts,
+    implementation_input_digest,
     read_input,
     read_loop_run,
     read_progress,
@@ -75,14 +79,6 @@ from ai_sdlc.core.implementation_store import (
 from ai_sdlc.core.implementation_store import (
     read_report as read_implementation_report,
 )
-from ai_sdlc.core.lean_code_policy import stable_artifact_digest
-from ai_sdlc.core.lean_code_review_scope_models import (
-    IMPLEMENTATION_CLOSE_PROOF_CREATOR,
-    IMPLEMENTATION_CLOSE_PROOF_NAME,
-    FrozenArtifact,
-    ImplementationCloseProof,
-)
-from ai_sdlc.core.lean_code_runtime import validate_lean_close
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import (
     LoopRound,
@@ -91,17 +87,12 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
-from ai_sdlc.core.loop_policy import LOOP_POLICY_PATH, LoopPolicyError
-from ai_sdlc.core.scope_authority_store import (
-    ScopeAuthorityIntegrityError,
-    _verify_design_scope_authority,
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
 )
+from ai_sdlc.core.slimming_advice import collect_slimming_advice
 from ai_sdlc.core.stable_file_read import read_stable_bytes
-from ai_sdlc.core.stage_review.adapters import ImplementationStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_loop_stage_close,
-)
 
 _TASK_ID = re.compile(r"\bT\d{2,}\b")
 _TASK_SECTION = re.compile(r"(?m)^###\s+(?:Task|任务)\b.*$")
@@ -112,6 +103,112 @@ _INDENTED_LIST_ITEM = re.compile(r"^\s{2,}-\s+(.+?)\s*$")
 _FRONTEND_SIGNAL = re.compile(
     r"(?i)(\b(?:frontend|browser|playwright|vue|react|ui|css)\b|前端|浏览器|页面|组件)"
 )
+
+
+class _ImplementationWriteLockError(RuntimeError):
+    """实现循环写操作无法取得互斥锁。"""
+
+
+@contextmanager
+def _implementation_write_guard(root: Path, loop_id: str) -> Iterator[None]:
+    """跨进程串行化同一实现循环的读取、校验与写入。"""
+
+    lock_dir = _implementation_lock_dir(root)
+    lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    lock_key = f"{root.resolve()}\0{loop_id}".encode()
+    lock_name = hashlib.sha256(lock_key).hexdigest()
+    lock_path = lock_dir / f"implementation-{lock_name}.lock"
+    flags = os.O_CREAT | os.O_RDWR
+    if hasattr(os, "O_CLOEXEC"):
+        flags |= os.O_CLOEXEC
+    file_descriptor = -1
+    try:
+        file_descriptor = os.open(lock_path, flags, 0o600)
+        _acquire_implementation_file_lock(file_descriptor)
+    except OSError as exc:
+        if file_descriptor >= 0:
+            os.close(file_descriptor)
+        raise _ImplementationWriteLockError(
+            f"Implementation loop write lock is unavailable: {loop_id}."
+        ) from exc
+    try:
+        yield
+    finally:
+        _release_implementation_file_lock(file_descriptor)
+        os.close(file_descriptor)
+
+
+def _implementation_lock_dir(root: Path) -> Path:
+    git_marker = root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "ai-sdlc-locks"
+    if git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            marker = ""
+        if marker.lower().startswith("gitdir:"):
+            value = marker.split(":", 1)[1].strip()
+            git_dir = Path(value)
+            if not git_dir.is_absolute():
+                git_dir = root / git_dir
+            return git_dir.resolve() / "ai-sdlc-locks"
+    if hasattr(os, "getuid"):
+        user_key = str(os.getuid())
+    else:  # pragma: no cover - Windows temp directories are already user-scoped
+        user_key = hashlib.sha256(str(Path.home()).encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"ai-sdlc-loop-locks-{user_key}"
+
+
+def _acquire_implementation_file_lock(file_descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - Windows CI exercises this branch
+        import msvcrt
+
+        if os.fstat(file_descriptor).st_size == 0:
+            os.write(file_descriptor, b"\0")
+        os.lseek(file_descriptor, 0, os.SEEK_SET)
+        msvcrt.__dict__["locking"](
+            file_descriptor,
+            msvcrt.__dict__["LK_LOCK"],
+            1,
+        )
+        return
+
+    import fcntl
+
+    fcntl.flock(file_descriptor, fcntl.LOCK_EX)
+
+
+def _release_implementation_file_lock(file_descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - Windows CI exercises this branch
+        import msvcrt
+
+        os.lseek(file_descriptor, 0, os.SEEK_SET)
+        msvcrt.__dict__["locking"](
+            file_descriptor,
+            msvcrt.__dict__["LK_UNLCK"],
+            1,
+        )
+        return
+
+    import fcntl
+
+    fcntl.flock(file_descriptor, fcntl.LOCK_UN)
+
+
+def _implementation_write_loop_id(root: Path, requested_loop_id: str) -> str:
+    requested = requested_loop_id.strip()
+    if requested:
+        validate_explicit_loop_id(requested)
+        return requested
+    loop_run_path, blocker = resolve_implementation_loop_run_path(root, "")
+    if blocker:
+        raise ValueError(blocker)
+    if not loop_run_path.is_file():
+        raise ValueError("Implementation loop-run.json does not exist.")
+    loop_run = read_loop_run(loop_run_path)
+    validate_explicit_loop_id(loop_run.loop_id)
+    return loop_run.loop_id
 
 
 def start_implementation_loop(
@@ -174,13 +271,6 @@ def start_implementation_loop(
             design_contract_report_path=design_report_path,
             task_items=task_items,
         )
-    except LoopPolicyError as exc:
-        return _blocked_result(
-            str(exc),
-            loop_id=loop_id,
-            next_action=f"Fix {LOOP_POLICY_PATH.as_posix()} and retry.",
-            artifacts=planned_refs,
-        )
     except ValueError as exc:
         return _blocked_result(
             f"Invalid implementation input: {exc}",
@@ -237,6 +327,23 @@ def record_implementation_progress(
 ) -> ImplementationCommandResult:
     """Record local implementation progress for one task."""
 
+    root = options.root.resolve()
+    try:
+        loop_id = _implementation_write_loop_id(root, options.loop_id)
+    except ValueError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+    try:
+        with _implementation_write_guard(root, loop_id):
+            return _record_implementation_progress_locked(
+                replace(options, loop_id=loop_id)
+            )
+    except _ImplementationWriteLockError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+
+
+def _record_implementation_progress_locked(
+    options: ImplementationRecordOptions,
+) -> ImplementationCommandResult:
     root = options.root.resolve()
     loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
         root,
@@ -340,28 +447,84 @@ def record_implementation_progress(
 
 def close_implementation_loop(
     options: ImplementationCloseOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> ImplementationCommandResult:
     """Close an implementation loop after required task evidence is complete."""
 
     root = options.root.resolve()
-    loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
-        root,
-        options.loop_id,
-    )
-    if pointer_blocker:
-        return _blocked_result(pointer_blocker)
     if not options.yes:
         return _blocked_result(
             "Pass --yes after confirming implementation evidence.",
             result="Implementation close requires explicit confirmation.",
-            next_action="Run ai-sdlc loop implementation close --yes.",
+            next_action="Repeat the same guarded implementation close command with --yes.",
         )
     try:
-        loop_run = read_loop_run(loop_run_path)
+        loop_id = _implementation_write_loop_id(root, options.loop_id)
+    except ValueError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+    try:
+        with _implementation_write_guard(root, loop_id):
+            return _close_implementation_loop_locked(
+                replace(options, loop_id=loop_id),
+                review_input_validator=review_input_validator,
+                reviewed_artifacts=reviewed_artifacts,
+            )
+    except _ImplementationWriteLockError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+
+
+def _close_implementation_loop_locked(
+    options: ImplementationCloseOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> ImplementationCommandResult:
+    root = options.root.resolve()
+    expected_loop_id = options.loop_id.strip()
+    if reviewed_artifacts is None:
+        loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
+            root,
+            options.loop_id,
+        )
+        if pointer_blocker:
+            return _blocked_result(pointer_blocker)
+    else:
+        try:
+            validate_explicit_loop_id(expected_loop_id)
+        except ValueError as exc:
+            return _blocked_result(
+                str(exc),
+                loop_id=expected_loop_id,
+                result="Implementation loop artifact is malformed.",
+            )
+        loop_run_path = implementation_artifacts(root, expected_loop_id).loop_run_path
+    try:
+        loop_run = (
+            read_loop_run(loop_run_path)
+            if reviewed_artifacts is None
+            else LoopRun.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    loop_run_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
         validate_explicit_loop_id(loop_run.loop_id)
     except ValueError as exc:
         return _blocked_result(
             str(exc), result="Implementation loop artifact is malformed."
+        )
+    if expected_loop_id and loop_run.loop_id != expected_loop_id:
+        return _blocked_result(
+            (
+                "Implementation loop identity mismatch: expected "
+                f"{expected_loop_id}, found {loop_run.loop_id}."
+            ),
+            loop_id=expected_loop_id,
+            result="Implementation loop artifact is malformed.",
         )
     artifacts = implementation_artifacts(root, loop_run.loop_id)
     loaded = _read_current_state(
@@ -369,6 +532,7 @@ def close_implementation_loop(
         artifacts,
         loop_id=loop_run.loop_id,
         input_digest=loop_run.input_digest,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if isinstance(loaded, ImplementationCommandResult):
         return loaded
@@ -376,7 +540,17 @@ def close_implementation_loop(
     report = _build_report(root, impl_input, tasks, progress)
     if loop_run.status == LoopStatus.CLOSED and artifacts.close_path.is_file():
         try:
-            report = read_implementation_report(artifacts.report_json_path)
+            report = (
+                read_implementation_report(artifacts.report_json_path)
+                if reviewed_artifacts is None
+                else ImplementationReport.model_validate_json(
+                    _reviewed_implementation_bytes(
+                        root,
+                        artifacts.report_json_path,
+                        reviewed_artifacts,
+                    )
+                )
+            )
         except (OSError, ValueError) as exc:
             return _blocked_result(
                 f"Persisted implementation report is malformed: {exc}",
@@ -391,12 +565,7 @@ def close_implementation_loop(
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _next_loop_action(report),
         )
-        return _execute_implementation_close_gate(
-            root,
-            loop_run,
-            artifacts,
-            lambda: result,
-        )
+        return result
     close_blockers = _close_blockers(tasks, progress)
     if close_blockers:
         report = report.model_copy(
@@ -407,6 +576,14 @@ def close_implementation_loop(
                 "next_action": _record_next_action(tasks, progress),
             }
         )
+        if reviewed_artifacts is not None:
+            revalidate_review_input_at_transition(
+                root,
+                loop_type="implementation",
+                loop_id=loop_run.loop_id,
+                expected_digest=options.expected_review_digest,
+                validator=review_input_validator,
+            )
         _write_artifacts(
             root,
             impl_input,
@@ -430,66 +607,14 @@ def close_implementation_loop(
             status=ImplementationCommandStatus.NEEDS_FIX,
             blocker=close_blockers[0],
         )
-    lean_blocker = validate_lean_close(root, loop_run.loop_id)
-    if lean_blocker:
-        return _lean_close_failure(
-            root,
-            loop_run,
-            impl_input,
-            tasks,
-            progress,
-            report,
-            artifacts,
-            lean_blocker,
-        )
-    return _write_close(root, loop_run, report, artifacts, options.closed_by)
-
-
-def _lean_close_failure(
-    root: Path,
-    loop_run: LoopRun,
-    impl_input: ImplementationInput,
-    tasks: ImplementationTasks,
-    progress: ImplementationProgress,
-    report: ImplementationReport,
-    artifacts: ImplementationArtifacts,
-    blocker: str,
-) -> ImplementationCommandResult:
-    effective_status = (
-        loop_run.status
-        if loop_run.status in {LoopStatus.NEEDS_FIX, LoopStatus.NEEDS_USER}
-        else LoopStatus.NEEDS_REVIEW
-    )
-    next_action = "Run ai-sdlc loop implementation lean-check."
-    updated_report = report.model_copy(
-        update={
-            "status": effective_status,
-            "blocker_count": report.blocker_count + 1,
-            "blockers": [*report.blockers, blocker],
-            "next_action": next_action,
-        }
-    )
-    loop_run.status = effective_status
-    loop_run.updated_at = utc_now_iso()
-    loop_run.next_action = next_action
-    _write_artifacts(
+    revalidate_review_input_at_transition(
         root,
-        impl_input,
-        tasks,
-        progress,
-        _evidence_from_progress(progress),
-        updated_report,
-        loop_run,
-        artifacts,
+        loop_type="implementation",
+        loop_id=loop_run.loop_id,
+        expected_digest=options.expected_review_digest,
+        validator=review_input_validator,
     )
-    return _result_from_report(
-        updated_report,
-        artifacts=artifacts.refs(root),
-        result="Implementation close requires a fresh passed Lean evaluation.",
-        status=ImplementationCommandStatus.NEEDS_FIX,
-        blocker=blocker,
-        loop_status=effective_status,
-    )
+    return _write_close(root, loop_run, report, artifacts, options.closed_by)
 
 
 def _write_close(
@@ -499,17 +624,12 @@ def _write_close(
     artifacts: ImplementationArtifacts,
     closed_by: str,
 ) -> ImplementationCommandResult:
-    return _execute_implementation_close_gate(
+    return _write_implementation_close(
         root,
         loop_run,
+        report,
         artifacts,
-        lambda: _write_implementation_close(
-            root,
-            loop_run,
-            report,
-            artifacts,
-            closed_by,
-        ),
+        closed_by,
     )
 
 
@@ -533,7 +653,6 @@ def _write_implementation_close(
     )
     close = ImplementationClose(
         loop_id=loop_run.loop_id,
-        created_by=IMPLEMENTATION_CLOSE_PROOF_CREATOR,
         closed_by=closed_by.strip() or "local-user",
         report_path=repo_relative_path(root, artifacts.report_json_path),
         required_task_count=report.required_task_count,
@@ -558,37 +677,15 @@ def _write_implementation_close(
     )
 
 
-def _execute_implementation_close_gate(
-    root: Path,
-    loop_run: LoopRun,
-    artifacts: ImplementationArtifacts,
-    writer: Callable[[], ImplementationCommandResult],
-) -> ImplementationCommandResult:
-    prepared = prepare_loop_stage_close(
-        root=root,
-        adapter=ImplementationStageAdapter(),
-        loop_run=loop_run,
-        close_kind="implementation-close",
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=artifacts.close_path,
-    )
-    return execute_stage_close(prepared, writer)
-
-
 def _record_close_outputs(
     root: Path,
     execution_round: LoopRound,
     artifacts: ImplementationArtifacts,
 ) -> None:
-    paths = (
-        artifacts.close_path,
-        artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME),
+    execution_round.output_artifacts = append_unique(
+        execution_round.output_artifacts,
+        repo_relative_path(root, artifacts.close_path),
     )
-    for path in paths:
-        execution_round.output_artifacts = append_unique(
-            execution_round.output_artifacts,
-            repo_relative_path(root, path),
-        )
 
 
 def _persist_close_artifacts(
@@ -604,34 +701,7 @@ def _persist_close_artifacts(
         artifacts.report_md_path, _render_report_markdown(report)
     )
     store.write_json_artifact(artifacts.close_path, close)
-    store.write_json_artifact(
-        artifacts.close_path.with_name(IMPLEMENTATION_CLOSE_PROOF_NAME),
-        _close_proof(root, artifacts, report),
-    )
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
-
-
-def _close_proof(
-    root: Path,
-    artifacts: ImplementationArtifacts,
-    report: ImplementationReport,
-) -> ImplementationCloseProof:
-    return ImplementationCloseProof(
-        implementation_loop_id=report.loop_id,
-        work_item_id=report.work_item_id,
-        close=FrozenArtifact(
-            path=repo_relative_path(root, artifacts.close_path),
-            digest=_raw_file_digest(artifacts.close_path),
-        ),
-        implementation_report=FrozenArtifact(
-            path=repo_relative_path(root, artifacts.report_json_path),
-            digest=_raw_file_digest(artifacts.report_json_path),
-        ),
-    )
-
-
-def _raw_file_digest(path: Path) -> str:
-    return f"sha256:{hashlib.sha256(path.read_bytes()).hexdigest()}"
 
 
 def _write_artifacts(
@@ -674,14 +744,38 @@ def _read_current_state(
     *,
     loop_id: str,
     input_digest: str = "",
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> (
     tuple[ImplementationInput, ImplementationTasks, ImplementationProgress]
     | ImplementationCommandResult
 ):
     try:
-        impl_input = read_input(artifacts.input_path)
-        tasks = read_tasks(artifacts.tasks_path)
-        progress = read_progress(artifacts.progress_path)
+        if reviewed_artifacts is None:
+            impl_input = read_input(artifacts.input_path)
+            tasks = read_tasks(artifacts.tasks_path)
+            progress = read_progress(artifacts.progress_path)
+        else:
+            impl_input = ImplementationInput.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    artifacts.input_path,
+                    reviewed_artifacts,
+                )
+            )
+            tasks = ImplementationTasks.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    artifacts.tasks_path,
+                    reviewed_artifacts,
+                )
+            )
+            progress = ImplementationProgress.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    artifacts.progress_path,
+                    reviewed_artifacts,
+                )
+            )
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -689,7 +783,7 @@ def _read_current_state(
             result="Implementation loop artifact is malformed.",
             artifacts=artifacts.refs(root),
         )
-    if input_digest and stable_artifact_digest(impl_input) != input_digest:
+    if input_digest and implementation_input_digest(impl_input) != input_digest:
         return _blocked_result(
             "Implementation input digest mismatch; the frozen input was modified.",
             loop_id=loop_id,
@@ -697,6 +791,18 @@ def _read_current_state(
             artifacts=artifacts.refs(root),
         )
     return impl_input, tasks, progress
+
+
+def _reviewed_implementation_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes:
+    key = repo_relative_path(root, path)
+    try:
+        return reviewed_artifacts[key]
+    except KeyError as exc:
+        raise ValueError(f"Reviewed implementation snapshot is missing {key}.") from exc
 
 
 def _design_contract_gate(
@@ -743,7 +849,8 @@ def _design_contract_gate(
                 f"Design-contract loop {loop_run.loop_id} must be closed before "
                 "implementation start."
             ),
-            "Run ai-sdlc loop design-contract close --yes.",
+            "Run ai-sdlc loop review --type design-contract "
+            f"--loop-id {loop_run.loop_id}.",
         )
     try:
         report = read_design_contract_report(artifacts.report_json_path)
@@ -765,19 +872,25 @@ def _design_contract_gate(
         work_item_id,
     )
     if blocker:
-        return "", "", blocker, "Run ai-sdlc loop design-contract close --yes."
-    authority_issue = _design_close_authority_issue(
+        return (
+            "",
+            "",
+            blocker,
+            "Run ai-sdlc loop review --type design-contract "
+            f"--loop-id {loop_run.loop_id}.",
+        )
+    input_issue = _design_close_input_issue(
         root,
         loop_run,
         artifacts,
         expected_loop_id,
         work_item_id,
     )
-    if authority_issue:
+    if input_issue:
         return (
             "",
             "",
-            authority_issue,
+            input_issue,
             "Rerun ai-sdlc loop design-contract check with a new loop id.",
         )
     return (
@@ -826,7 +939,7 @@ def _resolve_design_gate_target(
     )
 
 
-def _design_close_authority_issue(
+def _design_close_input_issue(
     root: Path,
     loop_run: LoopRun,
     artifacts: DesignContractArtifacts,
@@ -836,23 +949,20 @@ def _design_close_authority_issue(
     try:
         payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
         contract_input = DesignContractInput.model_validate(payload)
-        _verify_design_scope_authority(
-            root,
-            contract_input,
-            loop_input_digest=loop_run.input_digest,
-            expected_loop_id=expected_loop_id,
-            expected_work_item_id=work_item_id,
-        )
+        if contract_input.loop_id != expected_loop_id:
+            raise ValueError("design-contract input loop id changed")
+        if contract_input.work_item_id != work_item_id:
+            raise ValueError("design-contract input work item changed")
+        if design_contract_input_digest(contract_input) != loop_run.input_digest:
+            raise ValueError("design-contract input changed after check")
         _verify_design_document_snapshot(root, contract_input)
-        _verify_design_close_authority(root, contract_input, artifacts)
     except (
         OSError,
         UnicodeError,
         ValueError,
         ValidationError,
-        ScopeAuthorityIntegrityError,
     ) as exc:
-        return f"Design close authority verification failed: {exc}"
+        return f"Design close input verification failed: {exc}"
     return ""
 
 
@@ -885,7 +995,7 @@ def _design_contract_blocker(
             f"work item is {work_item_id}."
         )
     if (
-        report.status != LoopStatus.PASSED
+        report.status != LoopStatus.NEEDS_REVIEW
         or report.blocker_count != 0
         or close.blocker_count != 0
     ):
@@ -1068,11 +1178,7 @@ def _build_report(
     if blockers:
         status = LoopStatus.NEEDS_FIX
     elif len(done_required) == len(required):
-        status = (
-            LoopStatus.NEEDS_REVIEW
-            if "lean-code" in impl_input.quality_profiles
-            else LoopStatus.PASSED
-        )
+        status = LoopStatus.NEEDS_REVIEW
     evidence_count = sum(
         len(item.evidence) + len(item.verification_commands) for item in progress.tasks
     )
@@ -1087,6 +1193,7 @@ def _build_report(
         evidence_count=evidence_count,
         blocker_count=len(blockers),
         blockers=blockers,
+        advisories=_implementation_slimming_advisories(root, impl_input),
         requires_frontend_evidence=_requires_frontend_evidence(root, impl_input),
         next_action=_next_action_for_progress(
             tasks,
@@ -1102,9 +1209,10 @@ def _next_action_for_progress(
     status: LoopStatus,
 ) -> str:
     if status == LoopStatus.NEEDS_REVIEW:
-        return "Run ai-sdlc loop implementation lean-check."
-    if status == LoopStatus.PASSED:
-        return "Run ai-sdlc loop implementation close --yes."
+        return (
+            "Run ai-sdlc loop review --type implementation "
+            f"--loop-id {progress.loop_id}."
+        )
     return _record_next_action(tasks, progress)
 
 
@@ -1135,7 +1243,72 @@ def _record_next_action(
                 f"--task-id {item.task_id} --status done "
                 '--verification "<command>" --evidence <path>.'
             )
-    return "Run ai-sdlc loop implementation close --yes."
+    return (
+        f"Run ai-sdlc loop review --type implementation --loop-id {progress.loop_id}."
+    )
+
+
+def _implementation_slimming_advisories(
+    root: Path,
+    impl_input: ImplementationInput,
+) -> list[str]:
+    root = root.resolve()
+    paths: list[Path] = []
+    for path_text in impl_input.declared_scope:
+        pattern = Path(path_text)
+        if pattern.is_absolute() or ".." in pattern.parts:
+            continue
+        for candidate in sorted(root.glob(path_text)):
+            try:
+                candidate.relative_to(root)
+            except ValueError:
+                continue
+            kind = _slimming_path_kind(root, candidate)
+            if kind == "directory":
+                paths.extend(
+                    path
+                    for path in sorted(candidate.rglob("*"))
+                    if _slimming_path_kind(root, path) == "file"
+                )
+            elif kind == "file":
+                paths.append(candidate)
+    rendered: list[str] = []
+    for advice in collect_slimming_advice(paths):
+        path = Path(advice.path)
+        try:
+            path_text = path.relative_to(root).as_posix()
+        except ValueError:
+            path_text = path.as_posix()
+        location = f"{path_text}:{advice.line}" if advice.line else path_text
+        rendered.append(f"{location}: {advice.message}")
+    return rendered
+
+
+def _slimming_path_kind(root: Path, path: Path) -> str | None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError:
+        return None
+    current = root
+    for index, part in enumerate(relative.parts):
+        current /= part
+        try:
+            metadata = current.lstat()
+        except OSError:
+            return None
+        attributes = getattr(metadata, "st_file_attributes", 0)
+        if stat.S_ISLNK(metadata.st_mode) or attributes & 0x400:
+            return None
+        is_leaf = index == len(relative.parts) - 1
+        if is_leaf:
+            if stat.S_ISREG(metadata.st_mode):
+                return "file"
+            if stat.S_ISDIR(metadata.st_mode):
+                return "directory"
+            return None
+        if not stat.S_ISDIR(metadata.st_mode):
+            return None
+    return None
 
 
 def _close_blockers(
@@ -1204,7 +1377,7 @@ def _build_loop_run(
         loop_type=LoopType.IMPLEMENTATION,
         status=report.status,
         work_item_id=impl_input.work_item_id,
-        input_digest=stable_artifact_digest(impl_input),
+        input_digest=implementation_input_digest(impl_input),
         current_round=1,
         rounds=[
             LoopRound(
@@ -1257,6 +1430,7 @@ def _result_from_report(
         blocked_count=report.blocked_count,
         evidence_count=report.evidence_count,
         blocker_count=report.blocker_count,
+        advisories=list(report.advisories),
         closed=closed,
         dry_run=dry_run,
         blocker=blocker,
@@ -1336,14 +1510,16 @@ def _next_guidance_for_result(
             safety="writes_project_artifacts",
             evidence=evidence,
         )
-    if report.status == LoopStatus.PASSED:
+    if report.status == LoopStatus.NEEDS_REVIEW:
         return ImplementationNextGuidance(
-            command="ai-sdlc loop implementation close --yes",
-            reason="All required implementation tasks have recorded evidence.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                f"ai-sdlc loop review --type implementation --loop-id {report.loop_id}"
+            ),
+            reason="Implementation evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety="writes_project_artifacts",
+            safety="safe_read_only",
             evidence=evidence,
         )
     return ImplementationNextGuidance(
@@ -1412,6 +1588,9 @@ def _render_report_markdown(report: ImplementationReport) -> str:
     if report.blockers:
         lines.extend(["", "## Blockers"])
         lines.extend(f"- {blocker}" for blocker in report.blockers)
+    if report.advisories:
+        lines.extend(["", "## Slimming advice"])
+        lines.extend(f"- {advice}" for advice in report.advisories)
     return "\n".join(lines) + "\n"
 
 

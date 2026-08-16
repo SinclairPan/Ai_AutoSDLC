@@ -56,6 +56,6 @@ jobs:
           uv run pytest
           tests/integration/test_cli_module_invocation.py
           tests/integration/test_cli_handoff.py
-          tests/unit/stage_review/test_resources.py
-          tests/e2e/test_clean_user_stage_gate.py
+          tests/unit/test_review_kernel.py
+          tests/unit/test_slimming_advice.py
           -q

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+import threading
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,10 +13,21 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
+import ai_sdlc.core.design_contract_loop as design_contract_loop
+import ai_sdlc.core.frontend_evidence_loop as frontend_evidence_loop
+import ai_sdlc.core.implementation_loop as implementation_loop
+import ai_sdlc.core.requirement_loop as requirement_loop
+from ai_sdlc.cli.loop_review_cmd import (
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.cli.main import app
+from ai_sdlc.core.design_contract_models import DesignContractCheckOptions
+from ai_sdlc.core.implementation_loop import record_implementation_progress
 from ai_sdlc.core.implementation_models import (
     ImplementationClose,
     ImplementationCurrentPointer,
+    ImplementationRecordOptions,
     ImplementationReport,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
@@ -35,34 +47,41 @@ from ai_sdlc.core.requirement_loop import (
     freeze_requirement_loop,
     start_requirement_loop,
 )
-from ai_sdlc.core.stage_review.stage_review_execution import (
-    StageCloseGateUnavailableError,
-)
 
 runner = CliRunner()
 pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
 
 
-def test_loop_close_reports_stage_review_result_and_one_next_action(
+def _review_close_args(root: Path, loop_type: str, loop_id: str) -> list[str]:
+    digest = resolve_review_input(
+        root,
+        loop_type=loop_type,
+        loop_id=loop_id,
+    ).input_digest
+    return [
+        "--loop-id",
+        loop_id,
+        "--expect-review-digest",
+        digest,
+    ]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation is not portable")
+def test_loop_review_rejects_linked_current_pointer_before_parsing(
     tmp_path: Path,
 ) -> None:
-    failure = StageCloseGateUnavailableError("review-isolation-unproven")
-    with (
-        patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
-        patch("ai_sdlc.cli.loop_cmd._run_project_writer_adapter"),
-        patch("ai_sdlc.cli.loop_cmd.close_implementation_loop", side_effect=failure),
-    ):
-        result = runner.invoke(
-            app,
-            ["loop", "implementation", "close", "--yes", "--json"],
-        )
+    target = tmp_path / "pointer-target.json"
+    target.write_text("{}", encoding="utf-8")
+    pointer = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "current-review.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.symlink_to(target)
 
-    assert result.exit_code == 2
-    payload = json.loads(result.output)
-    assert payload["status"] == "needs_user"
-    assert payload["reason_code"] == "review-isolation-unproven"
-    assert payload["request_id"]
-    assert "ai-sdlc doctor" in payload["next_action"]
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id="review-linked-pointer",
+        )
 
 
 def test_loop_help_lists_status_and_list() -> None:
@@ -115,8 +134,9 @@ def test_loop_status_json_guides_post_fix_review_to_rerun(tmp_path: Path) -> Non
     assert payload["next_guidance"]["command"] == "ai-sdlc pr-review rerun"
     assert payload["next_guidance"]["requires_model"] is True
     assert payload["next_guidance"]["safety"] == "may_call_local_review_agent"
-    assert ".ai-sdlc/reviews/pr/review-001/resolution.yaml" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/review-001/resolution.yaml"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -357,7 +377,14 @@ def test_loop_requirement_freeze_triggers_ide_adapter_hook(
         adapter_hook.reset_mock()
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-adapter-freeze"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -395,7 +422,14 @@ def test_loop_requirement_freeze_json_suppresses_adapter_notice(
         )
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-adapter-freeze-json"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -486,8 +520,9 @@ def test_loop_list_json_guides_no_current_pointer_with_history_to_doctor(
     )
     assert payload["next_guidance"]["requires_model"] is False
     assert payload["next_guidance"]["writes_artifacts"] is False
-    assert "ai-sdlc pr-review start --base <branch>" in (
-        payload["next_guidance"]["alternatives"]
+    assert (
+        "ai-sdlc pr-review start --base <branch>"
+        in (payload["next_guidance"]["alternatives"])
     )
     assert payload["items"][0]["next_guidance"]["command"] == (
         "ai-sdlc loop list --json"
@@ -524,8 +559,9 @@ def test_loop_list_json_reports_malformed_current_pointer(
     assert payload["next_guidance"]["command"] == (
         "ai-sdlc pr-review start --base <branch>"
     )
-    assert ".ai-sdlc/reviews/pr/current-review.json" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/current-review.json"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -551,8 +587,9 @@ def test_loop_list_json_reports_missing_current_pointer_target(
         ".ai-sdlc/reviews/pr/missing/review-run.json"
     )
     assert payload["next_guidance"]["safety"] == "blocked"
-    assert ".ai-sdlc/reviews/pr/missing/review-run.json" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/missing/review-run.json"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -579,8 +616,9 @@ def test_loop_list_json_reports_malformed_current_review_run_guidance(
         ".ai-sdlc/reviews/pr/review-bad-current/review-run.json"
     )
     assert payload["next_guidance"]["safety"] == "blocked"
-    assert ".ai-sdlc/reviews/pr/review-bad-current/review-run.json" in (
-        payload["next_guidance"]["evidence"]
+    assert (
+        ".ai-sdlc/reviews/pr/review-bad-current/review-run.json"
+        in (payload["next_guidance"]["evidence"])
     )
 
 
@@ -657,7 +695,14 @@ def test_loop_requirement_start_status_and_freeze_json(tmp_path: Path) -> None:
         )
         freeze = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -678,7 +723,7 @@ def test_loop_requirement_start_status_and_freeze_json(tmp_path: Path) -> None:
     assert status_payload["current_loop"]["loop_type"] == "requirement"
     assert status_payload["current_loop"]["requirement"]["acceptance_count"] == 1
     assert status_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop requirement freeze --yes"
+        "ai-sdlc loop review --type requirement --loop-id req-cli"
     )
 
     assert freeze.exit_code == 0
@@ -686,6 +731,94 @@ def test_loop_requirement_start_status_and_freeze_json(tmp_path: Path) -> None:
     assert freeze_payload["status"] == "ready"
     assert freeze_payload["loop_status"] == "closed"
     assert "design-contract" in freeze_payload["next_action"]
+
+
+def test_loop_requirement_freeze_uses_reviewed_state_across_aba(
+    tmp_path: Path,
+) -> None:
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "requirement",
+                "start",
+                "--loop-id",
+                "req-aba",
+                "--idea",
+                "Operations needs an approval report.",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="requirement",
+        loop_id="req-aba",
+    )
+    reviewed_bytes = {
+        path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
+    }
+    validation_count = 0
+
+    def validate_then_add_acceptance(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 1:
+            updated = start_requirement_loop(
+                RequirementStartOptions(
+                    root=tmp_path,
+                    loop_id="req-aba",
+                    idea="Operations needs an approval report.",
+                    acceptance=("The report includes every approval decision.",),
+                )
+            )
+            assert updated.status == "ready"
+        return result
+
+    original_revalidate = requirement_loop.revalidate_review_input_at_transition
+
+    def restore_then_revalidate(*args, **kwargs):
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+        return original_revalidate(*args, **kwargs)
+
+    try:
+        with (
+            patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+            patch(
+                "ai_sdlc.cli.loop_cmd.validate_review_input_for_close",
+                side_effect=validate_then_add_acceptance,
+            ),
+            patch(
+                "ai_sdlc.core.requirement_loop.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "loop",
+                    "requirement",
+                    "freeze",
+                    "--loop-id",
+                    "req-aba",
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--yes",
+                    "--json",
+                ],
+            )
+    finally:
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["status"] == "needs_user"
+    assert payload["acceptance_count"] == 0
 
 
 def test_loop_requirement_start_human_needs_user_without_acceptance(
@@ -731,7 +864,13 @@ def test_loop_requirement_freeze_requires_yes(tmp_path: Path) -> None:
         )
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-freeze-cli"),
+                "--json",
+            ],
         )
 
     assert result.exit_code == 1
@@ -758,7 +897,14 @@ def test_loop_requirement_freeze_without_acceptance_exits_nonzero(
         )
         result = runner.invoke(
             app,
-            ["loop", "requirement", "freeze", "--yes", "--json"],
+            [
+                "loop",
+                "requirement",
+                "freeze",
+                *_review_close_args(tmp_path, "requirement", "req-freeze-needs-user"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
@@ -829,14 +975,21 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
         )
         close = runner.invoke(
             app,
-            ["loop", "design-contract", "close", "--yes", "--json"],
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert check.exit_code == 0
     check_payload = json.loads(check.output)
     assert check_payload["status"] == "ready"
-    assert check_payload["loop_status"] == "passed"
-    assert check_payload["design_contract"]["status"] == "passed"
+    assert check_payload["loop_status"] == "needs_review"
+    assert check_payload["design_contract"]["status"] == "needs_review"
     assert check_payload["design_contract"]["coverage_count"] == 2
     assert check_payload["design_contract"]["coverage_matrix_path"].endswith(
         ".ai-sdlc/loops/design-contract/dc-cli/coverage-matrix.json"
@@ -845,13 +998,13 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
         ".ai-sdlc/loops/design-contract/dc-cli/design-contract-report.json"
     )
     assert check_payload["next_action"] == (
-        "Run ai-sdlc loop design-contract close --yes."
+        "Run ai-sdlc loop review --type design-contract --loop-id dc-cli."
     )
     assert check_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop design-contract close --yes"
+        "ai-sdlc loop review --type design-contract --loop-id dc-cli"
     )
-    assert check_payload["next_guidance"]["requires_model"] is False
-    assert check_payload["next_guidance"]["writes_artifacts"] is True
+    assert check_payload["next_guidance"]["requires_model"] is True
+    assert check_payload["next_guidance"]["writes_artifacts"] is False
     assert check_payload["next_guidance"]["writes_code"] is False
 
     assert status.exit_code == 0
@@ -860,7 +1013,7 @@ def test_loop_design_contract_check_status_and_close_json(tmp_path: Path) -> Non
     assert status_payload["current_loop"]["loop_type"] == "design-contract"
     assert status_payload["current_loop"]["design_contract"]["blocker_count"] == 0
     assert status_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop design-contract close --yes"
+        "ai-sdlc loop review --type design-contract --loop-id dc-cli"
     )
 
     assert close.exit_code == 0
@@ -946,7 +1099,14 @@ def test_loop_design_contract_close_with_blockers_exits_nonzero(
         )
         close = runner.invoke(
             app,
-            ["loop", "design-contract", "close", "--yes", "--json"],
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-blocked"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert check.exit_code == 0
@@ -954,6 +1114,175 @@ def test_loop_design_contract_close_with_blockers_exits_nonzero(
     payload = json.loads(close.output)
     assert payload["status"] == "needs_fix"
     assert payload["blocker_count"] >= 2
+
+
+def test_loop_design_contract_close_uses_reviewed_state_across_aba(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_design_contract_work_item(
+        tmp_path,
+        include_task_refs=False,
+        verification_value="",
+    )
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        check = runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-aba",
+                "--json",
+            ],
+        )
+
+    assert check.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="design-contract",
+        loop_id="dc-aba",
+    )
+    reviewed_bytes = {
+        path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
+    }
+    validation_count = 0
+
+    def validate_then_pass_contract(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 1:
+            work_item.joinpath("tasks.md").write_text(
+                "\n".join(
+                    [
+                        "# 任务分解",
+                        "### Task 1.1 Check contract",
+                        "- **任务编号**：T11",
+                        "- **优先级**：P0",
+                        "- **验收标准**：Cover FR-DEMO-001 and SC-DEMO-001.",
+                        "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            refreshed = design_contract_loop.check_design_contract_loop(
+                DesignContractCheckOptions(
+                    root=tmp_path,
+                    work_item="specs/demo-design-contract",
+                    loop_id="dc-aba",
+                )
+            )
+            assert refreshed.status == "ready"
+        return result
+
+    original_revalidate = design_contract_loop.revalidate_review_input_at_transition
+
+    def restore_then_revalidate(*args, **kwargs):
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+        return original_revalidate(*args, **kwargs)
+
+    try:
+        with (
+            patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+            patch(
+                "ai_sdlc.cli.loop_cmd.validate_review_input_for_close",
+                side_effect=validate_then_pass_contract,
+            ),
+            patch(
+                "ai_sdlc.core.design_contract_loop.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "loop",
+                    "design-contract",
+                    "close",
+                    "--loop-id",
+                    "dc-aba",
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--yes",
+                    "--json",
+                ],
+            )
+    finally:
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["status"] == "needs_fix"
+    assert payload["blocker_count"] >= 2
+
+
+def test_loop_design_contract_close_rechecks_reviewed_document_snapshot(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_design_contract_work_item(tmp_path)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        check = runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-reviewed-docs",
+                "--json",
+            ],
+        )
+
+    assert check.exit_code == 0
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+            "- **验证**：",
+        ),
+        encoding="utf-8",
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="design-contract",
+        loop_id="dc-reviewed-docs",
+    )
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        close = runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                "--loop-id",
+                "dc-reviewed-docs",
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--yes",
+                "--json",
+            ],
+        )
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["closed"] is False
+    assert payload["status"] == "needs_fix"
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / "dc-reviewed-docs"
+        / "design-contract-close.json"
+    ).exists()
 
 
 def test_loop_design_contract_list_json(tmp_path: Path) -> None:
@@ -1007,7 +1336,14 @@ def test_loop_implementation_start_record_status_and_close_json(
         )
         design_close = runner.invoke(
             app,
-            ["loop", "design-contract", "close", "--yes", "--json"],
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-cli"),
+                "--yes",
+                "--json",
+            ],
         )
         start = runner.invoke(
             app,
@@ -1047,7 +1383,14 @@ def test_loop_implementation_start_record_status_and_close_json(
         )
         close = runner.invoke(
             app,
-            ["loop", "implementation", "close", "--loop-id", "impl-cli", "--yes", "--json"],
+            [
+                "loop",
+                "implementation",
+                "close",
+                *_review_close_args(tmp_path, "implementation", "impl-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert design_check.exit_code == 0
@@ -1068,10 +1411,10 @@ def test_loop_implementation_start_record_status_and_close_json(
 
     assert record.exit_code == 0
     record_payload = json.loads(record.output)
-    assert record_payload["loop_status"] == "passed"
+    assert record_payload["loop_status"] == "needs_review"
     assert record_payload["done_count"] == 1
     assert record_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop implementation close --yes"
+        "ai-sdlc loop review --type implementation --loop-id impl-cli"
     )
 
     assert close.exit_code == 0
@@ -1079,6 +1422,349 @@ def test_loop_implementation_start_record_status_and_close_json(
     assert close_payload["closed"] is True
     assert close_payload["loop_status"] == "closed"
     assert close_payload["next_action"] == "Run ai-sdlc pr-review start."
+
+
+def test_loop_implementation_close_uses_reviewed_state_across_aba(
+    tmp_path: Path,
+) -> None:
+    _write_design_contract_work_item(tmp_path)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-impl-aba",
+                "--json",
+            ],
+        )
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-aba"),
+                "--yes",
+                "--json",
+            ],
+        )
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "start",
+                "--wi",
+                "specs/demo-design-contract",
+                "--design-contract-loop-id",
+                "dc-impl-aba",
+                "--loop-id",
+                "impl-aba",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="impl-aba",
+    )
+    reviewed_bytes = {
+        path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
+    }
+    validation_count = 0
+
+    def validate_then_complete(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 1:
+            recorded = record_implementation_progress(
+                ImplementationRecordOptions(
+                    root=tmp_path,
+                    loop_id="impl-aba",
+                    task_id="T11",
+                    status="done",
+                    verification=("pytest -q",),
+                )
+            )
+            assert recorded.status == "ready"
+        return result
+
+    original_revalidate = implementation_loop.revalidate_review_input_at_transition
+
+    def restore_then_revalidate(*args, **kwargs):
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+        return original_revalidate(*args, **kwargs)
+
+    try:
+        with (
+            patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+            patch(
+                "ai_sdlc.cli.loop_cmd.validate_review_input_for_close",
+                side_effect=validate_then_complete,
+            ),
+            patch(
+                "ai_sdlc.core.implementation_loop.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "loop",
+                    "implementation",
+                    "close",
+                    "--loop-id",
+                    "impl-aba",
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--yes",
+                    "--json",
+                ],
+            )
+    finally:
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["closed"] is False
+    assert payload["status"] == "needs_fix"
+    assert payload["blocker"] == "T11 is not done."
+
+
+def test_loop_implementation_failed_close_persists_reviewed_decision(
+    tmp_path: Path,
+) -> None:
+    _write_design_contract_work_item(tmp_path)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-impl-needs-fix",
+                "--json",
+            ],
+        )
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-needs-fix"),
+                "--yes",
+                "--json",
+            ],
+        )
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "start",
+                "--wi",
+                "specs/demo-design-contract",
+                "--design-contract-loop-id",
+                "dc-impl-needs-fix",
+                "--loop-id",
+                "impl-needs-fix",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="impl-needs-fix",
+    )
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        close = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "close",
+                "--loop-id",
+                "impl-needs-fix",
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--yes",
+                "--json",
+            ],
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-needs-fix"
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["status"] == "needs_fix"
+    assert (
+        json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))["status"]
+        == "needs_fix"
+    )
+    assert (
+        json.loads(
+            (loop_dir / "implementation-report.json").read_text(encoding="utf-8")
+        )["status"]
+        == "needs_fix"
+    )
+
+
+def test_loop_implementation_close_does_not_overwrite_newer_progress(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_design_contract_work_item(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-impl-concurrent",
+                "--json",
+            ],
+        )
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-concurrent"),
+                "--yes",
+                "--json",
+            ],
+        )
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "start",
+                "--wi",
+                "specs/demo-design-contract",
+                "--design-contract-loop-id",
+                "dc-impl-concurrent",
+                "--loop-id",
+                "impl-concurrent",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="impl-concurrent",
+    )
+    validation_count = 0
+    worker: threading.Thread | None = None
+    worker_reached_write = threading.Event()
+    allow_worker_write = threading.Event()
+    worker_finished = threading.Event()
+    worker_errors: list[BaseException] = []
+    original_write_artifacts = implementation_loop._write_artifacts
+
+    def coordinated_write(*args, **kwargs):
+        if threading.current_thread() is worker:
+            worker_reached_write.set()
+            assert allow_worker_write.wait(timeout=5)
+        return original_write_artifacts(*args, **kwargs)
+
+    def complete_task() -> None:
+        try:
+            recorded = record_implementation_progress(
+                ImplementationRecordOptions(
+                    root=tmp_path,
+                    loop_id="impl-concurrent",
+                    task_id="T11",
+                    status="done",
+                    verification=("pytest -q",),
+                )
+            )
+            assert recorded.status == "ready"
+        except BaseException as exc:
+            worker_errors.append(exc)
+        finally:
+            worker_finished.set()
+
+    def validate_then_complete(*args, **kwargs):
+        nonlocal validation_count, worker
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 2:
+            worker = threading.Thread(target=complete_task)
+            worker.start()
+            reached_before_close_write = worker_reached_write.wait(timeout=0.25)
+            allow_worker_write.set()
+            if reached_before_close_write:
+                assert worker_finished.wait(timeout=5)
+        return result
+
+    monkeypatch.setattr(
+        implementation_loop,
+        "_write_artifacts",
+        coordinated_write,
+    )
+    with (
+        patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+        patch(
+            "ai_sdlc.cli.loop_cmd.validate_review_input_for_close",
+            side_effect=validate_then_complete,
+        ),
+    ):
+        close = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "close",
+                "--loop-id",
+                "impl-concurrent",
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--yes",
+                "--json",
+            ],
+        )
+
+    assert worker is not None
+    worker.join(timeout=5)
+    assert not worker.is_alive()
+    assert worker_errors == []
+    progress_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "impl-concurrent"
+        / "implementation-progress.json"
+    )
+    progress_payload = json.loads(progress_path.read_text(encoding="utf-8"))
+    assert close.exit_code == 1
+    assert progress_payload["tasks"][0]["status"] == "done"
+    assert progress_payload["tasks"][0]["verification_commands"] == ["pytest -q"]
+    assert not (tmp_path / ".ai-sdlc" / "locks").exists()
 
 
 def test_loop_implementation_start_dry_run_skips_adapter_hook(
@@ -1099,7 +1785,17 @@ def test_loop_implementation_start_dry_run_skips_adapter_hook(
                 "--json",
             ],
         )
-        runner.invoke(app, ["loop", "design-contract", "close", "--yes", "--json"])
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-dry-run"),
+                "--yes",
+                "--json",
+            ],
+        )
     with (
         patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
         patch("ai_sdlc.cli.loop_cmd.run_ide_adapter_if_initialized") as adapter_hook,
@@ -1136,7 +1832,9 @@ def test_loop_frontend_evidence_start_status_and_close_json(
 ) -> None:
     work_item = _write_frontend_work_item(tmp_path)
     _write_closed_frontend_implementation(tmp_path, work_item)
-    _write_frontend_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    _write_frontend_browser_gate_artifact(
+        tmp_path, work_item_path="specs/demo-frontend"
+    )
 
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
         start = runner.invoke(
@@ -1160,13 +1858,20 @@ def test_loop_frontend_evidence_start_status_and_close_json(
         )
         close = runner.invoke(
             app,
-            ["loop", "frontend-evidence", "close", "--loop-id", "fe-cli", "--yes", "--json"],
+            [
+                "loop",
+                "frontend-evidence",
+                "close",
+                *_review_close_args(tmp_path, "frontend-evidence", "fe-cli"),
+                "--yes",
+                "--json",
+            ],
         )
 
     assert start.exit_code == 0
     start_payload = json.loads(start.output)
     assert start_payload["status"] == "ready"
-    assert start_payload["loop_status"] == "passed"
+    assert start_payload["loop_status"] == "needs_review"
     assert start_payload["frontend_evidence"]["gate_run_id"] == "gate-run-cli"
     assert start_payload["frontend_evidence"]["report_path"].endswith(
         ".ai-sdlc/loops/frontend-evidence/fe-cli/frontend-evidence-report.json"
@@ -1179,7 +1884,7 @@ def test_loop_frontend_evidence_start_status_and_close_json(
         "demo-frontend"
     )
     assert status_payload["next_guidance"]["command"] == (
-        "ai-sdlc loop frontend-evidence close --yes"
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-cli"
     )
 
     assert close.exit_code == 0
@@ -1194,7 +1899,9 @@ def test_loop_frontend_evidence_start_needs_fix_exits_nonzero(
 ) -> None:
     work_item = _write_frontend_work_item(tmp_path)
     _write_closed_frontend_implementation(tmp_path, work_item)
-    _write_frontend_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    _write_frontend_browser_gate_artifact(
+        tmp_path, work_item_path="specs/demo-frontend"
+    )
     artifact_path = (
         tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
     )
@@ -1241,6 +1948,130 @@ def test_loop_frontend_evidence_start_needs_fix_exits_nonzero(
     assert start_payload["status"] == "needs_fix"
     assert start_payload["loop_status"] == "needs_fix"
     assert start_payload["blocker_count"] >= 1
+
+
+def test_loop_frontend_evidence_close_uses_reviewed_state_across_aba(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_frontend_work_item(tmp_path)
+    _write_closed_frontend_implementation(tmp_path, work_item)
+    _write_frontend_browser_gate_artifact(
+        tmp_path, work_item_path="specs/demo-frontend"
+    )
+    artifact_path = (
+        tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    )
+    gate_payload = yaml.safe_load(artifact_path.read_text(encoding="utf-8"))
+    gate_payload["overall_gate_status"] = "incomplete"
+    gate_payload["bundle_input"]["overall_gate_status"] = "incomplete"
+    gate_payload["bundle_input"]["smoke_verdict"] = "evidence_missing"
+    gate_payload["bundle_input"]["blocking_reason_codes"] = [
+        "playwright_probe_evidence_missing"
+    ]
+    artifact_path.write_text(
+        yaml.safe_dump(gate_payload, sort_keys=False, allow_unicode=True),
+        encoding="utf-8",
+    )
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "frontend-evidence",
+                "start",
+                "--wi",
+                "specs/demo-frontend",
+                "--implementation-loop-id",
+                "impl-frontend-cli",
+                "--loop-id",
+                "fe-aba",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 1
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="frontend-evidence",
+        loop_id="fe-aba",
+    )
+    reviewed_bytes = {
+        path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
+    }
+    validation_count = 0
+
+    def validate_then_pass_report(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 1:
+            report_path = (
+                tmp_path
+                / ".ai-sdlc"
+                / "loops"
+                / "frontend-evidence"
+                / "fe-aba"
+                / "frontend-evidence-report.json"
+            )
+            report_payload = json.loads(report_path.read_text(encoding="utf-8"))
+            report_payload.update(
+                {
+                    "status": "passed",
+                    "blocker_count": 0,
+                    "warning_count": 0,
+                    "blockers": [],
+                    "warnings": [],
+                    "blocking_reason_codes": [],
+                    "advisory_reason_codes": [],
+                }
+            )
+            report_path.write_text(
+                json.dumps(report_payload, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        return result
+
+    original_revalidate = frontend_evidence_loop.revalidate_review_input_at_transition
+
+    def restore_then_revalidate(*args, **kwargs):
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+        return original_revalidate(*args, **kwargs)
+
+    try:
+        with (
+            patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+            patch(
+                "ai_sdlc.cli.loop_cmd.validate_review_input_for_close",
+                side_effect=validate_then_pass_report,
+            ),
+            patch(
+                "ai_sdlc.core.frontend_evidence_loop.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "loop",
+                    "frontend-evidence",
+                    "close",
+                    "--loop-id",
+                    "fe-aba",
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--yes",
+                    "--json",
+                ],
+            )
+    finally:
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["status"] == "needs_fix"
+    assert payload["blocker_count"] >= 1
 
 
 def test_loop_frontend_evidence_doctor_respects_codex_browser_provider(
@@ -1302,7 +2133,7 @@ def test_loop_frontend_evidence_doctor_playwright_provider_shows_install_command
     assert "optional install: npx playwright install chromium" in result.output
 
 
-def test_loop_frontend_evidence_skip_json_closes_with_audit(
+def test_loop_frontend_evidence_skip_json_waits_for_review(
     tmp_path: Path,
 ) -> None:
     work_item = _write_frontend_work_item(tmp_path)
@@ -1335,18 +2166,23 @@ def test_loop_frontend_evidence_skip_json_closes_with_audit(
 
     assert skip.exit_code == 0
     skip_payload = json.loads(skip.output)
-    assert skip_payload["closed"] is True
+    assert skip_payload["closed"] is False
     assert skip_payload["skipped"] is True
     assert skip_payload["skip_reason"] == reason
-    assert skip_payload["next_action"] == "Run ai-sdlc pr-review start."
+    assert skip_payload["loop_status"] == "needs_review"
+    assert skip_payload["next_action"] == (
+        "Run ai-sdlc loop review --type frontend-evidence --loop-id fe-cli-skip."
+    )
 
     assert status.exit_code == 0
     status_payload = json.loads(status.output)
     frontend = status_payload["current_loop"]["frontend_evidence"]
-    assert frontend["closed"] is True
+    assert frontend["closed"] is False
     assert frontend["skipped"] is True
     assert frontend["skip_reason"] == reason
-    assert status_payload["next_guidance"]["command"] == "ai-sdlc pr-review start"
+    assert status_payload["next_guidance"]["command"] == (
+        "ai-sdlc loop review --type frontend-evidence --loop-id fe-cli-skip"
+    )
 
 
 def test_python_module_help_fallback_lists_loop() -> None:
@@ -1379,6 +2215,29 @@ def _write_closed_frontend_implementation(root: Path, work_item: Path) -> None:
         "impl-frontend-cli",
         loop_type=LoopType.IMPLEMENTATION.value,
     )
+    design_dir = root / ".ai-sdlc" / "loops" / "design-contract" / "dc-frontend-cli"
+    design_dir.mkdir(parents=True)
+    store.write_json_artifact(
+        design_dir / "design-contract-input.json",
+        {
+            "requirement_loop_id": "",
+            "spec_path": f"specs/{work_item.name}/spec.md",
+            "plan_path": f"specs/{work_item.name}/plan.md",
+            "tasks_path": f"specs/{work_item.name}/tasks.md",
+        },
+    )
+    store.write_json_artifact(design_dir / "design-contract-report.json", {})
+    (design_dir / "design-contract-report.md").write_text(
+        "# Design contract\n", encoding="utf-8"
+    )
+    store.write_json_artifact(
+        artifacts.input_path,
+        {"design_contract_loop_id": "dc-frontend-cli"},
+    )
+    store.write_json_artifact(artifacts.tasks_path, {})
+    store.write_json_artifact(artifacts.progress_path, {})
+    store.write_json_artifact(artifacts.evidence_path, {})
+    artifacts.report_md_path.write_text("# Implementation\n", encoding="utf-8")
     report = ImplementationReport(
         loop_id="impl-frontend-cli",
         work_item_id=work_item.name,
@@ -1530,7 +2389,9 @@ def _write_frontend_browser_gate_artifact(
             "playwright_trace_refs": [trace_ref],
             "screenshot_refs": [screenshot_ref],
             "check_receipts": [
-                _browser_gate_receipt("playwright_smoke", ["smoke-screenshot", "smoke-trace"]),
+                _browser_gate_receipt(
+                    "playwright_smoke", ["smoke-screenshot", "smoke-trace"]
+                ),
                 _browser_gate_receipt("visual_expectation", ["smoke-screenshot"]),
                 _browser_gate_receipt("basic_a11y", ["smoke-screenshot"]),
                 _browser_gate_receipt(
@@ -1560,7 +2421,9 @@ def _write_frontend_browser_gate_artifact(
     )
 
 
-def _browser_gate_receipt(check_name: str, artifact_ids: list[str]) -> dict[str, object]:
+def _browser_gate_receipt(
+    check_name: str, artifact_ids: list[str]
+) -> dict[str, object]:
     return {
         "check_name": check_name,
         "started_at": "2026-07-01T00:00:00Z",

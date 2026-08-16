@@ -224,7 +224,9 @@ class E2EHarness:
     def write_summary(self) -> None:
         self.result.finished_at = _now()
         self.result.status = (
-            "PASS" if all(step.status == "PASS" for step in self.result.steps) else "FAIL"
+            "PASS"
+            if all(step.status == "PASS" for step in self.result.steps)
+            else "FAIL"
         )
         summary = asdict(self.result)
         (self.evidence_root / "summary.json").write_text(
@@ -257,7 +259,7 @@ class E2EHarness:
             "- Frontend-evidence loop: missing browser artifact blocks start; valid artifact closes.",
             "- Windows frontend provider path: no Codex/no local Playwright, doctor-recommended Playwright install, Chromium smoke.",
             "- Windows Playwright evidence path: installed Playwright runs browser-gate-probe, handles first-run baseline when needed, materializes browser evidence, and closes frontend-evidence.",
-            "- No-install frontend path: provider tooling unavailable, explicit skip closes with audit instead of hard-blocking.",
+            "- No-install frontend path: provider tooling unavailable, explicit skip records audit and waits for expert review.",
             "- Local PR review loop: mock adversarial finding forces fix/rerun; clean rerun closes and attests.",
             "",
             "## Step Results",
@@ -339,6 +341,51 @@ def main() -> int:
             temp_dir.cleanup()
 
 
+def _review_input_and_recheck(
+    h: E2EHarness,
+    loop_type: str,
+    loop_id: str,
+    slug: str,
+) -> str:
+    first = h.run(
+        f"{slug}_input",
+        [
+            "loop",
+            "review",
+            "--type",
+            loop_type,
+            "--loop-id",
+            loop_id,
+            "--json",
+        ],
+        parse_json=True,
+    )
+    if first.parsed_json is None:
+        raise AssertionError(f"{slug} did not produce JSON")
+    digest = str(first.parsed_json["input_digest"])
+    recheck = h.run(
+        f"{slug}_recheck",
+        [
+            "loop",
+            "review",
+            "--type",
+            loop_type,
+            "--loop-id",
+            loop_id,
+            "--expect-digest",
+            digest,
+            "--json",
+        ],
+        parse_json=True,
+    )
+    h.assert_true(
+        f"{loop_type} review input remains stable before close",
+        recheck.parsed_json is not None
+        and recheck.parsed_json.get("input_digest") == digest,
+    )
+    return digest
+
+
 def run_scenario(
     h: E2EHarness,
     *,
@@ -383,6 +430,12 @@ def run_scenario(
         missing_req.parsed_json is not None
         and missing_req.parsed_json.get("status") == "needs_user",
     )
+    missing_requirement_digest = _review_input_and_recheck(
+        h,
+        "requirement",
+        "req-missing-acceptance-e2e",
+        "requirement_missing_acceptance_review",
+    )
     h.run(
         "requirement_freeze_missing_acceptance_blocks",
         [
@@ -391,6 +444,8 @@ def run_scenario(
             "freeze",
             "--loop-id",
             "req-missing-acceptance-e2e",
+            "--expect-review-digest",
+            missing_requirement_digest,
             "--yes",
             "--json",
         ],
@@ -424,9 +479,22 @@ def run_scenario(
         req.parsed_json is not None and req.parsed_json.get("status") == "ready",
     )
     h.run("requirement_status_human", ["loop", "status", "--type", "requirement"])
+    requirement_digest = _review_input_and_recheck(
+        h, "requirement", "req-e2e", "requirement_review"
+    )
     req_freeze = h.run(
         "requirement_freeze",
-        ["loop", "requirement", "freeze", "--loop-id", "req-e2e", "--yes", "--json"],
+        [
+            "loop",
+            "requirement",
+            "freeze",
+            "--loop-id",
+            "req-e2e",
+            "--expect-review-digest",
+            requirement_digest,
+            "--yes",
+            "--json",
+        ],
         parse_json=True,
     )
     h.assert_true(
@@ -459,9 +527,22 @@ def run_scenario(
         dc_blocked.parsed_json is not None
         and dc_blocked.parsed_json.get("loop_status") == "needs_fix",
     )
+    blocked_design_digest = _review_input_and_recheck(
+        h, "design-contract", "dc-e2e", "design_contract_blocked_review"
+    )
     h.run(
         "design_contract_close_blocked",
-        ["loop", "design-contract", "close", "--loop-id", "dc-e2e", "--yes", "--json"],
+        [
+            "loop",
+            "design-contract",
+            "close",
+            "--loop-id",
+            "dc-e2e",
+            "--expect-review-digest",
+            blocked_design_digest,
+            "--yes",
+            "--json",
+        ],
         expected=(1,),
         parse_json=True,
         note="Expected blocker: design contract cannot close while needs_fix.",
@@ -485,14 +566,29 @@ def run_scenario(
         parse_json=True,
     )
     h.assert_true(
-        "Design-contract check passes after repairing task contract",
+        "Design-contract check is ready for expert review after repair",
         dc_ready.parsed_json is not None
-        and dc_ready.parsed_json.get("loop_status") == "passed",
+        and dc_ready.parsed_json.get("loop_status") == "needs_review",
     )
-    h.run("design_contract_status_human", ["loop", "status", "--type", "design-contract"])
+    h.run(
+        "design_contract_status_human", ["loop", "status", "--type", "design-contract"]
+    )
+    design_digest = _review_input_and_recheck(
+        h, "design-contract", "dc-e2e", "design_contract_review"
+    )
     dc_close = h.run(
         "design_contract_close",
-        ["loop", "design-contract", "close", "--loop-id", "dc-e2e", "--yes", "--json"],
+        [
+            "loop",
+            "design-contract",
+            "close",
+            "--loop-id",
+            "dc-e2e",
+            "--expect-review-digest",
+            design_digest,
+            "--yes",
+            "--json",
+        ],
         parse_json=True,
     )
     h.assert_true(
@@ -521,9 +617,22 @@ def run_scenario(
         impl_start.parsed_json is not None
         and impl_start.parsed_json.get("loop_status") == "running",
     )
+    incomplete_implementation_digest = _review_input_and_recheck(
+        h, "implementation", "impl-e2e", "implementation_incomplete_review"
+    )
     h.run(
         "implementation_close_without_evidence_blocks",
-        ["loop", "implementation", "close", "--loop-id", "impl-e2e", "--yes", "--json"],
+        [
+            "loop",
+            "implementation",
+            "close",
+            "--loop-id",
+            "impl-e2e",
+            "--expect-review-digest",
+            incomplete_implementation_digest,
+            "--yes",
+            "--json",
+        ],
         expected=(1,),
         parse_json=True,
         note="Expected blocker: required task has not been recorded as done.",
@@ -537,7 +646,9 @@ def run_scenario(
         h.project_root / "tests" / "test_app.py",
         "from src.app import approval_enabled\n\n\ndef test_approval_enabled():\n    assert approval_enabled() is True\n",
     )
-    _git(h.project_root, "add", "specs/demo-loop-e2e", "src/app.py", "tests/test_app.py")
+    _git(
+        h.project_root, "add", "specs/demo-loop-e2e", "src/app.py", "tests/test_app.py"
+    )
     _git(h.project_root, "commit", "-m", "implement loop e2e demo")
     first_feature_commit = _git(h.project_root, "rev-parse", "HEAD")
     h.result.key_artifacts["first_feature_commit"] = first_feature_commit
@@ -568,9 +679,22 @@ def run_scenario(
         and impl_record.parsed_json.get("done_count") == 1,
     )
     h.run("implementation_status_human", ["loop", "status", "--type", "implementation"])
+    implementation_digest = _review_input_and_recheck(
+        h, "implementation", "impl-e2e", "implementation_review"
+    )
     impl_close = h.run(
         "implementation_close",
-        ["loop", "implementation", "close", "--loop-id", "impl-e2e", "--yes", "--json"],
+        [
+            "loop",
+            "implementation",
+            "close",
+            "--loop-id",
+            "impl-e2e",
+            "--expect-review-digest",
+            implementation_digest,
+            "--yes",
+            "--json",
+        ],
         parse_json=True,
     )
     h.assert_true(
@@ -605,7 +729,9 @@ def run_scenario(
         == "ai-sdlc loop frontend-evidence doctor",
     )
     no_install_env = (
-        _no_install_env(h.evidence_root) if include_windows_playwright_provider_e2e else None
+        _no_install_env(h.evidence_root)
+        if include_windows_playwright_provider_e2e
+        else None
     )
     if include_windows_playwright_provider_e2e and no_install_env is not None:
         no_install_doctor = h.run(
@@ -655,7 +781,7 @@ def run_scenario(
         parse_json=True,
         env_overrides=no_install_env,
         note=(
-            "No install-tool PATH is active; skip must still close with audit."
+            "No install-tool PATH is active; skip must still record audit and await review."
             if no_install_env
             else ""
         ),
@@ -663,13 +789,22 @@ def run_scenario(
     h.assert_true(
         "Frontend-evidence can be skipped with explicit risk acceptance",
         fe_skip.parsed_json is not None
-        and fe_skip.parsed_json.get("closed") is True
+        and fe_skip.parsed_json.get("closed") is False
         and fe_skip.parsed_json.get("skipped") is True
-        and "pr-review" in str(fe_skip.parsed_json.get("next_action", "")),
+        and fe_skip.parsed_json.get("loop_status") == "needs_review"
+        and "loop review --type frontend-evidence"
+        in str(fe_skip.parsed_json.get("next_action", "")),
     )
     fe_doctor_codex = h.run(
         "frontend_evidence_doctor_codex_browser",
-        ["loop", "frontend-evidence", "doctor", "--provider", "codex-browser", "--json"],
+        [
+            "loop",
+            "frontend-evidence",
+            "doctor",
+            "--provider",
+            "codex-browser",
+            "--json",
+        ],
         parse_json=True,
     )
     h.assert_true(
@@ -678,10 +813,15 @@ def run_scenario(
         and fe_doctor_codex.parsed_json.get("recommended_provider") == "codex-browser"
         and "Playwright" not in str(fe_doctor_codex.parsed_json.get("next_action", "")),
     )
-    if include_windows_playwright_provider_e2e and platform.system().lower() == "windows":
+    if (
+        include_windows_playwright_provider_e2e
+        and platform.system().lower() == "windows"
+    ):
         _run_windows_playwright_generated_frontend_evidence_loop(h)
     else:
-        _write_browser_gate_artifact(h.project_root, work_item_path="specs/demo-loop-e2e")
+        _write_browser_gate_artifact(
+            h.project_root, work_item_path="specs/demo-loop-e2e"
+        )
         _run_frontend_evidence_ready_path(
             h,
             loop_id="fe-e2e",
@@ -742,7 +882,9 @@ def run_scenario(
     )
     _git(h.project_root, "add", "src/app.py")
     _git(h.project_root, "commit", "-m", "address review feedback")
-    h.result.key_artifacts["review_fix_commit"] = _git(h.project_root, "rev-parse", "HEAD")
+    h.result.key_artifacts["review_fix_commit"] = _git(
+        h.project_root, "rev-parse", "HEAD"
+    )
     if review_fix.parsed_json is None:
         raise AssertionError("pr_review_fix did not produce JSON")
     _mark_resolution_fixed(Path(str(review_fix.parsed_json["resolution_path"])))
@@ -758,9 +900,39 @@ def run_scenario(
         and review_rerun.parsed_json.get("verdict") == "clean",
     )
     h.run("local_pr_review_status_clean_human", ["loop", "status"])
+    h.run(
+        "pr_review_record_evidence",
+        [
+            "pr-review",
+            "record-evidence",
+            "--evidence",
+            "loop E2E verification passed",
+            "--json",
+        ],
+        parse_json=True,
+    )
+    if review_rerun.parsed_json is None:
+        raise AssertionError("pr_review_rerun_clean did not produce JSON")
+    local_review_loop_id = str(review_rerun.parsed_json["loop_id"])
+    local_review_digest = _review_input_and_recheck(
+        h,
+        "local-pr-review",
+        local_review_loop_id,
+        "local_pr_review",
+    )
     review_close = h.run(
         "pr_review_close",
-        ["pr-review", "close", "--json"],
+        [
+            "pr-review",
+            "close",
+            "--review-id",
+            "review-e2e",
+            "--loop-id",
+            local_review_loop_id,
+            "--expect-review-digest",
+            local_review_digest,
+            "--json",
+        ],
         parse_json=True,
     )
     h.assert_true(
@@ -771,16 +943,6 @@ def run_scenario(
         in {"clean", "fully_clean", "risk_accepted"}
         and review_close.parsed_json.get("unresolved_required", 0) == 0,
     )
-    review_attest = h.run(
-        "pr_review_attest",
-        ["pr-review", "attest", "--json"],
-        parse_json=True,
-    )
-    h.assert_true(
-        "Local PR review attestation is CI-readable and model-free for CI",
-        review_attest.parsed_json is not None
-        and review_attest.parsed_json.get("status") == "ready",
-    )
     h.run("loop_list_all_local_pr_review_human", ["loop", "list"])
 
     for key, rel in {
@@ -788,11 +950,15 @@ def run_scenario(
         "design_contract_report": ".ai-sdlc/loops/design-contract/dc-e2e/design-contract-report.json",
         "implementation_report": ".ai-sdlc/loops/implementation/impl-e2e/implementation-report.json",
         "frontend_evidence_report": ".ai-sdlc/loops/frontend-evidence/fe-e2e/frontend-evidence-report.json",
-        "pr_review_attestation": ".ai-sdlc/reviews/pr/latest-attestation.json",
     }.items():
         path = h.project_root / rel
         h.assert_true(f"Artifact exists: {rel}", path.is_file())
         h.result.key_artifacts[key] = str(path)
+    if review_close.parsed_json is None:
+        raise AssertionError("pr_review_close did not produce JSON")
+    final_report = Path(str(review_close.parsed_json["final_report_path"]))
+    h.assert_true("Local PR final report exists", final_report.is_file())
+    h.result.key_artifacts["pr_review_final_report"] = str(final_report)
 
 
 def _write_work_item(work_item: Path, *, valid_tasks: bool) -> None:
@@ -870,9 +1036,27 @@ def _write_browser_gate_artifact(root: Path, *, work_item_path: str) -> None:
     trace_ref = f"{artifact_root}/shared-runtime/playwright-trace.zip"
     interaction_ref = f"{artifact_root}/interaction/interaction-snapshot.json"
     artifact_records = [
-        _artifact_record("smoke-screenshot", gate_run_id, "playwright_smoke", "navigation_screenshot", screenshot_ref),
-        _artifact_record("smoke-trace", gate_run_id, "playwright_smoke", "playwright_trace", trace_ref),
-        _artifact_record("interaction-snapshot", gate_run_id, "interaction_anti_pattern_checks", "interaction_snapshot", interaction_ref),
+        _artifact_record(
+            "smoke-screenshot",
+            gate_run_id,
+            "playwright_smoke",
+            "navigation_screenshot",
+            screenshot_ref,
+        ),
+        _artifact_record(
+            "smoke-trace",
+            gate_run_id,
+            "playwright_smoke",
+            "playwright_trace",
+            trace_ref,
+        ),
+        _artifact_record(
+            "interaction-snapshot",
+            gate_run_id,
+            "interaction_anti_pattern_checks",
+            "interaction_snapshot",
+            interaction_ref,
+        ),
     ]
     for record in artifact_records:
         target = root / str(record["artifact_ref"])
@@ -958,7 +1142,9 @@ def _write_browser_gate_artifact(root: Path, *, work_item_path: str) -> None:
         "plain_language_blockers": [],
         "recommended_next_steps": [],
     }
-    artifact_path = root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    artifact_path = (
+        root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(
         yaml.safe_dump(payload, sort_keys=False, allow_unicode=True),
@@ -984,7 +1170,8 @@ def _run_frontend_evidence_ready_path(
         "Auto provider prefers existing browser artifact",
         fe_doctor_auto.parsed_json is not None
         and fe_doctor_auto.parsed_json.get("browser_artifact_available") is True
-        and fe_doctor_auto.parsed_json.get("recommended_provider") == "external-artifact",
+        and fe_doctor_auto.parsed_json.get("recommended_provider")
+        == "external-artifact",
     )
     fe_start = h.run(
         start_slug,
@@ -1005,21 +1192,30 @@ def _run_frontend_evidence_ready_path(
     )
     start_payload = fe_start.parsed_json or {}
     start_status = start_payload.get("loop_status")
-    advisory_needs_user = (
-        start_status == "needs_user"
-        and start_payload.get("overall_gate_status") == "passed_with_advisories"
+    advisory_warnings = (
+        start_payload.get("overall_gate_status") == "passed_with_advisories"
         and start_payload.get("execute_gate_state") == "ready"
         and start_payload.get("blocker_count") == 0
-        and "allow-warnings" in str(start_payload.get("next_action", ""))
     )
     h.assert_true(
         "Frontend-evidence loop starts with valid browser artifact",
-        fe_start.parsed_json is not None
-        and (start_status == "passed" or advisory_needs_user),
+        fe_start.parsed_json is not None and start_status == "needs_review",
     )
     h.run(status_slug, ["loop", "status", "--type", "frontend-evidence"])
-    close_args = ["loop", "frontend-evidence", "close", "--loop-id", loop_id, "--yes"]
-    if advisory_needs_user:
+    frontend_digest = _review_input_and_recheck(
+        h, "frontend-evidence", loop_id, f"{start_slug}_review"
+    )
+    close_args = [
+        "loop",
+        "frontend-evidence",
+        "close",
+        "--loop-id",
+        loop_id,
+        "--expect-review-digest",
+        frontend_digest,
+        "--yes",
+    ]
+    if advisory_warnings:
         close_args.append("--allow-warnings")
     close_args.append("--json")
     fe_close = h.run(
@@ -1119,7 +1315,9 @@ def _run_windows_playwright_generated_frontend_evidence_loop(h: E2EHarness) -> N
         "Browser gate probe execute command exits successfully",
         probe.returncode == 0,
     )
-    artifact_path = h.project_root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    artifact_path = (
+        h.project_root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+    )
     payload = _load_browser_gate_payload(artifact_path)
     passed_statuses = {"passed", "passed_with_advisories"}
     if payload.get("overall_gate_status") not in passed_statuses:
@@ -1152,7 +1350,9 @@ def _run_windows_playwright_generated_frontend_evidence_loop(h: E2EHarness) -> N
             ".ai-sdlc/artifacts/frontend-browser-gate/"
         ),
     )
-    h.result.key_artifacts["playwright_generated_browser_gate_artifact"] = str(artifact_path)
+    h.result.key_artifacts["playwright_generated_browser_gate_artifact"] = str(
+        artifact_path
+    )
     _run_frontend_evidence_ready_path(
         h,
         loop_id="fe-e2e",
@@ -1293,7 +1493,9 @@ def _write_playwright_probe_truth(
             """
         ),
     )
-    apply_artifact = root / ".ai-sdlc" / "memory" / "frontend-managed-delivery-apply" / "latest.yaml"
+    apply_artifact = (
+        root / ".ai-sdlc" / "memory" / "frontend-managed-delivery-apply" / "latest.yaml"
+    )
     apply_artifact.parent.mkdir(parents=True, exist_ok=True)
     apply_payload = {
         "generated_at": _now(),
@@ -1646,9 +1848,7 @@ def _git(cwd: Path, *args: str) -> str:
         check=False,
     )
     if completed.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed: {completed.stderr.strip()}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
     return completed.stdout.strip()
 
 

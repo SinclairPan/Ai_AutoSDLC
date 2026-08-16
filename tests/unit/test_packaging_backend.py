@@ -22,9 +22,11 @@ def test_build_wheel_includes_templates_and_entry_points(tmp_path: Path) -> None
         assert "ai_sdlc/templates/plan-template.md" in names
         assert "ai_sdlc/templates/tasks-template.md" in names
         assert "ai_sdlc/templates/execution-log-template.md" in names
-        assert "ai_sdlc/rules/lean-code.md" in names
-        assert "ai_sdlc/core/lean_code_runtime.py" in names
-        assert "ai_sdlc/core/lean_code_evaluator.py" in names
+        assert "ai_sdlc/core/review_kernel.py" in names
+        assert "ai_sdlc/core/pr_review_provider.py" in names
+        assert "ai_sdlc/rules/lean-code.md" not in names
+        assert not any(name.startswith("ai_sdlc/core/lean_code") for name in names)
+        assert not any(name.startswith("ai_sdlc/core/stage_review/") for name in names)
 
         entry_points_path = next(
             name for name in names if name.endswith(".dist-info/entry_points.txt")

@@ -1,4 +1,4 @@
-"""Deterministic source snapshots shared by Lean Code and PR review gates."""
+"""Deterministic source snapshots for local review and source comparison."""
 
 from __future__ import annotations
 
@@ -589,11 +589,7 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
     patch_file = options.patch_file
     if not patch_file.strip():
         raise ValueError("patch_file is required for patch source")
-    path = (root / patch_file).resolve()
-    try:
-        path.relative_to(root)
-    except ValueError as exc:
-        raise ValueError("patch_file must stay inside the repository") from exc
+    path = _patch_path(root, patch_file)
     if not path.is_file():
         raise ValueError(f"patch_file not found: {patch_file}")
     patch = path.read_bytes()
@@ -624,10 +620,22 @@ def _patch_parts(root: Path, options: SourceSnapshotOptions) -> _SnapshotParts:
         head_ref=head_ref,
         base_commit=head,
         head_commit=head,
-        patch_file=path.relative_to(root).as_posix(),
+        patch_file=_persisted_patch_path(root, path),
         captured_changes=changes,
         source_input_digest=_digest(patch),
     )
+
+
+def _patch_path(root: Path, patch_file: str) -> Path:
+    path = Path(patch_file)
+    return path.resolve() if path.is_absolute() else (root / path).resolve()
+
+
+def _persisted_patch_path(root: Path, path: Path) -> str:
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return str(path)
 
 
 def _index_identity(root: Path) -> str:

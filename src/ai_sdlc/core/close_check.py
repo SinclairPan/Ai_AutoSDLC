@@ -13,7 +13,6 @@ import yaml
 from pydantic import ValidationError
 
 from ai_sdlc.branch.git_client import GitClient, GitError
-from ai_sdlc.core.lean_code_review import validate_review_run_lean_binding
 from ai_sdlc.core.plan_check import resolve_plan_path_from_wi, run_plan_check
 from ai_sdlc.core.pr_review_models import ReviewFindings, ReviewPack, ReviewRun
 from ai_sdlc.core.pr_review_service import CURRENT_REVIEW_PATH
@@ -1239,7 +1238,7 @@ def _local_pr_review_artifact_blocker(root: Path, review_run: ReviewRun) -> str:
     )
     if findings_blocker:
         return findings_blocker
-    return validate_review_run_lean_binding(root, review_run)
+    return ""
 
 
 def _local_pr_review_artifact_digest_blocker(

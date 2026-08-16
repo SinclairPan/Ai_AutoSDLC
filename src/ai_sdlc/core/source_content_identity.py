@@ -128,6 +128,87 @@ def inspect_unsafe_attribute_paths(root: Path, paths: list[str]) -> set[str]:
     return unsafe
 
 
+def source_content_equivalent(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    """Return whether two snapshots prove the same source change."""
+
+    return compare_source_content(evaluated, current)[0]
+
+
+def compare_source_content(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> tuple[bool, str]:
+    """Compare source content and distinguish mismatch from unverifiable input."""
+
+    from ai_sdlc.core.source_snapshot import source_snapshot_identity_issue
+
+    identity_issue = source_snapshot_identity_issue(
+        evaluated
+    ) or source_snapshot_identity_issue(current)
+    if identity_issue:
+        return False, f"Source identity is unverifiable: {identity_issue}."
+    if evaluated.source_kind == current.source_kind:
+        return _same_source_equivalent(evaluated, current), ""
+    if evaluated.base_commit != current.base_commit:
+        return False, ""
+    if (
+        evaluated.change_identity_kind == CHANGE_IDENTITY_KIND
+        and current.change_identity_kind == CHANGE_IDENTITY_KIND
+    ):
+        return _change_identities_match(evaluated, current), ""
+    if (
+        evaluated.diff_hash == current.diff_hash
+        and evaluated.file_digests == current.file_digests
+    ):
+        return True, ""
+    return False, "Legacy source content identity cannot be verified."
+
+
+def _same_source_equivalent(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    fields = (
+        "base_commit",
+        "head_commit",
+        "diff_hash",
+        "changed_files",
+        "untracked_files",
+        "deleted_files",
+        "binary_files",
+        "renamed_files",
+        "file_digests",
+        "index_identity",
+    )
+    return all(getattr(evaluated, name) == getattr(current, name) for name in fields)
+
+
+def _change_identities_match(
+    evaluated: SourceSnapshot,
+    current: SourceSnapshot,
+) -> bool:
+    if set(evaluated.raw_change_identities) != set(current.raw_change_identities):
+        return False
+    safe_eol = {
+        path
+        for snapshot in (evaluated, current)
+        if snapshot.source_kind == "local-unstaged"
+        for path in snapshot.safe_eol_paths
+    }
+    for path, evaluated_raw in evaluated.raw_change_identities.items():
+        if evaluated_raw == current.raw_change_identities[path]:
+            continue
+        if path not in safe_eol or (
+            evaluated.portable_change_identities.get(path)
+            != current.portable_change_identities.get(path)
+        ):
+            return False
+    return True
+
+
 def _change_identity(
     base_commit: str,
     path: str,
@@ -309,5 +390,7 @@ __all__ = [
     "build_change_identities",
     "build_raw_change_identities",
     "canonical_content_digests",
+    "compare_source_content",
     "inspect_unsafe_attribute_paths",
+    "source_content_equivalent",
 ]

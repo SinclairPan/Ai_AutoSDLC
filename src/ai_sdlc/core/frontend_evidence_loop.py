@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Callable, Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -80,10 +80,9 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
-from ai_sdlc.core.stage_review.adapters import FrontendEvidenceStageAdapter
-from ai_sdlc.core.stage_review.close_gate import (
-    execute_stage_close,
-    prepare_loop_stage_close,
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
 )
 from ai_sdlc.models.frontend_browser_gate import (
     BrowserGateProbeRuntimeSession,
@@ -143,7 +142,8 @@ def start_frontend_evidence_loop(
             implementation_blocker,
             loop_id=loop_id,
             next_action=(
-                f"Run ai-sdlc loop implementation close --yes for {work_item_dir.name}."
+                "Run ai-sdlc loop review --type implementation "
+                f"--loop-id {implementation_loop_id or '<implementation-loop-id>'}."
             ),
             artifacts=planned_refs,
         )
@@ -381,12 +381,18 @@ def skip_frontend_evidence_loop(
             implementation_blocker,
             loop_id=loop_id,
             next_action=(
-                f"Run ai-sdlc loop implementation close --yes for {work_item_dir.name}."
+                "Run ai-sdlc loop review --type implementation "
+                f"--loop-id {implementation_loop_id or '<implementation-loop-id>'}."
             ),
             artifacts=planned_refs,
         )
 
-    source_artifact_path = repo_relative_path(root, artifacts.close_path)
+    source_artifact_path = repo_relative_path(root, artifacts.report_json_path)
+    review_next_action = _next_action_for_status(
+        LoopStatus.NEEDS_REVIEW,
+        repo_relative_path(root, work_item_dir),
+        loop_id,
+    )
     frontend_input = FrontendEvidenceInput(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
@@ -408,13 +414,13 @@ def skip_frontend_evidence_loop(
         blocking_reason_codes=[],
         advisory_reason_codes=[_FRONTEND_EVIDENCE_SKIP_REASON_CODE],
         warnings=[_FRONTEND_EVIDENCE_SKIP_RISK, reason],
-        recommended_next_steps=[_local_pr_review_next_action()],
+        recommended_next_steps=[review_next_action],
     )
     report = FrontendEvidenceReport(
         loop_id=loop_id,
         work_item_id=work_item_dir.name,
         work_item_path=repo_relative_path(root, work_item_dir),
-        status=LoopStatus.CLOSED,
+        status=LoopStatus.NEEDS_REVIEW,
         gate_run_id="skipped",
         source_artifact_path=source_artifact_path,
         overall_gate_status="skipped",
@@ -424,7 +430,7 @@ def skip_frontend_evidence_loop(
         warning_count=2,
         warnings=[_FRONTEND_EVIDENCE_SKIP_RISK, reason],
         advisory_reason_codes=[_FRONTEND_EVIDENCE_SKIP_REASON_CODE],
-        next_action=_local_pr_review_next_action(),
+        next_action=review_next_action,
     )
     loop_run = _build_skip_loop_run(
         frontend_input=frontend_input,
@@ -432,32 +438,14 @@ def skip_frontend_evidence_loop(
         artifacts=artifacts,
         root=root,
     )
-    close = FrontendEvidenceClose(
-        loop_id=loop_id,
-        closed_by=options.closed_by.strip() or "local-user",
-        report_path=repo_relative_path(root, artifacts.report_json_path),
-        allow_warnings=True,
-        warning_count=report.warning_count,
-        accepted_warning_reason_codes=list(report.advisory_reason_codes),
-        skipped=True,
-        skip_reason=reason,
-        skip_risk_acknowledgement=_FRONTEND_EVIDENCE_SKIP_RISK,
-    )
-    return _execute_frontend_close_gate(
+    return _write_frontend_skip(
         root,
+        frontend_input,
+        snapshot,
+        report,
         loop_run,
         artifacts,
-        close_kind="frontend-evidence-skip",
-        writer=lambda: _write_frontend_skip(
-            root,
-            frontend_input,
-            snapshot,
-            report,
-            loop_run,
-            close,
-            artifacts,
-            reason,
-        ),
+        reason,
     )
 
 
@@ -481,13 +469,7 @@ def _reconcile_existing_frontend_skip(
         loop_id=loop_run.loop_id,
         artifacts=artifacts.refs(root, include_close=True),
     )
-    return _execute_frontend_close_gate(
-        root,
-        loop_run,
-        artifacts,
-        close_kind="frontend-evidence-skip",
-        writer=lambda: result,
-    )
+    return result
 
 
 def _write_frontend_skip(
@@ -496,7 +478,6 @@ def _write_frontend_skip(
     snapshot: FrontendEvidenceSnapshot,
     report: FrontendEvidenceReport,
     loop_run: LoopRun,
-    close: FrontendEvidenceClose,
     artifacts: FrontendEvidenceArtifacts,
     reason: str,
 ) -> FrontendEvidenceCommandResult:
@@ -506,26 +487,27 @@ def _write_frontend_skip(
         snapshot,
         report,
         loop_run,
-        close,
         artifacts,
     )
     return _result_from_report(
         report,
-        artifacts=artifacts.refs(root, include_close=True),
-        result="Frontend evidence loop skipped with explicit risk acceptance.",
+        artifacts=artifacts.refs(root),
+        result="Frontend evidence skip recorded and waiting for expert review.",
         status=FrontendEvidenceCommandStatus.READY,
-        closed=True,
+        closed=False,
         skipped=True,
         skip_reason=reason,
-        loop_status=LoopStatus.CLOSED,
-        next_action=_local_pr_review_next_action(),
-        allow_warnings=True,
+        loop_status=LoopStatus.NEEDS_REVIEW,
+        next_action=report.next_action,
         snapshot=snapshot,
     )
 
 
 def close_frontend_evidence_loop(
     options: FrontendEvidenceCloseOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> FrontendEvidenceCommandResult:
     """Close the current frontend-evidence loop after explicit confirmation."""
 
@@ -540,20 +522,56 @@ def close_frontend_evidence_loop(
         return _blocked_result(
             "Pass --yes after confirming frontend evidence.",
             result="Frontend evidence close requires explicit confirmation.",
-            next_action="Run ai-sdlc loop frontend-evidence close --yes.",
+            next_action="Repeat the same guarded frontend-evidence close command with --yes.",
         )
     try:
-        loop_run = read_loop_run(loop_run_path)
+        loop_run = (
+            read_loop_run(loop_run_path)
+            if reviewed_artifacts is None
+            else LoopRun.model_validate_json(
+                _reviewed_frontend_evidence_bytes(
+                    root,
+                    loop_run_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
         validate_explicit_loop_id(loop_run.loop_id)
     except ValueError as exc:
         return _blocked_result(
             str(exc),
             result="Frontend-evidence loop artifact is malformed.",
         )
+    expected_loop_id = options.loop_id.strip()
+    if expected_loop_id and loop_run.loop_id != expected_loop_id:
+        return _blocked_result(
+            (
+                "Frontend-evidence loop identity mismatch: expected "
+                f"{expected_loop_id}, found {loop_run.loop_id}."
+            ),
+            loop_id=expected_loop_id,
+            result="Frontend-evidence loop artifact is malformed.",
+        )
     artifacts = frontend_evidence_artifacts(root, loop_run.loop_id)
     try:
-        report = read_report(artifacts.report_json_path)
-        snapshot = read_snapshot(artifacts.snapshot_path)
+        if reviewed_artifacts is None:
+            report = read_report(artifacts.report_json_path)
+            snapshot = read_snapshot(artifacts.snapshot_path)
+        else:
+            report = FrontendEvidenceReport.model_validate_json(
+                _reviewed_frontend_evidence_bytes(
+                    root,
+                    artifacts.report_json_path,
+                    reviewed_artifacts,
+                )
+            )
+            snapshot = FrontendEvidenceSnapshot.model_validate_json(
+                _reviewed_frontend_evidence_bytes(
+                    root,
+                    artifacts.snapshot_path,
+                    reviewed_artifacts,
+                )
+            )
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -569,13 +587,7 @@ def close_frontend_evidence_loop(
             loop_status=LoopStatus.CLOSED,
             next_action=loop_run.next_action or _local_pr_review_next_action(),
         )
-        return _execute_frontend_close_gate(
-            root,
-            loop_run,
-            artifacts,
-            close_kind="frontend-evidence-close",
-            writer=lambda: result,
-        )
+        return result
     if report.blocker_count or report.status in {
         LoopStatus.BLOCKED,
         LoopStatus.NEEDS_FIX,
@@ -594,8 +606,18 @@ def close_frontend_evidence_loop(
             result="Frontend evidence warnings require explicit confirmation.",
             status=FrontendEvidenceCommandStatus.NEEDS_USER,
             blocker="Pass --allow-warnings to close with advisory warnings recorded.",
-            next_action="Run ai-sdlc loop frontend-evidence close --yes --allow-warnings.",
+            next_action=(
+                "Repeat the same guarded frontend-evidence close command with "
+                "--yes --allow-warnings."
+            ),
         )
+    revalidate_review_input_at_transition(
+        root,
+        loop_type="frontend-evidence",
+        loop_id=loop_run.loop_id,
+        expected_digest=options.expected_review_digest,
+        validator=review_input_validator,
+    )
     return _write_close(
         root,
         loop_run,
@@ -679,9 +701,7 @@ def _implementation_gate_state_issue(
             f"work item is {work_item_id}."
         )
     if not report.requires_frontend_evidence:
-        return (
-            f"Implementation loop {loop_run.loop_id} does not require frontend evidence."
-        )
+        return f"Implementation loop {loop_run.loop_id} does not require frontend evidence."
     return ""
 
 
@@ -1443,7 +1463,11 @@ def _build_report(
         screenshot_refs=snapshot.screenshot_refs,
         trace_refs=snapshot.trace_refs,
         artifact_refs=[record.artifact_ref for record in snapshot.artifact_records],
-        next_action=_next_action_for_status(status, frontend_input.work_item_path),
+        next_action=_next_action_for_status(
+            status,
+            frontend_input.work_item_path,
+            frontend_input.loop_id,
+        ),
     )
 
 
@@ -1458,12 +1482,7 @@ def _loop_status_for_snapshot(
             return LoopStatus.BLOCKED
         return LoopStatus.NEEDS_FIX
     if snapshot.execute_gate_state == FRONTEND_GATE_EXECUTE_STATE_READY:
-        if (
-            snapshot.decision_reason == FRONTEND_GATE_DECISION_REASON_ADVISORY_ONLY
-            or warnings
-        ):
-            return LoopStatus.NEEDS_USER
-        return LoopStatus.PASSED
+        return LoopStatus.NEEDS_REVIEW
     if snapshot.execute_gate_state in {
         FRONTEND_GATE_EXECUTE_STATE_NEEDS_REMEDIATION,
         FRONTEND_GATE_EXECUTE_STATE_RECHECK_REQUIRED,
@@ -1510,11 +1529,15 @@ def _report_warnings(snapshot: FrontendEvidenceSnapshot) -> list[str]:
     return _unique_strings(warnings)
 
 
-def _next_action_for_status(status: LoopStatus, work_item_path: str) -> str:
-    if status == LoopStatus.PASSED:
-        return "Run ai-sdlc loop frontend-evidence close --yes."
+def _next_action_for_status(
+    status: LoopStatus,
+    work_item_path: str,
+    loop_id: str,
+) -> str:
+    if status == LoopStatus.NEEDS_REVIEW:
+        return f"Run ai-sdlc loop review --type frontend-evidence --loop-id {loop_id}."
     if status == LoopStatus.NEEDS_USER:
-        return "Run ai-sdlc loop frontend-evidence close --yes --allow-warnings."
+        return f"Run ai-sdlc loop review --type frontend-evidence --loop-id {loop_id}."
     if status == LoopStatus.NEEDS_FIX:
         return "Run ai-sdlc program browser-gate-probe --execute."
     return f"Fix frontend evidence blockers, then run ai-sdlc loop frontend-evidence start --wi {work_item_path}."
@@ -1556,7 +1579,6 @@ def _write_skip_artifacts(
     snapshot: FrontendEvidenceSnapshot,
     report: FrontendEvidenceReport,
     loop_run: LoopRun,
-    close: FrontendEvidenceClose,
     artifacts: FrontendEvidenceArtifacts,
 ) -> None:
     store = LoopArtifactStore(root)
@@ -1571,7 +1593,6 @@ def _write_skip_artifacts(
         artifacts.report_md_path,
         _render_report_markdown(report),
     )
-    store.write_json_artifact(artifacts.close_path, close)
     store.write_json_artifact(artifacts.loop_run_path, loop_run)
     store.write_json_artifact(
         artifacts.pointer_path,
@@ -1592,20 +1613,14 @@ def _write_close(
     *,
     allow_warnings: bool,
 ) -> FrontendEvidenceCommandResult:
-    return _execute_frontend_close_gate(
+    return _write_frontend_close(
         root,
         loop_run,
+        report,
+        snapshot,
         artifacts,
-        close_kind="frontend-evidence-close",
-        writer=lambda: _write_frontend_close(
-            root,
-            loop_run,
-            report,
-            snapshot,
-            artifacts,
-            closed_by,
-            allow_warnings=allow_warnings,
-        ),
+        closed_by,
+        allow_warnings=allow_warnings,
     )
 
 
@@ -1619,6 +1634,20 @@ def _write_frontend_close(
     *,
     allow_warnings: bool,
 ) -> FrontendEvidenceCommandResult:
+    skipped = (
+        report.overall_gate_status == "skipped"
+        and report.decision_reason == _FRONTEND_EVIDENCE_SKIP_REASON_CODE
+    )
+    skip_reason = ""
+    if skipped:
+        skip_reason = next(
+            (
+                warning
+                for warning in report.warnings
+                if warning != _FRONTEND_EVIDENCE_SKIP_RISK
+            ),
+            "",
+        )
     close = FrontendEvidenceClose(
         loop_id=loop_run.loop_id,
         closed_by=closed_by.strip() or "local-user",
@@ -1628,6 +1657,9 @@ def _write_frontend_close(
         accepted_warning_reason_codes=(
             list(report.advisory_reason_codes) if allow_warnings else []
         ),
+        skipped=skipped,
+        skip_reason=skip_reason,
+        skip_risk_acknowledgement=(_FRONTEND_EVIDENCE_SKIP_RISK if skipped else ""),
     )
     loop_run.status = LoopStatus.CLOSED
     loop_run.updated_at = utc_now_iso()
@@ -1648,30 +1680,13 @@ def _write_frontend_close(
         result="Frontend evidence loop closed.",
         status=FrontendEvidenceCommandStatus.READY,
         closed=True,
+        skipped=skipped,
+        skip_reason=skip_reason,
         loop_status=LoopStatus.CLOSED,
         next_action=loop_run.next_action,
         allow_warnings=allow_warnings,
         snapshot=snapshot,
     )
-
-
-def _execute_frontend_close_gate(
-    root: Path,
-    loop_run: LoopRun,
-    artifacts: FrontendEvidenceArtifacts,
-    *,
-    close_kind: str,
-    writer: Callable[[], FrontendEvidenceCommandResult],
-) -> FrontendEvidenceCommandResult:
-    prepared = prepare_loop_stage_close(
-        root=root,
-        adapter=FrontendEvidenceStageAdapter(),
-        loop_run=loop_run,
-        close_kind=close_kind,
-        target_status=LoopStatus.CLOSED.value,
-        close_artifact_path=artifacts.close_path,
-    )
-    return execute_stage_close(prepared, writer)
 
 
 def _build_loop_run(
@@ -1724,12 +1739,11 @@ def _build_skip_loop_run(
         repo_relative_path(root, artifacts.snapshot_path),
         repo_relative_path(root, artifacts.report_json_path),
         repo_relative_path(root, artifacts.report_md_path),
-        repo_relative_path(root, artifacts.close_path),
     ]
     return LoopRun(
         loop_id=frontend_input.loop_id,
         loop_type=LoopType.FRONTEND_EVIDENCE,
-        status=LoopStatus.CLOSED,
+        status=LoopStatus.NEEDS_REVIEW,
         work_item_id=frontend_input.work_item_id,
         current_round=1,
         rounds=[
@@ -1738,8 +1752,8 @@ def _build_skip_loop_run(
                 input_artifacts=[frontend_input.implementation_report_path],
                 output_artifacts=output_artifacts,
                 command=["ai-sdlc", "loop", "frontend-evidence", "skip"],
-                status=LoopStatus.CLOSED,
-                result=LoopStatus.CLOSED,
+                status=LoopStatus.NEEDS_REVIEW,
+                result=LoopStatus.NEEDS_REVIEW,
                 next_action=report.next_action,
             )
         ],
@@ -1878,24 +1892,33 @@ def _next_guidance_for_result(
             safety="may_call_local_review_agent",
             evidence=evidence,
         )
-    if report.status == LoopStatus.PASSED:
+    if report.status == LoopStatus.NEEDS_REVIEW:
         return FrontendEvidenceNextGuidance(
-            command="ai-sdlc loop frontend-evidence close --yes",
-            reason="Browser gate evidence passed with no blockers or advisory warnings.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type frontend-evidence "
+                f"--loop-id {report.loop_id}"
+            ),
+            reason="Frontend evidence is ready for bounded adversarial review.",
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety="writes_project_artifacts",
+            safety="safe_read_only",
             evidence=evidence,
         )
     if report.status == LoopStatus.NEEDS_USER:
         return FrontendEvidenceNextGuidance(
-            command="ai-sdlc loop frontend-evidence close --yes --allow-warnings",
-            reason="Browser gate evidence passed with advisory warnings that must be explicitly recorded.",
-            requires_model=False,
-            writes_artifacts=True,
+            command=(
+                "ai-sdlc loop review --type frontend-evidence "
+                f"--loop-id {report.loop_id}"
+            ),
+            reason=(
+                "Browser gate evidence has advisory warnings; bounded review must "
+                "bind the input before warnings can be accepted during close."
+            ),
+            requires_model=True,
+            writes_artifacts=False,
             writes_code=False,
-            safety="needs_user",
+            safety="safe_read_only",
             evidence=evidence,
         )
     if report.status == LoopStatus.NEEDS_FIX:
@@ -1920,8 +1943,8 @@ def _next_guidance_for_result(
 
 
 def _result_text_for_report(report: FrontendEvidenceReport) -> str:
-    if report.status == LoopStatus.PASSED:
-        return "Frontend evidence passed."
+    if report.status == LoopStatus.NEEDS_REVIEW:
+        return "Frontend evidence is ready for bounded adversarial review."
     if report.status == LoopStatus.NEEDS_USER:
         return "Frontend evidence passed with warnings."
     if report.status == LoopStatus.NEEDS_FIX:
@@ -2050,6 +2073,20 @@ def _unique_strings(values: Iterable[object]) -> list[str]:
         seen.add(text)
         ordered.append(text)
     return ordered
+
+
+def _reviewed_frontend_evidence_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes:
+    key = repo_relative_path(root, path)
+    try:
+        return reviewed_artifacts[key]
+    except KeyError as exc:
+        raise ValueError(
+            f"Reviewed frontend-evidence snapshot is missing {key}."
+        ) from exc
 
 
 __all__ = [
