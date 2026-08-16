@@ -307,6 +307,89 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     assert not any("actions/checkout" in step.get("uses", "") for step in upload_job["steps"])
 
 
+def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> None:
+    bash = shutil.which("bash")
+    git = shutil.which("git")
+    if bash is None or git is None:
+        pytest.skip("The release source validation requires Bash and Git.")
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    )
+    validation_script = next(
+        step["run"]
+        for step in workflow["jobs"]["build-smoke"]["steps"]
+        if step.get("name") == "Validate exact release tag source"
+    )
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "pyproject.toml").write_text(
+        '[project]\nname = "ai-sdlc"\nversion = "2.0.0"\n',
+        encoding="utf-8",
+    )
+    for command in (
+        [git, "init", "-b", "main"],
+        [git, "config", "user.name", "Release Test"],
+        [git, "config", "user.email", "release@example.invalid"],
+        [git, "add", "pyproject.toml"],
+        [git, "commit", "-m", "release source"],
+        [git, "tag", "-a", "v2.0.0", "-m", "v2.0.0"],
+    ):
+        subprocess.run(command, cwd=repository, check=True, capture_output=True)
+    head = subprocess.run(
+        [git, "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    base_env = {
+        **os.environ,
+        "RELEASE_TAG": "v2.0.0",
+        "ALLOWED_RELEASE_TAG": "v2.0.0",
+        "DISPATCH_REF": "refs/heads/main",
+        "DISPATCH_SHA": head,
+    }
+
+    accepted = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env=base_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    frozen_tag = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env={**base_env, "RELEASE_TAG": "v1.0.4"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    non_main = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env={**base_env, "DISPATCH_REF": "refs/heads/release-candidate"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    wrong_commit = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env={**base_env, "DISPATCH_SHA": "0" * 40},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert frozen_tag.returncode != 0
+    assert "Only v2.0.0" in frozen_tag.stderr
+    assert non_main.returncode != 0
+    assert wrong_commit.returncode != 0
+
+
 def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
     bash = shutil.which("bash")
     if bash is None:
@@ -335,7 +418,11 @@ if [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json isDraft"* ]]; then
     printf '%s\n' "${FAKE_RELEASE_IS_DRAFT}"
   fi
 elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json assets"* ]]; then
-  printf '%s' "${FAKE_RELEASE_ASSETS}"
+  if [[ -n "${FAKE_RELEASE_STATE_FILE:-}" && -f "${FAKE_RELEASE_STATE_FILE}" ]]; then
+    cat "${FAKE_RELEASE_STATE_FILE}"
+  else
+    printf '%s' "${FAKE_RELEASE_ASSETS}"
+  fi
 elif [[ "$1" == "release" && "$2" == "download" ]]; then
   pattern=""
   destination=""
@@ -358,6 +445,16 @@ elif [[ "$1" == "release" && "$2" == "download" ]]; then
   cp "${FAKE_REMOTE_ASSETS}/${pattern}" "${destination}/${pattern}"
 elif [[ "$1" == "release" && "$2" == "upload" ]]; then
   printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+  shift 3
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--repo" ]]; then
+      shift 2
+    else
+      basename "$1" >> "${FAKE_RELEASE_STATE_FILE}"
+      shift
+    fi
+  done
+  sort -u -o "${FAKE_RELEASE_STATE_FILE}" "${FAKE_RELEASE_STATE_FILE}"
 else
   exit 97
 fi
@@ -383,17 +480,23 @@ fi
     remote_assets = tmp_path / "remote-assets"
     remote_assets.mkdir()
     log_path = tmp_path / "gh.log"
+    asset_state = tmp_path / "release-assets.txt"
     base_env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
         "RELEASE_TAG": "v2.0.0",
+        "ALLOWED_RELEASE_TAG": "v2.0.0",
+        "DISPATCH_REF": "refs/heads/main",
+        "DISPATCH_SHA": "a" * 40,
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
         "AI_SDLC_RELEASE_ASSET_OS": "linux",
         "AI_SDLC_RELEASE_ASSET_MACHINE": "amd64",
         "FAKE_GH_LOG": str(log_path),
         "FAKE_REMOTE_ASSETS": str(remote_assets),
+        "FAKE_RELEASE_STATE_FILE": str(asset_state),
     }
 
+    asset_state.write_text("", encoding="utf-8")
     published = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -403,6 +506,7 @@ fi
         check=False,
     )
     (remote_assets / asset.name).write_bytes(b"different archive")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8")
     mismatched = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -416,6 +520,7 @@ fi
         check=False,
     )
     (remote_assets / asset.name).write_bytes(asset.read_bytes())
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8")
     partial = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -432,6 +537,7 @@ fi
     log_path.unlink(missing_ok=True)
     draft_sequence = tmp_path / "draft-sequence.txt"
     draft_sequence.write_text("true\nfalse\n", encoding="utf-8")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8")
     published_during_retry = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -453,6 +559,7 @@ fi
     complete_asset_names = "\n".join(
         [asset.name, sidecar.name, *(item.name for item in other_assets)]
     )
+    asset_state.write_text(f"{complete_asset_names}\n", encoding="utf-8")
     complete = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -466,6 +573,20 @@ fi
         check=False,
     )
     complete_uploaded = log_path.exists()
+    asset_state.write_text(f"{complete_asset_names}\nunexpected.txt\n", encoding="utf-8")
+    unexpected = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": complete_asset_names,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    asset_state.write_text("", encoding="utf-8")
     allowed = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -485,6 +606,7 @@ fi
     assert not transitioned_upload
     assert complete.returncode == 0, complete.stderr
     assert not complete_uploaded
+    assert unexpected.returncode != 0
     assert allowed.returncode == 0, allowed.stderr
     upload_call = log_path.read_text(encoding="utf-8")
     assert asset.name in upload_call
