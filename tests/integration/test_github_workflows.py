@@ -557,7 +557,7 @@ fi
     partial_upload = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
     log_path.unlink(missing_ok=True)
     draft_sequence = tmp_path / "draft-sequence.txt"
-    draft_sequence.write_text("true\nfalse\n", encoding="utf-8")
+    draft_sequence.write_text("true\nfalse\n", encoding="utf-8", newline="\n")
     asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     published_during_retry = subprocess.run(
         [bash, "-c", upload_script],
