@@ -1943,6 +1943,53 @@ def test_close_design_contract_loop_rechecks_review_digest_at_final_write(
     ).exists()
 
 
+def test_close_design_contract_loop_preserves_unchanged_review_digest(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-unchanged-review-guard"
+    check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="design-contract",
+        loop_id=loop_id,
+    )
+    refresh_persistence: list[bool] = []
+    original_refresh = design_contract_loop_module._refresh_report_before_close
+
+    def record_refresh_persistence(*args: object, **kwargs: object) -> object:
+        refresh_persistence.append(bool(kwargs["persist"]))
+        return original_refresh(*args, **kwargs)
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_refresh_report_before_close",
+        record_refresh_persistence,
+    )
+
+    result = close_design_contract_loop(
+        DesignContractCloseOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            yes=True,
+            expected_review_digest=reviewed.input_digest,
+        ),
+        review_input_validator=validate_review_input_for_close,
+    )
+
+    assert result.status == "ready"
+    assert result.loop_status == "closed"
+    assert result.closed is True
+    assert refresh_persistence == [False]
+
+
 def test_close_design_contract_loop_recovers_close_written_before_loop_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

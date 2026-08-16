@@ -394,12 +394,19 @@ def _finish_verified_design_close(
         loop_run,
         artifacts,
         verified_input,
-        persist=True,
+        persist=False,
     )
     if isinstance(refreshed, DesignContractCommandResult):
         return refreshed
     report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
+        _write_check_artifacts(
+            root,
+            verified_input,
+            report,
+            loop_run,
+            artifacts,
+        )
         return _result_from_report(
             report,
             artifacts=artifacts.refs(root),
