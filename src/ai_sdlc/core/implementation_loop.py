@@ -6,6 +6,7 @@ import hashlib
 import os
 import re
 import stat
+import tempfile
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
@@ -112,9 +113,10 @@ class _ImplementationWriteLockError(RuntimeError):
 def _implementation_write_guard(root: Path, loop_id: str) -> Iterator[None]:
     """跨进程串行化同一实现循环的读取、校验与写入。"""
 
-    lock_dir = root / ".ai-sdlc" / "locks"
-    lock_dir.mkdir(parents=True, exist_ok=True)
-    lock_name = hashlib.sha256(loop_id.encode("utf-8")).hexdigest()
+    lock_dir = _implementation_lock_dir(root)
+    lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+    lock_key = f"{root.resolve()}\0{loop_id}".encode()
+    lock_name = hashlib.sha256(lock_key).hexdigest()
     lock_path = lock_dir / f"implementation-{lock_name}.lock"
     flags = os.O_CREAT | os.O_RDWR
     if hasattr(os, "O_CLOEXEC"):
@@ -134,6 +136,24 @@ def _implementation_write_guard(root: Path, loop_id: str) -> Iterator[None]:
     finally:
         _release_implementation_file_lock(file_descriptor)
         os.close(file_descriptor)
+
+
+def _implementation_lock_dir(root: Path) -> Path:
+    git_marker = root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "ai-sdlc-locks"
+    if git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            marker = ""
+        if marker.lower().startswith("gitdir:"):
+            value = marker.split(":", 1)[1].strip()
+            git_dir = Path(value)
+            if not git_dir.is_absolute():
+                git_dir = root / git_dir
+            return git_dir.resolve() / "ai-sdlc-locks"
+    return Path(tempfile.gettempdir()) / "ai-sdlc-loop-locks"
 
 
 def _acquire_implementation_file_lock(file_descriptor: int) -> None:

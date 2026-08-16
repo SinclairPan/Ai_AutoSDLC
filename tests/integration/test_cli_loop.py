@@ -1629,6 +1629,7 @@ def test_loop_implementation_close_does_not_overwrite_newer_progress(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _write_design_contract_work_item(tmp_path)
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
         runner.invoke(
             app,
@@ -1763,6 +1764,7 @@ def test_loop_implementation_close_does_not_overwrite_newer_progress(
     assert close.exit_code == 1
     assert progress_payload["tasks"][0]["status"] == "done"
     assert progress_payload["tasks"][0]["verification_commands"] == ["pytest -q"]
+    assert not (tmp_path / ".ai-sdlc" / "locks").exists()
 
 
 def test_loop_implementation_start_dry_run_skips_adapter_hook(
