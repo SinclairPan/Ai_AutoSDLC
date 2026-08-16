@@ -566,6 +566,19 @@ def _find_local_review_dir(
         raise ValueError(
             f"Current local PR review run does not identify Loop {loop_id}."
         )
+    for field_name, filename in (
+        ("review_pack_path", "review-pack.json"),
+        ("findings_path", "findings.json"),
+    ):
+        raw_artifact_path = run.get(field_name, "")
+        if raw_artifact_path in {None, ""}:
+            continue
+        if not isinstance(raw_artifact_path, str):
+            raise ValueError(f"Current local PR review {field_name} is invalid.")
+        artifact_path = _repo_path(root, raw_artifact_path, field_name)
+        expected_artifact_path = run_path.parent / filename
+        if _lexical_path(artifact_path) != _lexical_path(expected_artifact_path):
+            raise ValueError(f"Current local PR review {field_name} is not canonical.")
     return run_path.parent, pointer_path, run_path
 
 

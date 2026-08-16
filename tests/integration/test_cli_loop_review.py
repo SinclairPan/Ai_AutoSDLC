@@ -300,7 +300,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
             {
                 "review_id": "review-001",
                 "loop_id": "loop-pr-001",
-                "findings_path": "unreviewed-findings.json",
+                "status": "needs_review",
             }
         ),
         encoding="utf-8",
@@ -311,6 +311,26 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
         loop_id="loop-pr-001",
     )
     assert run_drift.input_digest != reviewed.input_digest
+    for field_name, redirected_name in (
+        ("review_pack_path", "unreviewed-pack.json"),
+        ("findings_path", "unreviewed-findings.json"),
+    ):
+        review_run.write_text(
+            json.dumps(
+                {
+                    "review_id": "review-001",
+                    "loop_id": "loop-pr-001",
+                    field_name: redirected_name,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match=f"{field_name}.*canonical"):
+            resolve_review_input(
+                tmp_path,
+                loop_type="local-pr-review",
+                loop_id="loop-pr-001",
+            )
     review_run.write_text(
         json.dumps({"review_id": "review-001", "loop_id": "loop-pr-001"}),
         encoding="utf-8",
