@@ -349,7 +349,8 @@ jobs:
         with:
           name: release-assets-${{ matrix.asset_os }}-${{ matrix.archive }}
           path: |
-            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.*
+            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}
+            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.${{ matrix.archive }}.sha256
           if-no-files-found: error
 
   upload-release-assets:
