@@ -213,12 +213,14 @@ def requirement_freeze(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    reviewed_artifacts: dict[str, bytes] = {}
     _require_review_close_guard(
         root,
         loop_type="requirement",
         loop_id=loop_id,
         expected_digest=expect_review_digest,
         json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
     )
     result = _run_review_bound_close(
         lambda: freeze_requirement_loop(
@@ -230,6 +232,7 @@ def requirement_freeze(
                 expected_review_digest=expect_review_digest,
             ),
             review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
     )
@@ -305,12 +308,14 @@ def design_contract_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    reviewed_artifacts: dict[str, bytes] = {}
     _require_review_close_guard(
         root,
         loop_type="design-contract",
         loop_id=loop_id,
         expected_digest=expect_review_digest,
         json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
     )
     result = _run_review_bound_close(
         lambda: close_design_contract_loop(
@@ -322,6 +327,7 @@ def design_contract_close(
                 expected_review_digest=expect_review_digest,
             ),
             review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
     )
@@ -626,12 +632,14 @@ def frontend_evidence_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    reviewed_artifacts: dict[str, bytes] = {}
     _require_review_close_guard(
         root,
         loop_type="frontend-evidence",
         loop_id=loop_id,
         expected_digest=expect_review_digest,
         json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
     )
     result = _run_review_bound_close(
         lambda: close_frontend_evidence_loop(
@@ -644,6 +652,7 @@ def frontend_evidence_close(
                 expected_review_digest=expect_review_digest,
             ),
             review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
     )

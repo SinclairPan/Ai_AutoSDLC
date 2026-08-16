@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -462,6 +463,7 @@ def freeze_requirement_loop(
     options: RequirementFreezeOptions,
     *,
     review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> RequirementLoopCommandResult:
     """Freeze the current requirement loop after explicit user confirmation."""
 
@@ -473,6 +475,7 @@ def freeze_requirement_loop(
         root,
         loop_run_path,
         expected_loop_id,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if isinstance(target, RequirementLoopCommandResult):
         return target
@@ -482,6 +485,7 @@ def freeze_requirement_loop(
         loop_run,
         expected_loop_id,
         artifacts,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if isinstance(intake, RequirementLoopCommandResult):
         return intake
@@ -536,6 +540,8 @@ def _load_requirement_freeze_target(
     root: Path,
     loop_run_path: Path,
     expected_loop_id: str,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> tuple[LoopRun, _RequirementArtifacts] | RequirementLoopCommandResult:
     artifacts = _requirement_artifacts(root, expected_loop_id)
     path_issue = _requirement_artifact_path_issue(
@@ -553,7 +559,17 @@ def _load_requirement_freeze_target(
             next_action="Rerun ai-sdlc loop requirement start.",
         )
     try:
-        loop_run = _read_loop_run(loop_run_path)
+        loop_run = (
+            _read_loop_run(loop_run_path)
+            if reviewed_artifacts is None
+            else LoopRun.model_validate_json(
+                _reviewed_requirement_bytes(
+                    root,
+                    loop_run_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
     except ValueError as exc:
         return RequirementLoopCommandResult(
             status=RequirementCommandStatus.BLOCKED,
@@ -583,6 +599,8 @@ def _load_requirement_freeze_intake(
     loop_run: LoopRun,
     expected_loop_id: str,
     artifacts: _RequirementArtifacts,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> RequirementIntake | RequirementLoopCommandResult:
     path_issue = _requirement_artifact_path_issue(
         root,
@@ -600,7 +618,17 @@ def _load_requirement_freeze_intake(
             artifacts=artifacts.refs(root),
         )
     try:
-        intake = _read_intake(artifacts.intake_path)
+        intake = (
+            _read_intake(artifacts.intake_path)
+            if reviewed_artifacts is None
+            else RequirementIntake.model_validate_json(
+                _reviewed_requirement_bytes(
+                    root,
+                    artifacts.intake_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
     except ValueError as exc:
         return RequirementLoopCommandResult(
             status=RequirementCommandStatus.BLOCKED,
@@ -1310,6 +1338,18 @@ def _repo_relative_path(root: Path, path: Path) -> str:
         )
     except ValueError:
         return path.as_posix()
+
+
+def _reviewed_requirement_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes:
+    key = _repo_relative_path(root, path)
+    try:
+        return reviewed_artifacts[key]
+    except KeyError as exc:
+        raise ValueError(f"Reviewed requirement snapshot is missing {key}.") from exc
 
 
 def _append_unique(values: list[str], value: str) -> list[str]:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -507,6 +507,7 @@ def close_frontend_evidence_loop(
     options: FrontendEvidenceCloseOptions,
     *,
     review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> FrontendEvidenceCommandResult:
     """Close the current frontend-evidence loop after explicit confirmation."""
 
@@ -524,7 +525,17 @@ def close_frontend_evidence_loop(
             next_action="Repeat the same guarded frontend-evidence close command with --yes.",
         )
     try:
-        loop_run = read_loop_run(loop_run_path)
+        loop_run = (
+            read_loop_run(loop_run_path)
+            if reviewed_artifacts is None
+            else LoopRun.model_validate_json(
+                _reviewed_frontend_evidence_bytes(
+                    root,
+                    loop_run_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
         validate_explicit_loop_id(loop_run.loop_id)
     except ValueError as exc:
         return _blocked_result(
@@ -543,8 +554,24 @@ def close_frontend_evidence_loop(
         )
     artifacts = frontend_evidence_artifacts(root, loop_run.loop_id)
     try:
-        report = read_report(artifacts.report_json_path)
-        snapshot = read_snapshot(artifacts.snapshot_path)
+        if reviewed_artifacts is None:
+            report = read_report(artifacts.report_json_path)
+            snapshot = read_snapshot(artifacts.snapshot_path)
+        else:
+            report = FrontendEvidenceReport.model_validate_json(
+                _reviewed_frontend_evidence_bytes(
+                    root,
+                    artifacts.report_json_path,
+                    reviewed_artifacts,
+                )
+            )
+            snapshot = FrontendEvidenceSnapshot.model_validate_json(
+                _reviewed_frontend_evidence_bytes(
+                    root,
+                    artifacts.snapshot_path,
+                    reviewed_artifacts,
+                )
+            )
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -2046,6 +2073,20 @@ def _unique_strings(values: Iterable[object]) -> list[str]:
         seen.add(text)
         ordered.append(text)
     return ordered
+
+
+def _reviewed_frontend_evidence_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes:
+    key = repo_relative_path(root, path)
+    try:
+        return reviewed_artifacts[key]
+    except KeyError as exc:
+        raise ValueError(
+            f"Reviewed frontend-evidence snapshot is missing {key}."
+        ) from exc
 
 
 __all__ = [

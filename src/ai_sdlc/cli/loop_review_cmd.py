@@ -46,6 +46,26 @@ _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
         "frontend-evidence-report.md",
     ),
 }
+_STAGE_CLOSE_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    "requirement": ("loop-run.json", "requirement-intake.json"),
+    "design-contract": (
+        "loop-run.json",
+        "design-contract-input.json",
+        "design-contract-report.json",
+    ),
+    "implementation": (
+        "loop-run.json",
+        "implementation-input.json",
+        "implementation-report.json",
+        "implementation-tasks.json",
+        "implementation-progress.json",
+    ),
+    "frontend-evidence": (
+        "loop-run.json",
+        "frontend-evidence-snapshot.json",
+        "frontend-evidence-report.json",
+    ),
+}
 _STAGE_PREDECESSORS: dict[str, tuple[str, str, str]] = {
     "design-contract": (
         "design-contract-input.json",
@@ -323,14 +343,8 @@ def resolve_review_input(
         )
         round_number = _read_round_number(root, run_path)
         capture_artifact_paths = (
-            [
-                run_path,
-                loop_dir / "implementation-input.json",
-                loop_dir / "implementation-report.json",
-                loop_dir / "implementation-tasks.json",
-                loop_dir / "implementation-progress.json",
-            ]
-            if loop_type == "implementation" and captured_artifacts is not None
+            [loop_dir / name for name in _STAGE_CLOSE_ARTIFACTS[loop_type]]
+            if captured_artifacts is not None
             else []
         )
     else:

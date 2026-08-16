@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -254,6 +255,7 @@ def close_design_contract_loop(
     options: DesignContractCloseOptions,
     *,
     review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> DesignContractCommandResult:
     """Close the current design-contract loop after explicit confirmation."""
 
@@ -276,6 +278,7 @@ def close_design_contract_loop(
         root,
         loop_run_path,
         expected_loop_id,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if isinstance(context, DesignContractCommandResult):
         return context
@@ -288,6 +291,7 @@ def close_design_contract_loop(
         verified_input,
         artifacts,
         review_input_validator=review_input_validator,
+        reviewed_artifacts=reviewed_artifacts,
     )
 
 
@@ -295,6 +299,8 @@ def _load_design_close_context(
     root: Path,
     loop_run_path: Path,
     expected_loop_id: str,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> (
     tuple[
         LoopRun,
@@ -305,7 +311,13 @@ def _load_design_close_context(
     | DesignContractCommandResult
 ):
     try:
-        loop_run = read_loop_run(loop_run_path, root=root)
+        loop_run = (
+            read_loop_run(loop_run_path, root=root)
+            if reviewed_artifacts is None
+            else LoopRun.model_validate_json(
+                _reviewed_design_bytes(root, loop_run_path, reviewed_artifacts)
+            )
+        )
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -325,7 +337,17 @@ def _load_design_close_context(
         )
     artifacts = design_contract_artifacts(root, expected_loop_id)
     try:
-        report = read_report(artifacts.report_json_path)
+        report = (
+            read_report(artifacts.report_json_path)
+            if reviewed_artifacts is None
+            else DesignContractReport.model_validate_json(
+                _reviewed_design_bytes(
+                    root,
+                    artifacts.report_json_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -337,6 +359,7 @@ def _load_design_close_context(
         loop_run,
         report,
         artifacts,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if isinstance(verified_input, DesignContractCommandResult):
         return verified_input
@@ -352,6 +375,7 @@ def _close_verified_design_context(
     artifacts: DesignContractArtifacts,
     *,
     review_input_validator: ReviewInputValidator | None,
+    reviewed_artifacts: Mapping[str, bytes] | None,
 ) -> DesignContractCommandResult:
     existing = _existing_design_close_result(
         root,
@@ -361,6 +385,7 @@ def _close_verified_design_context(
         artifacts,
         options=options,
         review_input_validator=review_input_validator,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if existing is not None:
         return existing
@@ -374,9 +399,11 @@ def _close_verified_design_context(
         root,
         options,
         loop_run,
+        report,
         verified_input,
         artifacts,
         review_input_validator=review_input_validator,
+        reviewed_artifacts=reviewed_artifacts,
     )
 
 
@@ -384,21 +411,24 @@ def _finish_verified_design_close(
     root: Path,
     options: DesignContractCloseOptions,
     loop_run: LoopRun,
+    report: DesignContractReport,
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
     *,
     review_input_validator: ReviewInputValidator | None,
+    reviewed_artifacts: Mapping[str, bytes] | None,
 ) -> DesignContractCommandResult:
-    refreshed = _refresh_report_before_close(
-        root,
-        loop_run,
-        artifacts,
-        verified_input,
-        persist=False,
-    )
-    if isinstance(refreshed, DesignContractCommandResult):
-        return refreshed
-    report, loop_run = refreshed
+    if reviewed_artifacts is None:
+        refreshed = _refresh_report_before_close(
+            root,
+            loop_run,
+            artifacts,
+            verified_input,
+            persist=False,
+        )
+        if isinstance(refreshed, DesignContractCommandResult):
+            return refreshed
+        report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
         _write_check_artifacts(
             root,
@@ -437,6 +467,7 @@ def _existing_design_close_result(
     *,
     options: DesignContractCloseOptions,
     review_input_validator: ReviewInputValidator | None,
+    reviewed_artifacts: Mapping[str, bytes] | None,
 ) -> DesignContractCommandResult | None:
     try:
         close_exists = _trusted_close_artifact_exists(root, artifacts)
@@ -459,6 +490,7 @@ def _existing_design_close_result(
             artifacts,
             options=options,
             review_input_validator=review_input_validator,
+            reviewed_artifacts=reviewed_artifacts,
         )
     if loop_run.status == LoopStatus.CLOSED or close_exists:
         return _blocked_result(
@@ -478,17 +510,19 @@ def _recover_partially_written_design_close(
     *,
     options: DesignContractCloseOptions,
     review_input_validator: ReviewInputValidator | None,
+    reviewed_artifacts: Mapping[str, bytes] | None,
 ) -> DesignContractCommandResult:
-    refreshed = _refresh_report_before_close(
-        root,
-        loop_run,
-        artifacts,
-        verified_input,
-        persist=False,
-    )
-    if isinstance(refreshed, DesignContractCommandResult):
-        return refreshed
-    report, loop_run = refreshed
+    if reviewed_artifacts is None:
+        refreshed = _refresh_report_before_close(
+            root,
+            loop_run,
+            artifacts,
+            verified_input,
+            persist=False,
+        )
+        if isinstance(refreshed, DesignContractCommandResult):
+            return refreshed
+        report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
         artifacts.close_path.unlink(missing_ok=True)
         _write_check_artifacts(
@@ -674,6 +708,8 @@ def _verified_design_close_input(
     loop_run: LoopRun,
     report: DesignContractReport,
     artifacts: DesignContractArtifacts,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> DesignContractInput | DesignContractCommandResult:
     if (
         report.loop_id != loop_run.loop_id
@@ -685,8 +721,17 @@ def _verified_design_close_input(
             artifacts=artifacts.refs(root),
         )
     try:
-        payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
-        contract_input = DesignContractInput.model_validate(payload)
+        if reviewed_artifacts is None:
+            payload = LoopArtifactStore(root).read_json_artifact(artifacts.input_path)
+            contract_input = DesignContractInput.model_validate(payload)
+        else:
+            contract_input = DesignContractInput.model_validate_json(
+                _reviewed_design_bytes(
+                    root,
+                    artifacts.input_path,
+                    reviewed_artifacts,
+                )
+            )
     except (OSError, ValueError, ValidationError) as exc:
         return _blocked_result(
             f"Design-contract input artifact is malformed: {exc}",
@@ -1353,6 +1398,18 @@ def _next_guidance_for_result(
 
 def _implementation_next_action(work_item_id: str) -> str:
     return f"Start implementation loop for {work_item_id}."
+
+
+def _reviewed_design_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes:
+    key = repo_relative_path(root, path)
+    try:
+        return reviewed_artifacts[key]
+    except KeyError as exc:
+        raise ValueError(f"Reviewed design snapshot is missing {key}.") from exc
 
 
 __all__ = [
