@@ -194,7 +194,7 @@ def test_loop_review_reads_expert_bytes_from_digest_bound_snapshot(
         "acceptance-checklist.md",
     ):
         content = "{}" if filename.endswith(".json") else f"{filename}: v1\n"
-        (loop_dir / filename).write_text(content, encoding="utf-8")
+        (loop_dir / filename).write_bytes(content.encode("utf-8"))
 
     with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
         reviewed = runner.invoke(

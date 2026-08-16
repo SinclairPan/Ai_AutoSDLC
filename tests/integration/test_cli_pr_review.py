@@ -424,7 +424,7 @@ def test_pr_review_close_uses_validated_resolution_across_aba(
         started = json.loads(start.output)
         fixed = json.loads(fix.output)
         resolution_path = Path(fixed["resolution_path"])
-        reviewed_text = resolution_path.read_text(encoding="utf-8")
+        reviewed_bytes = resolution_path.read_bytes()
         if not reviewed_resolution_exists:
             resolution_path.unlink()
         reviewed = resolve_review_input(
@@ -439,7 +439,7 @@ def test_pr_review_close_uses_validated_resolution_across_aba(
             validation_count += 1
             result = validate_review_input_for_close(*args, **kwargs)
             if validation_count == 1:
-                resolution = yaml.safe_load(reviewed_text)
+                resolution = yaml.safe_load(reviewed_bytes)
                 resolution["finding_resolutions"][0].update(
                     {
                         "status": "fixed",
@@ -448,17 +448,14 @@ def test_pr_review_close_uses_validated_resolution_across_aba(
                         "resolved_at": "2026-08-16T00:00:00Z",
                     }
                 )
-                resolution_path.write_text(
-                    yaml.safe_dump(resolution),
-                    encoding="utf-8",
-                )
+                resolution_path.write_bytes(yaml.safe_dump(resolution).encode("utf-8"))
             return result
 
         original_revalidate = pr_review_service.revalidate_review_input_at_transition
 
         def restore_then_revalidate(*args, **kwargs):
             if reviewed_resolution_exists:
-                resolution_path.write_text(reviewed_text, encoding="utf-8")
+                resolution_path.write_bytes(reviewed_bytes)
             else:
                 resolution_path.unlink()
             return original_revalidate(*args, **kwargs)
