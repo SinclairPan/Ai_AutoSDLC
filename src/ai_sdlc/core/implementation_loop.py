@@ -338,6 +338,16 @@ def close_implementation_loop(
         return _blocked_result(
             str(exc), result="Implementation loop artifact is malformed."
         )
+    expected_loop_id = options.loop_id.strip()
+    if expected_loop_id and loop_run.loop_id != expected_loop_id:
+        return _blocked_result(
+            (
+                "Implementation loop identity mismatch: expected "
+                f"{expected_loop_id}, found {loop_run.loop_id}."
+            ),
+            loop_id=expected_loop_id,
+            result="Implementation loop artifact is malformed.",
+        )
     artifacts = implementation_artifacts(root, loop_run.loop_id)
     loaded = _read_current_state(
         root,

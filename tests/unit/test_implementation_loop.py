@@ -619,6 +619,48 @@ def test_close_implementation_loop_blocks_incomplete_required_tasks(
     ).exists()
 
 
+def test_close_implementation_loop_rejects_replaced_loop_identity(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    for loop_id in ("impl-reviewed", "impl-unreviewed"):
+        start_implementation_loop(
+            ImplementationStartOptions(
+                root=tmp_path,
+                work_item="specs/demo-implementation-loop",
+                loop_id=loop_id,
+            )
+        )
+    record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id="impl-unreviewed",
+            task_id="T11",
+            status="done",
+            verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
+        )
+    )
+    reviewed_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "impl-reviewed"
+        / "loop-run.json"
+    )
+    unreviewed_run = reviewed_run.parent.parent / "impl-unreviewed" / "loop-run.json"
+    reviewed_run.write_bytes(unreviewed_run.read_bytes())
+
+    result = close_implementation_loop(
+        ImplementationCloseOptions(root=tmp_path, loop_id="impl-reviewed", yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "identity" in result.blocker.lower()
+    assert not (unreviewed_run.parent / "implementation-close.json").exists()
+
+
 def test_close_implementation_loop_writes_close_artifact(tmp_path: Path) -> None:
     work_item = _write_ready_work_item(tmp_path)
     _close_design_contract_for_work_item(tmp_path, work_item)

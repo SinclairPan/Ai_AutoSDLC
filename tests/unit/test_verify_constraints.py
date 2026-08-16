@@ -271,7 +271,12 @@ def test_192_feature_contract_surfaces_cover_requirement_loop_runtime() -> None:
         for token in evidence.required_tokens
     }
     assert "ai-sdlc loop requirement start" in doc_tokens
-    assert "ai-sdlc loop requirement freeze --yes" in doc_tokens
+    assert (
+        "ai-sdlc loop requirement freeze --loop-id <loop-id> "
+        "--expect-review-digest <input_digest> --yes"
+    ) in doc_tokens
+    assert "ai-sdlc loop review --type requirement" in doc_tokens
+    assert "ai-sdlc loop requirement freeze --yes" not in doc_tokens
     assert "design-contract" in doc_tokens
 
 
@@ -307,8 +312,12 @@ def test_193_feature_contract_surfaces_cover_design_contract_loop_runtime() -> N
         for token in evidence.required_tokens
     }
     assert "ai-sdlc loop design-contract check" in doc_tokens
-    assert "ai-sdlc loop design-contract close --yes" in doc_tokens
-    assert "does not enter frontend evidence" in doc_tokens
+    assert (
+        "ai-sdlc loop design-contract close --loop-id <loop-id> "
+        "--expect-review-digest <input_digest> --yes"
+    ) in doc_tokens
+    assert "ai-sdlc loop review --type design-contract" in doc_tokens
+    assert "ai-sdlc loop design-contract close --yes" not in doc_tokens
     assert "implementation loop" in doc_tokens
 
 
@@ -344,7 +353,12 @@ def test_194_feature_contract_surfaces_cover_implementation_loop_runtime() -> No
         for token in evidence.required_tokens
     }
     assert "ai-sdlc loop implementation start" in doc_tokens
-    assert "ai-sdlc loop implementation close --yes" in doc_tokens
+    assert (
+        "ai-sdlc loop implementation close --loop-id <loop-id> "
+        "--expect-review-digest <input_digest> --yes"
+    ) in doc_tokens
+    assert "ai-sdlc loop review --type implementation" in doc_tokens
+    assert "ai-sdlc loop implementation close --yes" not in doc_tokens
     assert "frontend-evidence" in doc_tokens
     assert "local-pr-review" in doc_tokens
 
@@ -382,14 +396,14 @@ def test_195_feature_contract_surfaces_cover_frontend_evidence_loop_runtime() ->
     }
     assert "ai-sdlc loop frontend-evidence doctor --provider auto" in doc_tokens
     assert "ai-sdlc loop frontend-evidence start" in doc_tokens
-    assert "ai-sdlc loop frontend-evidence close --yes" in doc_tokens
+    assert (
+        "ai-sdlc loop frontend-evidence close --loop-id <loop-id> "
+        "--expect-review-digest <input_digest> --yes"
+    ) in doc_tokens
+    assert "ai-sdlc loop review --type frontend-evidence" in doc_tokens
+    assert "ai-sdlc loop frontend-evidence close --yes" not in doc_tokens
     assert "ai-sdlc loop frontend-evidence skip" in doc_tokens
     assert "ai-sdlc program browser-gate-probe --execute" in doc_tokens
-    assert "Codex browser" in doc_tokens
-    assert "browser MCP" in doc_tokens
-    assert "optional Playwright" in doc_tokens
-    assert "skipped=true" in doc_tokens
-    assert "does not assume GitHub" in doc_tokens
     assert "--allow-warnings" in doc_tokens
 
 

@@ -525,6 +525,16 @@ def close_frontend_evidence_loop(
             str(exc),
             result="Frontend-evidence loop artifact is malformed.",
         )
+    expected_loop_id = options.loop_id.strip()
+    if expected_loop_id and loop_run.loop_id != expected_loop_id:
+        return _blocked_result(
+            (
+                "Frontend-evidence loop identity mismatch: expected "
+                f"{expected_loop_id}, found {loop_run.loop_id}."
+            ),
+            loop_id=expected_loop_id,
+            result="Frontend-evidence loop artifact is malformed.",
+        )
     artifacts = frontend_evidence_artifacts(root, loop_run.loop_id)
     try:
         report = read_report(artifacts.report_json_path)

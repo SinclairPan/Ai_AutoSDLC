@@ -865,6 +865,40 @@ def test_close_frontend_evidence_loop_requires_allow_warnings(
     assert close_payload["accepted_warning_reason_codes"] == ["low_contrast_text"]
 
 
+def test_close_frontend_evidence_loop_rejects_replaced_loop_identity(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_work_item(tmp_path)
+    _write_closed_implementation_loop(tmp_path, work_item)
+    _write_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    for loop_id in ("fe-reviewed", "fe-unreviewed"):
+        start_frontend_evidence_loop(
+            FrontendEvidenceStartOptions(
+                root=tmp_path,
+                work_item="specs/demo-frontend",
+                loop_id=loop_id,
+            )
+        )
+    reviewed_run = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "frontend-evidence"
+        / "fe-reviewed"
+        / "loop-run.json"
+    )
+    unreviewed_run = reviewed_run.parent.parent / "fe-unreviewed" / "loop-run.json"
+    reviewed_run.write_bytes(unreviewed_run.read_bytes())
+
+    result = close_frontend_evidence_loop(
+        FrontendEvidenceCloseOptions(root=tmp_path, loop_id="fe-reviewed", yes=True)
+    )
+
+    assert result.status == "blocked"
+    assert "identity" in result.blocker.lower()
+    assert not (unreviewed_run.parent / "frontend-evidence-close.json").exists()
+
+
 def test_frontend_evidence_loop_needs_fix_for_missing_evidence(
     tmp_path: Path,
 ) -> None:

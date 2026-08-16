@@ -86,14 +86,34 @@ ai-sdlc verify constraints
 ### 2. 运行工程闭环
 
 ```powershell
-ai-sdlc loop requirement
-ai-sdlc loop design-contract
-ai-sdlc loop implementation
-ai-sdlc loop frontend-evidence
-ai-sdlc loop status
+# Requirement
+ai-sdlc loop requirement start --loop-id <loop-id> --idea "<requirement>"
+ai-sdlc loop status --type requirement
+ai-sdlc loop review --type requirement --loop-id <loop-id> --json
+ai-sdlc loop requirement freeze --loop-id <loop-id> --expect-review-digest <input_digest> --yes
+
+# Design Contract
+ai-sdlc loop design-contract check --wi specs/<work-item> --loop-id <loop-id>
+ai-sdlc loop status --type design-contract
+ai-sdlc loop review --type design-contract --loop-id <loop-id> --json
+ai-sdlc loop design-contract close --loop-id <loop-id> --expect-review-digest <input_digest> --yes
+
+# Implementation
+ai-sdlc loop implementation start --wi specs/<work-item> --loop-id <loop-id>
+ai-sdlc loop implementation record --loop-id <loop-id> --task-id <task-id> --status done
+ai-sdlc loop status --type implementation
+ai-sdlc loop review --type implementation --loop-id <loop-id> --json
+ai-sdlc loop implementation close --loop-id <loop-id> --expect-review-digest <input_digest> --yes
+
+# Frontend Evidence（仅前端工作）
+ai-sdlc loop frontend-evidence doctor --provider auto
+ai-sdlc loop frontend-evidence start --wi specs/<work-item> --loop-id <loop-id>
+ai-sdlc loop status --type frontend-evidence
+ai-sdlc loop review --type frontend-evidence --loop-id <loop-id> --json
+ai-sdlc loop frontend-evidence close --loop-id <loop-id> --expect-review-digest <input_digest> --yes
 ```
 
-每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。只有证据满足关闭条件时，闭环才会进入完成状态。
+每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。`loop review` 返回的 `input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc program browser-gate-probe --execute`。
 
 ### 非阻断精简建议
 
