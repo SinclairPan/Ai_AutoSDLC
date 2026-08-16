@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -497,6 +498,98 @@ def test_pr_review_close_uses_validated_resolution_across_aba(
     if reviewed_resolution_exists:
         resolution = yaml.safe_load(resolution_path.read_text(encoding="utf-8"))
         assert resolution["finding_resolutions"][0]["status"] == "unresolved"
+
+
+def test_pr_review_close_uses_all_validated_artifacts_across_aba(
+    tmp_path: Path,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+
+    with patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "pr-review",
+                "start",
+                "--base",
+                base_commit,
+                "--provider",
+                "mock-reviewer",
+                "--mock-fixture",
+                "changes_required",
+                "--review-id",
+                "review-artifact-aba-cli",
+                "--json",
+            ],
+        )
+        started = json.loads(start.output)
+        review_run_path = Path(started["review_pack_path"]).with_name("review-run.json")
+        findings_path = Path(started["findings_path"])
+        reviewed_run = review_run_path.read_bytes()
+        reviewed_findings = findings_path.read_bytes()
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
+        validation_count = 0
+
+        def validate_then_replace_outputs(*args, **kwargs):
+            nonlocal validation_count
+            validation_count += 1
+            result = validate_review_input_for_close(*args, **kwargs)
+            if validation_count == 1:
+                findings = json.loads(reviewed_findings)
+                findings["verdict"] = "clean"
+                findings["findings"] = []
+                transient_findings = json.dumps(findings).encode("utf-8")
+                review_run = json.loads(reviewed_run)
+                review_run["findings_digest"] = hashlib.sha256(
+                    transient_findings
+                ).hexdigest()
+                findings_path.write_bytes(transient_findings)
+                review_run_path.write_text(json.dumps(review_run), encoding="utf-8")
+            return result
+
+        original_revalidate = pr_review_service.revalidate_review_input_at_transition
+
+        def restore_then_revalidate(*args, **kwargs):
+            review_run_path.write_bytes(reviewed_run)
+            findings_path.write_bytes(reviewed_findings)
+            return original_revalidate(*args, **kwargs)
+
+        with (
+            patch(
+                "ai_sdlc.cli.pr_review_cmd.validate_review_input_for_close",
+                side_effect=validate_then_replace_outputs,
+            ),
+            patch(
+                "ai_sdlc.core.pr_review_service.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "pr-review",
+                    "close",
+                    "--review-id",
+                    started["review_id"],
+                    "--loop-id",
+                    started["loop_id"],
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--json",
+                ],
+            )
+
+    payload = json.loads(close.output)
+    assert validation_count == 2
+    assert close.exit_code == 1
+    assert payload["status"] == "blocked"
+    assert payload["verdict"] == "blocked"
+    assert payload["blocker"] == "Unresolved REQUIRED findings remain."
 
 
 def test_pr_review_fix_dry_run_json_does_not_write_artifacts(tmp_path: Path) -> None:

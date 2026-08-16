@@ -16,7 +16,7 @@ import typer
 
 from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review_input
 from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
-from ai_sdlc.core.stable_file_read import consume_stable_chunks
+from ai_sdlc.core.stable_file_read import consume_stable_chunks, read_stable_text
 from ai_sdlc.utils.helpers import find_project_root
 
 _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
@@ -291,13 +291,8 @@ def resolve_review_input(
             *_git_risk_signals(root),
             *_local_review_source_risk_signals(root, loop_dir / "review-pack.json"),
         ]
-        round_number = _read_round_number(run_path)
-        capture_artifact_paths = (
-            [loop_dir / "resolution.yaml"]
-            if captured_artifacts is not None
-            and (loop_dir / "resolution.yaml").is_file()
-            else []
-        )
+        round_number = _read_round_number(root, run_path)
+        capture_artifact_paths = artifacts if captured_artifacts is not None else []
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
         pointer_path, run_path = _resolve_current_stage_state(
@@ -321,7 +316,7 @@ def resolve_review_input(
             root,
             [*artifacts, *upstream_context],
         )
-        round_number = _read_round_number(run_path)
+        round_number = _read_round_number(root, run_path)
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
 
@@ -355,7 +350,7 @@ def _stage_upstream_context(
     input_name, id_field, predecessor_type = predecessor
     input_path = loop_dir / input_name
     try:
-        payload = json.loads(input_path.read_text(encoding="utf-8"))
+        payload = json.loads(read_stable_text(root, input_path, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Loop input is unreadable: {input_path}") from exc
     if not isinstance(payload, dict):
@@ -394,14 +389,14 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
     if loop_type == "requirement":
         return []
     if loop_type == "design-contract":
-        payload = _read_json_object(loop_dir / "design-contract-input.json")
+        payload = _read_json_object(root, loop_dir / "design-contract-input.json")
         return [
             _repo_path(root, value, field_name)
             for field_name in ("spec_path", "plan_path", "tasks_path")
             if isinstance((value := payload.get(field_name)), str) and value.strip()
         ]
     if loop_type == "implementation":
-        payload = _read_json_object(loop_dir / "implementation-input.json")
+        payload = _read_json_object(root, loop_dir / "implementation-input.json")
         declared_scope = payload.get("declared_scope", [])
         if not isinstance(declared_scope, list) or not all(
             isinstance(item, str) for item in declared_scope
@@ -416,9 +411,11 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
             ]
         )
     if loop_type == "frontend-evidence":
-        input_payload = _read_json_object(loop_dir / "frontend-evidence-input.json")
+        input_payload = _read_json_object(
+            root, loop_dir / "frontend-evidence-input.json"
+        )
         snapshot_payload = _read_json_object(
-            loop_dir / "frontend-evidence-snapshot.json"
+            root, loop_dir / "frontend-evidence-snapshot.json"
         )
         referenced: list[Path] = []
         source_path = input_payload.get("source_artifact_path", "")
@@ -454,7 +451,7 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
 
 
 def _implementation_evidence_material(root: Path, loop_dir: Path) -> list[Path]:
-    payload = _read_json_object(loop_dir / "verification-evidence.json")
+    payload = _read_json_object(root, loop_dir / "verification-evidence.json")
     tasks = payload.get("tasks", [])
     if not isinstance(tasks, list):
         raise ValueError(
@@ -495,7 +492,7 @@ def _implementation_evidence_material(root: Path, loop_dir: Path) -> list[Path]:
 
 
 def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
-    payload = _read_json_object(review_pack_path)
+    payload = _read_json_object(root, review_pack_path)
     diff_path_text = payload.get("diff_path", "")
     diff_digest = payload.get("diff_digest", "")
     if not isinstance(diff_path_text, str) or not diff_path_text.strip():
@@ -504,7 +501,7 @@ def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
         raise ValueError(f"Review pack diff_digest is invalid: {review_pack_path}")
     diff_path = _repo_path(root, diff_path_text, "diff_path")
     try:
-        actual = _file_sha256(diff_path)
+        actual = _file_sha256(root, diff_path)
     except OSError as exc:
         raise ValueError(f"Review diff is unreadable: {diff_path}") from exc
     if diff_digest != f"sha256:{actual}":
@@ -514,9 +511,9 @@ def _local_review_diff(root: Path, review_pack_path: Path) -> Path:
     return diff_path
 
 
-def _read_json_object(path: Path) -> dict[str, object]:
+def _read_json_object(root: Path, path: Path) -> dict[str, object]:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(read_stable_text(root, path, encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError(f"Loop input is unreadable: {path}") from exc
     if not isinstance(payload, dict):
@@ -574,11 +571,9 @@ def _unique_paths(paths: list[Path]) -> list[Path]:
     return list(unique.values())
 
 
-def _file_sha256(path: Path) -> str:
+def _file_sha256(root: Path, path: Path) -> str:
     digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        while chunk := handle.read(64 * 1024):
-            digest.update(chunk)
+    consume_stable_chunks(root, path, digest.update)
     return digest.hexdigest()
 
 
@@ -599,7 +594,7 @@ def _resolve_current_stage_state(
     pointer_path = (
         root / ".ai-sdlc" / "loops" / loop_type / _STAGE_POINTER_NAMES[loop_type]
     )
-    pointer = _read_json_object(pointer_path)
+    pointer = _read_json_object(root, pointer_path)
     if pointer.get("loop_id") != loop_id:
         raise ValueError(
             f"Current {loop_type} review does not identify Loop {loop_id}."
@@ -613,7 +608,7 @@ def _resolve_current_stage_state(
     )
     if _lexical_path(run_path) != _lexical_path(expected_run_path):
         raise ValueError(f"Current {loop_type} Loop run path is not canonical.")
-    run = _read_json_object(run_path)
+    run = _read_json_object(root, run_path)
     if run.get("loop_id") != loop_id or run.get("loop_type") != loop_type:
         raise ValueError(
             f"Current {loop_type} Loop run does not identify Loop {loop_id}."
@@ -626,7 +621,7 @@ def _find_local_review_dir(
     loop_id: str,
 ) -> tuple[Path, Path, Path]:
     pointer_path = root / _CURRENT_LOCAL_REVIEW
-    pointer = _read_json_object(pointer_path)
+    pointer = _read_json_object(root, pointer_path)
     if pointer.get("loop_id") != loop_id:
         raise ValueError(f"Current local PR review does not identify Loop {loop_id}.")
     raw_review_id = pointer.get("review_id", "")
@@ -642,7 +637,7 @@ def _find_local_review_dir(
     )
     if _lexical_path(run_path) != _lexical_path(expected_run_path):
         raise ValueError("Current local PR review run path is not canonical.")
-    run = _read_json_object(run_path)
+    run = _read_json_object(root, run_path)
     if run.get("review_id") != review_id or run.get("loop_id") != loop_id:
         raise ValueError(
             f"Current local PR review run does not identify Loop {loop_id}."
@@ -663,9 +658,9 @@ def _find_local_review_dir(
     return run_path.parent, pointer_path, run_path
 
 
-def _read_round_number(path: Path) -> int:
+def _read_round_number(root: Path, path: Path) -> int:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload = json.loads(read_stable_text(root, path, encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Loop state is unreadable: {path}") from exc
     if not isinstance(payload, dict):
@@ -776,7 +771,7 @@ def _git_risk_signals(root: Path) -> list[str]:
 
 
 def _local_review_source_risk_signals(root: Path, review_pack_path: Path) -> list[str]:
-    payload = _read_json_object(review_pack_path)
+    payload = _read_json_object(root, review_pack_path)
     diff_source = payload.get("diff_source")
     if diff_source is None:
         return []

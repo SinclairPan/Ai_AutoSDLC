@@ -55,6 +55,24 @@ def _review_close_args(root: Path, loop_type: str, loop_id: str) -> list[str]:
     ]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="symlink creation is not portable")
+def test_loop_review_rejects_linked_current_pointer_before_parsing(
+    tmp_path: Path,
+) -> None:
+    target = tmp_path / "pointer-target.json"
+    target.write_text("{}", encoding="utf-8")
+    pointer = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "current-review.json"
+    pointer.parent.mkdir(parents=True)
+    pointer.symlink_to(target)
+
+    with pytest.raises(ValueError, match="symlink"):
+        resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id="review-linked-pointer",
+        )
+
+
 def test_loop_help_lists_status_and_list() -> None:
     result = runner.invoke(app, ["loop", "--help"])
 

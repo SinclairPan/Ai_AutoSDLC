@@ -9,6 +9,7 @@ import re
 import shlex
 import shutil
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
 from pathlib import Path
@@ -1173,8 +1174,7 @@ def close_pr_review(
     expected_loop_id: str = "",
     expected_review_digest: str = "",
     review_input_validator: ReviewInputValidator | None = None,
-    reviewed_resolution: bytes | None = None,
-    resolution_snapshot_supplied: bool = False,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
@@ -1192,7 +1192,10 @@ def close_pr_review(
         require_no_blockers or policy.default_close_mode == "require-no-blockers"
     )
     try:
-        review_run, review_run_path = _load_current_review_run(root)
+        review_run, review_run_path = _load_current_review_run(
+            root,
+            reviewed_artifacts=reviewed_artifacts,
+        )
         if (
             expected_review_id.strip()
             and review_run.review_id != expected_review_id.strip()
@@ -1208,12 +1211,28 @@ def close_pr_review(
                 ),
                 next_action="Rerun local PR expert review before closing.",
             )
-        not_closeable = _not_closeable_review_result(root.resolve(), review_run)
+        not_closeable = _not_closeable_review_result(
+            root.resolve(),
+            review_run,
+            reviewed_artifacts=reviewed_artifacts,
+        )
         if not_closeable is not None:
             return not_closeable
-        findings = _load_findings(root.resolve(), review_run)
-        review_pack = _load_review_pack(root.resolve(), review_run.review_pack_path)
-        verification_evidence = _load_verification_evidence(root.resolve(), review_run)
+        findings = _load_findings(
+            root.resolve(),
+            review_run,
+            reviewed_artifacts=reviewed_artifacts,
+        )
+        review_pack = _load_review_pack(
+            root.resolve(),
+            review_run.review_pack_path,
+            reviewed_artifacts=reviewed_artifacts,
+        )
+        verification_evidence = _load_verification_evidence(
+            root.resolve(),
+            review_run,
+            reviewed_artifacts=reviewed_artifacts,
+        )
     except FileNotFoundError as exc:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.NO_REVIEW,
@@ -1229,7 +1248,10 @@ def close_pr_review(
         )
 
     tamper_blocker = _reviewer_outputs_tamper_blocker(
-        root.resolve(), review_run, findings
+        root.resolve(),
+        review_run,
+        findings,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if tamper_blocker:
         return PRReviewCloseResult(
@@ -1284,7 +1306,11 @@ def close_pr_review(
             next_action="Rerun PR review for the current diff source before closing.",
         )
 
-    dirty_blocker = _reviewed_worktree_dirty(root, review_run)
+    dirty_blocker = _reviewed_worktree_dirty(
+        root,
+        review_run,
+        review_pack=review_pack,
+    )
     if dirty_blocker:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.BLOCKED,
@@ -1318,25 +1344,25 @@ def close_pr_review(
         review_run.review_pack_path,
     ).with_name("resolution.yaml")
     try:
-        if resolution_snapshot_supplied:
+        if reviewed_artifacts is not None:
+            resolution_bytes = _review_snapshot_optional_bytes(
+                root.resolve(),
+                resolution_path,
+                reviewed_artifacts,
+            )
             resolution_payload = (
                 _parse_resolution_payload(
-                    reviewed_resolution,
+                    resolution_bytes,
                     name=resolution_path.name,
                 )
-                if reviewed_resolution is not None
+                if resolution_bytes is not None
                 else {}
             )
-        elif reviewed_resolution is None:
+        else:
             resolution_payload = (
                 _load_resolution_payload(resolution_path)
                 if resolution_path.exists()
                 else {}
-            )
-        else:
-            resolution_payload = _parse_resolution_payload(
-                reviewed_resolution,
-                name=resolution_path.name,
             )
         resolution_statuses = _resolution_statuses(resolution_payload)
         resolution_records = _resolution_records(resolution_payload)
@@ -1516,11 +1542,22 @@ def _pr_review_close_result(
 def _not_closeable_review_result(
     root: Path,
     review_run: ReviewRun,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> PRReviewCloseResult | None:
+    findings_exists = bool(review_run.findings_path.strip()) and (
+        _review_snapshot_contains(
+            root,
+            _resolve_repo_path(root, review_run.findings_path),
+            reviewed_artifacts,
+        )
+        if reviewed_artifacts is not None
+        else _resolve_repo_path(root, review_run.findings_path).is_file()
+    )
     if (
         review_run.status == LoopStatus.BLOCKED
         and review_run.findings_path.strip()
-        and not _resolve_repo_path(root, review_run.findings_path).is_file()
+        and not findings_exists
     ):
         return _blocked_not_closeable_review_result(review_run)
     if review_run.status != LoopStatus.NEEDS_USER and review_run.findings_path.strip():
@@ -1661,9 +1698,18 @@ def _current_changed_paths_for_review_run(
     return list(resolve_review_input_for_source(root, source_resolution).changed_files)
 
 
-def _reviewed_worktree_dirty(root: Path, review_run: ReviewRun) -> str:
+def _reviewed_worktree_dirty(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    review_pack: ReviewPack | None = None,
+) -> str:
     try:
-        dirty_paths = _unreviewed_dirty_paths(root.resolve(), review_run)
+        dirty_paths = _unreviewed_dirty_paths(
+            root.resolve(),
+            review_run,
+            review_pack=review_pack,
+        )
     except GitError as exc:
         return f"Unable to verify clean worktree before closing PR review: {exc}"
     if dirty_paths:
@@ -1678,6 +1724,8 @@ def _reviewer_outputs_tamper_blocker(
     root: Path,
     review_run: ReviewRun,
     findings: ReviewFindings,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> str:
     if not review_run.review_pack_digest.strip():
         return (
@@ -1685,8 +1733,12 @@ def _reviewer_outputs_tamper_blocker(
         )
     review_pack_path = _resolve_repo_path(root, review_run.review_pack_path)
     try:
-        actual_pack_digest = _file_sha256(review_pack_path)
-    except OSError as exc:
+        actual_pack_digest = _review_artifact_sha256(
+            root,
+            review_pack_path,
+            reviewed_artifacts,
+        )
+    except (KeyError, OSError, ValueError) as exc:
         return f"Current review-pack.json cannot be verified: {exc}"
     if actual_pack_digest != review_run.review_pack_digest:
         return "Current review-pack.json changed after the reviewer run."
@@ -1694,8 +1746,12 @@ def _reviewer_outputs_tamper_blocker(
     if review_run.findings_digest.strip():
         findings_path = _resolve_repo_path(root, review_run.findings_path)
         try:
-            actual_digest = _file_sha256(findings_path)
-        except OSError as exc:
+            actual_digest = _review_artifact_sha256(
+                root,
+                findings_path,
+                reviewed_artifacts,
+            )
+        except (KeyError, OSError, ValueError) as exc:
             return f"Current findings.json cannot be verified: {exc}"
         if actual_digest != review_run.findings_digest:
             return "Current findings.json changed after the reviewer run."
@@ -1729,7 +1785,12 @@ def _final_report_tamper_blocker(
     return ""
 
 
-def _unreviewed_dirty_paths(root: Path, review_run: ReviewRun) -> list[str]:
+def _unreviewed_dirty_paths(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    review_pack: ReviewPack | None = None,
+) -> list[str]:
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -1747,7 +1808,11 @@ def _unreviewed_dirty_paths(root: Path, review_run: ReviewRun) -> list[str]:
         raise GitError(result.stderr.strip() or "git status failed")
 
     source_kind = DiffSourceKind(review_run.diff_source.source_kind)
-    allowed_dirty = _reviewed_dirty_paths_for_review_run(root, review_run)
+    allowed_dirty = _reviewed_dirty_paths_for_review_run(
+        root,
+        review_run,
+        review_pack=review_pack,
+    )
     dirty: list[str] = []
     for status_xy, rel_path in _iter_porcelain_entries(result.stdout):
         normalized = rel_path.replace("\\", "/")
@@ -1786,6 +1851,8 @@ def _iter_porcelain_entries(output: str) -> list[tuple[str, str]]:
 def _reviewed_dirty_paths_for_review_run(
     root: Path,
     review_run: ReviewRun,
+    *,
+    review_pack: ReviewPack | None = None,
 ) -> frozenset[str]:
     source_kind = DiffSourceKind(review_run.diff_source.source_kind)
     if source_kind == DiffSourceKind.PATCH:
@@ -1799,16 +1866,17 @@ def _reviewed_dirty_paths_for_review_run(
         DiffSourceKind.LOCAL_UNSTAGED,
     }:
         return frozenset()
-    try:
-        review_pack = _load_review_pack(root, review_run.review_pack_path)
-    except (
-        FileNotFoundError,
-        json.JSONDecodeError,
-        ValidationError,
-        ValueError,
-        OSError,
-    ):
-        return frozenset()
+    if review_pack is None:
+        try:
+            review_pack = _load_review_pack(root, review_run.review_pack_path)
+        except (
+            FileNotFoundError,
+            json.JSONDecodeError,
+            ValidationError,
+            ValueError,
+            OSError,
+        ):
+            return frozenset()
     return frozenset(
         path.strip().replace("\\", "/")
         for path in review_pack.changed_files
@@ -2489,50 +2557,120 @@ def _next_action_for_provider(result: ProviderRunResult) -> str:
     return result.next_action or "Fix the blocked review provider and rerun."
 
 
-def _load_current_review_run(root: Path) -> tuple[ReviewRun, Path]:
+def _load_current_review_run(
+    root: Path,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> tuple[ReviewRun, Path]:
     resolved_root = root.resolve()
     pointer_path = resolved_root / CURRENT_REVIEW_PATH
-    if not pointer_path.exists():
-        raise FileNotFoundError("Current PR review pointer is missing.")
-    pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    if reviewed_artifacts is None:
+        if not pointer_path.exists():
+            raise FileNotFoundError("Current PR review pointer is missing.")
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    else:
+        pointer = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                resolved_root,
+                pointer_path,
+                reviewed_artifacts,
+                missing_message="Current PR review pointer is missing.",
+            ),
+            name=pointer_path.name,
+        )
     if not isinstance(pointer, dict):
         raise ValueError("Current review pointer is malformed: root must be an object.")
     review_run_path = _resolve_repo_path(
         resolved_root, str(pointer.get("review_run_path", ""))
     )
-    if not review_run_path.exists():
-        raise FileNotFoundError("Current review-run.json is missing.")
+    if reviewed_artifacts is None:
+        if not review_run_path.exists():
+            raise FileNotFoundError("Current review-run.json is missing.")
+        run_payload = json.loads(review_run_path.read_text(encoding="utf-8"))
+    else:
+        run_payload = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                resolved_root,
+                review_run_path,
+                reviewed_artifacts,
+                missing_message="Current review-run.json is missing.",
+            ),
+            name=review_run_path.name,
+        )
     return (
-        ReviewRun.model_validate(
-            json.loads(review_run_path.read_text(encoding="utf-8"))
-        ),
+        ReviewRun.model_validate(run_payload),
         review_run_path,
     )
 
 
-def _load_findings(root: Path, review_run: ReviewRun) -> ReviewFindings:
+def _load_findings(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> ReviewFindings:
     if not review_run.findings_path.strip():
         raise FileNotFoundError("Current findings.json is missing.")
     path = _resolve_repo_path(root, review_run.findings_path)
-    if not path.is_file():
-        raise FileNotFoundError("Current findings.json is missing.")
-    return ReviewFindings.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if reviewed_artifacts is None:
+        if not path.is_file():
+            raise FileNotFoundError("Current findings.json is missing.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        payload = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                root,
+                path,
+                reviewed_artifacts,
+                missing_message="Current findings.json is missing.",
+            ),
+            name=path.name,
+        )
+    return ReviewFindings.model_validate(payload)
 
 
-def _load_review_pack(root: Path, path_text: str) -> ReviewPack:
+def _load_review_pack(
+    root: Path,
+    path_text: str,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> ReviewPack:
     path = _resolve_repo_path(root, path_text)
-    if not path.exists():
-        raise FileNotFoundError("Current review-pack.json is missing.")
-    return ReviewPack.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    if reviewed_artifacts is None:
+        if not path.exists():
+            raise FileNotFoundError("Current review-pack.json is missing.")
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        payload = _parse_review_json_bytes(
+            _review_snapshot_required_bytes(
+                root,
+                path,
+                reviewed_artifacts,
+                missing_message="Current review-pack.json is missing.",
+            ),
+            name=path.name,
+        )
+    return ReviewPack.model_validate(payload)
 
 
-def _load_verification_evidence(root: Path, review_run: ReviewRun) -> list[str]:
+def _load_verification_evidence(
+    root: Path,
+    review_run: ReviewRun,
+    *,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
+) -> list[str]:
     path = LoopArtifactStore(root).review_run_dir(review_run.review_id) / (
         "verification-evidence.json"
     )
-    if not path.is_file():
-        return []
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    if reviewed_artifacts is None:
+        if not path.is_file():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    else:
+        content = _review_snapshot_optional_bytes(root, path, reviewed_artifacts)
+        if content is None:
+            return []
+        payload = _parse_review_json_bytes(content, name=path.name)
     if not isinstance(payload, dict):
         raise ValueError("verification-evidence.json root must be an object")
     if payload.get("artifact_kind") != "review-verification-evidence":
@@ -2547,6 +2685,68 @@ def _load_verification_evidence(root: Path, review_run: ReviewRun) -> list[str]:
     ):
         raise ValueError("verification-evidence.json entries must be non-empty strings")
     return list(dict.fromkeys(item.strip() for item in entries))
+
+
+def _review_snapshot_key(root: Path, path: Path) -> str:
+    resolved_root = root.resolve(strict=True)
+    candidate = path if path.is_absolute() else resolved_root / path
+    lexical = Path(os.path.abspath(candidate))
+    try:
+        return lexical.relative_to(resolved_root).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"Reviewed artifact escapes project: {path}") from exc
+
+
+def _review_snapshot_required_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+    *,
+    missing_message: str,
+) -> bytes:
+    content = _review_snapshot_optional_bytes(root, path, reviewed_artifacts)
+    if content is None:
+        raise FileNotFoundError(missing_message)
+    return content
+
+
+def _review_snapshot_optional_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes | None:
+    return reviewed_artifacts.get(_review_snapshot_key(root, path))
+
+
+def _review_snapshot_contains(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bool:
+    return _review_snapshot_key(root, path) in reviewed_artifacts
+
+
+def _parse_review_json_bytes(content: bytes, *, name: str) -> object:
+    try:
+        return json.loads(content.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise ValueError(f"{name} is malformed: {exc}") from exc
+
+
+def _review_artifact_sha256(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes] | None,
+) -> str:
+    if reviewed_artifacts is None:
+        return _file_sha256(path)
+    content = _review_snapshot_required_bytes(
+        root,
+        path,
+        reviewed_artifacts,
+        missing_message=f"Reviewed artifact is missing: {path.name}",
+    )
+    return hashlib.sha256(content).hexdigest()
 
 
 def _repo_relative_path(root: Path, path: Path) -> str:
