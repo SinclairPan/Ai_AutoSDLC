@@ -210,7 +210,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v1.0.5" in workflow
+    assert "default: v2.0.0" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -273,7 +273,7 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v1.0.5" in workflow
+    assert "default: v2.0.0" in workflow
     assert "ref: ${{ inputs.tag }}" in workflow
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert all(
@@ -292,6 +292,102 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     assert "release-certificate" not in workflow
     assert "terminal-generation-burn" not in workflow
     assert "actions/attest" not in workflow
+    parsed = yaml.safe_load(workflow)
+    assert parsed["permissions"] == {"contents": "read"}
+    build_job = parsed["jobs"]["build-smoke"]
+    upload_job = parsed["jobs"]["upload-release-assets"]
+    assert build_job["permissions"] == {"contents": "read"}
+    assert "GH_TOKEN" not in build_job.get("env", {})
+    checkout = next(
+        step for step in build_job["steps"] if step.get("name") == "Checkout"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert upload_job["permissions"] == {"contents": "write"}
+    assert upload_job["needs"] == "build-smoke"
+    assert not any("actions/checkout" in step.get("uses", "") for step in upload_job["steps"])
+
+
+def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> None:
+    bash = shutil.which("bash")
+    git = shutil.which("git")
+    if bash is None or git is None:
+        pytest.skip("The release source validation requires Bash and Git.")
+    workflow = yaml.safe_load(
+        (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
+    )
+    validation_script = next(
+        step["run"]
+        for step in workflow["jobs"]["build-smoke"]["steps"]
+        if step.get("name") == "Validate exact release tag source"
+    )
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    (repository / "pyproject.toml").write_text(
+        '[project]\nname = "ai-sdlc"\nversion = "2.0.0"\n',
+        encoding="utf-8",
+    )
+    for command in (
+        [git, "init", "-b", "main"],
+        [git, "config", "user.name", "Release Test"],
+        [git, "config", "user.email", "release@example.invalid"],
+        [git, "add", "pyproject.toml"],
+        [git, "commit", "-m", "release source"],
+        [git, "tag", "-a", "v2.0.0", "-m", "v2.0.0"],
+    ):
+        subprocess.run(command, cwd=repository, check=True, capture_output=True)
+    head = subprocess.run(
+        [git, "rev-parse", "HEAD"],
+        cwd=repository,
+        check=True,
+        text=True,
+        capture_output=True,
+    ).stdout.strip()
+    base_env = {
+        **os.environ,
+        "RELEASE_TAG": "v2.0.0",
+        "ALLOWED_RELEASE_TAG": "v2.0.0",
+        "DISPATCH_REF": "refs/heads/main",
+        "DISPATCH_SHA": head,
+    }
+
+    accepted = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env=base_env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    frozen_tag = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env={**base_env, "RELEASE_TAG": "v1.0.4"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    non_main = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env={**base_env, "DISPATCH_REF": "refs/heads/release-candidate"},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    wrong_commit = subprocess.run(
+        [bash, "-c", validation_script],
+        cwd=repository,
+        env={**base_env, "DISPATCH_SHA": "0" * 40},
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert accepted.returncode == 0, accepted.stderr
+    assert frozen_tag.returncode != 0
+    assert "Only v2.0.0" in frozen_tag.stderr
+    assert non_main.returncode != 0
+    assert wrong_commit.returncode != 0
 
 
 def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
@@ -301,12 +397,12 @@ def test_release_upload_step_is_draft_only_and_retryable(tmp_path) -> None:
     workflow = yaml.safe_load(
         (_WORKFLOWS_DIR / "release-build.yml").read_text(encoding="utf-8")
     )
-    steps = workflow["jobs"]["build-smoke-upload"]["steps"]
+    steps = workflow["jobs"]["upload-release-assets"]["steps"]
     upload_script = next(
         step["run"]
         for step in steps
-        if step.get("name") == "Upload smoke-passed asset to release"
-    ).replace("${{ matrix.archive }}", "tar.gz")
+        if step.get("name") == "Upload smoke-passed assets to release"
+    )
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     fake_gh = fake_bin / "gh"
@@ -322,7 +418,11 @@ if [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json isDraft"* ]]; then
     printf '%s\n' "${FAKE_RELEASE_IS_DRAFT}"
   fi
 elif [[ "$1" == "release" && "$2" == "view" && "$*" == *"--json assets"* ]]; then
-  printf '%s' "${FAKE_RELEASE_ASSETS}"
+  if [[ -n "${FAKE_RELEASE_STATE_FILE:-}" && -f "${FAKE_RELEASE_STATE_FILE}" ]]; then
+    cat "${FAKE_RELEASE_STATE_FILE}"
+  else
+    printf '%s' "${FAKE_RELEASE_ASSETS}"
+  fi
 elif [[ "$1" == "release" && "$2" == "download" ]]; then
   pattern=""
   destination=""
@@ -345,6 +445,20 @@ elif [[ "$1" == "release" && "$2" == "download" ]]; then
   cp "${FAKE_REMOTE_ASSETS}/${pattern}" "${destination}/${pattern}"
 elif [[ "$1" == "release" && "$2" == "upload" ]]; then
   printf '%s\n' "$*" >> "${FAKE_GH_LOG}"
+  shift 3
+  while [[ $# -gt 0 ]]; do
+    if [[ "$1" == "--repo" ]]; then
+      shift 2
+    else
+      basename "$1" >> "${FAKE_RELEASE_STATE_FILE}"
+      shift
+    fi
+  done
+  sort -u -o "${FAKE_RELEASE_STATE_FILE}" "${FAKE_RELEASE_STATE_FILE}"
+elif [[ "$1" == "api" && "$2" == *"/git/ref/tags/"* ]]; then
+  printf 'tag %s\n' "${FAKE_TAG_OBJECT_SHA}"
+elif [[ "$1" == "api" && "$2" == *"/git/tags/"* ]]; then
+  printf '%s\n' "${FAKE_TAG_COMMIT_SHA}"
 else
   exit 97
 fi
@@ -352,25 +466,58 @@ fi
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-1.0.5-linux-amd64.tar.gz"
+    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz"
     asset.parent.mkdir()
     asset.write_bytes(b"archive")
     sidecar = Path(f"{asset}.sha256")
     sidecar.write_text("digest  archive\n", encoding="utf-8")
+    other_assets = []
+    for name in (
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256",
+    ):
+        path = asset.parent / name
+        path.write_bytes(name.encode("utf-8"))
+        other_assets.append(path)
     remote_assets = tmp_path / "remote-assets"
     remote_assets.mkdir()
     log_path = tmp_path / "gh.log"
+    asset_state = tmp_path / "release-assets.txt"
     base_env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "RELEASE_TAG": "v1.0.5",
+        "RELEASE_TAG": "v2.0.0",
+        "ALLOWED_RELEASE_TAG": "v2.0.0",
+        "DISPATCH_REF": "refs/heads/main",
+        "DISPATCH_SHA": "a" * 40,
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
         "AI_SDLC_RELEASE_ASSET_OS": "linux",
         "AI_SDLC_RELEASE_ASSET_MACHINE": "amd64",
         "FAKE_GH_LOG": str(log_path),
         "FAKE_REMOTE_ASSETS": str(remote_assets),
+        "FAKE_RELEASE_STATE_FILE": str(asset_state),
+        "FAKE_TAG_OBJECT_SHA": "b" * 40,
+        "FAKE_TAG_COMMIT_SHA": "a" * 40,
     }
 
+    asset_state.write_text("", encoding="utf-8", newline="\n")
+    moved_tag = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": "",
+            "FAKE_TAG_COMMIT_SHA": "c" * 40,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    log_path.unlink(missing_ok=True)
+    asset_state.write_text("", encoding="utf-8", newline="\n")
     published = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -380,6 +527,7 @@ fi
         check=False,
     )
     (remote_assets / asset.name).write_bytes(b"different archive")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     mismatched = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -393,6 +541,7 @@ fi
         check=False,
     )
     (remote_assets / asset.name).write_bytes(asset.read_bytes())
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     partial = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -408,7 +557,8 @@ fi
     partial_upload = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
     log_path.unlink(missing_ok=True)
     draft_sequence = tmp_path / "draft-sequence.txt"
-    draft_sequence.write_text("true\nfalse\n", encoding="utf-8")
+    draft_sequence.write_text("true\nfalse\n", encoding="utf-8", newline="\n")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     published_during_retry = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -425,19 +575,45 @@ fi
     transitioned_upload = log_path.exists()
     log_path.unlink(missing_ok=True)
     (remote_assets / sidecar.name).write_bytes(sidecar.read_bytes())
+    for other_asset in other_assets:
+        (remote_assets / other_asset.name).write_bytes(other_asset.read_bytes())
+    complete_asset_names = "\n".join(
+        [asset.name, sidecar.name, *(item.name for item in other_assets)]
+    )
+    asset_state.write_text(
+        f"{complete_asset_names}\n", encoding="utf-8", newline="\n"
+    )
     complete = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
         env={
             **base_env,
             "FAKE_RELEASE_IS_DRAFT": "true",
-            "FAKE_RELEASE_ASSETS": f"{asset.name}\n{sidecar.name}",
+            "FAKE_RELEASE_ASSETS": complete_asset_names,
         },
         text=True,
         capture_output=True,
         check=False,
     )
     complete_uploaded = log_path.exists()
+    asset_state.write_text(
+        f"{complete_asset_names}\nunexpected.txt\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+    unexpected = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": complete_asset_names,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    asset_state.write_text("", encoding="utf-8", newline="\n")
     allowed = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -447,6 +623,7 @@ fi
         check=False,
     )
 
+    assert moved_tag.returncode != 0
     assert published.returncode != 0
     assert mismatched.returncode != 0
     assert partial.returncode == 0, partial.stderr
@@ -457,6 +634,7 @@ fi
     assert not transitioned_upload
     assert complete.returncode == 0, complete.stderr
     assert not complete_uploaded
+    assert unexpected.returncode != 0
     assert allowed.returncode == 0, allowed.stderr
     upload_call = log_path.read_text(encoding="utf-8")
     assert asset.name in upload_call
@@ -473,14 +651,14 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v1.0.2" in workflow
+    assert "default: v2.0.0" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "v1.0.5" in workflow
+    assert "v2.0.0" in workflow
     assert "ai-sdlc-offline-$releaseVersion-windows-amd64" in workflow
     assert "releases/download/$env:RELEASE_TAG" in workflow
     assert "Invoke-WebRequest" in workflow
@@ -521,8 +699,8 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v1.0.2"' in workflow
-    assert "v1.0.5" in workflow
+    assert 'default: "v2.0.0"' in workflow
+    assert "v2.0.0" in workflow
     for path_filter in (
         '      - "src/**"',
         '      - "pyproject.toml"',

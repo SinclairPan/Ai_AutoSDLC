@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag that will receive the platform assets.
         required: true
-        default: v1.0.5
+        default: v2.0.0
       upload_to_release:
         description: Upload smoke-passed assets to the existing GitHub Release.
         required: true
@@ -17,17 +17,19 @@ on:
           - "false"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: release-build-${{ inputs.tag }}
   cancel-in-progress: false
 
 jobs:
-  build-smoke-upload:
+  build-smoke:
     name: ${{ matrix.asset_os }} ${{ matrix.archive }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 40
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -47,7 +49,9 @@ jobs:
 
     env:
       RELEASE_TAG: ${{ inputs.tag }}
-      GH_TOKEN: ${{ github.token }}
+      ALLOWED_RELEASE_TAG: v2.0.0
+      DISPATCH_REF: ${{ github.ref }}
+      DISPATCH_SHA: ${{ github.sha }}
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
 
@@ -57,11 +61,20 @@ jobs:
         with:
           ref: ${{ inputs.tag }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Validate exact release tag source
         shell: bash
         run: |
           set -euo pipefail
+          if [[ "${RELEASE_TAG}" != "${ALLOWED_RELEASE_TAG}" ]]; then
+            echo "Only ${ALLOWED_RELEASE_TAG} may be built by this release workflow; refusing ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+          if [[ "${DISPATCH_REF}" != "refs/heads/main" ]]; then
+            echo "Release builds must be dispatched from refs/heads/main, not ${DISPATCH_REF}." >&2
+            exit 1
+          fi
           package_version="$(awk -F'"' '/^version =/ {print $2; exit}' pyproject.toml)"
           if [[ "${RELEASE_TAG}" != "v${package_version}" ]]; then
             echo "Release tag ${RELEASE_TAG} does not match package version ${package_version}." >&2
@@ -71,6 +84,10 @@ jobs:
           tag_commit="$(git rev-parse "${RELEASE_TAG}^{commit}")"
           if [[ "${head_commit}" != "${tag_commit}" ]]; then
             echo "Checked-out source ${head_commit} does not match ${RELEASE_TAG} commit ${tag_commit}." >&2
+            exit 1
+          fi
+          if [[ "${tag_commit}" != "${DISPATCH_SHA}" ]]; then
+            echo "Release tag commit ${tag_commit} does not match dispatched main commit ${DISPATCH_SHA}." >&2
             exit 1
           fi
 
@@ -326,36 +343,107 @@ jobs:
           path: ${{ runner.temp }}/ai-sdlc-release-build-evidence
           if-no-files-found: error
 
-      - name: Upload smoke-passed asset to release
+      - name: Stage smoke-passed release assets
         if: inputs.upload_to_release == 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: release-assets-${{ matrix.asset_os }}-${{ matrix.archive }}
+          path: |
+            dist-offline/ai-sdlc-offline-*-${{ matrix.asset_os }}-${{ matrix.asset_machine }}.*
+          if-no-files-found: error
+
+  upload-release-assets:
+    name: Upload smoke-passed release assets
+    if: inputs.upload_to_release == 'true'
+    needs: build-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag }}
+      ALLOWED_RELEASE_TAG: v2.0.0
+      DISPATCH_REF: ${{ github.ref }}
+      DISPATCH_SHA: ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Download smoke-passed release assets
+        uses: actions/download-artifact@v7
+        with:
+          pattern: release-assets-*
+          path: dist-offline
+          merge-multiple: true
+
+      - name: Upload smoke-passed assets to release
         shell: bash
         run: |
           set -euo pipefail
-          release_version="${RELEASE_TAG#v}"
-          asset_base="dist-offline/ai-sdlc-offline-${release_version}-${AI_SDLC_RELEASE_ASSET_OS}-${AI_SDLC_RELEASE_ASSET_MACHINE}"
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            asset="${asset_base}.zip"
-          else
-            asset="${asset_base}.tar.gz"
-          fi
-          if [[ ! -f "${asset}" || ! -f "${asset}.sha256" ]]; then
-            echo "Release asset or SHA256 sidecar is missing: ${asset}" >&2
+          if [[ "${RELEASE_TAG}" != "${ALLOWED_RELEASE_TAG}" ]]; then
+            echo "Only ${ALLOWED_RELEASE_TAG} may receive release assets; refusing ${RELEASE_TAG}." >&2
             exit 1
           fi
+          if [[ "${DISPATCH_REF}" != "refs/heads/main" || ! "${DISPATCH_SHA}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release assets require an exact main-branch dispatch commit." >&2
+            exit 1
+          fi
+          require_exact_remote_release_tag() {
+            remote_tag_ref="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+                --jq '.object.type + " " + .object.sha'
+            )"
+            read -r remote_tag_type remote_tag_object_sha <<< "${remote_tag_ref}"
+            if [[ "${remote_tag_type}" != "tag" || ! "${remote_tag_object_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Release tag ${RELEASE_TAG} must resolve to one annotated tag object." >&2
+              exit 1
+            fi
+            remote_tag_commit="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/tags/${remote_tag_object_sha}" \
+                --jq 'select(.object.type == "commit") | .object.sha'
+            )"
+            if [[ "${remote_tag_commit}" != "${DISPATCH_SHA}" ]]; then
+              echo "Release tag ${RELEASE_TAG} now resolves to ${remote_tag_commit}, not ${DISPATCH_SHA}." >&2
+              exit 1
+            fi
+          }
+          require_exact_remote_release_tag
+          local_paths=()
+          while IFS= read -r local_path; do
+            local_paths+=("${local_path}")
+          done < <(find dist-offline -maxdepth 1 -type f -name 'ai-sdlc-offline-*' -print | sort)
+          if [[ "${#local_paths[@]}" -ne 6 ]]; then
+            printf 'Expected exactly six release files, found %s.\n' "${#local_paths[@]}" >&2
+            exit 1
+          fi
+          expected_asset_names=()
+          for local_path in "${local_paths[@]}"; do
+            expected_asset_names+=("$(basename "${local_path}")")
+          done
           release_is_draft="$(gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')"
           if [[ "${release_is_draft}" != "true" ]]; then
             echo "Release ${RELEASE_TAG} is not a draft; refusing to upload or replace assets." >&2
             exit 1
           fi
-          asset_name="$(basename "${asset}")"
-          sidecar_name="$(basename "${asset}.sha256")"
           existing_asset_names="$(
             gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name'
           )"
+          while IFS= read -r existing_name; do
+            [[ -z "${existing_name}" ]] && continue
+            expected="false"
+            for expected_name in "${expected_asset_names[@]}"; do
+              if [[ "${existing_name}" == "${expected_name}" ]]; then
+                expected="true"
+                break
+              fi
+            done
+            if [[ "${expected}" != "true" ]]; then
+              echo "Release ${RELEASE_TAG} contains an unexpected asset: ${existing_name}" >&2
+              exit 1
+            fi
+          done <<< "${existing_asset_names}"
           download_dir="$(mktemp -d)"
           trap 'rm -rf -- "${download_dir}"' EXIT
           upload_paths=()
-          for local_path in "${asset}" "${asset}.sha256"; do
+          for local_path in "${local_paths[@]}"; do
             local_name="$(basename "${local_path}")"
             exists="false"
             while IFS= read -r existing_name; do
@@ -380,5 +468,15 @@ jobs:
               echo "Release ${RELEASE_TAG} is no longer a draft; refusing to upload assets." >&2
               exit 1
             fi
+            require_exact_remote_release_tag
             gh release upload "${RELEASE_TAG}" "${upload_paths[@]}" --repo "${GITHUB_REPOSITORY}"
+          fi
+          final_asset_names="$(
+            gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" --json assets --jq '.assets[].name'
+          )"
+          expected_asset_set="$(printf '%s\n' "${expected_asset_names[@]}" | LC_ALL=C sort)"
+          final_asset_set="$(printf '%s\n' "${final_asset_names}" | sed '/^$/d' | LC_ALL=C sort)"
+          if [[ "${final_asset_set}" != "${expected_asset_set}" ]]; then
+            echo "Release ${RELEASE_TAG} assets do not exactly match the six smoke-tested files." >&2
+            exit 1
           fi

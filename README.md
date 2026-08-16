@@ -1,10 +1,10 @@
-# AI-SDLC 1.0.5
+# AI-SDLC 2.0.0
 
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 当前仓库源码版本为 `1.0.5`，公开稳定版本仍为 `v1.0.2`。普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装公开稳定版本；`1.0.5` 只在完成普通发布流程后才会成为公开版本。
+> 当前公开稳定版本为 `v2.0.0`。普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装；从 `v1.0.2` 升级前请先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
 
 ## 核心特性
 
@@ -30,18 +30,18 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 ### 从 Git 安装
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v1.0.2"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0"
 ai-sdlc --version
 ```
 
-版本输出应为 `1.0.2`。
+版本输出应为 `2.0.0`。
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
 ### 从源码运行
 
 ```powershell
-git clone --branch v1.0.2 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v2.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -220,13 +220,13 @@ ai-sdlc enterprise configure --help
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。以下是 `1.0.5` 源码候选预期生成的产物名称；它们尚未形成已发布、可安装的正式集合：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。`v2.0.0` 的正式产物名称为：
 
-- `ai-sdlc-offline-1.0.5-windows-amd64.zip`
-- `ai-sdlc-offline-1.0.5-macos-arm64.tar.gz`
-- `ai-sdlc-offline-1.0.5-linux-amd64.tar.gz`
+- `ai-sdlc-offline-2.0.0-windows-amd64.zip`
+- `ai-sdlc-offline-2.0.0-macos-arm64.tar.gz`
+- `ai-sdlc-offline-2.0.0-linux-amd64.tar.gz`
 
-当前公开可安装的离线版本仍是 `v1.0.2`，具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
+具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
 
 构建入口：
 
@@ -256,6 +256,7 @@ uv run python scripts/validate_public_release_identity.py .
 ## 文档
 
 - [中文用户指南](USER_GUIDE.zh-CN.md)
+- [v2 迁移说明](docs/v2-migration.zh-CN.md)
 - [产品能力契约](docs/product-contract.md)
 - [Pull Request 检查清单](docs/pull-request-checklist.zh.md)
 - [框架自迭代开发与发布约定](docs/框架自迭代开发与发布约定.md)

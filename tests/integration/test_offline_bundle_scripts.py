@@ -26,10 +26,42 @@ _PACKAGING_DIR = _REPO_ROOT / "packaging"
 def test_release_checklist_matches_the_standard_release_workflow() -> None:
     checklist = (_OFFLINE_DIR / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
-    assert "`v1.0.5`" in checklist
+    assert "`v2.0.0`" in checklist
     assert "`upload_to_release`" in checklist
     assert "PR1 的三个发布开关" not in checklist
     assert "v1.0.4 上传与发布动作保持禁止" not in checklist
+
+
+def test_online_installers_default_to_the_exact_public_git_tag(tmp_path: Path) -> None:
+    expected = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0"
+    powershell = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
+    script_path = tmp_path / "install_online.sh"
+    shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
+    script_path.chmod(0o755)
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_path_alias(fake_python, wrapper_dir / "python3.11")
+    install_log = tmp_path / "pip-install.log"
+    env = dict(os.environ)
+    _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
+    env["FAKE_PIP_INSTALL_LOG"] = str(install_log)
+
+    assert expected in powershell
+    assert "ai-sdlc==" not in powershell
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert expected in install_log.read_text(encoding="utf-8")
+    assert "ai-sdlc==" not in install_log.read_text(encoding="utf-8")
 
 
 def _load_verify_offline_bundle_module():
@@ -162,7 +194,10 @@ if args[:2] == ["-m", "venv"]:
         f'''#!{shebang_python}
 from pathlib import Path
 import sys
+import os
 if sys.argv[1:4] == ["-m", "pip", "install"]:
+    if log_path := os.environ.get("FAKE_PIP_INSTALL_LOG"):
+        Path(log_path).write_text(" ".join(sys.argv[4:]), encoding="utf-8")
     cli = Path(__file__).resolve().parent / "ai-sdlc"
     cli.write_text("#!/usr/bin/env bash\\\\necho ai-sdlc stub\\\\n", encoding="utf-8")
     cli.chmod(0o755)
@@ -1805,9 +1840,9 @@ def test_user_guide_documents_published_assets_and_two_new_user_paths() -> None:
     assert "## 第一章：全新用户 + 全新空项目" in guide
     assert "## 第二章：全新用户 + 已有项目" in guide
     assert "https://github.com/SinclairPan/Ai_AutoSDLC" in guide
-    assert "ai-sdlc-offline-1.0.2-windows-amd64.zip" in guide
-    assert "ai-sdlc-offline-1.0.2-macos-arm64.tar.gz" in guide
-    assert "ai-sdlc-offline-1.0.2-linux-amd64.tar.gz" in guide
+    assert "ai-sdlc-offline-2.0.0-windows-amd64.zip" in guide
+    assert "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz" in guide
+    assert "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz" in guide
     assert "releases/download/v1.0.4/" not in guide
     assert "Get-FileHash -Algorithm SHA256" in guide
     assert "shasum -a 256 -c" in guide
