@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 from typer.testing import CliRunner
 
@@ -16,6 +17,7 @@ from ai_sdlc.cli.loop_review_cmd import (
     validate_review_input_for_close,
 )
 from ai_sdlc.cli.main import app
+from ai_sdlc.core import pr_review_service
 
 runner = CliRunner()
 
@@ -390,6 +392,111 @@ def test_pr_review_close_revalidates_resolution_at_transition(tmp_path: Path) ->
         / started["review_id"]
         / "final-report.md"
     ).exists()
+
+
+@pytest.mark.parametrize("reviewed_resolution_exists", [False, True])
+def test_pr_review_close_uses_validated_resolution_across_aba(
+    tmp_path: Path,
+    reviewed_resolution_exists: bool,
+) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+
+    with patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "pr-review",
+                "start",
+                "--base",
+                base_commit,
+                "--provider",
+                "mock-reviewer",
+                "--mock-fixture",
+                "changes_required",
+                "--review-id",
+                "review-resolution-aba-cli",
+                "--json",
+            ],
+        )
+        fix = runner.invoke(app, ["pr-review", "fix", "--json"])
+        started = json.loads(start.output)
+        fixed = json.loads(fix.output)
+        resolution_path = Path(fixed["resolution_path"])
+        reviewed_text = resolution_path.read_text(encoding="utf-8")
+        if not reviewed_resolution_exists:
+            resolution_path.unlink()
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
+        validation_count = 0
+
+        def validate_then_replace_resolution(*args, **kwargs):
+            nonlocal validation_count
+            validation_count += 1
+            result = validate_review_input_for_close(*args, **kwargs)
+            if validation_count == 1:
+                resolution = yaml.safe_load(reviewed_text)
+                resolution["finding_resolutions"][0].update(
+                    {
+                        "status": "fixed",
+                        "evidence_refs": ["transient unreviewed evidence"],
+                        "operator": "other-process",
+                        "resolved_at": "2026-08-16T00:00:00Z",
+                    }
+                )
+                resolution_path.write_text(
+                    yaml.safe_dump(resolution),
+                    encoding="utf-8",
+                )
+            return result
+
+        original_revalidate = pr_review_service.revalidate_review_input_at_transition
+
+        def restore_then_revalidate(*args, **kwargs):
+            if reviewed_resolution_exists:
+                resolution_path.write_text(reviewed_text, encoding="utf-8")
+            else:
+                resolution_path.unlink()
+            return original_revalidate(*args, **kwargs)
+
+        with (
+            patch(
+                "ai_sdlc.cli.pr_review_cmd.validate_review_input_for_close",
+                side_effect=validate_then_replace_resolution,
+            ),
+            patch(
+                "ai_sdlc.core.pr_review_service.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "pr-review",
+                    "close",
+                    "--review-id",
+                    started["review_id"],
+                    "--loop-id",
+                    started["loop_id"],
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--json",
+                ],
+            )
+
+    payload = json.loads(close.output)
+    assert validation_count == 2
+    assert close.exit_code == 1
+    assert payload["status"] == "blocked"
+    assert payload["verdict"] == "blocked"
+    assert payload["blocker"] == "Unresolved REQUIRED findings remain."
+    assert resolution_path.exists() is reviewed_resolution_exists
+    if reviewed_resolution_exists:
+        resolution = yaml.safe_load(resolution_path.read_text(encoding="utf-8"))
+        assert resolution["finding_resolutions"][0]["status"] == "unresolved"
 
 
 def test_pr_review_fix_dry_run_json_does_not_write_artifacts(tmp_path: Path) -> None:

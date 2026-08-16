@@ -323,12 +323,34 @@ def pr_review_close(
 
     root = _project_root_or_exit(json_output=json_output)
     try:
-        validate_review_input_for_close(
+        reviewed_artifacts: dict[str, bytes] = {}
+        reviewed_input = validate_review_input_for_close(
             root,
             loop_type="local-pr-review",
             loop_id=loop_id,
             expected_digest=expect_review_digest,
+            captured_artifacts=reviewed_artifacts,
         )
+        resolution_paths = [
+            path
+            for path in reviewed_input.artifact_paths
+            if Path(path).name == "resolution.yaml"
+        ]
+        if len(resolution_paths) > 1:
+            raise ReviewInputGuardError(
+                "review-input-unavailable",
+                detail="Reviewed input contains multiple resolution artifacts.",
+                expected_digest=expect_review_digest,
+            )
+        reviewed_resolution = (
+            reviewed_artifacts.get(resolution_paths[0]) if resolution_paths else None
+        )
+        if resolution_paths and reviewed_resolution is None:
+            raise ReviewInputGuardError(
+                "review-input-unavailable",
+                detail="Reviewed resolution snapshot is unavailable.",
+                expected_digest=expect_review_digest,
+            )
         result = close_pr_review(
             root,
             require_no_blockers=require_no_blockers,
@@ -336,6 +358,8 @@ def pr_review_close(
             expected_loop_id=loop_id,
             expected_review_digest=expect_review_digest,
             review_input_validator=validate_review_input_for_close,
+            reviewed_resolution=reviewed_resolution,
+            resolution_snapshot_supplied=True,
         )
     except ReviewInputGuardError as exc:
         _emit_result(exc.payload(), json_output=json_output)

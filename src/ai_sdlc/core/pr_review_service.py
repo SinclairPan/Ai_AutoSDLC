@@ -1173,6 +1173,8 @@ def close_pr_review(
     expected_loop_id: str = "",
     expected_review_digest: str = "",
     review_input_validator: ReviewInputValidator | None = None,
+    reviewed_resolution: bytes | None = None,
+    resolution_snapshot_supplied: bool = False,
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
@@ -1316,8 +1318,28 @@ def close_pr_review(
         review_run.review_pack_path,
     ).with_name("resolution.yaml")
     try:
-        resolution_statuses = _load_resolution_statuses(resolution_path)
-        resolution_records = _load_resolution_records(resolution_path)
+        if resolution_snapshot_supplied:
+            resolution_payload = (
+                _parse_resolution_payload(
+                    reviewed_resolution,
+                    name=resolution_path.name,
+                )
+                if reviewed_resolution is not None
+                else {}
+            )
+        elif reviewed_resolution is None:
+            resolution_payload = (
+                _load_resolution_payload(resolution_path)
+                if resolution_path.exists()
+                else {}
+            )
+        else:
+            resolution_payload = _parse_resolution_payload(
+                reviewed_resolution,
+                name=resolution_path.name,
+            )
+        resolution_statuses = _resolution_statuses(resolution_payload)
+        resolution_records = _resolution_records(resolution_payload)
     except ResolutionFileError as exc:
         return PRReviewCloseResult(
             status=PRReviewCommandStatus.BLOCKED,
@@ -2567,7 +2589,10 @@ def _read_round_file(path: Path) -> int:
 def _load_resolution_statuses(path: Path) -> dict[str, FindingResolutionStatus]:
     if not path.exists():
         return {}
-    payload = _load_resolution_payload(path)
+    return _resolution_statuses(_load_resolution_payload(path))
+
+
+def _resolution_statuses(payload: object) -> dict[str, FindingResolutionStatus]:
     if not isinstance(payload, dict):
         return {}
     statuses: dict[str, FindingResolutionStatus] = {}
@@ -2588,7 +2613,10 @@ def _load_resolution_statuses(path: Path) -> dict[str, FindingResolutionStatus]:
 def _load_resolution_records(path: Path) -> dict[str, FindingResolution]:
     if not path.exists():
         return {}
-    payload = _load_resolution_payload(path)
+    return _resolution_records(_load_resolution_payload(path))
+
+
+def _resolution_records(payload: object) -> dict[str, FindingResolution]:
     if not isinstance(payload, dict):
         return {}
     records: dict[str, FindingResolution] = {}
@@ -2605,9 +2633,18 @@ def _load_resolution_records(path: Path) -> dict[str, FindingResolution]:
 
 def _load_resolution_payload(path: Path) -> object:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise ResolutionFileError(f"{path.name} is malformed: {exc}") from exc
+        content = path.read_bytes()
+    except OSError as exc:
+        raise ResolutionFileError(f"{path.name} is unreadable: {exc}") from exc
+    return _parse_resolution_payload(content, name=path.name)
+
+
+def _parse_resolution_payload(content: bytes, *, name: str) -> object:
+    try:
+        text = content.decode("utf-8")
+        return yaml.safe_load(text) or {}
+    except (UnicodeDecodeError, yaml.YAMLError) as exc:
+        raise ResolutionFileError(f"{name} is malformed: {exc}") from exc
 
 
 def _unresolved_counts(

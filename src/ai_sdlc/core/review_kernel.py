@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, MutableMapping, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -148,12 +148,34 @@ def build_review_input(
     artifact_paths: Sequence[str | Path],
     upstream_context_paths: Sequence[str | Path],
     risk_signals: Sequence[str],
+    capture_artifact_paths: Sequence[str | Path] = (),
+    captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> ReviewInput:
     """Read stable regular files and bind their raw bytes to one review input."""
 
     resolved_root = root.resolve(strict=True)
-    artifacts = _read_paths(resolved_root, artifact_paths)
-    upstream = _read_paths(resolved_root, upstream_context_paths)
+    capture_paths = {
+        _review_relative_path(resolved_root, path) for path in capture_artifact_paths
+    }
+    if capture_paths and captured_artifacts is None:
+        raise ValueError("captured_artifacts is required when capture paths are set")
+    artifacts = _read_paths(
+        resolved_root,
+        artifact_paths,
+        capture_paths=capture_paths,
+        captured_artifacts=captured_artifacts,
+    )
+    upstream = _read_paths(
+        resolved_root,
+        upstream_context_paths,
+        capture_paths=capture_paths,
+        captured_artifacts=captured_artifacts,
+    )
+    if captured_artifacts is not None:
+        missing_captures = capture_paths - captured_artifacts.keys()
+        if missing_captures:
+            missing = ", ".join(sorted(missing_captures))
+            raise ValueError(f"review capture path is not an input artifact: {missing}")
     all_paths = [path for path, _, _, _ in (*artifacts, *upstream)]
     if len(all_paths) != len(set(all_paths)):
         raise ValueError("review paths must be unique")
@@ -244,6 +266,9 @@ def merge_expert_findings(executions: Sequence[ReviewExecution]) -> ReviewExecut
 def _read_paths(
     root: Path,
     paths: Sequence[str | Path],
+    *,
+    capture_paths: set[str],
+    captured_artifacts: MutableMapping[str, bytes] | None,
 ) -> list[tuple[str, int, int, str]]:
     records: list[tuple[str, int, int, str]] = []
     for raw_path in paths:
@@ -278,9 +303,14 @@ def _read_paths(
             if not stat.S_ISREG(opened.st_mode):
                 raise ValueError(f"review path is not a regular file: {relative}")
             digest = hashlib.sha256()
+            captured_chunks: list[bytes] | None = (
+                [] if relative in capture_paths else None
+            )
             content_size = 0
             while chunk := os.read(descriptor, 1024 * 1024):
                 digest.update(chunk)
+                if captured_chunks is not None:
+                    captured_chunks.append(chunk)
                 content_size += len(chunk)
             after = os.fstat(descriptor)
         finally:
@@ -297,8 +327,20 @@ def _read_paths(
         records.append(
             (relative, stat.S_IMODE(opened.st_mode), content_size, digest.hexdigest())
         )
+        if captured_chunks is not None and captured_artifacts is not None:
+            captured_artifacts[relative] = b"".join(captured_chunks)
     records.sort(key=lambda item: item[0])
     return records
+
+
+def _review_relative_path(root: Path, raw_path: str | Path) -> str:
+    candidate = Path(raw_path)
+    unresolved = candidate if candidate.is_absolute() else root / candidate
+    path = Path(os.path.abspath(unresolved))
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError as exc:
+        raise ValueError(f"review path escapes project: {raw_path}") from exc
 
 
 def _validate_review_path(

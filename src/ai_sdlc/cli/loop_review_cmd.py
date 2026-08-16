@@ -8,6 +8,7 @@ import json
 import os
 import re
 import subprocess
+from collections.abc import MutableMapping
 from pathlib import Path
 from typing import cast
 
@@ -183,6 +184,7 @@ def validate_review_input_for_close(
     loop_type: str,
     loop_id: str,
     expected_digest: str,
+    captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> ReviewInput:
     """Rebuild the reviewed input inside the close process and fail on drift."""
 
@@ -197,6 +199,7 @@ def validate_review_input_for_close(
             root,
             loop_type=loop_type,
             loop_id=loop_id,
+            captured_artifacts=captured_artifacts,
         )
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise ReviewInputGuardError(
@@ -267,6 +270,7 @@ def resolve_review_input(
     *,
     loop_type: str,
     loop_id: str,
+    captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> ReviewInput:
     """Resolve existing substantive artifacts without creating a parallel Loop."""
 
@@ -288,6 +292,12 @@ def resolve_review_input(
             *_local_review_source_risk_signals(root, loop_dir / "review-pack.json"),
         ]
         round_number = _read_round_number(run_path)
+        capture_artifact_paths = (
+            [loop_dir / "resolution.yaml"]
+            if captured_artifacts is not None
+            and (loop_dir / "resolution.yaml").is_file()
+            else []
+        )
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
         pointer_path, run_path = _resolve_current_stage_state(
@@ -325,6 +335,10 @@ def resolve_review_input(
         if loop_type != "local-pr-review"
         else [],
         risk_signals=risk_signals,
+        capture_artifact_paths=capture_artifact_paths
+        if loop_type == "local-pr-review"
+        else [],
+        captured_artifacts=captured_artifacts,
     )
 
 
