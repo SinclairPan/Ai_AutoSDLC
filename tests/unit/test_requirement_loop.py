@@ -7,6 +7,12 @@ from pathlib import Path
 
 import pytest
 
+import ai_sdlc.core.requirement_loop as requirement_loop_module
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.requirement_loop import (
     CURRENT_REQUIREMENT_PATH,
     RequirementFreezeOptions,
@@ -412,6 +418,69 @@ def test_freeze_requirement_loop_closes_current_loop(tmp_path: Path) -> None:
     loop_run = json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))
     assert loop_run["status"] == "closed"
     assert "design-contract" in loop_run["next_action"]
+
+
+def test_freeze_requirement_loop_rechecks_review_digest_at_final_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loop_id = "req-final-review-guard"
+    start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            idea="运营用户需要任务提醒。",
+            acceptance=("任务提醒可以发送",),
+        )
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="requirement",
+        loop_id=loop_id,
+    )
+    original_acceptance = requirement_loop_module._requirement_acceptance_result
+
+    def mutate_after_state_validation(*args: object, **kwargs: object) -> object:
+        result = original_acceptance(*args, **kwargs)
+        brief_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "requirement"
+            / loop_id
+            / "requirement-brief.md"
+        )
+        brief_path.write_text(
+            brief_path.read_text(encoding="utf-8") + "\n评审后发生变化。\n",
+            encoding="utf-8",
+        )
+        return result
+
+    monkeypatch.setattr(
+        requirement_loop_module,
+        "_requirement_acceptance_result",
+        mutate_after_state_validation,
+    )
+
+    with pytest.raises(ReviewInputGuardError, match="review-input-drift"):
+        freeze_requirement_loop(
+            RequirementFreezeOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                yes=True,
+                expected_review_digest=reviewed.input_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        )
+
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "requirement"
+        / loop_id
+        / "requirement-freeze.json"
+    ).exists()
 
 
 def test_freeze_requirement_loop_requires_yes(tmp_path: Path) -> None:

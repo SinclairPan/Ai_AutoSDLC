@@ -21,6 +21,10 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
+)
 from ai_sdlc.core.stable_file_read import read_stable_text
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
@@ -172,6 +176,7 @@ class RequirementFreezeOptions:
     loop_id: str = ""
     yes: bool = False
     accepted_by: str = "local-user"
+    expected_review_digest: str = ""
 
 
 @dataclass(frozen=True, slots=True)
@@ -455,6 +460,8 @@ def _blocked_requirement_start(
 
 def freeze_requirement_loop(
     options: RequirementFreezeOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
 ) -> RequirementLoopCommandResult:
     """Freeze the current requirement loop after explicit user confirmation."""
 
@@ -488,7 +495,14 @@ def freeze_requirement_loop(
         return acceptance_result
     if loop_run.status == LoopStatus.CLOSED and artifacts.freeze_path.is_file():
         return _refreeze_closed_requirement(root, loop_run, intake, artifacts)
-    return _freeze_open_requirement(root, options, loop_run, intake, artifacts)
+    return _freeze_open_requirement(
+        root,
+        options,
+        loop_run,
+        intake,
+        artifacts,
+        review_input_validator=review_input_validator,
+    )
 
 
 def _prepare_requirement_freeze_request(
@@ -714,6 +728,8 @@ def _freeze_open_requirement(
     loop_run: LoopRun,
     intake: RequirementIntake,
     artifacts: _RequirementArtifacts,
+    *,
+    review_input_validator: ReviewInputValidator | None,
 ) -> RequirementLoopCommandResult:
     accepted_by = options.accepted_by.strip() or "local-user"
     accepted_at = utc_now_iso()
@@ -725,6 +741,13 @@ def _freeze_open_requirement(
         intake_path=_repo_relative_path(root, artifacts.intake_path),
         intake_digest=_requirement_intake_digest(intake),
         acceptance_count=len(intake.acceptance_criteria),
+    )
+    revalidate_review_input_at_transition(
+        root,
+        loop_type="requirement",
+        loop_id=loop_run.loop_id,
+        expected_digest=options.expected_review_digest,
+        validator=review_input_validator,
     )
     return _write_requirement_freeze(
         root,

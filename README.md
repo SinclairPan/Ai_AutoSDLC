@@ -87,7 +87,7 @@ ai-sdlc verify constraints
 
 ```powershell
 # Requirement
-ai-sdlc loop requirement start --loop-id <loop-id> --idea "<requirement>"
+ai-sdlc loop requirement start --loop-id <loop-id> --idea "<requirement>" --acceptance "<acceptance criterion>"
 ai-sdlc loop status --type requirement
 ai-sdlc loop review --type requirement --loop-id <loop-id> --json
 ai-sdlc loop requirement freeze --loop-id <loop-id> --expect-review-digest <input_digest> --yes
@@ -100,7 +100,7 @@ ai-sdlc loop design-contract close --loop-id <loop-id> --expect-review-digest <i
 
 # Implementation
 ai-sdlc loop implementation start --wi specs/<work-item> --loop-id <loop-id>
-ai-sdlc loop implementation record --loop-id <loop-id> --task-id <task-id> --status done
+ai-sdlc loop implementation record --loop-id <loop-id> --task-id <task-id> --status done --verification "<command>" --evidence <path>
 ai-sdlc loop status --type implementation
 ai-sdlc loop review --type implementation --loop-id <loop-id> --json
 ai-sdlc loop implementation close --loop-id <loop-id> --expect-review-digest <input_digest> --yes

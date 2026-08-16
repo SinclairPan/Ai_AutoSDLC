@@ -82,6 +82,10 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
+)
 from ai_sdlc.core.slimming_advice import collect_slimming_advice
 from ai_sdlc.core.stable_file_read import read_stable_bytes
 
@@ -315,6 +319,8 @@ def record_implementation_progress(
 
 def close_implementation_loop(
     options: ImplementationCloseOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
 ) -> ImplementationCommandResult:
     """Close an implementation loop after required task evidence is complete."""
 
@@ -410,6 +416,13 @@ def close_implementation_loop(
             status=ImplementationCommandStatus.NEEDS_FIX,
             blocker=close_blockers[0],
         )
+    revalidate_review_input_at_transition(
+        root,
+        loop_type="implementation",
+        loop_id=loop_run.loop_id,
+        expected_digest=options.expected_review_digest,
+        validator=review_input_validator,
+    )
     return _write_close(root, loop_run, report, artifacts, options.closed_by)
 
 

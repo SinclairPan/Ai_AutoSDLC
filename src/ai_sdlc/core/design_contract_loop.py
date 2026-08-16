@@ -64,6 +64,10 @@ from ai_sdlc.core.requirement_loop import (
 from ai_sdlc.core.requirement_loop import (
     _validate_explicit_loop_id as _validate_requirement_loop_id,
 )
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
+)
 from ai_sdlc.core.stable_file_read import (
     _stable_regular_file_exists,
 )
@@ -248,6 +252,8 @@ def _build_checked_contract_input(
 
 def close_design_contract_loop(
     options: DesignContractCloseOptions,
+    *,
+    review_input_validator: ReviewInputValidator | None = None,
 ) -> DesignContractCommandResult:
     """Close the current design-contract loop after explicit confirmation."""
 
@@ -281,6 +287,7 @@ def close_design_contract_loop(
         report,
         verified_input,
         artifacts,
+        review_input_validator=review_input_validator,
     )
 
 
@@ -343,6 +350,8 @@ def _close_verified_design_context(
     report: DesignContractReport,
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
+    *,
+    review_input_validator: ReviewInputValidator | None,
 ) -> DesignContractCommandResult:
     existing = _existing_design_close_result(
         root,
@@ -350,6 +359,8 @@ def _close_verified_design_context(
         report,
         verified_input,
         artifacts,
+        options=options,
+        review_input_validator=review_input_validator,
     )
     if existing is not None:
         return existing
@@ -365,6 +376,7 @@ def _close_verified_design_context(
         loop_run,
         verified_input,
         artifacts,
+        review_input_validator=review_input_validator,
     )
 
 
@@ -374,6 +386,8 @@ def _finish_verified_design_close(
     loop_run: LoopRun,
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
+    *,
+    review_input_validator: ReviewInputValidator | None,
 ) -> DesignContractCommandResult:
     refreshed = _refresh_report_before_close(
         root,
@@ -391,6 +405,13 @@ def _finish_verified_design_close(
             artifacts=artifacts.refs(root),
             result="Design contract cannot close while blockers remain.",
         )
+    revalidate_review_input_at_transition(
+        root,
+        loop_type="design-contract",
+        loop_id=loop_run.loop_id,
+        expected_digest=options.expected_review_digest,
+        validator=review_input_validator,
+    )
     return _write_close(
         root,
         loop_run,
@@ -406,6 +427,9 @@ def _existing_design_close_result(
     report: DesignContractReport,
     verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
+    *,
+    options: DesignContractCloseOptions,
+    review_input_validator: ReviewInputValidator | None,
 ) -> DesignContractCommandResult | None:
     try:
         close_exists = _trusted_close_artifact_exists(root, artifacts)
@@ -424,7 +448,10 @@ def _existing_design_close_result(
             root,
             loop_run,
             report,
+            verified_input,
             artifacts,
+            options=options,
+            review_input_validator=review_input_validator,
         )
     if loop_run.status == LoopStatus.CLOSED or close_exists:
         return _blocked_result(
@@ -439,8 +466,35 @@ def _recover_partially_written_design_close(
     root: Path,
     loop_run: LoopRun,
     report: DesignContractReport,
+    verified_input: DesignContractInput,
     artifacts: DesignContractArtifacts,
+    *,
+    options: DesignContractCloseOptions,
+    review_input_validator: ReviewInputValidator | None,
 ) -> DesignContractCommandResult:
+    refreshed = _refresh_report_before_close(
+        root,
+        loop_run,
+        artifacts,
+        verified_input,
+        persist=False,
+    )
+    if isinstance(refreshed, DesignContractCommandResult):
+        return refreshed
+    report, loop_run = refreshed
+    if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
+        return _result_from_report(
+            report,
+            artifacts=artifacts.refs(root, include_close=True),
+            result="Design contract cannot recover close while blockers remain.",
+        )
+    revalidate_review_input_at_transition(
+        root,
+        loop_type="design-contract",
+        loop_id=loop_run.loop_id,
+        expected_digest=options.expected_review_digest,
+        validator=review_input_validator,
+    )
     try:
         payload = LoopArtifactStore(root).read_json_artifact(artifacts.close_path)
         close = DesignContractClose.model_validate(payload)

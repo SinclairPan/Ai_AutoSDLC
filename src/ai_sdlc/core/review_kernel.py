@@ -6,7 +6,7 @@ import hashlib
 import json
 import os
 import stat
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Literal
 
@@ -21,6 +21,7 @@ LoopReviewType = Literal[
 ]
 ReviewSeverity = Literal["blocker", "important", "advisory"]
 ReviewExecutionStatus = Literal["completed", "failed"]
+ReviewInputValidator = Callable[..., object]
 
 _ROLE_BRIEF = "Choose one primary expert and at most one cross-risk expert."
 _SEVERITY_RANK: dict[ReviewSeverity, int] = {
@@ -397,10 +398,35 @@ def _merge_roles(
     return roles, reasons
 
 
+def revalidate_review_input_at_transition(
+    root: Path,
+    *,
+    loop_type: LoopReviewType,
+    loop_id: str,
+    expected_digest: str,
+    validator: ReviewInputValidator | None,
+) -> None:
+    """Recheck the reviewed input immediately before a close transition."""
+
+    digest = expected_digest.strip()
+    if not digest:
+        return
+    if validator is None:
+        raise ValueError("A review input validator is required for a guarded close.")
+    validator(
+        root,
+        loop_type=loop_type,
+        loop_id=loop_id,
+        expected_digest=digest,
+    )
+
+
 __all__ = [
     "ReviewExecution",
     "ReviewFinding",
     "ReviewInput",
+    "ReviewInputValidator",
     "build_review_input",
     "merge_expert_findings",
+    "revalidate_review_input_at_transition",
 ]

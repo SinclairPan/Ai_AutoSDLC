@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Callable
 from io import StringIO
 from pathlib import Path
+from typing import TypeVar
 
 import typer
 from rich.console import Console
@@ -60,6 +62,8 @@ from ai_sdlc.core.requirement_loop import (
     start_requirement_loop,
 )
 from ai_sdlc.utils.helpers import find_project_root
+
+_CloseResult = TypeVar("_CloseResult")
 
 loop_app = typer.Typer(
     help="Inspect read-only Loop Engine artifacts.",
@@ -216,13 +220,18 @@ def requirement_freeze(
         expected_digest=expect_review_digest,
         json_output=json_output,
     )
-    result = freeze_requirement_loop(
-        RequirementFreezeOptions(
-            root=root,
-            loop_id=loop_id,
-            yes=yes,
-            accepted_by=accepted_by,
-        )
+    result = _run_review_bound_close(
+        lambda: freeze_requirement_loop(
+            RequirementFreezeOptions(
+                root=root,
+                loop_id=loop_id,
+                yes=yes,
+                accepted_by=accepted_by,
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        ),
+        json_output=json_output,
     )
     _emit_requirement_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" else 1)
@@ -303,13 +312,18 @@ def design_contract_close(
         expected_digest=expect_review_digest,
         json_output=json_output,
     )
-    result = close_design_contract_loop(
-        DesignContractCloseOptions(
-            root=root,
-            loop_id=loop_id,
-            yes=yes,
-            closed_by=closed_by,
-        )
+    result = _run_review_bound_close(
+        lambda: close_design_contract_loop(
+            DesignContractCloseOptions(
+                root=root,
+                loop_id=loop_id,
+                yes=yes,
+                closed_by=closed_by,
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        ),
+        json_output=json_output,
     )
     _emit_design_contract_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -431,13 +445,18 @@ def implementation_close(
         expected_digest=expect_review_digest,
         json_output=json_output,
     )
-    result = close_implementation_loop(
-        ImplementationCloseOptions(
-            root=root,
-            loop_id=loop_id,
-            yes=yes,
-            closed_by=closed_by,
-        )
+    result = _run_review_bound_close(
+        lambda: close_implementation_loop(
+            ImplementationCloseOptions(
+                root=root,
+                loop_id=loop_id,
+                yes=yes,
+                closed_by=closed_by,
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        ),
+        json_output=json_output,
     )
     _emit_implementation_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -611,14 +630,19 @@ def frontend_evidence_close(
         expected_digest=expect_review_digest,
         json_output=json_output,
     )
-    result = close_frontend_evidence_loop(
-        FrontendEvidenceCloseOptions(
-            root=root,
-            loop_id=loop_id,
-            yes=yes,
-            allow_warnings=allow_warnings,
-            closed_by=closed_by,
-        )
+    result = _run_review_bound_close(
+        lambda: close_frontend_evidence_loop(
+            FrontendEvidenceCloseOptions(
+                root=root,
+                loop_id=loop_id,
+                yes=yes,
+                allow_warnings=allow_warnings,
+                closed_by=closed_by,
+                expected_review_digest=expect_review_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        ),
+        json_output=json_output,
     )
     _emit_frontend_evidence_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
@@ -639,6 +663,18 @@ def _require_review_close_guard(
             loop_id=loop_id,
             expected_digest=expected_digest,
         )
+    except ReviewInputGuardError as exc:
+        _emit_payload(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
+
+
+def _run_review_bound_close(
+    operation: Callable[[], _CloseResult],
+    *,
+    json_output: bool,
+) -> _CloseResult:
+    try:
+        return operation()
     except ReviewInputGuardError as exc:
         _emit_payload(exc.payload(), json_output=json_output)
         raise typer.Exit(1) from exc

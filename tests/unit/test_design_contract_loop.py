@@ -10,6 +10,11 @@ from pathlib import Path
 import pytest
 
 import ai_sdlc.core.design_contract_loop as design_contract_loop_module
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.design_contract_loop import (
     CURRENT_DESIGN_CONTRACT_PATH,
     DesignContractCheckOptions,
@@ -1875,6 +1880,69 @@ def test_close_design_contract_loop_writes_close_artifact(tmp_path: Path) -> Non
     assert loop_run["status"] == "closed"
 
 
+def test_close_design_contract_loop_rechecks_review_digest_at_final_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-final-review-guard"
+    check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="design-contract",
+        loop_id=loop_id,
+    )
+    original_refresh = design_contract_loop_module._refresh_report_before_close
+
+    def mutate_after_state_validation(*args: object, **kwargs: object) -> object:
+        result = original_refresh(*args, **kwargs)
+        report_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "design-contract"
+            / loop_id
+            / "design-contract-report.md"
+        )
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8") + "\n评审后发生变化。\n",
+            encoding="utf-8",
+        )
+        return result
+
+    monkeypatch.setattr(
+        design_contract_loop_module,
+        "_refresh_report_before_close",
+        mutate_after_state_validation,
+    )
+
+    with pytest.raises(ReviewInputGuardError, match="review-input-drift"):
+        close_design_contract_loop(
+            DesignContractCloseOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                yes=True,
+                expected_review_digest=reviewed.input_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        )
+
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+        / "design-contract-close.json"
+    ).exists()
+
+
 def test_close_design_contract_loop_recovers_close_written_before_loop_run(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1946,6 +2014,64 @@ def test_close_design_contract_loop_recovers_close_written_before_loop_run(
     assert unchanged_artifacts == {
         name: (loop_dir / name).read_bytes() for name in unchanged_artifacts
     }
+
+
+def test_close_design_contract_loop_revalidates_docs_before_partial_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_work_item(tmp_path)
+    loop_id = "dc-recovery-revalidates-docs"
+    checked = check_design_contract_loop(
+        DesignContractCheckOptions(
+            root=tmp_path,
+            work_item="specs/demo-contract",
+            loop_id=loop_id,
+        )
+    )
+    assert checked.status == "ready"
+    original_write = LoopArtifactStore.write_json_artifact
+    close_written = False
+
+    def fail_loop_run_write(
+        store: LoopArtifactStore,
+        path: Path,
+        payload: object,
+    ) -> Path:
+        nonlocal close_written
+        if path.name == "design-contract-close.json":
+            written = original_write(store, path, payload)
+            close_written = True
+            return written
+        if close_written and path.name == "loop-run.json":
+            raise OSError("injected loop-run write failure")
+        return original_write(store, path, payload)
+
+    monkeypatch.setattr(LoopArtifactStore, "write_json_artifact", fail_loop_run_write)
+    with pytest.raises(OSError, match="injected loop-run write failure"):
+        close_design_contract_loop(
+            DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+        )
+
+    tasks_path = tmp_path / "specs" / "demo-contract" / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+            "- **验证**：",
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(LoopArtifactStore, "write_json_artifact", original_write)
+
+    recovered = close_design_contract_loop(
+        DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
+    )
+
+    assert recovered.status == "needs_fix"
+    assert recovered.closed is False
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    persisted_run = json.loads((loop_dir / "loop-run.json").read_text("utf-8"))
+    assert persisted_run["status"] != "closed"
 
 
 def test_close_design_contract_loop_revalidates_changed_docs(

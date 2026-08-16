@@ -6,8 +6,13 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 
+import ai_sdlc.core.frontend_evidence_loop as frontend_evidence_loop_module
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+)
 from ai_sdlc.core.frontend_evidence_loop import (
     CURRENT_FRONTEND_EVIDENCE_PATH,
     FrontendEvidenceCloseOptions,
@@ -863,6 +868,90 @@ def test_close_frontend_evidence_loop_requires_allow_warnings(
     assert close_payload["allow_warnings"] is True
     assert close_payload["warning_count"] == 3
     assert close_payload["accepted_warning_reason_codes"] == ["low_contrast_text"]
+
+
+def test_close_frontend_evidence_loop_rechecks_review_digest_at_final_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _write_work_item(tmp_path)
+    _write_closed_implementation_loop(tmp_path, work_item)
+    _write_browser_gate_artifact(tmp_path, work_item_path="specs/demo-frontend")
+    loop_id = "fe-final-review-guard"
+    started = start_frontend_evidence_loop(
+        FrontendEvidenceStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-frontend",
+            loop_id=loop_id,
+        )
+    )
+    assert started.status == "ready"
+    expected_digest = "a" * 64
+    original_read_snapshot = frontend_evidence_loop_module.read_snapshot
+
+    def mutate_after_state_validation(*args: object, **kwargs: object) -> object:
+        snapshot = original_read_snapshot(*args, **kwargs)
+        report_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "frontend-evidence"
+            / loop_id
+            / "frontend-evidence-report.md"
+        )
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8") + "\n评审后发生变化。\n",
+            encoding="utf-8",
+        )
+        return snapshot
+
+    monkeypatch.setattr(
+        frontend_evidence_loop_module,
+        "read_snapshot",
+        mutate_after_state_validation,
+    )
+
+    def reject_changed_report(
+        root: Path,
+        *,
+        loop_type: str,
+        loop_id: str,
+        expected_digest: str,
+    ) -> None:
+        assert root == tmp_path
+        assert loop_type == "frontend-evidence"
+        assert loop_id == "fe-final-review-guard"
+        assert expected_digest == "a" * 64
+        report_path = (
+            root
+            / ".ai-sdlc"
+            / "loops"
+            / "frontend-evidence"
+            / loop_id
+            / "frontend-evidence-report.md"
+        )
+        assert "评审后发生变化" in report_path.read_text(encoding="utf-8")
+        raise ReviewInputGuardError("review-input-drift")
+
+    with pytest.raises(ReviewInputGuardError, match="review-input-drift"):
+        close_frontend_evidence_loop(
+            FrontendEvidenceCloseOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                yes=True,
+                expected_review_digest=expected_digest,
+            ),
+            review_input_validator=reject_changed_report,
+        )
+
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "frontend-evidence"
+        / loop_id
+        / "frontend-evidence-close.json"
+    ).exists()
 
 
 def test_close_frontend_evidence_loop_rejects_replaced_loop_identity(

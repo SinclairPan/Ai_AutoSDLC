@@ -275,6 +275,7 @@ class ImplementationCloseOptions:
     loop_id: str = ""
     yes: bool = False
     closed_by: str = "local-user"
+    expected_review_digest: str = ""
 
 
 __all__ = [

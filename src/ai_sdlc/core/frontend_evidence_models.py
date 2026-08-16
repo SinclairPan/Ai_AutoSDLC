@@ -330,6 +330,7 @@ class FrontendEvidenceCloseOptions:
     yes: bool = False
     allow_warnings: bool = False
     closed_by: str = "local-user"
+    expected_review_digest: str = ""
 
 
 __all__ = [

@@ -8,6 +8,12 @@ from pathlib import Path
 
 import pytest
 
+import ai_sdlc.core.implementation_loop as implementation_loop_module
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
     DesignContractCloseOptions,
@@ -714,6 +720,79 @@ def test_close_implementation_loop_writes_close_artifact(tmp_path: Path) -> None
     assert repeated.next_action == "Run ai-sdlc pr-review start."
     assert repeated.next_guidance.reason.endswith("local-pr-review.")
     assert repeated.next_guidance.requires_model is True
+
+
+def test_close_implementation_loop_rechecks_review_digest_at_final_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    loop_id = "impl-final-review-guard"
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id=loop_id,
+        )
+    )
+    record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            task_id="T11",
+            status="done",
+            verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
+        )
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id=loop_id,
+    )
+    original_blockers = implementation_loop_module._close_blockers
+
+    def mutate_after_state_validation(*args: object, **kwargs: object) -> list[str]:
+        blockers = original_blockers(*args, **kwargs)
+        report_path = (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "implementation"
+            / loop_id
+            / "implementation-report.md"
+        )
+        report_path.write_text(
+            report_path.read_text(encoding="utf-8") + "\n评审后发生变化。\n",
+            encoding="utf-8",
+        )
+        return blockers
+
+    monkeypatch.setattr(
+        implementation_loop_module,
+        "_close_blockers",
+        mutate_after_state_validation,
+    )
+
+    with pytest.raises(ReviewInputGuardError, match="review-input-drift"):
+        close_implementation_loop(
+            ImplementationCloseOptions(
+                root=tmp_path,
+                loop_id=loop_id,
+                yes=True,
+                expected_review_digest=reviewed.input_digest,
+            ),
+            review_input_validator=validate_review_input_for_close,
+        )
+
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / loop_id
+        / "implementation-close.json"
+    ).exists()
 
 
 def test_close_implementation_loop_routes_frontend_work_to_frontend_evidence(
