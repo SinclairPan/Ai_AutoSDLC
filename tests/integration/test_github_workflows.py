@@ -502,7 +502,7 @@ fi
         "FAKE_TAG_COMMIT_SHA": "a" * 40,
     }
 
-    asset_state.write_text("", encoding="utf-8")
+    asset_state.write_text("", encoding="utf-8", newline="\n")
     moved_tag = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -517,7 +517,7 @@ fi
         check=False,
     )
     log_path.unlink(missing_ok=True)
-    asset_state.write_text("", encoding="utf-8")
+    asset_state.write_text("", encoding="utf-8", newline="\n")
     published = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -527,7 +527,7 @@ fi
         check=False,
     )
     (remote_assets / asset.name).write_bytes(b"different archive")
-    asset_state.write_text(f"{asset.name}\n", encoding="utf-8")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     mismatched = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -541,7 +541,7 @@ fi
         check=False,
     )
     (remote_assets / asset.name).write_bytes(asset.read_bytes())
-    asset_state.write_text(f"{asset.name}\n", encoding="utf-8")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     partial = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -558,7 +558,7 @@ fi
     log_path.unlink(missing_ok=True)
     draft_sequence = tmp_path / "draft-sequence.txt"
     draft_sequence.write_text("true\nfalse\n", encoding="utf-8")
-    asset_state.write_text(f"{asset.name}\n", encoding="utf-8")
+    asset_state.write_text(f"{asset.name}\n", encoding="utf-8", newline="\n")
     published_during_retry = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -580,7 +580,9 @@ fi
     complete_asset_names = "\n".join(
         [asset.name, sidecar.name, *(item.name for item in other_assets)]
     )
-    asset_state.write_text(f"{complete_asset_names}\n", encoding="utf-8")
+    asset_state.write_text(
+        f"{complete_asset_names}\n", encoding="utf-8", newline="\n"
+    )
     complete = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -594,7 +596,11 @@ fi
         check=False,
     )
     complete_uploaded = log_path.exists()
-    asset_state.write_text(f"{complete_asset_names}\nunexpected.txt\n", encoding="utf-8")
+    asset_state.write_text(
+        f"{complete_asset_names}\nunexpected.txt\n",
+        encoding="utf-8",
+        newline="\n",
+    )
     unexpected = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -607,7 +613,7 @@ fi
         capture_output=True,
         check=False,
     )
-    asset_state.write_text("", encoding="utf-8")
+    asset_state.write_text("", encoding="utf-8", newline="\n")
     allowed = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
