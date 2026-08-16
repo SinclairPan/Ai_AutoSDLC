@@ -490,7 +490,7 @@ def _recover_partially_written_design_close(
         return refreshed
     report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
-        artifacts.close_path.unlink()
+        artifacts.close_path.unlink(missing_ok=True)
         _write_check_artifacts(
             root,
             verified_input,
@@ -500,7 +500,7 @@ def _recover_partially_written_design_close(
         )
         return _result_from_report(
             report,
-            artifacts=artifacts.refs(root, include_close=True),
+            artifacts=artifacts.refs(root),
             result="Design contract cannot recover close while blockers remain.",
         )
     revalidate_review_input_at_transition(

@@ -2109,6 +2109,22 @@ def test_close_design_contract_loop_revalidates_docs_before_partial_recovery(
         encoding="utf-8",
     )
     monkeypatch.setattr(LoopArtifactStore, "write_json_artifact", original_write)
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    close_path = loop_dir / "design-contract-close.json"
+    original_unlink = Path.unlink
+    removed_concurrently = False
+
+    def remove_close_before_recovery_unlink(
+        path: Path,
+        missing_ok: bool = False,
+    ) -> None:
+        nonlocal removed_concurrently
+        if path == close_path and not removed_concurrently:
+            removed_concurrently = True
+            original_unlink(path)
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", remove_close_before_recovery_unlink)
 
     recovered = close_design_contract_loop(
         DesignContractCloseOptions(root=tmp_path, loop_id=loop_id, yes=True)
@@ -2116,7 +2132,14 @@ def test_close_design_contract_loop_revalidates_docs_before_partial_recovery(
 
     assert recovered.status == "needs_fix"
     assert recovered.closed is False
-    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "design-contract" / loop_id
+    assert removed_concurrently is True
+    assert "design-contract-close" not in {
+        artifact.kind for artifact in recovered.artifacts
+    }
+    assert all(
+        not evidence.endswith("design-contract-close.json")
+        for evidence in recovered.next_guidance.evidence
+    )
     persisted_run = json.loads((loop_dir / "loop-run.json").read_text("utf-8"))
     persisted_report = json.loads(
         (loop_dir / "design-contract-report.json").read_text(encoding="utf-8")
