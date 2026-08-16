@@ -329,15 +329,17 @@ def pr_review_close(
             loop_id=loop_id,
             expected_digest=expect_review_digest,
         )
+        result = close_pr_review(
+            root,
+            require_no_blockers=require_no_blockers,
+            expected_review_id=review_id,
+            expected_loop_id=loop_id,
+            expected_review_digest=expect_review_digest,
+            review_input_validator=validate_review_input_for_close,
+        )
     except ReviewInputGuardError as exc:
         _emit_result(exc.payload(), json_output=json_output)
         raise typer.Exit(1) from exc
-    result = close_pr_review(
-        root,
-        require_no_blockers=require_no_blockers,
-        expected_review_id=review_id,
-        expected_loop_id=loop_id,
-    )
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.CLOSED else 1)
 

@@ -8,9 +8,13 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from typer.testing import CliRunner
 
-from ai_sdlc.cli.loop_review_cmd import resolve_review_input
+from ai_sdlc.cli.loop_review_cmd import (
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.cli.main import app
 
 runner = CliRunner()
@@ -300,6 +304,92 @@ def test_pr_review_fix_and_close_require_no_blockers_json(tmp_path: Path) -> Non
     assert close_payload["status"] == "closed"
     assert close_payload["verdict"] == "risk_accepted"
     assert Path(close_payload["final_report_path"]).is_file()
+
+
+def test_pr_review_close_revalidates_resolution_at_transition(tmp_path: Path) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+
+    with patch("ai_sdlc.cli.pr_review_cmd.find_project_root", return_value=tmp_path):
+        start = runner.invoke(
+            app,
+            [
+                "pr-review",
+                "start",
+                "--base",
+                base_commit,
+                "--provider",
+                "mock-reviewer",
+                "--mock-fixture",
+                "changes_required",
+                "--review-id",
+                "review-resolution-transition-cli",
+                "--json",
+            ],
+        )
+        fix = runner.invoke(app, ["pr-review", "fix", "--json"])
+        started = json.loads(start.output)
+        fixed = json.loads(fix.output)
+        reviewed = resolve_review_input(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=started["loop_id"],
+        )
+        resolution_path = Path(fixed["resolution_path"])
+        validation_count = 0
+
+        def validate_then_replace_resolution(*args, **kwargs):
+            nonlocal validation_count
+            validation_count += 1
+            result = validate_review_input_for_close(*args, **kwargs)
+            if validation_count == 1:
+                resolution = yaml.safe_load(resolution_path.read_text(encoding="utf-8"))
+                resolution["finding_resolutions"][0].update(
+                    {
+                        "status": "waived",
+                        "reason": "Concurrent unreviewed waiver.",
+                        "operator": "other-process",
+                        "resolved_at": "2026-08-16T00:00:00Z",
+                    }
+                )
+                resolution_path.write_text(
+                    yaml.safe_dump(resolution),
+                    encoding="utf-8",
+                )
+            return result
+
+        with patch(
+            "ai_sdlc.cli.pr_review_cmd.validate_review_input_for_close",
+            side_effect=validate_then_replace_resolution,
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "pr-review",
+                    "close",
+                    "--review-id",
+                    started["review_id"],
+                    "--loop-id",
+                    started["loop_id"],
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--json",
+                ],
+            )
+
+    payload = json.loads(close.output)
+    assert validation_count == 2
+    assert close.exit_code == 1
+    assert payload["status"] == "blocked"
+    assert payload["reason"] == "review-input-drift"
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "reviews"
+        / "pr"
+        / started["review_id"]
+        / "final-report.md"
+    ).exists()
 
 
 def test_pr_review_fix_dry_run_json_does_not_write_artifacts(tmp_path: Path) -> None:

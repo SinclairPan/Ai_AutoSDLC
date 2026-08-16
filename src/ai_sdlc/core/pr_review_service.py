@@ -63,6 +63,10 @@ from ai_sdlc.core.pr_review_source import (
     DiffSourceResolutionOptions,
     resolve_diff_source,
 )
+from ai_sdlc.core.review_kernel import (
+    ReviewInputValidator,
+    revalidate_review_input_at_transition,
+)
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 CURRENT_REVIEW_PATH = Path(AI_SDLC_DIR) / "reviews" / "pr" / "current-review.json"
@@ -1167,6 +1171,8 @@ def close_pr_review(
     require_no_blockers: bool = False,
     expected_review_id: str = "",
     expected_loop_id: str = "",
+    expected_review_digest: str = "",
+    review_input_validator: ReviewInputValidator | None = None,
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
@@ -1377,6 +1383,13 @@ def close_pr_review(
             final_report_path=final_report_path,
         )
 
+    revalidate_review_input_at_transition(
+        root.resolve(),
+        loop_type="local-pr-review",
+        loop_id=review_run.loop_id,
+        expected_digest=expected_review_digest,
+        validator=review_input_validator,
+    )
     return writer()
 
 
