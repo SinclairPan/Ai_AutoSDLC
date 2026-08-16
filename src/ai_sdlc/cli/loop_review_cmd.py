@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 import codecs
 import hashlib
 import json
 import os
 import re
 import subprocess
-from collections.abc import MutableMapping
+from collections.abc import MutableMapping, Sequence
 from pathlib import Path
 from typing import cast
 
@@ -244,6 +245,11 @@ def loop_review(
         "--expect-digest",
         help="Fail if the current substantive input no longer matches this digest.",
     ),
+    read_path: str = typer.Option(
+        "",
+        "--read-path",
+        help="Return one artifact's bytes from the same digest-bound read.",
+    ),
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
 ) -> None:
     """Build or recheck one read-only dynamic-expert review input."""
@@ -252,12 +258,18 @@ def loop_review(
         root = find_project_root()
         if root is None:
             raise ValueError("Project is not initialized; .ai-sdlc is missing.")
+        expected = expect_digest.strip().lower()
+        requested_path = read_path.strip()
+        if requested_path and not expected:
+            raise ValueError("--read-path requires --expect-digest.")
+        captured_artifacts: dict[str, bytes] | None = {} if requested_path else None
         review_input = resolve_review_input(
             root,
             loop_type=loop_type,
             loop_id=loop_id,
+            captured_artifacts=captured_artifacts,
+            capture_paths=[requested_path] if requested_path else None,
         )
-        expected = expect_digest.strip().lower()
         if expected and expected != review_input.input_digest:
             _emit(
                 {
@@ -282,7 +294,13 @@ def loop_review(
         )
         raise typer.Exit(1) from exc
 
-    _emit(review_input.model_dump(mode="json"), json_output=json_output)
+    payload = review_input.model_dump(mode="json")
+    if captured_artifacts is not None:
+        if len(captured_artifacts) != 1:
+            raise typer.Exit(1)
+        path, content = next(iter(captured_artifacts.items()))
+        payload["review_snapshot"] = _review_snapshot_payload(path, content)
+    _emit(payload, json_output=json_output)
 
 
 def resolve_review_input(
@@ -291,6 +309,7 @@ def resolve_review_input(
     loop_type: str,
     loop_id: str,
     captured_artifacts: MutableMapping[str, bytes] | None = None,
+    capture_paths: Sequence[str | Path] | None = None,
 ) -> ReviewInput:
     """Resolve existing substantive artifacts without creating a parallel Loop."""
 
@@ -314,9 +333,13 @@ def resolve_review_input(
         ]
         round_number = _read_round_number(root, run_path)
         capture_artifact_paths = (
-            [path for path in artifacts if path != diff_path]
-            if captured_artifacts is not None
-            else []
+            list(capture_paths)
+            if capture_paths is not None
+            else (
+                [path for path in artifacts if path != diff_path]
+                if captured_artifacts is not None
+                else []
+            )
         )
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
@@ -325,12 +348,13 @@ def resolve_review_input(
             loop_type,
             safe_loop_id,
         )
+        stage_source_material = _stage_source_material(root, loop_type, loop_dir)
         artifacts = _unique_paths(
             [
                 pointer_path,
                 run_path,
                 *(loop_dir / name for name in _STAGE_ARTIFACTS[loop_type]),
-                *_stage_source_material(root, loop_type, loop_dir),
+                *stage_source_material,
             ]
         )
         upstream_context = _exclude_paths(
@@ -343,9 +367,16 @@ def resolve_review_input(
         )
         round_number = _read_round_number(root, run_path)
         capture_artifact_paths = (
-            [loop_dir / name for name in _STAGE_CLOSE_ARTIFACTS[loop_type]]
-            if captured_artifacts is not None
-            else []
+            list(capture_paths)
+            if capture_paths is not None
+            else (
+                [
+                    *(loop_dir / name for name in _STAGE_CLOSE_ARTIFACTS[loop_type]),
+                    *(stage_source_material if loop_type == "design-contract" else []),
+                ]
+                if captured_artifacts is not None
+                else []
+            )
         )
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
@@ -363,6 +394,22 @@ def resolve_review_input(
         capture_artifact_paths=capture_artifact_paths,
         captured_artifacts=captured_artifacts,
     )
+
+
+def _review_snapshot_payload(path: str, content: bytes) -> dict[str, str]:
+    try:
+        rendered = content.decode("utf-8")
+    except UnicodeDecodeError:
+        return {
+            "path": path,
+            "encoding": "base64",
+            "content": base64.b64encode(content).decode("ascii"),
+        }
+    return {
+        "path": path,
+        "encoding": "utf-8",
+        "content": rendered,
+    }
 
 
 def _stage_upstream_context(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from pathlib import Path
 
 from ai_sdlc.core.design_contract_models import (
@@ -101,10 +101,16 @@ _DESIGN_SCOPE_FAMILIES = {
 def analyze_design_contract(
     root: Path,
     contract_input: DesignContractInput,
+    *,
+    document_snapshot: Mapping[str, bytes] | None = None,
 ) -> DesignContractReport:
     """Inspect formal docs and return a machine-readable contract report."""
 
-    texts, findings = _load_contract_texts(root, contract_input)
+    texts, findings = _load_contract_texts(
+        root,
+        contract_input,
+        document_snapshot=document_snapshot,
+    )
     coverage_items = _spec_contract_results(contract_input, texts, findings)
     _plan_and_task_results(contract_input, texts, findings)
     return _design_contract_report(contract_input, coverage_items, findings)
@@ -113,6 +119,8 @@ def analyze_design_contract(
 def _load_contract_texts(
     root: Path,
     contract_input: DesignContractInput,
+    *,
+    document_snapshot: Mapping[str, bytes] | None = None,
 ) -> tuple[dict[str, str], list[DesignContractFinding]]:
     texts: dict[str, str] = {}
     findings: list[DesignContractFinding] = []
@@ -122,12 +130,25 @@ def _load_contract_texts(
         (Path(contract_input.tasks_path), contract_input.tasks_digest),
     ):
         try:
-            content = read_stable_bytes(root, relative)
+            content = (
+                read_stable_bytes(root, relative)
+                if document_snapshot is None
+                else document_snapshot[relative.as_posix()]
+            )
         except (OSError, UnicodeError, ValueError) as exc:
             findings.append(
                 _finding(
                     "untrusted_doc",
                     f"Required doc is unavailable or unsafe: {relative}: {exc}",
+                    relative,
+                )
+            )
+            continue
+        except KeyError:
+            findings.append(
+                _finding(
+                    "untrusted_doc",
+                    f"Reviewed document snapshot is missing: {relative}",
                     relative,
                 )
             )
@@ -225,9 +246,7 @@ def _plan_and_task_results(
                 Path(contract_input.spec_path),
             )
         )
-    effective_scope_families = (
-        declared_scope_families & authorized_scope_families
-    )
+    effective_scope_families = declared_scope_families & authorized_scope_families
     if plan_text:
         findings.extend(_plan_findings(Path(contract_input.plan_path), plan_text))
         findings.extend(
@@ -350,8 +369,7 @@ def _task_coverage_index(
         for source_id in _CONTRACT_ID.findall(task_body):
             coverage.setdefault(source_id, set()).add(task_id)
     return {
-        source_id: sorted(task_ids)
-        for source_id, task_ids in sorted(coverage.items())
+        source_id: sorted(task_ids) for source_id, task_ids in sorted(coverage.items())
     } or _inferred_task_coverage(tasks_text, source_ids)
 
 
@@ -409,7 +427,9 @@ def _contract_source_text(spec_text: str) -> str:
                 for existing_level, active in active_by_level.items()
                 if existing_level < level
             }
-            inherited = active_by_level[max(active_by_level)] if active_by_level else False
+            inherited = (
+                active_by_level[max(active_by_level)] if active_by_level else False
+            )
             if _is_non_contract_section(title):
                 active_by_level[level] = False
             elif _is_contract_section(title):
@@ -484,7 +504,11 @@ def _task_findings(path: Path, text: str) -> list[DesignContractFinding]:
     findings: list[DesignContractFinding] = []
     task_ids = _TASK_ID.findall(text)
     if not task_ids:
-        return [_finding("tasks_missing", "tasks.md does not define executable task ids.", path)]
+        return [
+            _finding(
+                "tasks_missing", "tasks.md does not define executable task ids.", path
+            )
+        ]
     sections = _task_sections(text)
     if not sections:
         return [

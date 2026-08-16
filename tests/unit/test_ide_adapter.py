@@ -282,6 +282,8 @@ class TestApplyAdapter:
             assert "一个主专家" in text
             assert "最多增加一个交叉风险专家" in text
             assert "全新且只读的独立上下文" in text
+            assert "--read-path" in text
+            assert "不得重新读取 `artifact_paths`" in text
             assert "不要求用户选择专家" in text
             assert "最多进行一次修复后复审" in text
             assert "--expect-review-digest" in text

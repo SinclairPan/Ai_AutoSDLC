@@ -427,23 +427,30 @@ def close_implementation_loop(
                 "next_action": _record_next_action(tasks, progress),
             }
         )
-        if reviewed_artifacts is None:
-            _write_artifacts(
+        if reviewed_artifacts is not None:
+            revalidate_review_input_at_transition(
                 root,
-                impl_input,
-                tasks,
-                progress,
-                _evidence_from_progress(progress),
-                report,
-                loop_run.model_copy(
-                    update={
-                        "status": LoopStatus.NEEDS_FIX,
-                        "next_action": report.next_action,
-                        "updated_at": utc_now_iso(),
-                    }
-                ),
-                artifacts,
+                loop_type="implementation",
+                loop_id=loop_run.loop_id,
+                expected_digest=options.expected_review_digest,
+                validator=review_input_validator,
             )
+        _write_artifacts(
+            root,
+            impl_input,
+            tasks,
+            progress,
+            _evidence_from_progress(progress),
+            report,
+            loop_run.model_copy(
+                update={
+                    "status": LoopStatus.NEEDS_FIX,
+                    "next_action": report.next_action,
+                    "updated_at": utc_now_iso(),
+                }
+            ),
+            artifacts,
+        )
         return _result_from_report(
             report,
             artifacts=artifacts.refs(root),

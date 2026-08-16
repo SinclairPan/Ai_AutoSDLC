@@ -168,6 +168,104 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
         )
 
 
+def test_loop_review_reads_expert_bytes_from_digest_bound_snapshot(
+    tmp_path: Path,
+) -> None:
+    loop_id = "requirement-snapshot"
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "requirement" / loop_id
+    loop_dir.mkdir(parents=True)
+    (loop_dir / "loop-run.json").write_text(
+        json.dumps(
+            {
+                "loop_id": loop_id,
+                "loop_type": "requirement",
+                "current_round": 1,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_stage_current_pointer(tmp_path, "requirement", loop_id)
+    for filename in (
+        "requirement-intake.json",
+        "requirement-brief.md",
+        "clarification-questions.md",
+        "acceptance-checklist.md",
+    ):
+        content = "{}" if filename.endswith(".json") else f"{filename}: v1\n"
+        (loop_dir / filename).write_text(content, encoding="utf-8")
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        reviewed = runner.invoke(
+            app,
+            [
+                "loop",
+                "review",
+                "--type",
+                "requirement",
+                "--loop-id",
+                loop_id,
+                "--json",
+            ],
+        )
+    reviewed_payload = json.loads(reviewed.output)
+    brief_path = next(
+        path
+        for path in reviewed_payload["artifact_paths"]
+        if path.endswith("requirement-brief.md")
+    )
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        snapshot = runner.invoke(
+            app,
+            [
+                "loop",
+                "review",
+                "--type",
+                "requirement",
+                "--loop-id",
+                loop_id,
+                "--expect-digest",
+                reviewed_payload["input_digest"],
+                "--read-path",
+                brief_path,
+                "--json",
+            ],
+        )
+
+    snapshot_payload = json.loads(snapshot.output)
+    assert snapshot.exit_code == 0
+    assert snapshot_payload["review_snapshot"] == {
+        "path": brief_path,
+        "encoding": "utf-8",
+        "content": "requirement-brief.md: v1\n",
+    }
+
+    (tmp_path / brief_path).write_text(
+        "requirement-brief.md: unreviewed\n",
+        encoding="utf-8",
+    )
+    assert snapshot_payload["review_snapshot"]["content"].endswith(": v1\n")
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        drifted = runner.invoke(
+            app,
+            [
+                "loop",
+                "review",
+                "--type",
+                "requirement",
+                "--loop-id",
+                loop_id,
+                "--expect-digest",
+                reviewed_payload["input_digest"],
+                "--read-path",
+                brief_path,
+                "--json",
+            ],
+        )
+    assert drifted.exit_code == 1
+    assert json.loads(drifted.output)["reason"] == "review-input-drift"
+
+
 @pytest.mark.parametrize(
     "filename",
     ["implementation-tasks.json", "implementation-progress.json"],

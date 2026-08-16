@@ -418,17 +418,17 @@ def _finish_verified_design_close(
     review_input_validator: ReviewInputValidator | None,
     reviewed_artifacts: Mapping[str, bytes] | None,
 ) -> DesignContractCommandResult:
-    if reviewed_artifacts is None:
-        refreshed = _refresh_report_before_close(
-            root,
-            loop_run,
-            artifacts,
-            verified_input,
-            persist=False,
-        )
-        if isinstance(refreshed, DesignContractCommandResult):
-            return refreshed
-        report, loop_run = refreshed
+    refreshed = _refresh_report_before_close(
+        root,
+        loop_run,
+        artifacts,
+        verified_input,
+        persist=False,
+        document_snapshot=reviewed_artifacts,
+    )
+    if isinstance(refreshed, DesignContractCommandResult):
+        return refreshed
+    report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
         _write_check_artifacts(
             root,
@@ -512,17 +512,17 @@ def _recover_partially_written_design_close(
     review_input_validator: ReviewInputValidator | None,
     reviewed_artifacts: Mapping[str, bytes] | None,
 ) -> DesignContractCommandResult:
-    if reviewed_artifacts is None:
-        refreshed = _refresh_report_before_close(
-            root,
-            loop_run,
-            artifacts,
-            verified_input,
-            persist=False,
-        )
-        if isinstance(refreshed, DesignContractCommandResult):
-            return refreshed
-        report, loop_run = refreshed
+    refreshed = _refresh_report_before_close(
+        root,
+        loop_run,
+        artifacts,
+        verified_input,
+        persist=False,
+        document_snapshot=reviewed_artifacts,
+    )
+    if isinstance(refreshed, DesignContractCommandResult):
+        return refreshed
+    report, loop_run = refreshed
     if report.blocker_count or loop_run.status != LoopStatus.NEEDS_REVIEW:
         artifacts.close_path.unlink(missing_ok=True)
         _write_check_artifacts(
@@ -647,6 +647,7 @@ def _refresh_report_before_close(
     contract_input: DesignContractInput,
     *,
     persist: bool = True,
+    document_snapshot: Mapping[str, bytes] | None = None,
 ) -> tuple[DesignContractReport, LoopRun] | DesignContractCommandResult:
     resolved_requirement_loop_id, requirement_blocker, requirement_next_action = (
         _required_requirement_loop_id(root, contract_input.requirement_loop_id)
@@ -683,7 +684,11 @@ def _refresh_report_before_close(
             next_action="Start and freeze a new requirement loop.",
             artifacts=artifacts.refs(root),
         )
-    report = analyze_design_contract(root, contract_input)
+    report = analyze_design_contract(
+        root,
+        contract_input,
+        document_snapshot=document_snapshot,
+    )
     report.next_action = _next_action_for_report(report)
     refreshed_loop_run = _build_loop_run(
         contract_input=contract_input,

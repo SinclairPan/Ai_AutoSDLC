@@ -40,7 +40,7 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - Frontend Evidence Loop：页面契约、浏览器证据、视觉与可访问性；
 - Local PR Review：提交前由独立本地只读代理执行跨阶段审查。
 
-五个 Loop 的实质结果均由当前代理按内容自动选择最多两名只读专家复核。有发现时由原实现代理修复，并只允许一次复审；通过后调用既有 close。专家失败时保留 `needs_review`，不创建持久化专家身份、session、ledger、certificate、attestation 或 authority/store。
+五个 Loop 的实质结果均由当前代理按内容自动选择最多两名只读专家复核。专家只读取与 `input_digest` 同次获取的内联 `review_snapshot`，不得在复核期间重新打开可变工件路径。有发现时由原实现代理修复，并只允许一次复审；通过后调用既有 close。专家失败时保留 `needs_review`，不创建持久化专家身份、session、ledger、certificate、attestation 或 authority/store。
 
 代码精简只提供非阻断建议。它不改变 Loop 状态，不产生强制修复、receipt、例外或 No-Go，也不阻止 close。
 

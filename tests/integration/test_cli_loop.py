@@ -1220,6 +1220,70 @@ def test_loop_design_contract_close_uses_reviewed_state_across_aba(
     assert payload["blocker_count"] >= 2
 
 
+def test_loop_design_contract_close_rechecks_reviewed_document_snapshot(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_design_contract_work_item(tmp_path)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        check = runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-reviewed-docs",
+                "--json",
+            ],
+        )
+
+    assert check.exit_code == 0
+    tasks_path = work_item / "tasks.md"
+    tasks_path.write_text(
+        tasks_path.read_text(encoding="utf-8").replace(
+            "- **验证**：uv run pytest tests/unit/test_demo.py -q",
+            "- **验证**：",
+        ),
+        encoding="utf-8",
+    )
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="design-contract",
+        loop_id="dc-reviewed-docs",
+    )
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        close = runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                "--loop-id",
+                "dc-reviewed-docs",
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--yes",
+                "--json",
+            ],
+        )
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["closed"] is False
+    assert payload["status"] == "needs_fix"
+    assert not (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / "dc-reviewed-docs"
+        / "design-contract-close.json"
+    ).exists()
+
+
 def test_loop_design_contract_list_json(tmp_path: Path) -> None:
     _write_design_contract_work_item(tmp_path)
 
@@ -1474,6 +1538,89 @@ def test_loop_implementation_close_uses_reviewed_state_across_aba(
     assert payload["closed"] is False
     assert payload["status"] == "needs_fix"
     assert payload["blocker"] == "T11 is not done."
+
+
+def test_loop_implementation_failed_close_persists_reviewed_decision(
+    tmp_path: Path,
+) -> None:
+    _write_design_contract_work_item(tmp_path)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-impl-needs-fix",
+                "--json",
+            ],
+        )
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-needs-fix"),
+                "--yes",
+                "--json",
+            ],
+        )
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "start",
+                "--wi",
+                "specs/demo-design-contract",
+                "--design-contract-loop-id",
+                "dc-impl-needs-fix",
+                "--loop-id",
+                "impl-needs-fix",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="impl-needs-fix",
+    )
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        close = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "close",
+                "--loop-id",
+                "impl-needs-fix",
+                "--expect-review-digest",
+                reviewed.input_digest,
+                "--yes",
+                "--json",
+            ],
+        )
+
+    loop_dir = tmp_path / ".ai-sdlc" / "loops" / "implementation" / "impl-needs-fix"
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["status"] == "needs_fix"
+    assert (
+        json.loads((loop_dir / "loop-run.json").read_text(encoding="utf-8"))["status"]
+        == "needs_fix"
+    )
+    assert (
+        json.loads(
+            (loop_dir / "implementation-report.json").read_text(encoding="utf-8")
+        )["status"]
+        == "needs_fix"
+    )
 
 
 def test_loop_implementation_close_does_not_overwrite_newer_progress(

@@ -113,7 +113,7 @@ ai-sdlc loop review --type frontend-evidence --loop-id <loop-id> --json
 ai-sdlc loop frontend-evidence close --loop-id <loop-id> --expect-review-digest <input_digest> --yes
 ```
 
-每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。`loop review` 返回的 `input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc program browser-gate-probe --execute`。
+每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。专家读取待审工件时使用同一 `loop review` 命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只检查返回的 `review_snapshot`，不重新打开可变路径。`loop review` 返回的 `input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc program browser-gate-probe --execute`。
 
 ### 非阻断精简建议
 
