@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, MutableMapping
 from io import StringIO
 from pathlib import Path
 from typing import TypeVar
@@ -438,12 +438,14 @@ def implementation_close(
 
     _run_project_writer_adapter(json_output=json_output)
     root = _project_root_or_exit(json_output=json_output)
+    reviewed_artifacts: dict[str, bytes] = {}
     _require_review_close_guard(
         root,
         loop_type="implementation",
         loop_id=loop_id,
         expected_digest=expect_review_digest,
         json_output=json_output,
+        captured_artifacts=reviewed_artifacts,
     )
     result = _run_review_bound_close(
         lambda: close_implementation_loop(
@@ -455,6 +457,7 @@ def implementation_close(
                 expected_review_digest=expect_review_digest,
             ),
             review_input_validator=validate_review_input_for_close,
+            reviewed_artifacts=reviewed_artifacts,
         ),
         json_output=json_output,
     )
@@ -655,6 +658,7 @@ def _require_review_close_guard(
     loop_id: str,
     expected_digest: str,
     json_output: bool,
+    captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> None:
     try:
         validate_review_input_for_close(
@@ -662,6 +666,7 @@ def _require_review_close_guard(
             loop_type=loop_type,
             loop_id=loop_id,
             expected_digest=expected_digest,
+            captured_artifacts=captured_artifacts,
         )
     except ReviewInputGuardError as exc:
         _emit_payload(exc.payload(), json_output=json_output)

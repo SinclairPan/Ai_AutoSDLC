@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import yaml
@@ -961,7 +962,29 @@ def test_close_honors_policy_default_require_no_blockers(tmp_path) -> None:
     assert result.unresolved_required == 1
 
 
-def test_close_blocks_malformed_loop_policy_without_traceback(tmp_path) -> None:
+def test_close_uses_reviewed_pack_policy_when_live_policy_changes(tmp_path) -> None:
+    base_commit = _init_repo(tmp_path)
+    _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
+    start_pr_review(
+        PRReviewStartOptions(
+            root=tmp_path,
+            base_ref=base_commit,
+            provider_id="mock-reviewer",
+            review_id="review-frozen-close-policy",
+            mock_fixture=MockReviewerFixture.CHANGES_REQUIRED,
+        )
+    )
+    with patch("ai_sdlc.core.pr_review_service.load_loop_policy") as live_policy_loader:
+        live_policy_loader.return_value.default_close_mode = "require-no-blockers"
+        result = close_pr_review(tmp_path)
+
+    assert result.status == PRReviewCommandStatus.BLOCKED
+    assert result.verdict == "blocked"
+    assert result.blocker == "Unresolved REQUIRED findings remain."
+    live_policy_loader.assert_not_called()
+
+
+def test_close_does_not_reload_live_policy_after_review(tmp_path) -> None:
     base_commit = _init_repo(tmp_path)
     _commit_file(tmp_path, "src/app.py", "print('hello')\n", "add app")
     start_pr_review(
@@ -973,14 +996,15 @@ def test_close_blocks_malformed_loop_policy_without_traceback(tmp_path) -> None:
             mock_fixture=MockReviewerFixture.CLEAN,
         )
     )
-    _write_loop_policy(tmp_path, "remote_model_policy: strict\n")
+    with patch(
+        "ai_sdlc.core.pr_review_service.load_loop_policy",
+        side_effect=AssertionError("close must use the reviewed policy decision"),
+    ) as live_policy_loader:
+        result = close_pr_review(tmp_path)
 
-    result = close_pr_review(tmp_path)
-
-    assert result.status == PRReviewCommandStatus.BLOCKED
-    assert result.verdict == "blocked"
-    assert "Loop policy is malformed" in result.blocker
-    assert "loop-policy.yaml" in result.next_action
+    assert result.status == PRReviewCommandStatus.CLOSED
+    assert result.verdict == "fully_clean"
+    live_policy_loader.assert_not_called()
 
 
 def test_close_blocks_tampered_reviewer_findings(tmp_path) -> None:

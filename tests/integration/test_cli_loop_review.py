@@ -899,17 +899,24 @@ def test_local_pr_review_streams_copied_diff_digest(tmp_path: Path) -> None:
     )
     (review_dir / "findings.json").write_text("{}", encoding="utf-8")
 
+    captured_artifacts: dict[str, bytes] = {}
     tracemalloc.start()
     try:
         resolve_review_input(
             tmp_path,
             loop_type="local-pr-review",
             loop_id="loop-pr-large-diff",
+            captured_artifacts=captured_artifacts,
         )
         _, peak = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
 
+    diff_key = diff.relative_to(tmp_path).as_posix()
+    assert diff_key not in captured_artifacts
+    assert (review_dir / "review-pack.json").relative_to(tmp_path).as_posix() in (
+        captured_artifacts
+    )
     assert peak < artifact_size // 2
 
 

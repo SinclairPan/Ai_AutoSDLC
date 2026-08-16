@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import stat
+from collections.abc import Mapping
 from pathlib import Path
 
 from pydantic import ValidationError
@@ -321,30 +322,52 @@ def close_implementation_loop(
     options: ImplementationCloseOptions,
     *,
     review_input_validator: ReviewInputValidator | None = None,
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> ImplementationCommandResult:
     """Close an implementation loop after required task evidence is complete."""
 
     root = options.root.resolve()
-    loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
-        root,
-        options.loop_id,
-    )
-    if pointer_blocker:
-        return _blocked_result(pointer_blocker)
     if not options.yes:
         return _blocked_result(
             "Pass --yes after confirming implementation evidence.",
             result="Implementation close requires explicit confirmation.",
             next_action="Repeat the same guarded implementation close command with --yes.",
         )
+    expected_loop_id = options.loop_id.strip()
+    if reviewed_artifacts is None:
+        loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
+            root,
+            options.loop_id,
+        )
+        if pointer_blocker:
+            return _blocked_result(pointer_blocker)
+    else:
+        try:
+            validate_explicit_loop_id(expected_loop_id)
+        except ValueError as exc:
+            return _blocked_result(
+                str(exc),
+                loop_id=expected_loop_id,
+                result="Implementation loop artifact is malformed.",
+            )
+        loop_run_path = implementation_artifacts(root, expected_loop_id).loop_run_path
     try:
-        loop_run = read_loop_run(loop_run_path)
+        loop_run = (
+            read_loop_run(loop_run_path)
+            if reviewed_artifacts is None
+            else LoopRun.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    loop_run_path,
+                    reviewed_artifacts,
+                )
+            )
+        )
         validate_explicit_loop_id(loop_run.loop_id)
     except ValueError as exc:
         return _blocked_result(
             str(exc), result="Implementation loop artifact is malformed."
         )
-    expected_loop_id = options.loop_id.strip()
     if expected_loop_id and loop_run.loop_id != expected_loop_id:
         return _blocked_result(
             (
@@ -360,6 +383,7 @@ def close_implementation_loop(
         artifacts,
         loop_id=loop_run.loop_id,
         input_digest=loop_run.input_digest,
+        reviewed_artifacts=reviewed_artifacts,
     )
     if isinstance(loaded, ImplementationCommandResult):
         return loaded
@@ -367,7 +391,17 @@ def close_implementation_loop(
     report = _build_report(root, impl_input, tasks, progress)
     if loop_run.status == LoopStatus.CLOSED and artifacts.close_path.is_file():
         try:
-            report = read_implementation_report(artifacts.report_json_path)
+            report = (
+                read_implementation_report(artifacts.report_json_path)
+                if reviewed_artifacts is None
+                else ImplementationReport.model_validate_json(
+                    _reviewed_implementation_bytes(
+                        root,
+                        artifacts.report_json_path,
+                        reviewed_artifacts,
+                    )
+                )
+            )
         except (OSError, ValueError) as exc:
             return _blocked_result(
                 f"Persisted implementation report is malformed: {exc}",
@@ -553,14 +587,38 @@ def _read_current_state(
     *,
     loop_id: str,
     input_digest: str = "",
+    reviewed_artifacts: Mapping[str, bytes] | None = None,
 ) -> (
     tuple[ImplementationInput, ImplementationTasks, ImplementationProgress]
     | ImplementationCommandResult
 ):
     try:
-        impl_input = read_input(artifacts.input_path)
-        tasks = read_tasks(artifacts.tasks_path)
-        progress = read_progress(artifacts.progress_path)
+        if reviewed_artifacts is None:
+            impl_input = read_input(artifacts.input_path)
+            tasks = read_tasks(artifacts.tasks_path)
+            progress = read_progress(artifacts.progress_path)
+        else:
+            impl_input = ImplementationInput.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    artifacts.input_path,
+                    reviewed_artifacts,
+                )
+            )
+            tasks = ImplementationTasks.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    artifacts.tasks_path,
+                    reviewed_artifacts,
+                )
+            )
+            progress = ImplementationProgress.model_validate_json(
+                _reviewed_implementation_bytes(
+                    root,
+                    artifacts.progress_path,
+                    reviewed_artifacts,
+                )
+            )
     except ValueError as exc:
         return _blocked_result(
             str(exc),
@@ -576,6 +634,18 @@ def _read_current_state(
             artifacts=artifacts.refs(root),
         )
     return impl_input, tasks, progress
+
+
+def _reviewed_implementation_bytes(
+    root: Path,
+    path: Path,
+    reviewed_artifacts: Mapping[str, bytes],
+) -> bytes:
+    key = repo_relative_path(root, path)
+    try:
+        return reviewed_artifacts[key]
+    except KeyError as exc:
+        raise ValueError(f"Reviewed implementation snapshot is missing {key}.") from exc
 
 
 def _design_contract_gate(

@@ -285,14 +285,19 @@ def resolve_review_input(
         artifacts.extend(
             loop_dir / name for name in _LOCAL_OPTIONAL if (loop_dir / name).is_file()
         )
-        artifacts.append(_local_review_diff(root, loop_dir / "review-pack.json"))
+        diff_path = _local_review_diff(root, loop_dir / "review-pack.json")
+        artifacts.append(diff_path)
         risk_signals = [
             *_content_risk_signals(root, artifacts),
             *_git_risk_signals(root),
             *_local_review_source_risk_signals(root, loop_dir / "review-pack.json"),
         ]
         round_number = _read_round_number(root, run_path)
-        capture_artifact_paths = artifacts if captured_artifacts is not None else []
+        capture_artifact_paths = (
+            [path for path in artifacts if path != diff_path]
+            if captured_artifacts is not None
+            else []
+        )
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
         pointer_path, run_path = _resolve_current_stage_state(
@@ -317,6 +322,17 @@ def resolve_review_input(
             [*artifacts, *upstream_context],
         )
         round_number = _read_round_number(root, run_path)
+        capture_artifact_paths = (
+            [
+                run_path,
+                loop_dir / "implementation-input.json",
+                loop_dir / "implementation-report.json",
+                loop_dir / "implementation-tasks.json",
+                loop_dir / "implementation-progress.json",
+            ]
+            if loop_type == "implementation" and captured_artifacts is not None
+            else []
+        )
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
 
@@ -330,9 +346,7 @@ def resolve_review_input(
         if loop_type != "local-pr-review"
         else [],
         risk_signals=risk_signals,
-        capture_artifact_paths=capture_artifact_paths
-        if loop_type == "local-pr-review"
-        else [],
+        capture_artifact_paths=capture_artifact_paths,
         captured_artifacts=captured_artifacts,
     )
 

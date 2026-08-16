@@ -1178,19 +1178,6 @@ def close_pr_review(
 ) -> PRReviewCloseResult:
     """Close current review with fail-closed verdict semantics."""
 
-    resolved_root = root.resolve()
-    try:
-        policy = load_loop_policy(resolved_root)
-    except LoopPolicyError as exc:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            verdict=ReviewVerdict.BLOCKED,
-            blocker=_policy_blocker(exc),
-            next_action=_policy_next_action(),
-        )
-    effective_require_no_blockers = (
-        require_no_blockers or policy.default_close_mode == "require-no-blockers"
-    )
     try:
         review_run, review_run_path = _load_current_review_run(
             root,
@@ -1228,6 +1215,11 @@ def close_pr_review(
             review_run.review_pack_path,
             reviewed_artifacts=reviewed_artifacts,
         )
+        reviewed_close_mode = review_pack.policy_decisions.get("default_close_mode")
+        if reviewed_close_mode not in {"strict", "require-no-blockers"}:
+            raise ValueError(
+                "review-pack.json has an invalid default_close_mode policy decision"
+            )
         verification_evidence = _load_verification_evidence(
             root.resolve(),
             review_run,
@@ -1246,6 +1238,10 @@ def close_pr_review(
             blocker=f"Current PR review artifacts are malformed: {exc}",
             next_action="Regenerate findings.json by rerunning PR review.",
         )
+
+    effective_require_no_blockers = (
+        require_no_blockers or reviewed_close_mode == "require-no-blockers"
+    )
 
     tamper_blocker = _reviewer_outputs_tamper_blocker(
         root.resolve(),

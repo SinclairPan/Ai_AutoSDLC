@@ -12,11 +12,17 @@ import pytest
 import yaml
 from typer.testing import CliRunner
 
-from ai_sdlc.cli.loop_review_cmd import resolve_review_input
+import ai_sdlc.core.implementation_loop as implementation_loop
+from ai_sdlc.cli.loop_review_cmd import (
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.cli.main import app
+from ai_sdlc.core.implementation_loop import record_implementation_progress
 from ai_sdlc.core.implementation_models import (
     ImplementationClose,
     ImplementationCurrentPointer,
+    ImplementationRecordOptions,
     ImplementationReport,
 )
 from ai_sdlc.core.implementation_store import implementation_artifacts
@@ -1154,6 +1160,123 @@ def test_loop_implementation_start_record_status_and_close_json(
     assert close_payload["closed"] is True
     assert close_payload["loop_status"] == "closed"
     assert close_payload["next_action"] == "Run ai-sdlc pr-review start."
+
+
+def test_loop_implementation_close_uses_reviewed_state_across_aba(
+    tmp_path: Path,
+) -> None:
+    _write_design_contract_work_item(tmp_path)
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "check",
+                "--wi",
+                "specs/demo-design-contract",
+                "--loop-id",
+                "dc-impl-aba",
+                "--json",
+            ],
+        )
+        runner.invoke(
+            app,
+            [
+                "loop",
+                "design-contract",
+                "close",
+                *_review_close_args(tmp_path, "design-contract", "dc-impl-aba"),
+                "--yes",
+                "--json",
+            ],
+        )
+        start = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "start",
+                "--wi",
+                "specs/demo-design-contract",
+                "--design-contract-loop-id",
+                "dc-impl-aba",
+                "--loop-id",
+                "impl-aba",
+                "--json",
+            ],
+        )
+
+    assert start.exit_code == 0
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="impl-aba",
+    )
+    reviewed_bytes = {
+        path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
+    }
+    validation_count = 0
+
+    def validate_then_complete(*args, **kwargs):
+        nonlocal validation_count
+        validation_count += 1
+        result = validate_review_input_for_close(*args, **kwargs)
+        if validation_count == 1:
+            recorded = record_implementation_progress(
+                ImplementationRecordOptions(
+                    root=tmp_path,
+                    loop_id="impl-aba",
+                    task_id="T11",
+                    status="done",
+                    verification=("pytest -q",),
+                )
+            )
+            assert recorded.status == "ready"
+        return result
+
+    original_revalidate = implementation_loop.revalidate_review_input_at_transition
+
+    def restore_then_revalidate(*args, **kwargs):
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+        return original_revalidate(*args, **kwargs)
+
+    try:
+        with (
+            patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path),
+            patch(
+                "ai_sdlc.cli.loop_cmd.validate_review_input_for_close",
+                side_effect=validate_then_complete,
+            ),
+            patch(
+                "ai_sdlc.core.implementation_loop.revalidate_review_input_at_transition",
+                side_effect=restore_then_revalidate,
+            ),
+        ):
+            close = runner.invoke(
+                app,
+                [
+                    "loop",
+                    "implementation",
+                    "close",
+                    "--loop-id",
+                    "impl-aba",
+                    "--expect-review-digest",
+                    reviewed.input_digest,
+                    "--yes",
+                    "--json",
+                ],
+            )
+    finally:
+        for path, content in reviewed_bytes.items():
+            (tmp_path / path).write_bytes(content)
+
+    payload = json.loads(close.output)
+    assert close.exit_code == 1
+    assert payload["closed"] is False
+    assert payload["status"] == "needs_fix"
+    assert payload["blocker"] == "T11 is not done."
 
 
 def test_loop_implementation_start_dry_run_skips_adapter_hook(
