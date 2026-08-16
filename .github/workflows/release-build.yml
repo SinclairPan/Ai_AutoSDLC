@@ -386,6 +386,26 @@ jobs:
             echo "Release assets require an exact main-branch dispatch commit." >&2
             exit 1
           fi
+          require_exact_remote_release_tag() {
+            remote_tag_ref="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/ref/tags/${RELEASE_TAG}" \
+                --jq '.object.type + " " + .object.sha'
+            )"
+            read -r remote_tag_type remote_tag_object_sha <<< "${remote_tag_ref}"
+            if [[ "${remote_tag_type}" != "tag" || ! "${remote_tag_object_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Release tag ${RELEASE_TAG} must resolve to one annotated tag object." >&2
+              exit 1
+            fi
+            remote_tag_commit="$(
+              gh api "repos/${GITHUB_REPOSITORY}/git/tags/${remote_tag_object_sha}" \
+                --jq 'select(.object.type == "commit") | .object.sha'
+            )"
+            if [[ "${remote_tag_commit}" != "${DISPATCH_SHA}" ]]; then
+              echo "Release tag ${RELEASE_TAG} now resolves to ${remote_tag_commit}, not ${DISPATCH_SHA}." >&2
+              exit 1
+            fi
+          }
+          require_exact_remote_release_tag
           local_paths=()
           while IFS= read -r local_path; do
             local_paths+=("${local_path}")
@@ -448,6 +468,7 @@ jobs:
               echo "Release ${RELEASE_TAG} is no longer a draft; refusing to upload assets." >&2
               exit 1
             fi
+            require_exact_remote_release_tag
             gh release upload "${RELEASE_TAG}" "${upload_paths[@]}" --repo "${GITHUB_REPOSITORY}"
           fi
           final_asset_names="$(

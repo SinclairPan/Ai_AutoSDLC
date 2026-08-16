@@ -455,6 +455,10 @@ elif [[ "$1" == "release" && "$2" == "upload" ]]; then
     fi
   done
   sort -u -o "${FAKE_RELEASE_STATE_FILE}" "${FAKE_RELEASE_STATE_FILE}"
+elif [[ "$1" == "api" && "$2" == *"/git/ref/tags/"* ]]; then
+  printf 'tag %s\n' "${FAKE_TAG_OBJECT_SHA}"
+elif [[ "$1" == "api" && "$2" == *"/git/tags/"* ]]; then
+  printf '%s\n' "${FAKE_TAG_COMMIT_SHA}"
 else
   exit 97
 fi
@@ -494,8 +498,25 @@ fi
         "FAKE_GH_LOG": str(log_path),
         "FAKE_REMOTE_ASSETS": str(remote_assets),
         "FAKE_RELEASE_STATE_FILE": str(asset_state),
+        "FAKE_TAG_OBJECT_SHA": "b" * 40,
+        "FAKE_TAG_COMMIT_SHA": "a" * 40,
     }
 
+    asset_state.write_text("", encoding="utf-8")
+    moved_tag = subprocess.run(
+        [bash, "-c", upload_script],
+        cwd=tmp_path,
+        env={
+            **base_env,
+            "FAKE_RELEASE_IS_DRAFT": "true",
+            "FAKE_RELEASE_ASSETS": "",
+            "FAKE_TAG_COMMIT_SHA": "c" * 40,
+        },
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    log_path.unlink(missing_ok=True)
     asset_state.write_text("", encoding="utf-8")
     published = subprocess.run(
         [bash, "-c", upload_script],
@@ -596,6 +617,7 @@ fi
         check=False,
     )
 
+    assert moved_tag.returncode != 0
     assert published.returncode != 0
     assert mismatched.returncode != 0
     assert partial.returncode == 0, partial.stderr
