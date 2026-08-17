@@ -361,12 +361,6 @@ AI-SDLC 不对所有问题使用同一种强度：
 
 - [README v2.0.0](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/README.md)
 
-#### 产品契约
-
-查看正式能力、失败语义和不作出的承诺：
-
-- [product-contract.md](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/docs/product-contract.md)
-
 ### 离线安装资产
 
 产品站只提供正式 Release 下载链接，不把安装包二进制放入站点交付目录。下载后必须同时取得同名 `.sha256` 文件并按中文用户指南完成校验。
