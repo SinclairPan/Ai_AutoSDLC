@@ -1280,7 +1280,8 @@ class TestRunCommand:
 
         assert result.exit_code == 2, result.output
         assert "Pipeline halted" in result.output
-        assert "Implement T001 with the active AI agent" in result.output
+        normalized_output = " ".join(result.output.split())
+        assert "Implement T001 with the active AI agent" in normalized_output
         assert not (spec_dir / "task-execution-log.md").exists()
         assert not (spec_dir / "development-summary.md").exists()
 
