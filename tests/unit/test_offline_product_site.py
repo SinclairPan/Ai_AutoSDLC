@@ -2303,3 +2303,130 @@ def test_focus_visible_contract_can_live_in_shared_stylesheet(tmp_path: Path) ->
     issues = validate_site(tmp_path)
 
     assert "missing_focus_visible_style" not in {issue.code for issue in issues}
+
+
+def test_every_external_link_exposes_the_offline_boundary() -> None:
+    external_links: list[_HtmlNode] = []
+    for relative_path in (*TOP_LEVEL_PAGES, "docs/USER_GUIDE.zh-CN.html"):
+        document = _parse_document(
+            (_offline_site_root() / relative_path).read_text(encoding="utf-8")
+        )
+        external_links.extend(
+            link
+            for link in _find_nodes(document, tag="a")
+            if link.attributes.get("href", "").startswith(("http://", "https://"))
+        )
+
+    assert len(external_links) == 28
+    for link in external_links:
+        assert link.attributes.get("href") in ALLOWED_EXTERNAL_URLS
+        assert link.attributes.get("target") == "_blank"
+        assert set(link.attributes.get("rel", "").split()) == {
+            "noopener",
+            "noreferrer",
+        }
+        labels = _find_nodes(
+            link,
+            tag="span",
+            attribute="class",
+            value="network-label",
+        )
+        assert len(labels) == 1
+        assert _node_text(labels[0]) == "需要联网"
+
+
+@pytest.mark.parametrize(
+    ("anchor", "expected_code"),
+    (
+        (
+            '<a href="https://github.com/SinclairPan/Ai_AutoSDLC" '
+            'target="_blank" rel="noopener noreferrer">GitHub</a>',
+            "external_link_missing_network_label",
+        ),
+        (
+            '<a href="https://github.com/SinclairPan/Ai_AutoSDLC" '
+            'rel="noopener noreferrer">GitHub '
+            '<span class="network-label">需要联网</span></a>',
+            "external_link_invalid_target",
+        ),
+        (
+            '<a href="https://github.com/SinclairPan/Ai_AutoSDLC" '
+            'target="_blank" rel="noopener">GitHub '
+            '<span class="network-label">需要联网</span></a>',
+            "external_link_invalid_rel",
+        ),
+    ),
+)
+def test_validator_rejects_incomplete_external_link_contract(
+    tmp_path: Path, anchor: str, expected_code: str
+) -> None:
+    _write(tmp_path, "index.html", anchor)
+
+    codes = {issue.code for issue in validate_site(tmp_path)}
+
+    assert expected_code in codes
+
+
+def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
+    runner = Path("scripts/run_offline_product_site_browser_acceptance.mjs")
+    receipt = Path("docs/product-site/design/qa/browser-acceptance-receipt.json")
+    manifest = Path("docs/product-site/design/qa/package-manifest.sha256")
+
+    result = subprocess.run(
+        [
+            "node",
+            str(runner),
+            "--verify-receipt",
+            str(receipt),
+            "--site-root",
+            str(_offline_site_root()),
+            "--manifest",
+            str(manifest),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    assert payload["schemaVersion"] == 1
+    assert re.fullmatch(r"[0-9a-f]{40}", payload["inputs"]["inputCommit"])
+    assert payload["inputs"]["copyRootKind"] == "fresh-external-copy"
+    assert payload["inputs"]["manifestSha256"] == sha256(
+        manifest.read_bytes()
+    ).hexdigest()
+    assert payload["summary"] == {
+        "stateCount": 135,
+        "stateFailures": 0,
+        "copyCount": 240,
+        "copyFailures": 0,
+        "noJsGroupCount": 12,
+        "noJsFailures": 0,
+        "configuredVideoFailures": 0,
+        "accessibilityFailures": 0,
+        "runtimeFailures": 0,
+    }
+    ownership = payload["requestOwnership"]
+    assert ownership["requestCount"] == 33
+    assert ownership["uniqueUrlCount"] == 13
+    assert ownership["remoteCount"] == 0
+    assert ownership["siteRootEscapeCount"] == 0
+    assert ownership["repositoryBackReferenceCount"] == 0
+    assert len(ownership["requests"]) == 33
+    assert all(
+        request["protocol"] == "file:"
+        and request["ownership"] == "copied-site-root"
+        and not request["repositoryBackReference"]
+        for request in ownership["requests"]
+    )
+    expert = payload["expertScreenshot"]
+    assert len(expert["captures"]) >= 2
+    assert len({capture["sha256"] for capture in expert["captures"]}) == 1
+    assert all(capture["assertions"]["unclipped"] for capture in expert["captures"])
+    assert all(
+        capture["assertions"]["tablistScrollLeft"] == 0
+        and capture["assertions"]["pageScrollX"] == 0
+        and capture["assertions"]["pageScrollY"] == 0
+        for capture in expert["captures"]
+    )

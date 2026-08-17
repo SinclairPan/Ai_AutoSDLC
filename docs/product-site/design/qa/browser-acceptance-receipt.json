@@ -1,0 +1,4309 @@
+{
+  "schemaVersion": 1,
+  "inputs": {
+    "inputCommit": "532d55991b24631c68cfde34377dadd4df049bb2",
+    "manifestSha256": "3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d",
+    "manifestEntryCount": 13,
+    "sourceSiteRoot": "/Users/sinclairpan/project/AI-SDLC_ParticipatingVersion/.worktrees/ai-sdlc-2-offline-product-site-build/deliverables/ai-sdlc-2.0-offline-product-site",
+    "copiedSiteRoot": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site",
+    "copyRootKind": "fresh-external-copy",
+    "copiedManifestSha256": "3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d",
+    "runnerSha256": "db10b0b365c4a62c61061492357819ae274109bd631be814483dc6923ca3ed06",
+    "playwrightModule": "/Users/sinclairpan/.nvm/versions/node/v24.11.1/lib/node_modules/@playwright/cli/node_modules/playwright/index.mjs",
+    "browserExecutable": "/Users/sinclairpan/Library/Caches/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-mac-arm64/chrome-headless-shell"
+  },
+  "summary": {
+    "stateCount": 135,
+    "stateFailures": 0,
+    "copyCount": 240,
+    "copyFailures": 0,
+    "noJsGroupCount": 12,
+    "noJsFailures": 0,
+    "configuredVideoFailures": 0,
+    "accessibilityFailures": 0,
+    "runtimeFailures": 0
+  },
+  "stateResults": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "home",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "loop",
+      "state": "requirement",
+      "protocol": "file:",
+      "selected": "requirement",
+      "hash": "#requirement",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "loop",
+      "state": "design-contract",
+      "protocol": "file:",
+      "selected": "design-contract",
+      "hash": "#design-contract",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "loop",
+      "state": "implementation",
+      "protocol": "file:",
+      "selected": "implementation",
+      "hash": "#implementation",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "loop",
+      "state": "frontend-evidence",
+      "protocol": "file:",
+      "selected": "frontend-evidence",
+      "hash": "#frontend-evidence",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "expert",
+      "state": "review-requirement",
+      "protocol": "file:",
+      "selected": "review-requirement",
+      "hash": "#review-requirement",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "expert",
+      "state": "review-design",
+      "protocol": "file:",
+      "selected": "review-design",
+      "hash": "#review-design",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "expert",
+      "state": "review-implementation",
+      "protocol": "file:",
+      "selected": "review-implementation",
+      "hash": "#review-implementation",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "expert",
+      "state": "review-frontend",
+      "protocol": "file:",
+      "selected": "review-frontend",
+      "hash": "#review-frontend",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "expert",
+      "state": "review-pr",
+      "protocol": "file:",
+      "selected": "review-pr",
+      "hash": "#review-pr",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "platform",
+      "state": "tool-governance",
+      "protocol": "file:",
+      "selected": "tool-governance",
+      "hash": "#tool-governance",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "platform",
+      "state": "continuity",
+      "protocol": "file:",
+      "selected": "continuity",
+      "hash": "#continuity",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "platform",
+      "state": "frontend-delivery",
+      "protocol": "file:",
+      "selected": "frontend-delivery",
+      "hash": "#frontend-delivery",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "platform",
+      "state": "engineering-controls",
+      "protocol": "file:",
+      "selected": "engineering-controls",
+      "hash": "#engineering-controls",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "downloads",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 11,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-1a",
+      "protocol": "file:",
+      "selected": "path-1a",
+      "hash": "#path-1a",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-1b",
+      "protocol": "file:",
+      "selected": "path-1b",
+      "hash": "#path-1b",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-1c",
+      "protocol": "file:",
+      "selected": "path-1c",
+      "hash": "#path-1c",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-2a",
+      "protocol": "file:",
+      "selected": "path-2a",
+      "hash": "#path-2a",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-2b",
+      "protocol": "file:",
+      "selected": "path-2b",
+      "hash": "#path-2b",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-2c",
+      "protocol": "file:",
+      "selected": "path-2c",
+      "hash": "#path-2c",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-3a",
+      "protocol": "file:",
+      "selected": "path-3a",
+      "hash": "#path-3a",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-3b",
+      "protocol": "file:",
+      "selected": "path-3b",
+      "hash": "#path-3b",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-3c",
+      "protocol": "file:",
+      "selected": "path-3c",
+      "hash": "#path-3c",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-4a",
+      "protocol": "file:",
+      "selected": "path-4a",
+      "hash": "#path-4a",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-4b",
+      "protocol": "file:",
+      "selected": "path-4b",
+      "hash": "#path-4b",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "key": "guide",
+      "state": "path-4c",
+      "protocol": "file:",
+      "selected": "path-4c",
+      "hash": "#path-4c",
+      "scrollWidth": 1440,
+      "clientWidth": 1440,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "home",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "requirement",
+      "protocol": "file:",
+      "selected": "requirement",
+      "hash": "#requirement",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "design-contract",
+      "protocol": "file:",
+      "selected": "design-contract",
+      "hash": "#design-contract",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "implementation",
+      "protocol": "file:",
+      "selected": "implementation",
+      "hash": "#implementation",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "frontend-evidence",
+      "protocol": "file:",
+      "selected": "frontend-evidence",
+      "hash": "#frontend-evidence",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-requirement",
+      "protocol": "file:",
+      "selected": "review-requirement",
+      "hash": "#review-requirement",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-design",
+      "protocol": "file:",
+      "selected": "review-design",
+      "hash": "#review-design",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-implementation",
+      "protocol": "file:",
+      "selected": "review-implementation",
+      "hash": "#review-implementation",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-frontend",
+      "protocol": "file:",
+      "selected": "review-frontend",
+      "hash": "#review-frontend",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-pr",
+      "protocol": "file:",
+      "selected": "review-pr",
+      "hash": "#review-pr",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "tool-governance",
+      "protocol": "file:",
+      "selected": "tool-governance",
+      "hash": "#tool-governance",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "continuity",
+      "protocol": "file:",
+      "selected": "continuity",
+      "hash": "#continuity",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "frontend-delivery",
+      "protocol": "file:",
+      "selected": "frontend-delivery",
+      "hash": "#frontend-delivery",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "engineering-controls",
+      "protocol": "file:",
+      "selected": "engineering-controls",
+      "hash": "#engineering-controls",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "downloads",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 11,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-1a",
+      "protocol": "file:",
+      "selected": "path-1a",
+      "hash": "#path-1a",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-1b",
+      "protocol": "file:",
+      "selected": "path-1b",
+      "hash": "#path-1b",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-1c",
+      "protocol": "file:",
+      "selected": "path-1c",
+      "hash": "#path-1c",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-2a",
+      "protocol": "file:",
+      "selected": "path-2a",
+      "hash": "#path-2a",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-2b",
+      "protocol": "file:",
+      "selected": "path-2b",
+      "hash": "#path-2b",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-2c",
+      "protocol": "file:",
+      "selected": "path-2c",
+      "hash": "#path-2c",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-3a",
+      "protocol": "file:",
+      "selected": "path-3a",
+      "hash": "#path-3a",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-3b",
+      "protocol": "file:",
+      "selected": "path-3b",
+      "hash": "#path-3b",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-3c",
+      "protocol": "file:",
+      "selected": "path-3c",
+      "hash": "#path-3c",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-4a",
+      "protocol": "file:",
+      "selected": "path-4a",
+      "hash": "#path-4a",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-4b",
+      "protocol": "file:",
+      "selected": "path-4b",
+      "hash": "#path-4b",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-4c",
+      "protocol": "file:",
+      "selected": "path-4c",
+      "hash": "#path-4c",
+      "scrollWidth": 1366,
+      "clientWidth": 1366,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "home",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "loop",
+      "state": "requirement",
+      "protocol": "file:",
+      "selected": "requirement",
+      "hash": "#requirement",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "loop",
+      "state": "design-contract",
+      "protocol": "file:",
+      "selected": "design-contract",
+      "hash": "#design-contract",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "loop",
+      "state": "implementation",
+      "protocol": "file:",
+      "selected": "implementation",
+      "hash": "#implementation",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "loop",
+      "state": "frontend-evidence",
+      "protocol": "file:",
+      "selected": "frontend-evidence",
+      "hash": "#frontend-evidence",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "expert",
+      "state": "review-requirement",
+      "protocol": "file:",
+      "selected": "review-requirement",
+      "hash": "#review-requirement",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "expert",
+      "state": "review-design",
+      "protocol": "file:",
+      "selected": "review-design",
+      "hash": "#review-design",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "expert",
+      "state": "review-implementation",
+      "protocol": "file:",
+      "selected": "review-implementation",
+      "hash": "#review-implementation",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "expert",
+      "state": "review-frontend",
+      "protocol": "file:",
+      "selected": "review-frontend",
+      "hash": "#review-frontend",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "expert",
+      "state": "review-pr",
+      "protocol": "file:",
+      "selected": "review-pr",
+      "hash": "#review-pr",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "platform",
+      "state": "tool-governance",
+      "protocol": "file:",
+      "selected": "tool-governance",
+      "hash": "#tool-governance",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "platform",
+      "state": "continuity",
+      "protocol": "file:",
+      "selected": "continuity",
+      "hash": "#continuity",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "platform",
+      "state": "frontend-delivery",
+      "protocol": "file:",
+      "selected": "frontend-delivery",
+      "hash": "#frontend-delivery",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "platform",
+      "state": "engineering-controls",
+      "protocol": "file:",
+      "selected": "engineering-controls",
+      "hash": "#engineering-controls",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "downloads",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 11,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-1a",
+      "protocol": "file:",
+      "selected": "path-1a",
+      "hash": "#path-1a",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-1b",
+      "protocol": "file:",
+      "selected": "path-1b",
+      "hash": "#path-1b",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-1c",
+      "protocol": "file:",
+      "selected": "path-1c",
+      "hash": "#path-1c",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-2a",
+      "protocol": "file:",
+      "selected": "path-2a",
+      "hash": "#path-2a",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-2b",
+      "protocol": "file:",
+      "selected": "path-2b",
+      "hash": "#path-2b",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-2c",
+      "protocol": "file:",
+      "selected": "path-2c",
+      "hash": "#path-2c",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-3a",
+      "protocol": "file:",
+      "selected": "path-3a",
+      "hash": "#path-3a",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-3b",
+      "protocol": "file:",
+      "selected": "path-3b",
+      "hash": "#path-3b",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-3c",
+      "protocol": "file:",
+      "selected": "path-3c",
+      "hash": "#path-3c",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-4a",
+      "protocol": "file:",
+      "selected": "path-4a",
+      "hash": "#path-4a",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-4b",
+      "protocol": "file:",
+      "selected": "path-4b",
+      "hash": "#path-4b",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "key": "guide",
+      "state": "path-4c",
+      "protocol": "file:",
+      "selected": "path-4c",
+      "hash": "#path-4c",
+      "scrollWidth": 1280,
+      "clientWidth": 1280,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "home",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "requirement",
+      "protocol": "file:",
+      "selected": "requirement",
+      "hash": "#requirement",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "design-contract",
+      "protocol": "file:",
+      "selected": "design-contract",
+      "hash": "#design-contract",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "implementation",
+      "protocol": "file:",
+      "selected": "implementation",
+      "hash": "#implementation",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "loop",
+      "state": "frontend-evidence",
+      "protocol": "file:",
+      "selected": "frontend-evidence",
+      "hash": "#frontend-evidence",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-requirement",
+      "protocol": "file:",
+      "selected": "review-requirement",
+      "hash": "#review-requirement",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-design",
+      "protocol": "file:",
+      "selected": "review-design",
+      "hash": "#review-design",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-implementation",
+      "protocol": "file:",
+      "selected": "review-implementation",
+      "hash": "#review-implementation",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-frontend",
+      "protocol": "file:",
+      "selected": "review-frontend",
+      "hash": "#review-frontend",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "expert",
+      "state": "review-pr",
+      "protocol": "file:",
+      "selected": "review-pr",
+      "hash": "#review-pr",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "tool-governance",
+      "protocol": "file:",
+      "selected": "tool-governance",
+      "hash": "#tool-governance",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "continuity",
+      "protocol": "file:",
+      "selected": "continuity",
+      "hash": "#continuity",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "frontend-delivery",
+      "protocol": "file:",
+      "selected": "frontend-delivery",
+      "hash": "#frontend-delivery",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "platform",
+      "state": "engineering-controls",
+      "protocol": "file:",
+      "selected": "engineering-controls",
+      "hash": "#engineering-controls",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "downloads",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 11,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-1a",
+      "protocol": "file:",
+      "selected": "path-1a",
+      "hash": "#path-1a",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-1b",
+      "protocol": "file:",
+      "selected": "path-1b",
+      "hash": "#path-1b",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-1c",
+      "protocol": "file:",
+      "selected": "path-1c",
+      "hash": "#path-1c",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-2a",
+      "protocol": "file:",
+      "selected": "path-2a",
+      "hash": "#path-2a",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-2b",
+      "protocol": "file:",
+      "selected": "path-2b",
+      "hash": "#path-2b",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-2c",
+      "protocol": "file:",
+      "selected": "path-2c",
+      "hash": "#path-2c",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-3a",
+      "protocol": "file:",
+      "selected": "path-3a",
+      "hash": "#path-3a",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-3b",
+      "protocol": "file:",
+      "selected": "path-3b",
+      "hash": "#path-3b",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-3c",
+      "protocol": "file:",
+      "selected": "path-3c",
+      "hash": "#path-3c",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-4a",
+      "protocol": "file:",
+      "selected": "path-4a",
+      "hash": "#path-4a",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-4b",
+      "protocol": "file:",
+      "selected": "path-4b",
+      "hash": "#path-4b",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "key": "guide",
+      "state": "path-4c",
+      "protocol": "file:",
+      "selected": "path-4c",
+      "hash": "#path-4c",
+      "scrollWidth": 1024,
+      "clientWidth": 1024,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "home",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "loop",
+      "state": "requirement",
+      "protocol": "file:",
+      "selected": "requirement",
+      "hash": "#requirement",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "loop",
+      "state": "design-contract",
+      "protocol": "file:",
+      "selected": "design-contract",
+      "hash": "#design-contract",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "loop",
+      "state": "implementation",
+      "protocol": "file:",
+      "selected": "implementation",
+      "hash": "#implementation",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "loop",
+      "state": "frontend-evidence",
+      "protocol": "file:",
+      "selected": "frontend-evidence",
+      "hash": "#frontend-evidence",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "expert",
+      "state": "review-requirement",
+      "protocol": "file:",
+      "selected": "review-requirement",
+      "hash": "#review-requirement",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "expert",
+      "state": "review-design",
+      "protocol": "file:",
+      "selected": "review-design",
+      "hash": "#review-design",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "expert",
+      "state": "review-implementation",
+      "protocol": "file:",
+      "selected": "review-implementation",
+      "hash": "#review-implementation",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "expert",
+      "state": "review-frontend",
+      "protocol": "file:",
+      "selected": "review-frontend",
+      "hash": "#review-frontend",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "expert",
+      "state": "review-pr",
+      "protocol": "file:",
+      "selected": "review-pr",
+      "hash": "#review-pr",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "platform",
+      "state": "tool-governance",
+      "protocol": "file:",
+      "selected": "tool-governance",
+      "hash": "#tool-governance",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "platform",
+      "state": "continuity",
+      "protocol": "file:",
+      "selected": "continuity",
+      "hash": "#continuity",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "platform",
+      "state": "frontend-delivery",
+      "protocol": "file:",
+      "selected": "frontend-delivery",
+      "hash": "#frontend-delivery",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "platform",
+      "state": "engineering-controls",
+      "protocol": "file:",
+      "selected": "engineering-controls",
+      "hash": "#engineering-controls",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "downloads",
+      "state": null,
+      "protocol": "file:",
+      "selected": null,
+      "hash": "",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 11,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-1a",
+      "protocol": "file:",
+      "selected": "path-1a",
+      "hash": "#path-1a",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-1b",
+      "protocol": "file:",
+      "selected": "path-1b",
+      "hash": "#path-1b",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-1c",
+      "protocol": "file:",
+      "selected": "path-1c",
+      "hash": "#path-1c",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-2a",
+      "protocol": "file:",
+      "selected": "path-2a",
+      "hash": "#path-2a",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-2b",
+      "protocol": "file:",
+      "selected": "path-2b",
+      "hash": "#path-2b",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-2c",
+      "protocol": "file:",
+      "selected": "path-2c",
+      "hash": "#path-2c",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-3a",
+      "protocol": "file:",
+      "selected": "path-3a",
+      "hash": "#path-3a",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-3b",
+      "protocol": "file:",
+      "selected": "path-3b",
+      "hash": "#path-3b",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-3c",
+      "protocol": "file:",
+      "selected": "path-3c",
+      "hash": "#path-3c",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 3,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-4a",
+      "protocol": "file:",
+      "selected": "path-4a",
+      "hash": "#path-4a",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-4b",
+      "protocol": "file:",
+      "selected": "path-4b",
+      "hash": "#path-4b",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "state": "path-4c",
+      "protocol": "file:",
+      "selected": "path-4c",
+      "hash": "#path-4c",
+      "scrollWidth": 390,
+      "clientWidth": 390,
+      "clippedControls": [],
+      "undersizedControls": [],
+      "externalLinkCount": 1,
+      "externalFailures": [],
+      "failures": []
+    }
+  ],
+  "accessibilityResults": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "activeClass": "skip-link",
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "activeClass": "skip-link",
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "activeClass": "skip-link",
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "activeClass": "skip-link",
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "activeClass": "skip-link",
+      "failures": []
+    }
+  ],
+  "copyResults": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "results": [
+        {
+          "commandId": "path-1a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-start-1",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "results": [
+        {
+          "commandId": "path-1a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-start-1",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "results": [
+        {
+          "commandId": "path-1a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-start-1",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "results": [
+        {
+          "commandId": "path-1a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-start-1",
+          "passed": true
+        }
+      ]
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "results": [
+        {
+          "commandId": "path-1a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-1c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-2c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-3c-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4a-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4b-start-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-install-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-verify-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-initialize-1",
+          "passed": true
+        },
+        {
+          "commandId": "path-4c-start-1",
+          "passed": true
+        }
+      ]
+    }
+  ],
+  "noJsResults": [
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "home",
+      "expectedPanels": 0,
+      "visiblePanels": 0,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "loop",
+      "expectedPanels": 4,
+      "visiblePanels": 4,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "expert",
+      "expectedPanels": 5,
+      "visiblePanels": 5,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "platform",
+      "expectedPanels": 4,
+      "visiblePanels": 4,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "downloads",
+      "expectedPanels": 0,
+      "visiblePanels": 0,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "key": "guide",
+      "expectedPanels": 12,
+      "visiblePanels": 12,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "home",
+      "expectedPanels": 0,
+      "visiblePanels": 0,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "loop",
+      "expectedPanels": 4,
+      "visiblePanels": 4,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "expert",
+      "expectedPanels": 5,
+      "visiblePanels": 5,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "platform",
+      "expectedPanels": 4,
+      "visiblePanels": 4,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "downloads",
+      "expectedPanels": 0,
+      "visiblePanels": 0,
+      "failures": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "key": "guide",
+      "expectedPanels": 12,
+      "visiblePanels": 12,
+      "failures": []
+    }
+  ],
+  "configuredVideo": {
+    "failures": []
+  },
+  "runtimeResults": [
+    {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedRequests": []
+    },
+    {
+      "viewport": {
+        "width": 1366,
+        "height": 768
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedRequests": []
+    },
+    {
+      "viewport": {
+        "width": 1280,
+        "height": 800
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedRequests": []
+    },
+    {
+      "viewport": {
+        "width": 1024,
+        "height": 768
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedRequests": []
+    },
+    {
+      "viewport": {
+        "width": 390,
+        "height": 844
+      },
+      "consoleErrors": [],
+      "pageErrors": [],
+      "failedRequests": []
+    }
+  ],
+  "requestOwnership": {
+    "requestCount": 33,
+    "uniqueUrlCount": 13,
+    "remoteCount": 0,
+    "siteRootEscapeCount": 0,
+    "repositoryBackReferenceCount": 0,
+    "requests": [
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/index.html",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/index.html",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/video-config.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/video-config.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/video-poster.png",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/video-poster.png",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/hero-layers.png",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/hero-layers.png",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/loop-engineering.html",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/loop-engineering.html",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/dynamic-expert-review.html",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/dynamic-expert-review.html",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/platform-capabilities.html",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/platform-capabilities.html",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/downloads-docs.html",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/downloads-docs.html",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/docs/USER_GUIDE.zh-CN.html",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/docs/USER_GUIDE.zh-CN.html",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      },
+      {
+        "page": "docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "protocol": "file:",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "ownership": "copied-site-root",
+        "repositoryBackReference": false
+      }
+    ]
+  },
+  "representativeScreenshots": [
+    {
+      "name": "home-1440x900.png",
+      "path": "docs/product-site/design/qa/home-1440x900.png",
+      "sha256": "367ce22dc32c130dd060fa54148face9cac90b85d881dd7646c19a7b58b16ee4"
+    },
+    {
+      "name": "home-1366x768.png",
+      "path": "docs/product-site/design/qa/home-1366x768.png",
+      "sha256": "368ad3dfa48b033335a839154d1bda72c86f8b4c424cd0f5b7bcab3f9ba9cc90"
+    },
+    {
+      "name": "home-1280x800.png",
+      "path": "docs/product-site/design/qa/home-1280x800.png",
+      "sha256": "d433e372b6de4008002dc7668c830a619e625756bd1d2de89d78e6db7586408b"
+    },
+    {
+      "name": "home-1024x768.png",
+      "path": "docs/product-site/design/qa/home-1024x768.png",
+      "sha256": "4f8a222c154a6de713db606b32d7e9c6b9043b1db70544b55f1f3813ce3f3ab0"
+    },
+    {
+      "name": "home-390x844.png",
+      "path": "docs/product-site/design/qa/home-390x844.png",
+      "sha256": "88f5e5e7cc29eddd55bf370d44cbb2fb8f4f7174c23303659c3a578e55975c86"
+    },
+    {
+      "name": "loop-1366x768.png",
+      "path": "docs/product-site/design/qa/loop-1366x768.png",
+      "sha256": "95dafb8bd7913c94b3730251d1fe59009f7c5aa8ca0a6f4f1caa8419aa946d27"
+    },
+    {
+      "name": "platform-1366x768.png",
+      "path": "docs/product-site/design/qa/platform-1366x768.png",
+      "sha256": "be9fe1cbb1e332aed0b6fc5db3f9a8aee4c6e5b8a7b5d41a74265011605080de"
+    },
+    {
+      "name": "downloads-1366x768.png",
+      "path": "docs/product-site/design/qa/downloads-1366x768.png",
+      "sha256": "d28f6296bbfc366fa83387944fec9e14bff3034c44c60a6d2a520737e856dbd6"
+    },
+    {
+      "name": "guide-1366x768.png",
+      "path": "docs/product-site/design/qa/guide-1366x768.png",
+      "sha256": "0e4938b90f3c728c4585bd181276d12ee9ff7f1b335396ac391887884fa40125"
+    },
+    {
+      "name": "guide-390x844.png",
+      "path": "docs/product-site/design/qa/guide-390x844.png",
+      "sha256": "20de5d6b62d4c40a40dfcab7db506f476719ea6f93952afb04f081fef9b45f1e"
+    }
+  ],
+  "expertScreenshot": {
+    "trackedPath": "docs/product-site/design/qa/expert-review-1366x768.png",
+    "state": "review-design",
+    "captures": [
+      {
+        "index": 1,
+        "path": "docs/product-site/design/qa/expert-review-1366x768.png",
+        "sha256": "2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7",
+        "assertions": {
+          "hash": "#review-design",
+          "selected": "review-design",
+          "focused": "review-design",
+          "tablistScrollLeft": 0,
+          "pageScrollX": 0,
+          "pageScrollY": 0,
+          "documentScrollWidth": 1366,
+          "documentClientWidth": 1366,
+          "geometry": [
+            {
+              "label": "AI-SDLC 2.0",
+              "left": 63,
+              "right": 163.46875,
+              "contentLeft": 63,
+              "contentRight": 163.46875,
+              "scrollWidth": 100,
+              "clientWidth": 100,
+              "clipped": false
+            },
+            {
+              "label": "菜单",
+              "left": 0,
+              "right": 0,
+              "contentLeft": 0,
+              "contentRight": 0,
+              "scrollWidth": 0,
+              "clientWidth": 0,
+              "clipped": false
+            },
+            {
+              "label": "AI-SDLC 2.0",
+              "left": 187.46875,
+              "right": 271.125,
+              "contentLeft": 187.46875,
+              "contentRight": 271.125,
+              "scrollWidth": 84,
+              "clientWidth": 84,
+              "clipped": false
+            },
+            {
+              "label": "Loop Engineering",
+              "left": 298.4375,
+              "right": 416.890625,
+              "contentLeft": 298.4375,
+              "contentRight": 416.890625,
+              "scrollWidth": 118,
+              "clientWidth": 118,
+              "clipped": false
+            },
+            {
+              "label": "Dynamic Expert Review",
+              "left": 444.203125,
+              "right": 604.0625,
+              "contentLeft": 444.203125,
+              "contentRight": 604.0625,
+              "scrollWidth": 160,
+              "clientWidth": 160,
+              "clipped": false
+            },
+            {
+              "label": "Platform Capabilities",
+              "left": 631.375,
+              "right": 774.34375,
+              "contentLeft": 631.375,
+              "contentRight": 774.34375,
+              "scrollWidth": 143,
+              "clientWidth": 143,
+              "clipped": false
+            },
+            {
+              "label": "Downloads & Docs",
+              "left": 801.65625,
+              "right": 928.6875,
+              "contentLeft": 801.65625,
+              "contentRight": 928.6875,
+              "scrollWidth": 127,
+              "clientWidth": 127,
+              "clipped": false
+            },
+            {
+              "label": "GitHub 需要联网",
+              "left": 1187.328125,
+              "right": 1303,
+              "contentLeft": 1187.328125,
+              "contentRight": 1303,
+              "scrollWidth": 116,
+              "clientWidth": 116,
+              "clipped": false
+            },
+            {
+              "label": "Requirement",
+              "left": 63,
+              "right": 211.3125,
+              "contentLeft": 88,
+              "contentRight": 186.3125,
+              "scrollWidth": 146,
+              "clientWidth": 146,
+              "clipped": false
+            },
+            {
+              "label": "Design Contract",
+              "left": 219.3125,
+              "right": 393.75,
+              "contentLeft": 244.3125,
+              "contentRight": 368.75,
+              "scrollWidth": 172,
+              "clientWidth": 172,
+              "clipped": false
+            },
+            {
+              "label": "Implementation",
+              "left": 401.75,
+              "right": 572.203125,
+              "contentLeft": 426.75,
+              "contentRight": 547.203125,
+              "scrollWidth": 168,
+              "clientWidth": 168,
+              "clipped": false
+            },
+            {
+              "label": "Frontend Evidence",
+              "left": 580.203125,
+              "right": 773.34375,
+              "contentLeft": 605.203125,
+              "contentRight": 748.34375,
+              "scrollWidth": 191,
+              "clientWidth": 191,
+              "clipped": false
+            },
+            {
+              "label": "Local PR Review",
+              "left": 781.34375,
+              "right": 955.375,
+              "contentLeft": 806.34375,
+              "contentRight": 930.375,
+              "scrollWidth": 172,
+              "clientWidth": 172,
+              "clipped": false
+            }
+          ],
+          "overlaps": [],
+          "clipped": [],
+          "unclipped": true,
+          "animationSettled": true,
+          "expert": true
+        }
+      },
+      {
+        "index": 2,
+        "path": "docs/product-site/design/qa/expert-review-1366x768.png",
+        "sha256": "2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7",
+        "assertions": {
+          "hash": "#review-design",
+          "selected": "review-design",
+          "focused": "review-design",
+          "tablistScrollLeft": 0,
+          "pageScrollX": 0,
+          "pageScrollY": 0,
+          "documentScrollWidth": 1366,
+          "documentClientWidth": 1366,
+          "geometry": [
+            {
+              "label": "AI-SDLC 2.0",
+              "left": 63,
+              "right": 163.46875,
+              "contentLeft": 63,
+              "contentRight": 163.46875,
+              "scrollWidth": 100,
+              "clientWidth": 100,
+              "clipped": false
+            },
+            {
+              "label": "菜单",
+              "left": 0,
+              "right": 0,
+              "contentLeft": 0,
+              "contentRight": 0,
+              "scrollWidth": 0,
+              "clientWidth": 0,
+              "clipped": false
+            },
+            {
+              "label": "AI-SDLC 2.0",
+              "left": 187.46875,
+              "right": 271.125,
+              "contentLeft": 187.46875,
+              "contentRight": 271.125,
+              "scrollWidth": 84,
+              "clientWidth": 84,
+              "clipped": false
+            },
+            {
+              "label": "Loop Engineering",
+              "left": 298.4375,
+              "right": 416.890625,
+              "contentLeft": 298.4375,
+              "contentRight": 416.890625,
+              "scrollWidth": 118,
+              "clientWidth": 118,
+              "clipped": false
+            },
+            {
+              "label": "Dynamic Expert Review",
+              "left": 444.203125,
+              "right": 604.0625,
+              "contentLeft": 444.203125,
+              "contentRight": 604.0625,
+              "scrollWidth": 160,
+              "clientWidth": 160,
+              "clipped": false
+            },
+            {
+              "label": "Platform Capabilities",
+              "left": 631.375,
+              "right": 774.34375,
+              "contentLeft": 631.375,
+              "contentRight": 774.34375,
+              "scrollWidth": 143,
+              "clientWidth": 143,
+              "clipped": false
+            },
+            {
+              "label": "Downloads & Docs",
+              "left": 801.65625,
+              "right": 928.6875,
+              "contentLeft": 801.65625,
+              "contentRight": 928.6875,
+              "scrollWidth": 127,
+              "clientWidth": 127,
+              "clipped": false
+            },
+            {
+              "label": "GitHub 需要联网",
+              "left": 1187.328125,
+              "right": 1303,
+              "contentLeft": 1187.328125,
+              "contentRight": 1303,
+              "scrollWidth": 116,
+              "clientWidth": 116,
+              "clipped": false
+            },
+            {
+              "label": "Requirement",
+              "left": 63,
+              "right": 211.3125,
+              "contentLeft": 88,
+              "contentRight": 186.3125,
+              "scrollWidth": 146,
+              "clientWidth": 146,
+              "clipped": false
+            },
+            {
+              "label": "Design Contract",
+              "left": 219.3125,
+              "right": 393.75,
+              "contentLeft": 244.3125,
+              "contentRight": 368.75,
+              "scrollWidth": 172,
+              "clientWidth": 172,
+              "clipped": false
+            },
+            {
+              "label": "Implementation",
+              "left": 401.75,
+              "right": 572.203125,
+              "contentLeft": 426.75,
+              "contentRight": 547.203125,
+              "scrollWidth": 168,
+              "clientWidth": 168,
+              "clipped": false
+            },
+            {
+              "label": "Frontend Evidence",
+              "left": 580.203125,
+              "right": 773.34375,
+              "contentLeft": 605.203125,
+              "contentRight": 748.34375,
+              "scrollWidth": 191,
+              "clientWidth": 191,
+              "clipped": false
+            },
+            {
+              "label": "Local PR Review",
+              "left": 781.34375,
+              "right": 955.375,
+              "contentLeft": 806.34375,
+              "contentRight": 930.375,
+              "scrollWidth": 172,
+              "clientWidth": 172,
+              "clipped": false
+            }
+          ],
+          "overlaps": [],
+          "clipped": [],
+          "unclipped": true,
+          "animationSettled": true,
+          "expert": true
+        }
+      }
+    ]
+  }
+}

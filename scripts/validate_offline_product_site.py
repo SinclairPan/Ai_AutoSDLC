@@ -128,6 +128,7 @@ class _SiteHTMLParser(HTMLParser):
         self.runtime_refs: list[tuple[str, str]] = []
         self.network_attribute_refs: list[tuple[str, str, str]] = []
         self.anchors: list[dict[str, str]] = []
+        self.anchors_with_visible_network_label: set[int] = set()
         self.text_nodes: list[tuple[str, tuple[tuple[str, dict[str, str]], ...]]] = []
         self.main_count = 0
         self.h1_count = 0
@@ -193,6 +194,21 @@ class _SiteHTMLParser(HTMLParser):
     def handle_data(self, data: str) -> None:
         if data.strip():
             self.text_nodes.append((data, tuple(self.stack)))
+        if "需要联网" not in data:
+            return
+        network_label_visible = any(
+            tag == "span"
+            and "network-label" in attributes.get("class", "").split()
+            and "hidden" not in attributes
+            and attributes.get("aria-hidden", "").lower() != "true"
+            for tag, attributes in self.stack
+        )
+        if not network_label_visible:
+            return
+        for tag, attributes in reversed(self.stack):
+            if tag == "a":
+                self.anchors_with_visible_network_label.add(id(attributes))
+                break
 
 
 @dataclass
@@ -374,6 +390,14 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
         if _is_network_address(href):
             if _normalized_url(href) not in ALLOWED_EXTERNAL_URLS:
                 issues.append(_issue("external_url_not_allowed", page, href))
+            if anchor.get("target") != "_blank":
+                issues.append(_issue("external_link_invalid_target", page, href))
+            if set(anchor.get("rel", "").split()) != {"noopener", "noreferrer"}:
+                issues.append(_issue("external_link_invalid_rel", page, href))
+            if id(anchor) not in parser.anchors_with_visible_network_label:
+                issues.append(
+                    _issue("external_link_missing_network_label", page, href)
+                )
         elif href and not href.startswith(("#", "mailto:", "tel:")):
             _validate_local_reference(root, page, href, issues)
 
