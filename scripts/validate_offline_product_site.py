@@ -68,6 +68,14 @@ GUIDE_PATH_IDS = tuple(
 )
 GUIDE_STEPS = ("install", "verify", "initialize", "start")
 GUIDE_PARTS = ("purpose", "location", "command", "expected", "troubleshoot", "next")
+GUIDE_PART_HEADING_TO_ID = {
+    "本步要完成什么": "purpose",
+    "在哪里执行": "location",
+    "复制并运行": "command",
+    "你应该看到": "expected",
+    "如果结果不同": "troubleshoot",
+    "下一步": "next",
+}
 
 _NETWORK_HOST_RE = r"(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])"
 _NETWORK_URL_RE = re.compile(
@@ -193,6 +201,18 @@ class _GuideCommand:
     text: list[str]
 
 
+@dataclass
+class _GuideBlock:
+    tag: str
+    kind: str
+    text: list[str]
+
+
+@dataclass
+class _GuidePart:
+    blocks: list[_GuideBlock]
+
+
 class _GuideHTMLParser(HTMLParser):
     """Collect guide path, step, part, and command nodes without dependencies."""
 
@@ -204,8 +224,13 @@ class _GuideHTMLParser(HTMLParser):
         self.paths: list[str] = []
         self.steps: list[tuple[str | None, str]] = []
         self.parts: list[tuple[str | None, str | None, str]] = []
+        self.part_nodes: dict[
+            tuple[str | None, str | None, str], list[_GuidePart]
+        ] = {}
         self.commands: dict[str, list[_GuideCommand]] = {}
         self._command_stack: list[tuple[str, _GuideCommand]] = []
+        self._part_stack: list[_GuidePart] = []
+        self._part_block_stack: list[_GuideBlock] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
@@ -220,13 +245,23 @@ class _GuideHTMLParser(HTMLParser):
             self.step_stack.append(step)
         part = attributes.get("data-guide-part")
         if part:
-            self.parts.append(
-                (
-                    self.path_stack[-1] if self.path_stack else None,
-                    self.step_stack[-1] if self.step_stack else None,
-                    part,
-                )
+            key = (
+                self.path_stack[-1] if self.path_stack else None,
+                self.step_stack[-1] if self.step_stack else None,
+                part,
             )
+            self.parts.append(key)
+            part_node = _GuidePart(blocks=[])
+            self.part_nodes.setdefault(key, []).append(part_node)
+            self._part_stack.append(part_node)
+        if self._part_stack and tag in {"p", "li", "pre"}:
+            block = _GuideBlock(
+                tag=tag,
+                kind="code" if tag == "pre" else tag,
+                text=[],
+            )
+            self._part_stack[-1].blocks.append(block)
+            self._part_block_stack.append(block)
         command_id = attributes.get("data-guide-command")
         if tag == "code" and command_id:
             command = _GuideCommand(
@@ -236,6 +271,8 @@ class _GuideHTMLParser(HTMLParser):
             self._command_stack.append((command_id, command))
 
     def handle_endtag(self, tag: str) -> None:
+        if self._part_block_stack and self._part_block_stack[-1].tag == tag:
+            self._part_block_stack.pop()
         if tag == "code" and self._command_stack:
             self._command_stack.pop()
         for index in range(len(self.stack) - 1, -1, -1):
@@ -246,10 +283,14 @@ class _GuideHTMLParser(HTMLParser):
                 self.path_stack.pop()
             if attributes.get("data-guide-step") and self.step_stack:
                 self.step_stack.pop()
+            if attributes.get("data-guide-part") and self._part_stack:
+                self._part_stack.pop()
             del self.stack[index:]
             break
 
     def handle_data(self, data: str) -> None:
+        if self._part_block_stack:
+            self._part_block_stack[-1].text.append(data)
         if self._command_stack:
             self._command_stack[-1][1].text.append(data)
 
@@ -454,6 +495,106 @@ def _normalize_text(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").split("\n")).strip()
 
 
+def _normalize_prose(text: str) -> str:
+    normalized = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", unescape(text))
+    normalized = re.sub(r"<br\s*/?>", " ", normalized, flags=re.IGNORECASE)
+    normalized = re.sub(r"`([^`]*)`", r"\1", normalized)
+    normalized = normalized.replace("**", "").replace("__", "")
+    return " ".join(normalized.split())
+
+
+def _guide_source_parts(source: str) -> dict[tuple[str, str, str], tuple[tuple[str, str], ...]]:
+    parts: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
+    current_path: str | None = None
+    current_step: str | None = None
+    current_part: str | None = None
+    paragraph: list[str] = []
+    lines = source.replace("\r\n", "\n").splitlines()
+
+    def flush_paragraph() -> None:
+        if not paragraph or not (current_path and current_step and current_part):
+            paragraph.clear()
+            return
+        key = (current_path, current_step, current_part)
+        parts.setdefault(key, []).append(("p", _normalize_prose(" ".join(paragraph))))
+        paragraph.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        heading = _GUIDE_HEADING_RE.match(line)
+        if heading:
+            flush_paragraph()
+            current_path = f"path-{heading.group('group')}{heading.group('platform').lower()}"
+            current_step = heading.group("step").lower()
+            current_part = None
+            index += 1
+            continue
+
+        stripped = line.strip()
+        if stripped.startswith("**") and stripped.endswith("**"):
+            part_id = GUIDE_PART_HEADING_TO_ID.get(stripped[2:-2])
+            if part_id:
+                flush_paragraph()
+                current_part = part_id
+                parts.setdefault((current_path or "", current_step or "", part_id), [])
+                index += 1
+                continue
+
+        if stripped == "---" or stripped.startswith("## "):
+            flush_paragraph()
+            current_part = None
+            index += 1
+            continue
+
+        if not (current_path and current_step and current_part):
+            index += 1
+            continue
+
+        if stripped.startswith("```"):
+            flush_paragraph()
+            index += 1
+            body: list[str] = []
+            while index < len(lines) and not lines[index].strip().startswith("```"):
+                body.append(lines[index])
+                index += 1
+            parts[(current_path, current_step, current_part)].append(
+                ("code", _normalize_text("\n".join(body)))
+            )
+            index += 1
+            continue
+
+        list_item = re.match(r"^\s*(?:[-*+]|\d+\.)\s+(.*)$", line)
+        if list_item:
+            flush_paragraph()
+            parts[(current_path, current_step, current_part)].append(
+                ("li", _normalize_prose(list_item.group(1)))
+            )
+            index += 1
+            continue
+
+        if not stripped:
+            flush_paragraph()
+        else:
+            paragraph.append(stripped)
+        index += 1
+
+    flush_paragraph()
+    return {key: tuple(blocks) for key, blocks in parts.items()}
+
+
+def _guide_html_part_blocks(part: _GuidePart) -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (
+            block.kind,
+            _normalize_text("".join(block.text))
+            if block.kind == "code"
+            else _normalize_prose("".join(block.text)),
+        )
+        for block in part.blocks
+    )
+
+
 def _guide_source_commands(source: str) -> dict[str, str]:
     commands: dict[str, str] = {}
     current_path: str | None = None
@@ -500,6 +641,8 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
     path_counts = Counter(parser.paths)
     step_counts = Counter(parser.steps)
     part_counts = Counter(parser.parts)
+    source_text = source_bytes.decode("utf-8")
+    source_parts = _guide_source_parts(source_text)
 
     for path_id, count in path_counts.items():
         if path_id not in expected_paths:
@@ -515,6 +658,19 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
                 issues.append(_issue("guide_step_missing", rendered_html, f"{path_id}:{step}"))
             elif count > 1:
                 issues.append(_issue("guide_duplicate_step", rendered_html, f"{path_id}:{step}"))
+            actual_part_order = [
+                part
+                for actual_path, actual_step, part in parser.parts
+                if actual_path == path_id and actual_step == step
+            ]
+            if actual_part_order != list(GUIDE_PARTS):
+                issues.append(
+                    _issue(
+                        "guide_part_order_mismatch",
+                        rendered_html,
+                        f"{path_id}:{step}",
+                    )
+                )
             for part in GUIDE_PARTS:
                 count = part_counts[(path_id, step, part)]
                 if count == 0:
@@ -524,6 +680,18 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
                 elif count > 1:
                     detail = f"{path_id}:{step}:{part}"
                     issues.append(_issue("guide_duplicate_part", rendered_html, detail))
+                else:
+                    key = (path_id, step, part)
+                    expected_blocks = source_parts.get(key)
+                    actual_blocks = _guide_html_part_blocks(parser.part_nodes[key][0])
+                    if expected_blocks is None or actual_blocks != expected_blocks:
+                        issues.append(
+                            _issue(
+                                "guide_part_content_mismatch",
+                                rendered_html,
+                                ":".join(key),
+                            )
+                        )
 
     for path_id, step in step_counts:
         if path_id is None:
@@ -542,7 +710,7 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
                 _issue("guide_unknown_part", rendered_html, f"{path_id}:{step}:{part}")
             )
 
-    source_commands = _guide_source_commands(source_bytes.decode("utf-8"))
+    source_commands = _guide_source_commands(source_text)
     for command_id, expected in source_commands.items():
         command_nodes = parser.commands.get(command_id, [])
         if not command_nodes:

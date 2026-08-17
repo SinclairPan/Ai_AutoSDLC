@@ -92,6 +92,67 @@
     });
   };
 
+  const fallbackCopyText = (text, root = document) => {
+    const textarea = root.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "");
+    textarea.style.position = "fixed";
+    textarea.style.opacity = "0";
+    root.body.append(textarea);
+    textarea.focus();
+    textarea.select();
+    const writeExactText = (event) => {
+      if (!event.clipboardData) return;
+      event.clipboardData.setData("text/plain", text);
+      event.preventDefault();
+    };
+    root.addEventListener("copy", writeExactText, { once: true });
+    let copied = false;
+    try {
+      copied = root.execCommand("copy");
+    } catch {
+      copied = false;
+    }
+    root.removeEventListener("copy", writeExactText);
+    textarea.remove();
+    return copied;
+  };
+
+  const copyText = async (text, root = document) => {
+    if (window.isSecureContext && navigator.clipboard?.writeText) {
+      try {
+        await navigator.clipboard.writeText(text);
+        return true;
+      } catch {
+        // 本地文件可能暴露 Clipboard API，但仍拒绝实际写入。
+      }
+    }
+    return fallbackCopyText(text, root);
+  };
+
+  const setupCopyCommands = (root = document) => {
+    root.querySelectorAll("[data-copy-command]").forEach((button) => {
+      const commandId = button.dataset.copyCommand;
+      const status = root.querySelector(`[data-copy-status="${commandId}"]`);
+      const command = button
+        .closest('[data-guide-part="command"]')
+        ?.querySelector(`[data-guide-command="${commandId}"]`);
+      button.addEventListener("click", async () => {
+        button.disabled = true;
+        const copied = Boolean(command) && (await copyText(command.textContent, root));
+        button.disabled = false;
+        button.focus();
+        button.dataset.copyState = copied ? "success" : "error";
+        button.textContent = copied ? "再次复制" : "重试复制";
+        if (status) {
+          status.textContent = copied
+            ? "已复制完整命令"
+            : "复制失败，请手动选择命令";
+        }
+      });
+    });
+  };
+
   const setupVideo = (root = document, config = window.AISDLC_VIDEO) => {
     const empty = root.querySelector("[data-video-empty]");
     const emptyPoster = root.querySelector("[data-video-empty-poster]");
@@ -129,6 +190,7 @@
     setupMobileNavigation();
     setupTabs();
     setupExternalLinks();
+    setupCopyCommands();
     setupVideo();
   });
 })();

@@ -1851,6 +1851,31 @@ GUIDE_PATH_CONTRACTS = (
     ("path-4c", "new-online", "linux"),
 )
 
+GUIDE_PATH_LABEL_CONTRACTS = (
+    ("path-1a", "1A", "Windows AMD64", "已有项目 · 离线包 · Windows AMD64"),
+    (
+        "path-1b",
+        "1B",
+        "macOS Apple Silicon",
+        "已有项目 · 离线包 · macOS Apple Silicon",
+    ),
+    ("path-1c", "1C", "Linux AMD64", "已有项目 · 离线包 · Linux AMD64"),
+    ("path-2a", "2A", "Windows", "已有项目 · 在线安装 · Windows"),
+    ("path-2b", "2B", "macOS", "已有项目 · 在线安装 · macOS"),
+    ("path-2c", "2C", "Linux", "已有项目 · 在线安装 · Linux"),
+    ("path-3a", "3A", "Windows AMD64", "全新项目 · 离线包 · Windows AMD64"),
+    (
+        "path-3b",
+        "3B",
+        "macOS Apple Silicon",
+        "全新项目 · 离线包 · macOS Apple Silicon",
+    ),
+    ("path-3c", "3C", "Linux AMD64", "全新项目 · 离线包 · Linux AMD64"),
+    ("path-4a", "4A", "Windows", "全新项目 · 在线安装 · Windows"),
+    ("path-4b", "4B", "macOS", "全新项目 · 在线安装 · macOS"),
+    ("path-4c", "4C", "Linux", "全新项目 · 在线安装 · Linux"),
+)
+
 
 def _offline_site_root() -> Path:
     return Path("deliverables/ai-sdlc-2.0-offline-product-site")
@@ -2006,6 +2031,47 @@ def test_user_guide_source_parity() -> None:
     ]
 
 
+def test_guide_offline_and_online_os_labels_are_scenario_specific() -> None:
+    document = _parse_document(_guide_markup())
+
+    for path_id, path_code, os_label, current_path_label in GUIDE_PATH_LABEL_CONTRACTS:
+        tab = _single_node(document, tag="button", attribute="id", value=f"{path_id}-tab")
+        panel = _single_node(document, tag="section", attribute="id", value=path_id)
+        path_index = _single_node(panel, tag="p", attribute="class", value="guide-path-index")
+        current_path = _single_node(panel, tag="aside", attribute="class", value="guide-note")
+
+        assert _node_text(tab) == f"{path_code} {os_label}"
+        assert _node_text(path_index) == f"{path_code} / {os_label}"
+        assert _node_text(current_path).startswith(f"当前路径：{current_path_label}")
+
+
+def test_every_guide_command_has_an_accessible_copy_control() -> None:
+    document = _parse_document(_guide_markup())
+    commands = _find_nodes(document, tag="code", attribute="data-guide-command")
+    controls = _find_nodes(document, tag="button", attribute="data-copy-command")
+    statuses = _find_nodes(document, attribute="data-copy-status")
+
+    assert len(commands) == len(controls) == len(statuses) == 48
+    for command in commands:
+        command_id = command.attributes["data-guide-command"]
+        control = _single_node(
+            document,
+            tag="button",
+            attribute="data-copy-command",
+            value=command_id,
+        )
+        status = _single_node(
+            document,
+            attribute="data-copy-status",
+            value=command_id,
+        )
+        assert control.attributes.get("type") == "button"
+        assert _node_text(control) == "复制命令"
+        assert control.attributes.get("aria-describedby") == status.attributes.get("id")
+        assert status.attributes.get("role") == "status"
+        assert status.attributes.get("aria-live") == "polite"
+
+
 def test_guide_parity_rejects_one_missing_path(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
@@ -2043,6 +2109,75 @@ def test_guide_parity_rejects_one_altered_command(tmp_path: Path) -> None:
     assert "guide_command_mismatch" in {issue.code for issue in issues}
 
 
+def test_guide_parity_rejects_altered_expected_result(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup = _guide_markup().replace(
+        "输出包含 <code>SHA256 verified</code>",
+        "输出包含 <code>任何版本都可以继续</code>",
+        1,
+    )
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_part_content_mismatch" in {issue.code for issue in issues}
+
+
+def test_guide_parity_rejects_empty_troubleshooting(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup, replacements = re.subn(
+        r'(<section class="guide-step-part" data-guide-part="troubleshoot">'
+        r"<h4>如果结果不同</h4>).*?(</section>)",
+        r"\1\2",
+        _guide_markup(),
+        count=1,
+        flags=re.DOTALL,
+    )
+    assert replacements == 1
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_part_content_mismatch" in {issue.code for issue in issues}
+
+
+def test_guide_parity_rejects_wrong_next_action(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup = _guide_markup().replace(
+        "保留当前 PowerShell 窗口，继续验证 Direct CLI。",
+        "忽略验证，直接开始下一阶段。",
+        1,
+    )
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_part_content_mismatch" in {issue.code for issue in issues}
+
+
+def test_guide_parity_rejects_swapped_expected_and_troubleshoot_parts(
+    tmp_path: Path,
+) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup = _guide_markup()
+    markup = markup.replace('data-guide-part="expected"', 'data-guide-part="swap"', 1)
+    markup = markup.replace(
+        'data-guide-part="troubleshoot"', 'data-guide-part="expected"', 1
+    )
+    markup = markup.replace('data-guide-part="swap"', 'data-guide-part="troubleshoot"', 1)
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+    codes = {issue.code for issue in issues}
+
+    assert "guide_part_order_mismatch" in codes
+    assert "guide_part_content_mismatch" in codes
+
+
 def test_guide_hides_os_tabs_outside_the_active_scenario() -> None:
     styles = (_offline_site_root() / "assets/css/pages.css").read_text(
         encoding="utf-8"
@@ -2056,7 +2191,16 @@ def test_guide_hides_os_tabs_outside_the_active_scenario() -> None:
 
 
 def test_built_site_has_no_contract_issues() -> None:
-    assert validate_site(_offline_site_root()) == []
+    root = _offline_site_root()
+    issues = validate_site(root)
+    issues.extend(
+        validate_guide_parity(
+            Path("docs/product-site/content/USER_GUIDE.zh-CN.md"),
+            root / "docs/USER_GUIDE.zh-CN.html",
+        )
+    )
+
+    assert issues == []
 
 
 def test_focus_visible_contract_can_live_in_shared_stylesheet(tmp_path: Path) -> None:

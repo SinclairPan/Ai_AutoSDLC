@@ -1964,6 +1964,62 @@ html:not(.js) .guide-path + .guide-path {
   margin-block: 0;
 }
 
+.guide-command-shell {
+  min-width: 0;
+}
+
+.guide-copy-row {
+  display: none;
+}
+
+.js .guide-copy-row {
+  display: flex;
+  min-height: 2.75rem;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  margin-bottom: var(--space-2);
+}
+
+.guide-copy-button {
+  min-width: 6.5rem;
+  min-height: 2.75rem;
+  padding: var(--space-2) var(--space-4);
+  color: var(--brand-600);
+  background: var(--surface);
+  border: 1px solid var(--brand-600);
+  border-radius: var(--radius-button);
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+
+.guide-copy-button:hover,
+.guide-copy-button[data-copy-state="success"] {
+  color: var(--surface);
+  background: var(--brand-600);
+}
+
+.guide-copy-button[data-copy-state="error"] {
+  color: var(--brand-900);
+  border-color: var(--brand-900);
+}
+
+.guide-copy-button:disabled {
+  cursor: wait;
+  opacity: 0.68;
+}
+
+[data-copy-status] {
+  color: var(--ink-700);
+  font-size: 0.8125rem;
+  text-align: right;
+}
+
+.guide-step-part[data-guide-part="command"] > p {
+  grid-column: 2;
+}
+
 .guide-step-part pre {
   min-width: 0;
   max-width: 100%;
@@ -1976,7 +2032,7 @@ html:not(.js) .guide-path + .guide-path {
   overscroll-behavior-inline: contain;
 }
 
-.guide-step-part pre + p {
+.guide-command-shell + p {
   margin-top: var(--space-4);
 }
 
@@ -2077,6 +2133,19 @@ html:not(.js) .guide-path + .guide-path {
     grid-template-columns: 1fr;
     gap: var(--space-2);
     margin-left: 0;
+  }
+
+  .guide-step-part[data-guide-part="command"] > p {
+    grid-column: 1;
+  }
+
+  .js .guide-copy-row {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  [data-copy-status] {
+    text-align: left;
   }
 
   .guide-step-part pre {

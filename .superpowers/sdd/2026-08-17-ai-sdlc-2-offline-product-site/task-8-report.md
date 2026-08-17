@@ -159,3 +159,120 @@ git diff --check
 - The deliverable contains zero ZIP, TGZ, TAR.GZ, or wheel payloads.
 - No external runtime dependency is required to read or navigate the two local
   pages; JavaScript is progressive enhancement only.
+
+## Fix Round 1/5 — three Important findings
+
+Planned fix commit subject: `fix: harden beginner guide copy and parity`.
+
+### Changes
+
+- Added one native, keyboard-focusable `复制命令` button and one polite status
+  region beside each of the 48 source-bound command blocks. The handler reads
+  only the matching `[data-guide-command].textContent`; it first attempts the
+  Clipboard API in a secure context, then falls back to a temporary selected
+  textarea and `document.execCommand("copy")` for direct `file://` use. Success
+  changes the control to `再次复制` and announces `已复制完整命令`; failure changes
+  it to `重试复制` and announces `复制失败，请手动选择命令`. Focus returns to the
+  triggering button after either branch.
+- Corrected all 12 operating-system labels by scenario. Offline paths now use
+  `Windows AMD64 / macOS Apple Silicon / Linux AMD64`; online paths use
+  `Windows / macOS / Linux`. The Tab, path index, and visible current-path note
+  agree for every path.
+- Extended `validate_guide_parity()` to parse the frozen Markdown into ordered
+  semantic blocks for every `path × step × part`. Paragraphs, list items, and
+  fenced command blocks are normalized independently, retained in order, and
+  compared with the matching rendered HTML part. The validator also rejects a
+  changed six-part order.
+- Updated the final closed-world test so it executes both the complete-site
+  validator and frozen-guide parity rather than relying on a separate parity
+  test alone.
+
+### TDD evidence
+
+The focused review suite was added before implementation and produced:
+
+```text
+6 failed, 78 deselected in 0.43s
+```
+
+The failures were the incorrect scenario labels, zero copy controls, altered
+expected output not detected, empty troubleshooting not detected, wrong next
+action not detected, and swapped parts not detected.
+
+After implementing each contract, the focused suite reported:
+
+```text
+7 passed, 77 deselected in 0.41s
+```
+
+The seventh assertion is the combined final closed-world gate. The four
+semantic mutation fixtures now all produce `guide_part_content_mismatch`; the
+swapped-parts fixture additionally produces `guide_part_order_mismatch`.
+
+### Five-viewport file verification
+
+The existing in-app Browser / `playwright-cli` direct-file limitations remain
+environmental, so the same installed Playwright Chromium runtime was invoked
+by a temporary script against the real nested `file://` guide. Clipboard API
+was explicitly unavailable so every success exercised the fallback branch.
+
+```text
+viewport   protocol commands controls statuses validCopies overflow console page
+1440x900   file:    48       48       48       48          0        0       0
+1366x768   file:    48       48       48       48          0        0       0
+1280x800   file:    48       48       48       48          0        0       0
+1024x768   file:    48       48       48       48          0        0       0
+390x844    file:    48       48       48       48          0        0       0
+```
+
+For every one of the 240 keyboard activations, the DOM command text matched
+the corresponding command parsed independently from the frozen Markdown, the
+fallback textarea selection exactly matched the DOM `textContent`, focus
+returned to the control, and the success state was announced. A separate
+forced failure returned:
+
+```text
+state=error label=重试复制 status=复制失败，请手动选择命令
+```
+
+At `390x844` with JavaScript disabled, all 48 commands and all 12 paths remained
+visible, all 48 inert copy controls had no layout box, and document overflow
+was `0`. Visual inspection at 1440px, 1024px, and 390px confirmed the copy row,
+status, and internally scrolling command block remained readable without page
+overflow.
+
+### Final fix-round verification
+
+```powershell
+$env:UV_CACHE_DIR = '.uv-cache'
+uv run pytest -q tests/unit/test_offline_product_site.py
+# 84 passed in 0.75s
+
+uv run python scripts/validate_offline_product_site.py --root deliverables/ai-sdlc-2.0-offline-product-site --guide-source docs/product-site/content/USER_GUIDE.zh-CN.md
+# OFFLINE_PRODUCT_SITE_VALID
+
+uv run ruff check scripts/validate_offline_product_site.py tests/unit/test_offline_product_site.py
+# All checks passed!
+
+node --check deliverables/ai-sdlc-2.0-offline-product-site/assets/js/site.js
+node --check deliverables/ai-sdlc-2.0-offline-product-site/assets/js/video-config.js
+git diff --check
+# all exited 0 with no output
+```
+
+### Fix-round self-review
+
+- The copy path never reconstructs, trims, or interpolates a command; both API
+  branches receive the exact source-bound code node `textContent`.
+- Buttons remain native controls with at least 44px height, visible focus from
+  the shared stylesheet, focus restoration, success/error state, and an
+  `aria-live` status. With JavaScript disabled, only the enhancement controls
+  disappear; commands remain readable.
+- Architecture labels are now a scenario relation, not one global three-item
+  list, so online availability is not incorrectly restricted to release-asset
+  architectures.
+- Full part parity is semantic rather than raw-HTML equality: it tolerates
+  HTML presentation but rejects changed content, missing recovery guidance,
+  wrong continuation actions, block reordering, and part swaps.
+- No frozen Markdown, release URL, installer asset, main product page, or
+  non-Task-8 feature changed. No unresolved Task 8 issue remains.
