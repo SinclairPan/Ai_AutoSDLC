@@ -48,9 +48,38 @@ const SURFACES = [
   },
 ];
 
+const INTERACTION_SURFACES = SURFACES.filter((surface) =>
+  ["loop", "expert", "platform", "guide"].includes(surface.key));
+const INTERACTION_VIEWPORTS = [
+  { width: 1366, height: 768 },
+  { width: 390, height: 844 },
+];
+const GUIDE_SCENARIOS = Object.freeze({
+  "existing-offline": "path-1a",
+  "existing-online": "path-2a",
+  "new-offline": "path-3a",
+  "new-online": "path-4a",
+});
+const INTERACTIVE_AUDIT_DEFINITION =
+  "visible key controls within a shared interaction region; text-only lines excluded";
+
 const EXPECTED_SUMMARY = Object.freeze({
   stateCount: 135,
   stateFailures: 0,
+  stateGeometryCheckCount: 135,
+  viewportClippingFailures: 0,
+  ancestorClippingFailures: 0,
+  controlOverlapFailures: 0,
+  mobileMenuCount: 1,
+  mobileMenuFailures: 0,
+  historyCount: 4,
+  historyFailures: 0,
+  tabKeyboardCount: 8,
+  tabKeyboardFailures: 0,
+  skipLinkCount: 5,
+  skipLinkFailures: 0,
+  guideScenarioCount: 8,
+  guideScenarioFailures: 0,
   copyCount: 240,
   copyFailures: 0,
   noJsGroupCount: 12,
@@ -58,6 +87,49 @@ const EXPECTED_SUMMARY = Object.freeze({
   configuredVideoFailures: 0,
   accessibilityFailures: 0,
   runtimeFailures: 0,
+});
+
+const resultFailureCount = (results) => results?.filter((item) => item.failures.length).length ?? -1;
+
+const deriveSummary = (receipt) => ({
+  stateCount: receipt.stateResults?.length ?? -1,
+  stateFailures: resultFailureCount(receipt.stateResults),
+  stateGeometryCheckCount: receipt.stateResults?.filter((item) => item.interactiveAudit).length ?? -1,
+  viewportClippingFailures: receipt.stateResults?.filter(
+    (item) => item.interactiveAudit?.viewportClipped?.length,
+  ).length ?? -1,
+  ancestorClippingFailures: receipt.stateResults?.filter(
+    (item) => item.interactiveAudit?.ancestorClipped?.length,
+  ).length ?? -1,
+  controlOverlapFailures: receipt.stateResults?.filter(
+    (item) => item.interactiveAudit?.overlaps?.length,
+  ).length ?? -1,
+  mobileMenuCount: receipt.mobileMenuResults?.length ?? -1,
+  mobileMenuFailures: resultFailureCount(receipt.mobileMenuResults),
+  historyCount: receipt.historyResults?.length ?? -1,
+  historyFailures: resultFailureCount(receipt.historyResults),
+  tabKeyboardCount: receipt.tabKeyboardResults?.length ?? -1,
+  tabKeyboardFailures: resultFailureCount(receipt.tabKeyboardResults),
+  skipLinkCount: receipt.skipLinkResults?.length ?? -1,
+  skipLinkFailures: resultFailureCount(receipt.skipLinkResults),
+  guideScenarioCount: receipt.guideScenarioResults?.length ?? -1,
+  guideScenarioFailures: resultFailureCount(receipt.guideScenarioResults),
+  copyCount: receipt.copyResults?.reduce((total, item) => total + item.results.length, 0) ?? -1,
+  copyFailures: receipt.copyResults?.reduce(
+    (total, item) => total + item.results.filter((result) => !result.passed).length,
+    0,
+  ) ?? -1,
+  noJsGroupCount: receipt.noJsResults?.length ?? -1,
+  noJsFailures: resultFailureCount(receipt.noJsResults),
+  configuredVideoFailures: receipt.configuredVideo?.failures?.length ?? -1,
+  accessibilityFailures: receipt.accessibilityResults?.reduce(
+    (total, item) => total + item.failures.length,
+    0,
+  ) ?? -1,
+  runtimeFailures: receipt.runtimeResults?.reduce(
+    (total, item) => total + item.consoleErrors.length + item.pageErrors.length + item.failedRequests.length,
+    0,
+  ) ?? -1,
 });
 
 const parseArgs = (argv) => {
@@ -121,13 +193,13 @@ const verifyReceipt = async (options) => {
     if (!condition) errors.push(message);
   };
 
-  check([1, 2].includes(receipt.schemaVersion), "schemaVersion must be 1 or 2");
+  check(receipt.schemaVersion === 3, "schemaVersion must be 3");
   check(receipt.inputs?.manifestSha256 === await sha256File(manifestPath), "manifest SHA drifted");
   check(
     receipt.inputs?.copiedManifestSha256 === receipt.inputs?.manifestSha256,
     "fresh-copy manifest is not bound to the committed manifest",
   );
-  if (receipt.schemaVersion >= 2) {
+  if (receipt.schemaVersion >= 3) {
     check(receipt.inputs?.runnerSha256 === await sha256File(runnerPath), "runner SHA drifted");
   }
   check(
@@ -145,7 +217,7 @@ const verifyReceipt = async (options) => {
   } catch {
     errors.push("input commit is not reachable from HEAD");
   }
-  if (receipt.schemaVersion >= 2) {
+  if (receipt.schemaVersion >= 3) {
     try {
       const committedManifest = execFileSync(
         "git",
@@ -192,33 +264,132 @@ const verifyReceipt = async (options) => {
     }
   }
 
-  const stateFailures = receipt.stateResults?.filter((item) => item.failures.length).length ?? -1;
-  const copyCount = receipt.copyResults?.reduce((total, item) => total + item.results.length, 0) ?? -1;
-  const copyFailures = receipt.copyResults?.reduce(
-    (total, item) => total + item.results.filter((result) => !result.passed).length,
-    0,
-  ) ?? -1;
-  const noJsFailures = receipt.noJsResults?.filter((item) => item.failures.length).length ?? -1;
-  const runtimeFailures = receipt.runtimeResults?.reduce(
-    (total, item) => total + item.consoleErrors.length + item.pageErrors.length + item.failedRequests.length,
-    0,
-  ) ?? -1;
-  const derivedSummary = {
-    stateCount: receipt.stateResults?.length ?? -1,
-    stateFailures,
-    copyCount,
-    copyFailures,
-    noJsGroupCount: receipt.noJsResults?.length ?? -1,
-    noJsFailures,
-    configuredVideoFailures: receipt.configuredVideo?.failures?.length ?? -1,
-    accessibilityFailures: receipt.accessibilityResults?.reduce(
-      (total, item) => total + item.failures.length,
-      0,
-    ) ?? -1,
-    runtimeFailures,
-  };
+  const derivedSummary = deriveSummary(receipt);
   check(JSON.stringify(receipt.summary) === JSON.stringify(EXPECTED_SUMMARY), "summary contract drifted");
   check(JSON.stringify(derivedSummary) === JSON.stringify(EXPECTED_SUMMARY), "summary is not reproducible");
+
+  const expectedHistorySurfaces = new Set(INTERACTION_SURFACES.map((surface) => surface.key));
+  check(
+    receipt.historyResults?.length === expectedHistorySurfaces.size
+      && new Set(receipt.historyResults.map((item) => item.surface)).size === expectedHistorySurfaces.size
+      && receipt.historyResults.every((item) => expectedHistorySurfaces.has(item.surface)),
+    "history surface coverage drifted",
+  );
+  const expectedKeyboardPairs = new Set(INTERACTION_VIEWPORTS.flatMap((viewport) =>
+    INTERACTION_SURFACES.map((surface) => `${surface.key}:${viewport.width}x${viewport.height}`)));
+  const keyboardPairs = new Set(receipt.tabKeyboardResults?.map(
+    (item) => `${item.surface}:${item.viewport.width}x${item.viewport.height}`,
+  ));
+  check(
+    keyboardPairs.size === expectedKeyboardPairs.size
+      && [...expectedKeyboardPairs].every((pair) => keyboardPairs.has(pair)),
+    "tab keyboard surface/viewport coverage drifted",
+  );
+  const expectedScenarioPairs = new Set(INTERACTION_VIEWPORTS.flatMap((viewport) =>
+    Object.keys(GUIDE_SCENARIOS).map((scenario) => `${scenario}:${viewport.width}x${viewport.height}`)));
+  const scenarioPairs = new Set(receipt.guideScenarioResults?.map(
+    (item) => `${item.scenario}:${item.viewport.width}x${item.viewport.height}`,
+  ));
+  check(
+    scenarioPairs.size === expectedScenarioPairs.size
+      && [...expectedScenarioPairs].every((pair) => scenarioPairs.has(pair)),
+    "guide scenario coverage drifted",
+  );
+  const expectedSkipViewports = new Set(VIEWPORTS.map((viewport) => `${viewport.width}x${viewport.height}`));
+  const skipViewports = new Set(receipt.skipLinkResults?.map(
+    (item) => `${item.viewport.width}x${item.viewport.height}`,
+  ));
+  check(
+    skipViewports.size === expectedSkipViewports.size
+      && [...expectedSkipViewports].every((viewport) => skipViewports.has(viewport)),
+    "skip-link viewport coverage drifted",
+  );
+  check(
+    receipt.mobileMenuResults?.length === 1
+      && receipt.mobileMenuResults[0]?.viewport?.width === 390
+      && receipt.mobileMenuResults[0]?.opened?.expanded === "true"
+      && receipt.mobileMenuResults[0]?.opened?.menuOpen === "true"
+      && receipt.mobileMenuResults[0]?.closed?.expanded === "false"
+      && receipt.mobileMenuResults[0]?.closed?.menuOpen === "false"
+      && receipt.mobileMenuResults[0]?.closed?.focusedToggle === true,
+    "mobile menu Escape/focus evidence drifted",
+  );
+  for (const item of receipt.historyResults || []) {
+    const surface = INTERACTION_SURFACES.find((candidate) => candidate.key === item.surface);
+    const first = surface?.states[0];
+    const second = surface?.states[1];
+    check(
+      item.snapshots?.selected?.selected === second
+        && item.snapshots?.selected?.hash === `#${second}`
+        && item.snapshots?.selected?.focused === second
+        && item.snapshots?.back?.selected === first
+        && item.snapshots?.back?.hash === ""
+        && item.snapshots?.back?.focused === first
+        && item.snapshots?.forward?.selected === second
+        && item.snapshots?.forward?.hash === `#${second}`
+        && item.snapshots?.forward?.focused === second
+        && item.snapshots?.reload?.selected === second
+        && item.snapshots?.reload?.hash === `#${second}`
+        && item.snapshots?.reload?.focused === "BODY",
+      `history observations drifted for ${item.surface}`,
+    );
+  }
+  for (const item of receipt.tabKeyboardResults || []) {
+    const surface = INTERACTION_SURFACES.find((candidate) => candidate.key === item.surface);
+    const visibleStates = item.surface === "guide" ? surface?.states.slice(0, 3) : surface?.states;
+    check(
+      item.steps?.start === visibleStates?.[0]
+        && item.steps?.ArrowRight === visibleStates?.[1]
+        && item.steps?.End === visibleStates?.at(-1)
+        && item.steps?.Home === visibleStates?.[0]
+        && item.steps?.ArrowLeft === visibleStates?.at(-1),
+      `tab keyboard observations drifted for ${item.surface}`,
+    );
+  }
+  for (const item of receipt.skipLinkResults || []) {
+    check(
+      item.beforeActivation?.focusedClass?.split(/\s+/).includes("skip-link")
+        && item.beforeActivation?.visible === true
+        && item.afterActivation?.focusedId === "main"
+        && item.afterActivation?.focusedTag === "MAIN",
+      `skip-link activation observations drifted at ${item.viewport?.width}`,
+    );
+  }
+  for (const item of receipt.guideScenarioResults || []) {
+    const expected = GUIDE_SCENARIOS[item.scenario];
+    check(
+      item.expectedState === expected
+        && item.selected === expected
+        && item.hash === `#${expected}`
+        && item.focused === expected
+        && item.ariaCurrent === "true",
+      `guide scenario observations drifted for ${item.scenario}`,
+    );
+  }
+  for (const state of receipt.stateResults || []) {
+    const audit = state.interactiveAudit;
+    const controls = audit?.controls || [];
+    const viewportClipped = controls.filter((control) => control.viewportClipReasons.length).map((control) => control.id);
+    const ancestorClipped = controls.filter((control) => control.ancestorClipReasons.length).map((control) => control.id);
+    const overlaps = [];
+    for (let index = 0; index < controls.length; index += 1) {
+      for (let next = index + 1; next < controls.length; next += 1) {
+        const first = controls[index];
+        const second = controls[next];
+        if (first.region !== second.region || first.contains?.includes(second.id) || second.contains?.includes(first.id)) continue;
+        const horizontal = Math.min(first.documentRect.right, second.documentRect.right)
+          - Math.max(first.documentRect.left, second.documentRect.left);
+        const vertical = Math.min(first.documentRect.bottom, second.documentRect.bottom)
+          - Math.max(first.documentRect.top, second.documentRect.top);
+        if (horizontal > 1 && vertical > 1) overlaps.push({ region: first.region, first: first.id, second: second.id });
+      }
+    }
+    check(audit?.definition === INTERACTIVE_AUDIT_DEFINITION, "interactive audit definition drifted");
+    check(audit?.keyControlCount === controls.length, "interactive key-control count drifted");
+    check(JSON.stringify(audit?.viewportClipped) === JSON.stringify(viewportClipped), "viewport clipping evidence drifted");
+    check(JSON.stringify(audit?.ancestorClipped) === JSON.stringify(ancestorClipped), "ancestor clipping evidence drifted");
+    check(JSON.stringify(audit?.overlaps) === JSON.stringify(overlaps), "control overlap evidence drifted");
+  }
 
   const ownership = receipt.requestOwnership || {};
   const requests = ownership.requests || [];
@@ -296,6 +467,11 @@ const runAcceptance = async (options) => {
   const accessibilityResults = [];
   const copyResults = [];
   const noJsResults = [];
+  const mobileMenuResults = [];
+  const historyResults = [];
+  const tabKeyboardResults = [];
+  const skipLinkResults = [];
+  const guideScenarioResults = [];
 
   for (const viewport of VIEWPORTS) {
     const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
@@ -318,7 +494,7 @@ const runAcceptance = async (options) => {
             state,
           );
         }
-        const observed = await page.evaluate(({ key, state }) => {
+        const observed = await page.evaluate(async ({ key, state, auditDefinition }) => {
           const visible = (node) => {
             if (!node) return false;
             const style = getComputedStyle(node);
@@ -327,20 +503,114 @@ const runAcceptance = async (options) => {
           };
           const selected = document.querySelector('[role="tab"][aria-selected="true"]');
           const panel = selected ? document.getElementById(selected.getAttribute("aria-controls")) : null;
-          const controls = [...document.querySelectorAll('a[href], button, [role="tab"], video[controls]')].filter(visible);
-          const clippedControls = controls.flatMap((node) => {
+          const controlNodes = [...document.querySelectorAll('a[href], button, [role="tab"], video[controls]')].filter(visible);
+          const rectObject = (rect, documentSpace = false) => ({
+            left: rect.left + (documentSpace ? scrollX : 0),
+            right: rect.right + (documentSpace ? scrollX : 0),
+            top: rect.top + (documentSpace ? scrollY : 0),
+            bottom: rect.bottom + (documentSpace ? scrollY : 0),
+            width: rect.width,
+            height: rect.height,
+          });
+          const controlIds = new Map(controlNodes.map((node, index) => [node,
+            node.dataset.tab
+              || node.dataset.copyCommand
+              || node.id
+              || node.getAttribute("aria-label")
+              || `${node.tagName.toLowerCase()}:${index}:${node.textContent.trim().replace(/\s+/g, " ").slice(0, 48)}`]));
+          const regionFor = (node) => {
+            const region = node.closest(".site-header")
+              || node.closest('[role="tablist"]')
+              || node.closest(".guide-scenario-links")
+              || node.closest(".guide-copy-row")
+              || node.closest("nav, section, article, aside, footer, main")
+              || document.body;
+            const peers = [...document.querySelectorAll(
+              '.site-header, [role="tablist"], .guide-scenario-links, .guide-copy-row, nav, section, article, aside, footer, main, body',
+            )];
+            return region.id
+              || region.getAttribute("aria-label")
+              || `${region.tagName.toLowerCase()}:${peers.indexOf(region)}`;
+          };
+          const scrollAncestors = new Set();
+          for (const node of controlNodes) {
+            for (let parent = node.parentElement; parent; parent = parent.parentElement) scrollAncestors.add(parent);
+          }
+          const savedScroll = [...scrollAncestors].map((node) => ({ node, left: node.scrollLeft, top: node.scrollTop }));
+          const originalWindowScroll = { x: scrollX, y: scrollY };
+          const controls = controlNodes.map((node) => ({
+            id: controlIds.get(node),
+            tag: node.tagName,
+            label: node.getAttribute("aria-label") || node.textContent.trim().replace(/\s+/g, " ").slice(0, 80),
+            region: regionFor(node),
+            documentRect: rectObject(node.getBoundingClientRect(), true),
+            contains: controlNodes.filter((candidate) => candidate !== node && node.contains(candidate)).map((candidate) => controlIds.get(candidate)),
+            viewportRect: null,
+            viewportClipReasons: [],
+            ancestorChecks: [],
+            ancestorClipReasons: [],
+          }));
+          for (let index = 0; index < controlNodes.length; index += 1) {
+            const node = controlNodes[index];
+            node.scrollIntoView({ block: "center", inline: "center" });
+            await new Promise((resolve) => requestAnimationFrame(resolve));
             const rect = node.getBoundingClientRect();
-            let scrollContainer = false;
+            controls[index].viewportRect = rectObject(rect);
+            if (rect.left < -0.5) controls[index].viewportClipReasons.push("left");
+            if (rect.right > innerWidth + 0.5) controls[index].viewportClipReasons.push("right");
+            if (rect.top < -0.5) controls[index].viewportClipReasons.push("top");
+            if (rect.bottom > innerHeight + 0.5) controls[index].viewportClipReasons.push("bottom");
             for (let parent = node.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
               const style = getComputedStyle(parent);
-              if (["auto", "scroll"].includes(style.overflowX) && parent.scrollWidth > parent.clientWidth) scrollContainer = true;
+              const axes = [];
+              if (["hidden", "clip", "auto", "scroll"].includes(style.overflowX)) axes.push("x");
+              if (["hidden", "clip", "auto", "scroll"].includes(style.overflowY)) axes.push("y");
+              if (!axes.length) continue;
+              const parentRect = parent.getBoundingClientRect();
+              const reasons = [];
+              if (axes.includes("x") && rect.left < parentRect.left - 0.5) reasons.push("left");
+              if (axes.includes("x") && rect.right > parentRect.right + 0.5) reasons.push("right");
+              if (axes.includes("y") && rect.top < parentRect.top - 0.5) reasons.push("top");
+              if (axes.includes("y") && rect.bottom > parentRect.bottom + 0.5) reasons.push("bottom");
+              const check = {
+                ancestor: parent.id || parent.getAttribute("aria-label") || parent.className || parent.tagName,
+                overflowX: style.overflowX,
+                overflowY: style.overflowY,
+                reasons,
+              };
+              controls[index].ancestorChecks.push(check);
+              controls[index].ancestorClipReasons.push(...reasons.map((reason) => `${check.ancestor}:${reason}`));
             }
-            return !scrollContainer && (rect.left < -0.5 || rect.right > innerWidth + 0.5)
-              ? [node.getAttribute("aria-label") || node.textContent.trim().replace(/\s+/g, " ").slice(0, 60)]
-              : [];
-          });
+          }
+          for (const saved of savedScroll) {
+            saved.node.scrollLeft = saved.left;
+            saved.node.scrollTop = saved.top;
+          }
+          scrollTo(originalWindowScroll.x, originalWindowScroll.y);
+          const overlaps = [];
+          for (let index = 0; index < controls.length; index += 1) {
+            for (let next = index + 1; next < controls.length; next += 1) {
+              const first = controls[index];
+              const second = controls[next];
+              if (first.region !== second.region || first.contains.includes(second.id) || second.contains.includes(first.id)) continue;
+              const horizontal = Math.min(first.documentRect.right, second.documentRect.right)
+                - Math.max(first.documentRect.left, second.documentRect.left);
+              const vertical = Math.min(first.documentRect.bottom, second.documentRect.bottom)
+                - Math.max(first.documentRect.top, second.documentRect.top);
+              if (horizontal > 1 && vertical > 1) overlaps.push({ region: first.region, first: first.id, second: second.id });
+            }
+          }
+          const interactiveAudit = {
+            definition: auditDefinition,
+            keyControlCount: controls.length,
+            controls,
+            viewportClipped: controls.filter((control) => control.viewportClipReasons.length).map((control) => control.id),
+            ancestorClipped: controls.filter((control) => control.ancestorClipReasons.length).map((control) => control.id),
+            overlaps,
+          };
+          const clippedControls = [...interactiveAudit.viewportClipped, ...interactiveAudit.ancestorClipped];
           const undersizedControls = innerWidth <= 390
-            ? controls.flatMap((node) => {
+            ? controlNodes.flatMap((node) => {
               const rect = node.getBoundingClientRect();
               return rect.width < 44 || rect.height < 44
                 ? [node.getAttribute("aria-label") || node.textContent.trim().replace(/\s+/g, " ").slice(0, 60)]
@@ -358,7 +628,9 @@ const runAcceptance = async (options) => {
           const failures = [];
           if (location.protocol !== "file:") failures.push("not-file-protocol");
           if (document.documentElement.scrollWidth > document.documentElement.clientWidth) failures.push("horizontal-overflow");
-          if (clippedControls.length) failures.push("clipped-controls");
+          if (interactiveAudit.viewportClipped.length) failures.push("viewport-clipped-controls");
+          if (interactiveAudit.ancestorClipped.length) failures.push("ancestor-clipped-controls");
+          if (interactiveAudit.overlaps.length) failures.push("overlapping-controls");
           if (undersizedControls.length) failures.push("undersized-controls");
           if (state && selected?.dataset.tab !== state) failures.push("wrong-selected-tab");
           if (state && (!panel || panel.hidden || !visible(panel))) failures.push("hidden-selected-panel");
@@ -375,12 +647,13 @@ const runAcceptance = async (options) => {
             scrollWidth: document.documentElement.scrollWidth,
             clientWidth: document.documentElement.clientWidth,
             clippedControls,
+            interactiveAudit,
             undersizedControls,
             externalLinkCount: externalLinks.length,
             externalFailures,
             failures,
           };
-        }, { key: surface.key, state });
+        }, { key: surface.key, state, auditDefinition: INTERACTIVE_AUDIT_DEFINITION });
         stateResults.push({ viewport, ...observed });
       }
     }
@@ -388,17 +661,163 @@ const runAcceptance = async (options) => {
     await page.goto(urlFor("index.html"), { waitUntil: "load" });
     await page.keyboard.press("Tab");
     await page.waitForTimeout(250);
-    const accessibility = await page.evaluate(() => {
+    const beforeActivation = await page.evaluate(() => {
       const active = document.activeElement;
       const failures = [];
       if (!active?.classList.contains("skip-link") || active.getBoundingClientRect().top < 0) failures.push("skip-link-focus");
       if (document.querySelectorAll("main").length !== 1) failures.push("main-count");
       if (!document.querySelector("nav")?.getAttribute("aria-label")) failures.push("nav-label");
       if (getComputedStyle(document.documentElement).scrollBehavior !== "auto") failures.push("reduced-motion");
-      return { activeClass: active?.className || "", failures };
+      return {
+        focusedClass: active?.className || "",
+        visible: Boolean(active && active.getBoundingClientRect().top >= 0),
+        failures,
+      };
     });
-    accessibilityResults.push({ viewport, ...accessibility });
+    await page.keyboard.press("Enter");
+    const afterActivation = await page.evaluate(() => ({
+      focusedId: document.activeElement?.id || "",
+      focusedTag: document.activeElement?.tagName || "",
+    }));
+    const skipFailures = [...beforeActivation.failures];
+    if (afterActivation.focusedId !== "main" || afterActivation.focusedTag !== "MAIN") {
+      skipFailures.push("skip-link-activation-focus");
+    }
+    const skipResult = { viewport, beforeActivation, afterActivation, failures: skipFailures };
+    skipLinkResults.push(skipResult);
+    accessibilityResults.push(skipResult);
+    if (viewport.width === 390) {
+      await page.goto(urlFor("index.html"), { waitUntil: "load" });
+      const toggle = page.locator("[data-nav-toggle]");
+      await toggle.focus();
+      await page.keyboard.press("Enter");
+      const opened = await page.evaluate(() => {
+        const button = document.querySelector("[data-nav-toggle]");
+        const menu = document.querySelector("[data-nav-menu]");
+        return {
+          expanded: button?.getAttribute("aria-expanded"),
+          menuOpen: menu?.dataset.open,
+          focusedToggle: document.activeElement === button,
+        };
+      });
+      await page.keyboard.press("Escape");
+      const closed = await page.evaluate(() => {
+        const button = document.querySelector("[data-nav-toggle]");
+        const menu = document.querySelector("[data-nav-menu]");
+        return {
+          expanded: button?.getAttribute("aria-expanded"),
+          menuOpen: menu?.dataset.open,
+          focusedToggle: document.activeElement === button,
+        };
+      });
+      const failures = [];
+      if (opened.expanded !== "true" || opened.menuOpen !== "true") failures.push("menu-not-opened");
+      if (closed.expanded !== "false" || closed.menuOpen !== "false") failures.push("menu-not-closed");
+      if (!closed.focusedToggle) failures.push("menu-focus-not-returned");
+      mobileMenuResults.push({ viewport, opened, closed, failures });
+    }
     runtimeResults.push({ viewport, consoleErrors, pageErrors, failedRequests });
+    await context.close();
+  }
+
+  const tabSnapshot = (page) => page.evaluate(() => {
+    const selected = document.querySelector('[role="tab"][aria-selected="true"]');
+    const panel = selected ? document.getElementById(selected.getAttribute("aria-controls")) : null;
+    return {
+      selected: selected?.dataset.tab || null,
+      hash: location.hash,
+      focused: document.activeElement?.dataset?.tab || document.activeElement?.tagName || null,
+      panelVisible: Boolean(panel && !panel.hidden && panel.getBoundingClientRect().width > 0),
+    };
+  });
+
+  for (const surface of INTERACTION_SURFACES) {
+    const context = await browser.newContext({ viewport: INTERACTION_VIEWPORTS[0], reducedMotion: "reduce" });
+    await context.setOffline(true);
+    const page = await context.newPage();
+    const [first, second] = surface.states;
+    await page.goto(urlFor(surface.file), { waitUntil: "load" });
+    await page.locator(`[data-tab="${first}"]`).focus();
+    await page.locator(`[data-tab="${second}"]`).click();
+    const selected = await tabSnapshot(page);
+    await page.goBack({ waitUntil: "load" });
+    await page.waitForFunction((id) => document.querySelector(`[data-tab="${id}"]`)?.getAttribute("aria-selected") === "true", first);
+    const back = await tabSnapshot(page);
+    await page.goForward({ waitUntil: "load" });
+    await page.waitForFunction((id) => document.querySelector(`[data-tab="${id}"]`)?.getAttribute("aria-selected") === "true", second);
+    const forward = await tabSnapshot(page);
+    await page.reload({ waitUntil: "load" });
+    await page.waitForFunction((id) => document.querySelector(`[data-tab="${id}"]`)?.getAttribute("aria-selected") === "true", second);
+    const reload = await tabSnapshot(page);
+    const failures = [];
+    if (selected.selected !== second || selected.hash !== `#${second}` || selected.focused !== second || !selected.panelVisible) failures.push("selected-state");
+    if (back.selected !== first || back.hash !== "" || back.focused !== first || !back.panelVisible) failures.push("back-state");
+    if (forward.selected !== second || forward.hash !== `#${second}` || forward.focused !== second || !forward.panelVisible) failures.push("forward-state");
+    if (reload.selected !== second || reload.hash !== `#${second}` || reload.focused !== "BODY" || !reload.panelVisible) failures.push("reload-state");
+    historyResults.push({
+      surface: surface.key,
+      focusContract: "Back and Forward follow the selected tab; Reload preserves hash/selection and restarts document focus at BODY",
+      snapshots: { selected, back, forward, reload },
+      failures,
+    });
+    await context.close();
+  }
+
+  for (const viewport of INTERACTION_VIEWPORTS) {
+    for (const surface of INTERACTION_SURFACES) {
+      const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
+      await context.setOffline(true);
+      const page = await context.newPage();
+      const first = surface.states[0];
+      const visibleStates = surface.key === "guide" ? surface.states.slice(0, 3) : surface.states;
+      await page.goto(urlFor(surface.file), { waitUntil: "load" });
+      await page.locator(`[data-tab="${first}"]`).focus();
+      const steps = { start: await page.evaluate(() => document.activeElement?.dataset?.tab || null) };
+      for (const key of ["ArrowRight", "End", "Home", "ArrowLeft"]) {
+        await page.keyboard.press(key);
+        steps[key] = await page.evaluate(() => document.activeElement?.dataset?.tab || null);
+      }
+      const expected = {
+        start: visibleStates[0],
+        ArrowRight: visibleStates[1],
+        End: visibleStates.at(-1),
+        Home: visibleStates[0],
+        ArrowLeft: visibleStates.at(-1),
+      };
+      const failures = Object.keys(expected).filter((key) => steps[key] !== expected[key]).map((key) => `keyboard-${key}`);
+      tabKeyboardResults.push({ surface: surface.key, viewport, visibleStates, steps, failures });
+      await context.close();
+    }
+  }
+
+  for (const viewport of INTERACTION_VIEWPORTS) {
+    const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
+    await context.setOffline(true);
+    const page = await context.newPage();
+    await page.goto(urlFor("docs/USER_GUIDE.zh-CN.html"), { waitUntil: "load" });
+    for (const [scenario, expectedState] of Object.entries(GUIDE_SCENARIOS)) {
+      const selector = page.locator(`[data-guide-scenario-selector="${scenario}"]`);
+      await selector.focus();
+      await page.keyboard.press("Enter");
+      await page.waitForFunction((id) => document.querySelector(`[data-tab="${id}"]`)?.getAttribute("aria-selected") === "true", expectedState);
+      const observed = await page.evaluate(({ scenarioId, expected }) => {
+        const selected = document.querySelector('[role="tab"][aria-selected="true"]');
+        const scenarioNode = document.querySelector(`[data-guide-scenario-selector="${scenarioId}"]`);
+        return {
+          scenario: scenarioId,
+          expectedState: expected,
+          selected: selected?.dataset.tab || null,
+          hash: location.hash,
+          focused: document.activeElement?.dataset?.tab || document.activeElement?.tagName || null,
+          ariaCurrent: scenarioNode?.getAttribute("aria-current"),
+          visibleTabCount: [...document.querySelectorAll('[role="tab"]')].filter((tab) => !tab.hidden).length,
+        };
+      }, { scenarioId: scenario, expected: expectedState });
+      const failures = [];
+      if (observed.selected !== expectedState || observed.hash !== `#${expectedState}` || observed.focused !== expectedState) failures.push("scenario-state");
+      if (observed.ariaCurrent !== "true" || observed.visibleTabCount !== 3) failures.push("scenario-contract");
+      guideScenarioResults.push({ viewport, ...observed, failures });
+    }
     await context.close();
   }
 
@@ -516,19 +935,22 @@ const runAcceptance = async (options) => {
   const screenshotEvidence = await captureScreenshots(browser, screenshotRoot, repositoryRoot, urlFor);
   await browser.close();
 
-  const summary = {
-    stateCount: stateResults.length,
-    stateFailures: stateResults.filter((item) => item.failures.length).length,
-    copyCount: copyResults.reduce((total, item) => total + item.results.length, 0),
-    copyFailures: copyResults.reduce((total, item) => total + item.results.filter((result) => !result.passed).length, 0),
-    noJsGroupCount: noJsResults.length,
-    noJsFailures: noJsResults.filter((item) => item.failures.length).length,
-    configuredVideoFailures: configuredVideo.failures.length,
-    accessibilityFailures: accessibilityResults.reduce((total, item) => total + item.failures.length, 0),
-    runtimeFailures: runtimeResults.reduce((total, item) => total + item.consoleErrors.length + item.pageErrors.length + item.failedRequests.length, 0),
+  const resultBundle = {
+    stateResults,
+    mobileMenuResults,
+    historyResults,
+    tabKeyboardResults,
+    skipLinkResults,
+    guideScenarioResults,
+    accessibilityResults,
+    copyResults,
+    noJsResults,
+    configuredVideo,
+    runtimeResults,
   };
+  const summary = deriveSummary(resultBundle);
   const receipt = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     inputs: {
       inputCommit,
       manifestSha256: await sha256File(manifestPath),
@@ -542,12 +964,7 @@ const runAcceptance = async (options) => {
       browserExecutable,
     },
     summary,
-    stateResults,
-    accessibilityResults,
-    copyResults,
-    noJsResults,
-    configuredVideo,
-    runtimeResults,
+    ...resultBundle,
     requestOwnership,
     representativeScreenshots: screenshotEvidence.representativeScreenshots,
     expertScreenshot: screenshotEvidence.expertScreenshot,
