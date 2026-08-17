@@ -1,104 +1,79 @@
-# AI-SDLC 2.0 离线产品站最终对抗验收
+# AI-SDLC 2.0 离线产品站最终闭世界验收记录
 
-Reviewed baseline commit: 17f4970fb1b8aaaff39d95d98eb1d0a56ce4420d
-Browser receipt input commit: 7d1409a1c9f2a377a61a64a66fdbcbe2e361b2ab
-Deliverable manifest SHA256: 3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d
-Browser receipt SHA256: 6f1c75f8077cec876461d56c1635b8ee51847a56e105c50cb13e03c049441cae
-Final result: PASS / PASS / PASS
+Reviewed product baseline: `9154a47a36026133e4a587043aeb32d1a21efb0e`
 
-## 冻结范围
+Browser receipt input commit: `08519e03d6f08d04d56ed386deb09efe2da8a5db`
 
-- 交付根目录：`deliverables/ai-sdlc-2.0-offline-product-site/`
-- 闭世界清单：`docs/product-site/design/qa/package-manifest.sha256`，共 13 个交付文件；路径均相对交付根、按路径排序、不包含清单自身。
-- 浏览器 runner：`scripts/run_offline_product_site_browser_acceptance.mjs`，SHA-256 `53d7831dab9a791b90097c54bff1596a7394601f9a8038a13314510b2962473f`。
-- 持久 receipt：`docs/product-site/design/qa/browser-acceptance-receipt.json`，schema version 2。
-- Validator：`e69488dc53aff35e21664320c9d4f8b21b10fde801766884d67016d65e44dc17`。
-- Unit contract：`01a7af0dd1d21ec3488d2b68fb1b8850bd4b9824dc08f9a0fd48a2a1fa7b72f5`。
-- 交互记录：`33b934b02d98134c8f19a654f97d57ad5c14a605c1fa784ac2b606ec872a1b6f`。
-- 批准文案：`2ee0d75cb38e742b98ac956a588f37f276fefbe095284cf1ac7838a4ce688ffa`。
-- 冻结指南源：`8466b8535cea8f0a17e15181060b954ad84a815be96c7e2b269f84cfce054d67`。
-- 视觉规范：`08f0ff785f2a4229f56477c6cab4e2d32ea5d43627f47e18eb2f16bee930d31c`。
+Reviewer attestation commit: `924d29465a9ad9ffa28a0359ed8bc334013be4ae`
 
-## Fix Round 1 闭环
+Deliverable manifest SHA-256: `3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d`
 
-### 1. 全站外链边界
+Browser receipt SHA-256: `c1ea3eca93f6356484ffc452c85ac603aec4c51fa9c3b9113968f60dbb9c4b88`
 
-六个 HTML 入口共有 28 个 allowlisted `http(s)` anchor。每个 anchor 都在静态 HTML 中显示唯一的“需要联网”标记，并带有 `target="_blank"` 与 `rel="noopener noreferrer"`。合同已提升到 validator 和全站参数化测试；旧的仅依赖运行时 JavaScript 设置属性不再作为接受证据。
+## 冻结范围与可重算输入
 
-TDD 证据：初始 focused run 为 `4 failed`；validator 增加三类失败代码后为 `1 failed, 3 passed`；补齐 28 个静态合同后为 `5 passed`。完整 validator 返回 `OFFLINE_PRODUCT_SITE_VALID`。
+- 交付根：`deliverables/ai-sdlc-2.0-offline-product-site/`，manifest 共 13 个相对、排序且不含自身的条目。
+- browser runner：`scripts/run_offline_product_site_browser_acceptance.mjs`，SHA-256 `f56950501ce5308d8f33ccf3b1188768ef15e3651f919c278b4a5eae3bfb6bcf`。
+- reviewer attestation verifier：`scripts/verify_offline_product_site_reviewer_attestations.py`，SHA-256 `980eb6f003b3908127268142368b432f8ab63e5405d1dfb39f95b34aea3f359e`。
+- validator：`scripts/validate_offline_product_site.py`，SHA-256 `e69488dc53aff35e21664320c9d4f8b21b10fde801766884d67016d65e44dc17`。
+- unit contract：`tests/unit/test_offline_product_site.py`，SHA-256 `05fe17fe4a511447edd135b5446ff4c867228b13b5b3010e329f508b01f985e3`。
+- interaction record：`docs/product-site/design/qa/interaction-verification.md`，SHA-256 `cf178b904313812f7bf15963ca6d0bf83f99a3b91913208c13e3594ff4e3d3d6`。
+- 批准 copy、指南、视觉规范、批准参考图和 11 张 QA 截图的 baseline blob SHA 均逐项保存在三份 reviewer 原始输出中。
 
-### 2. 可达 baseline 与可移植 receipt
+schema 3 receipt 从可达 input commit 直接读取 runner 与 manifest 字节，并检查交付目录、runner、validator、manifest 和 11 张截图到 reviewed product baseline 无漂移。verifier 还从明细数组重算摘要、请求归属和截图确定性；删除历史结果或注入伪重叠的 mutation 都会返回 `RECEIPT_INVALID`。
 
-旧的 amend/dangling baseline 不再作为证据。线性历史保留 `532d5599…`，产品、runner、receipt、截图和 manifest 的后继提交均可从当前分支到达。fresh clone 中：
+## 浏览器与交互闭世界结果
 
-- `git show 17f4970fb1b8aaaff39d95d98eb1d0a56ce4420d` 成功；
-- schema 2 verifier 从 input commit `7d1409a1…` 直接读取并重算 committed manifest 与 runner SHA；
-- verifier 同时确认交付目录、runner、validator、manifest 和 11 张截图从 input commit 到 reviewed baseline 无漂移；
-- persisted receipt 在 fresh clone 自校验通过；
-- fresh clone 内完整 Chromium runner 再次得到与本记录相同的零失败摘要。
+- 五视口、135 个页面状态：状态失败 `0`；每个状态都有 `interactiveAudit`。
+- 135 次逐状态几何审计：视口水平/垂直裁切 `0`、overflow 祖先裁切 `0`、关键控件重叠 `0`。
+- 重叠定义限定为“同一交互区域内的可见关键控件”，只比较链接、按钮、Tab 和受控视频，排除文本行与父子包含关系。
+- 移动菜单打开 → `Escape` → 焦点返回：`1 / 1`。
+- Loop、Expert、Platform、Guide 的 selected → Back → Forward → Reload：`4 / 4`；receipt 保存 selected、hash、focus 与 panel 可见性。Back/Forward 焦点跟随 Tab，Reload 保留 hash/selected 并按浏览器导航边界重置到 `BODY`。
+- 四个相关 Tab 面 × 桌面/移动的 `ArrowRight`、`End`、`Home`、`ArrowLeft`：`8 / 8`。
+- skip-link 五视口激活后焦点进入 `main#main`：`5 / 5`。
+- 指南四场景 × 桌面/移动选择：`8 / 8`；selected、hash、focus、`aria-current` 和可见 Tab 数全部一致。
+- 指南 48 条命令 × 五视口：`240 / 240`；无 JavaScript：六页 × 两视口 `12 / 12`。
+- 默认视频保持诚实空态；临时本地 MP4/VTT 配置 smoke 的 native controls、caption、fullscreen 与 `file:` source/track 全部通过。
+- 六页共 33 requests、13 unique URLs；remote、site-root escape、repository back-reference 均为 `0`。
+- 专家截图在固定 hash、selected Tab、focus、tablist/page scroll、fonts 和 animation 后连续两次字节一致，SHA-256 均为 `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7`。
 
-实践专家首轮发现 receipt 曾错误绑定父提交 `532d5599…`：该提交中的 manifest 为 `f71a9f60…`，而 receipt 记录修复后 `3910199d…`。新增 Git-tree regression contract 先以该差异产生 RED，随后 schema 2 receipt 改为绑定实际包含 runner/manifest/受审产品的 `7d1409a1…`，focused `2 passed`。旧 baseline 的全部 verdict 已作废；三专家只评审 `17f4970f…`。
+## Fresh clone 复验
 
-### 3. 专家截图确定性与完整性
+在 `/private/tmp/ai-sdlc-task10-final-clone-a6fac11ff7584e0eac53c950a49af1d6` 以 detached `9154a47a36026133e4a587043aeb32d1a21efb0e` 重跑扩展 runner。fresh clone 结果与持久 receipt 一致：135 states、135 geometry、1 mobile menu、4 history、8 keyboard、5 skip-link、8 guide scenarios、240 copies、12 no-JS 全部零失败；33/13/0/0/0 请求归属不变；专家截图两次仍为 `2abf4273…`。
 
-`expert-review-1366x768.png` 在 `1366×768`、`#review-design`、Design Contract Tab 选中且聚焦的状态下生成。runner 在截图前固定：
+## 三份独立 reviewer 原始输出
 
-- hash 与选中 Tab；
-- focus；
-- `tablist.scrollLeft=0`；
-- `scrollX=0`、`scrollY=0`；
-- fonts ready、双 `requestAnimationFrame`；
-- animation、transition 与 caret 停止。
+下列文件是 reviewer 结论和 finding count 的唯一权威来源；本汇总不重新表述或替代其中的 verdict。canonical SHA 的规则是把文件内 `Canonical content SHA256` 值替换为 64 个 ASCII `0` 后，对完整 UTF-8 文件字节计算 SHA-256，从而避免自引用悖论。
 
-连续两次捕获均为 `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7`。receipt 保存 header/Tab 的元素矩形、文字矩形、`scrollWidth/clientWidth`、重叠和裁切数组；两次均为 `unclipped=true`、`clipped=[]`、`overlaps=[]`。fresh clone 再次得到同一 SHA。
+| Reviewer ID | 原始输出 | Canonical SHA-256 | 实际文件 SHA-256 |
+| --- | --- | --- | --- |
+| `reviewer-requirements-copy-9154a47` | `docs/product-site/design/qa/reviewers/requirements-copy.md` | `586fae7a93145608c9dad401590c107f4e0c152601b292ab36030d7a46673dfa` | `52b266c680088255b6c5a6d509aef213aaba2096329928a6731436be73535d7f` |
+| `reviewer-interaction-a11y-9154a47` | `docs/product-site/design/qa/reviewers/interaction-accessibility.md` | `83f1f30791f495032af13363e3a888ee080618ac8d94fe6673b0b293c8c7d18c` | `e7516e38704b9e84ec81d01b9e9b80f41ce9ff9d392af7c6780468d2bc291ac1` |
+| `reviewer-visual-delivery-9154a47` | `docs/product-site/design/qa/reviewers/visual-offline-delivery.md` | `e2438422335345bc78e5726102c3fd048c212b234f72704e466e8e4d53fb618b` | `1dc6c33ef226fc0e6f6cedb78bb757d560e0ed2571c61f7ce1161f4232d86245` |
 
-## 代表截图
+`verify_offline_product_site_reviewer_attestations.py` 对三份文件重算 canonical SHA、唯一 role/identity/task、完整 baseline、UTC、18 项相同 baseline 输入哈希和必须存在的 scope/verification/findings 结构，输出 `REVIEWER_ATTESTATIONS_VALID ... files=3 inputs=18`。
 
-| 文件 | SHA-256 |
-| --- | --- |
-| `home-1440x900.png` | `367ce22dc32c130dd060fa54148face9cac90b85d881dd7646c19a7b58b16ee4` |
-| `home-1366x768.png` | `368ad3dfa48b033335a839154d1bda72c86f8b4c424cd0f5b7bcab3f9ba9cc90` |
-| `home-1280x800.png` | `d433e372b6de4008002dc7668c830a619e625756bd1d2de89d78e6db7586408b` |
-| `home-1024x768.png` | `4f8a222c154a6de713db606b32d7e9c6b9043b1db70544b55f1f3813ce3f3ab0` |
-| `home-390x844.png` | `88f5e5e7cc29eddd55bf370d44cbb2fb8f4f7174c23303659c3a578e55975c86` |
-| `loop-1366x768.png` | `95dafb8bd7913c94b3730251d1fe59009f7c5aa8ca0a6f4f1caa8419aa946d27` |
-| `expert-review-1366x768.png` | `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7` |
-| `platform-1366x768.png` | `be9fe1cbb1e332aed0b6fc5db3f9a8aee4c6e5b8a7b5d41a74265011605080de` |
-| `downloads-1366x768.png` | `d28f6296bbfc366fa83387944fec9e14bff3034c44c60a6d2a520737e856dbd6` |
-| `guide-1366x768.png` | `0e4938b90f3c728c4585bd181276d12ee9ff7f1b335396ac391887884fa40125` |
-| `guide-390x844.png` | `20de5d6b62d4c40a40dfcab7db506f476719ea6f93952afb04f081fef9b45f1e` |
+## 线性历史与无漂移
 
-## Fresh 门禁与可重算 receipt
+- `08519e03…` 是 `9154a47a…` 的祖先；`9154a47a…` 是 `924d2946…` 及最终 review-record HEAD 的祖先。
+- reviewer 评审期间 HEAD 保持 `9154a47a…`，三份文件完成后才进入 `924d2946…`。
+- 从 reviewed product baseline 到最终 HEAD，排除 `docs/product-site/design/qa/reviewers/` 与本最终记录后，产品、批准正文、runner、receipt、validator、tests、manifest 和截图 diff 为空。
+- 旧 baseline 的聚合 verdict 不用于本轮结论。
 
-- 站点 contracts：`100 passed`。
+## Fresh 门禁
+
+- `104 passed`。
 - Ruff：`All checks passed!`。
-- 完整 validator 与冻结指南 parity：`OFFLINE_PRODUCT_SITE_VALID`。
-- Node syntax：4 个交付/浏览器文件，failure `0`。
-- manifest：13 entries，rebuild exact match，relative/sorted/no-self。
-- 五个视口 × 27 个状态：`135 / 135`，failure `0`。
-- 指南 48 条命令 × 5 个视口：`240 / 240`，failure `0`。
-- no-JS：6 页 × 2 视口，`12 / 12`，failure `0`。
-- configured local MP4/VTT：native controls、caption、fullscreen 与本地 `file:` source/track，failure `0`。
-- accessibility 与 runtime：failure `0`。
-- 请求归属：33 requests、13 unique URLs；remote、site-root escape、repository back-reference 均为 `0`。receipt 保存全部 33 条 URL 与归属字段，不只保存摘要。
-- 交付目录安装包数量 `0`；公开官网赛事/评委话术扫描 `0`。
-
-## 三专家 exact-hash 复审
-
-三位 reviewer 均以 `17f4970fb1b8aaaff39d95d98eb1d0a56ce4420d`、manifest `3910199d…`、receipt `6f1c75f8…`、runner `53d7831d…`、11 张截图与上述批准源 hash 为同一只读输入。旧 `4582210f…` 及更早 baseline 的 verdict 全部作废。
-
-1. AI-SDLC 实践专家：`PASS`
-2. AI Coding 行业专家：`PASS`
-3. Technical Evaluator：`PASS`
-
-不存在 conditional PASS 或 stale PASS。
+- validator：`OFFLINE_PRODUCT_SITE_VALID`；临时重建 manifest 与 tracked manifest 字节一致。
+- browser receipt verifier 与 reviewer attestation verifier 均通过。
+- Node syntax 与 `git diff --check` 均通过。
+- 全站 28 个 allowlisted 外链均静态显示“需要联网”，并含 `target="_blank" rel="noopener noreferrer"`。
+- 交付目录安装包数量 `0`；公开产品表面赛事话术扫描 `0`。
 
 ## 诚实边界
 
-- 首页视频仍按要求保持未配置空态；未来配置 smoke 只证明本地 MP4/VTT、native controls、caption 与 fullscreen 合同，不声称已有真实产品录屏。
-- GitHub、Release、README、在线指南与安装包链接需要联网；站点自身阅读、导航与本地指南不依赖网络。
-- runner 不下载浏览器或 Node 依赖；执行者必须显式提供已存在的本地 Playwright module 与 Chromium executable 路径。
-- receipt 的 `copiedSiteRoot` 是一次 fresh external copy 的来源记录；长期可复验输入是可达 commit、manifest、runner、receipt、截图和本记录。
-- `local-first` 指项目治理与证据留在项目内，不表示远程 AI Provider 可以离线推理。
-
-最终产品官网表面未出现赛事叙述、评委脚本、虚构指标、客户 Logo 或 unsupported claim。
+- 首页默认视频仍未配置；未来配置验证只证明本地 MP4/VTT 播放合同，不声称已经提供真实产品录屏。
+- GitHub、Release、README、在线指南和安装包链接明确需要联网；站点页面、导航、复制与本地指南不依赖远程运行资源。
+- runner 不下载 Node、Playwright 或 Chromium；执行者需显式提供已存在的本地 Playwright module 和 Chromium executable。
+- fresh copy 与 fresh clone 路径是一次性执行证据；长期复验以可达 commits、manifest、runner、receipt、11 张截图、三份原始 reviewer 输出及本记录为准。
+- 产品官网表面未加入评审、赛事或交付过程话术。
