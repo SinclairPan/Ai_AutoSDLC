@@ -388,7 +388,15 @@
           <li><strong>Review Pack</strong><span>绑定 Git range、暂存区、工作区或补丁。</span></li>
           <li><strong>Findings</strong><span>检查跨阶段回归、修复与当前验证证据。</span></li>
           <li><strong>fix/rerun</strong><span>原 Writer 修复候选并重跑必要验证。</span></li>
-          <li><strong>final report</strong><span>无未解决 Finding 才生成最终报告，否则保持未关闭。</span></li>
+          <li
+            data-pr-review-close-policy="v2.0.0"
+            data-unresolved-blocker="blocked"
+            data-unresolved-required="blocked-or-risk-accepted"
+            data-advisory-waiver="recorded-and-disclosed"
+          >
+            <strong>final report</strong>
+            <span>未解决 BLOCKER 阻断关闭；未解决 REQUIRED 默认阻断，只有显式接受风险时才以 risk_accepted 关闭并生成披露风险的 final report；未解决 ADVISORY 与 waiver 按策略记录并披露。</span>
+          </li>
         </ol>
       </section>
 

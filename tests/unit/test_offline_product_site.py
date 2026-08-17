@@ -1002,6 +1002,25 @@ def test_loop_page_keeps_pr_review_cross_stage() -> None:
     _assert_local_pr_review_contract(document)
 
 
+def test_local_pr_review_close_policy_matches_v2_release_contract() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    policies = _find_nodes(document, attribute="data-pr-review-close-policy")
+    assert len(policies) == 1
+    assert policies[0].attributes == {
+        "data-pr-review-close-policy": "v2.0.0",
+        "data-unresolved-blocker": "blocked",
+        "data-unresolved-required": "blocked-or-risk-accepted",
+        "data-advisory-waiver": "recorded-and-disclosed",
+    }
+    policy_text = _node_text(policies[0])
+    for token in ("BLOCKER", "REQUIRED", "risk_accepted", "ADVISORY", "waiver"):
+        assert token in policy_text
+
+
 def test_loop_panel_contract_rejects_swapped_evidence() -> None:
     markup = Path(
         "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
