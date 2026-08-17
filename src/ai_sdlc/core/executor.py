@@ -13,6 +13,7 @@ import yaml
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.context.state import (
     build_execute_working_set,
+    load_execution_plan,
     save_execution_plan,
     save_latest_summary,
     save_runtime_state,
@@ -93,6 +94,10 @@ TaskRunner = Callable[[Task, RuntimeState], TaskStatus | TaskExecutionOutcome]
 
 class CircuitBreakerError(Exception):
     """Raised when consecutive task HALTs trigger the circuit breaker (BR-031)."""
+
+
+class TaskRunnerHeadChangedError(Exception):
+    """Raised when an injected task runner changes the repository HEAD."""
 
 
 class BatchExecutor:
@@ -213,8 +218,13 @@ class BatchExecutor:
         statuses = [
             self._task_map[tid].status for tid in batch.tasks if tid in self._task_map
         ]
-        terminal = {TaskStatus.COMPLETED, TaskStatus.HALTED, TaskStatus.CANCELLED}
-        if not all(s in terminal for s in statuses):
+        if any(status == TaskStatus.HALTED for status in statuses):
+            batch.status = TaskStatus.HALTED
+            return batch
+        if any(status == TaskStatus.CANCELLED for status in statuses):
+            batch.status = TaskStatus.CANCELLED
+            return batch
+        if not statuses or not all(status == TaskStatus.COMPLETED for status in statuses):
             return batch
 
         batch.status = TaskStatus.COMPLETED
@@ -342,7 +352,44 @@ class Executor:
 
         plan = TasksParser().parse(tasks_file)
         plan = self._rebatch_plan(plan, self._settings.max_tasks_per_batch)
-        self._restore_completed_batches(plan, runtime_state.current_batch)
+        work_item_id = spec_dir.name
+        persisted_plan = load_execution_plan(self.root, work_item_id)
+        if persisted_plan is not None and self._same_plan_topology(
+            plan,
+            persisted_plan,
+        ):
+            self._restore_persisted_plan_state(
+                plan,
+                persisted_plan,
+                runtime_state,
+            )
+        else:
+            self._restore_completed_batches(plan, runtime_state.current_batch)
+
+        stopped_task = self._first_stopped_task(plan)
+        if stopped_task is not None:
+            detail = (
+                f"Task {stopped_task.task_id} remains {stopped_task.status.value}; "
+                "AI-SDLC will not run the next task or promote the batch."
+            )
+            return ExecutionResult(
+                plan=plan,
+                runtime=runtime_state,
+                log_path=log_path,
+                summary_path=summary_path,
+                status=ExecutionStatus.HALTED,
+                detail=detail,
+                tasks_path=tasks_file,
+                target_task_id=stopped_task.task_id,
+                next_action=(
+                    f"Inspect and explicitly resolve {stopped_task.task_id} before "
+                    "rerunning; AI-SDLC preserves the stopped state by default."
+                ),
+                completed_batches=runtime_state.current_batch,
+                halted=True,
+                error=detail,
+            )
+
         pending_task = self._next_pending_task(plan)
         if self._task_runner is None:
             target_task_id = pending_task.task_id if pending_task is not None else ""
@@ -373,7 +420,6 @@ class Executor:
             max_consecutive_halts=self._settings.consecutive_failure_limit,
         )
         task_map = {task.task_id: task for task in plan.tasks}
-        work_item_id = spec_dir.name
         latest_summary = ""
 
         self._persist_truth_surfaces(
@@ -389,6 +435,7 @@ class Executor:
         last_log_timestamp = ""
         halted = False
         error = ""
+        runner_head_changed = False
         batch = executor.get_current_batch()
         if batch is not None:
             if batch.started_at is None:
@@ -406,12 +453,10 @@ class Executor:
             try:
                 for task_id in batch.tasks:
                     task = task_map[task_id]
-                    if task.status in {
-                        TaskStatus.COMPLETED,
-                        TaskStatus.HALTED,
-                        TaskStatus.CANCELLED,
-                    }:
+                    if task.status == TaskStatus.COMPLETED:
                         continue
+                    if task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}:
+                        break
                     runtime_state.current_task = task.task_id
                     self._persist_truth_surfaces(
                         work_item_id=work_item_id,
@@ -437,6 +482,8 @@ class Executor:
                         latest_summary=latest_summary,
                     )
                     self._sync_summary_log(log_path, summary_log_path)
+                    if task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}:
+                        break
 
                 next_batch = executor.advance_batch()
                 batch_summary = self._batch_summary(batch, plan)
@@ -464,6 +511,19 @@ class Executor:
                 ):
                     halted = True
                     error = "The current execution batch contains a halted task."
+            except TaskRunnerHeadChangedError as exc:
+                halted = True
+                runner_head_changed = True
+                error = str(exc)
+                self._persist_truth_surfaces(
+                    work_item_id=work_item_id,
+                    plan=plan,
+                    runtime=runtime_state,
+                    spec_dir=spec_dir,
+                    tasks_file=tasks_file,
+                    batch=batch,
+                    latest_summary=latest_summary,
+                )
             except CircuitBreakerError as exc:
                 halted = True
                 error = str(exc)
@@ -488,6 +548,13 @@ class Executor:
             else "The current batch ran, but review and a user-approved commit are still required."
         )
 
+        next_action = self._post_batch_next_action(target_task_id)
+        if runner_head_changed:
+            next_action = (
+                "Inspect the unexpected commit and ask the user whether to keep or "
+                "revert it before rerunning AI-SDLC; no automatic rollback was performed."
+            )
+
         return ExecutionResult(
             plan=plan,
             runtime=runtime_state,
@@ -497,7 +564,7 @@ class Executor:
             detail=detail,
             tasks_path=tasks_file,
             target_task_id=target_task_id,
-            next_action=self._post_batch_next_action(target_task_id),
+            next_action=next_action,
             commit_hashes=[],
             completed_batches=runtime_state.current_batch,
             last_log_timestamp=last_log_timestamp,
@@ -534,6 +601,75 @@ class Executor:
                 task = task_map.get(task_id)
                 if task is not None:
                     task.status = TaskStatus.COMPLETED
+
+    @staticmethod
+    def _same_plan_topology(
+        plan: ExecutionPlan,
+        persisted: ExecutionPlan,
+    ) -> bool:
+        current_tasks = [
+            task.model_dump(mode="json", exclude={"status"}) for task in plan.tasks
+        ]
+        persisted_tasks = [
+            task.model_dump(mode="json", exclude={"status"})
+            for task in persisted.tasks
+        ]
+        current_batches = [
+            batch.model_dump(
+                mode="json",
+                exclude={"status", "started_at", "completed_at"},
+            )
+            for batch in plan.batches
+        ]
+        persisted_batches = [
+            batch.model_dump(
+                mode="json",
+                exclude={"status", "started_at", "completed_at"},
+            )
+            for batch in persisted.batches
+        ]
+        return current_tasks == persisted_tasks and current_batches == persisted_batches
+
+    @staticmethod
+    def _restore_persisted_plan_state(
+        plan: ExecutionPlan,
+        persisted: ExecutionPlan,
+        runtime: RuntimeState,
+    ) -> None:
+        for task, persisted_task in zip(plan.tasks, persisted.tasks, strict=True):
+            task.status = persisted_task.status
+        for batch, persisted_batch in zip(
+            plan.batches,
+            persisted.batches,
+            strict=True,
+        ):
+            batch.status = persisted_batch.status
+            batch.started_at = persisted_batch.started_at
+            batch.completed_at = persisted_batch.completed_at
+
+        stopped_batch_indexes = [
+            index
+            for index, batch in enumerate(plan.batches)
+            if any(
+                task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}
+                for task in plan.tasks
+                if task.task_id in batch.tasks
+            )
+        ]
+        if stopped_batch_indexes:
+            runtime.current_batch = min(runtime.current_batch, stopped_batch_indexes[0])
+        plan.current_batch = runtime.current_batch
+
+    @staticmethod
+    def _first_stopped_task(plan: ExecutionPlan) -> Task | None:
+        return next(
+            (
+                task
+                for task in plan.tasks
+                if task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}
+            ),
+            None,
+        )
 
     @staticmethod
     def _implementation_next_action(task_id: str) -> str:
@@ -632,9 +768,15 @@ class Executor:
             TaskStatus.HALTED,
             TaskStatus.CANCELLED,
         }:
-            outcome = self._normalize_outcome(
-                self._task_runner(task, executor.runtime)
-            )
+            try:
+                raw_outcome = self._invoke_task_runner(task, executor.runtime)
+            except TaskRunnerHeadChangedError:
+                task.status = TaskStatus.HALTED
+                batch = executor.get_current_batch()
+                if batch is not None:
+                    batch.status = TaskStatus.HALTED
+                raise
+            outcome = self._normalize_outcome(raw_outcome)
             updated = executor.advance_task(task.task_id, outcome.status)
             last_log_timestamp = logger_.log_task(
                 task.task_id,
@@ -644,6 +786,43 @@ class Executor:
             if updated.status == TaskStatus.FAILED:
                 continue
         return last_log_timestamp
+
+    def _invoke_task_runner(
+        self,
+        task: Task,
+        runtime: RuntimeState,
+    ) -> TaskStatus | TaskExecutionOutcome:
+        before_head = self._head_commit()
+        runner_error: Exception | None = None
+        raw_outcome: TaskStatus | TaskExecutionOutcome | None = None
+        try:
+            if self._task_runner is None:  # pragma: no cover - guarded by run()
+                raise RuntimeError("Task runner is unavailable")
+            raw_outcome = self._task_runner(task, runtime)
+        except Exception as exc:  # Preserve runner failure after the HEAD check.
+            runner_error = exc
+
+        after_head = self._head_commit()
+        if after_head != before_head:
+            raise TaskRunnerHeadChangedError(
+                f"Task runner changed HEAD while executing {task.task_id}; the task and "
+                "batch remain halted. Inspect the unexpected commit and ask the user "
+                "whether to keep or revert it before rerunning."
+            ) from runner_error
+        if runner_error is not None:
+            raise runner_error
+        if raw_outcome is None:  # pragma: no cover - TaskRunner contract excludes None.
+            raise RuntimeError("Task runner returned no outcome")
+        return raw_outcome
+
+    def _head_commit(self) -> str:
+        try:
+            return self._git_client_factory(self.root).resolve_revision("HEAD")
+        except GitError as exc:
+            raise TaskRunnerHeadChangedError(
+                "AI-SDLC could not verify repository HEAD around the task runner; "
+                "the task was not advanced."
+            ) from exc
 
     @staticmethod
     def _normalize_outcome(

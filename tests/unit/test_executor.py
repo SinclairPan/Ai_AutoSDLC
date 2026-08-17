@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from ai_sdlc.context.state import load_checkpoint, save_checkpoint
 from ai_sdlc.core.config import YamlStore
 from ai_sdlc.core.executor import (
     MAX_CONSECUTIVE_HALTS,
@@ -19,9 +20,13 @@ from ai_sdlc.core.executor import (
     ExecutionStatus,
     Executor,
 )
+from ai_sdlc.core.runner import SDLCRunner
 from ai_sdlc.models.state import (
+    Checkpoint,
+    ExecuteProgress,
     ExecutionBatch,
     ExecutionPlan,
+    FeatureInfo,
     RuntimeState,
     Task,
     TaskStatus,
@@ -304,8 +309,8 @@ class TestAdvanceBatchEdgeCases:
         result = exe.advance_batch()
         assert result is None
 
-    def test_halted_task_allows_batch_advance(self) -> None:
-        """HALTED is a terminal status; batch can still advance."""
+    def test_halted_task_keeps_batch_stopped(self) -> None:
+        """A stopped task must not promote its batch to completed."""
         plan = _make_plan(
             [Task(task_id="X", title="X", phase=1)],
             [ExecutionBatch(batch_id=1, phase=1, tasks=["X"])],
@@ -317,8 +322,10 @@ class TestAdvanceBatchEdgeCases:
             exe.advance_task("X", TaskStatus.FAILED)
 
         result = exe.advance_batch()
-        assert result is None
-        assert exe.is_complete()
+        assert result is plan.batches[0]
+        assert result.status == TaskStatus.HALTED
+        assert runtime.current_batch == 0
+        assert not exe.is_complete()
 
 
 class TestExecutorRun:
@@ -470,9 +477,106 @@ class TestExecutorRun:
         result = Executor(git_repo, task_runner=runner).run(tasks_path)
 
         assert _git_commit_count(git_repo) == before_commits + 1
-        assert result.status == ExecutionStatus.NEEDS_USER
+        assert result.status == ExecutionStatus.HALTED
+        assert result.halted is True
+        assert result.completed_batches == 0
+        assert result.plan.tasks[0].status == TaskStatus.HALTED
         assert result.commit_hashes == []
         assert result.last_commit_timestamp == ""
+        assert "changed HEAD" in result.error
+        assert "user" in result.next_action.lower()
+
+    @pytest.mark.parametrize(
+        "stopped_status",
+        [TaskStatus.HALTED, TaskStatus.CANCELLED],
+    )
+    def test_stopped_batch_persists_without_running_the_next_task(
+        self,
+        git_repo: Path,
+        stopped_status: TaskStatus,
+    ) -> None:
+        spec_dir = git_repo / "specs" / f"WI-2026-{stopped_status.value.upper()}"
+        tasks_path = _write_tasks_md(spec_dir, _sample_tasks_md())
+        _write_pipeline_config(git_repo, max_tasks_per_batch=2)
+        calls: list[str] = []
+
+        def runner(task: Task, _runtime: RuntimeState) -> TaskStatus:
+            calls.append(task.task_id)
+            return stopped_status
+
+        first = Executor(git_repo, task_runner=runner).run(tasks_path)
+
+        assert calls == ["T001"]
+        assert first.status == ExecutionStatus.HALTED
+        assert first.completed_batches == 0
+        assert [task.status for task in first.plan.tasks] == [
+            stopped_status,
+            TaskStatus.PENDING,
+            TaskStatus.PENDING,
+        ]
+
+        resumed_calls: list[str] = []
+        resumed = Executor(
+            git_repo,
+            task_runner=lambda task, _runtime: resumed_calls.append(task.task_id)
+            or TaskStatus.COMPLETED,
+        ).run(
+            tasks_path,
+            runtime=RuntimeState(
+                current_stage="execute",
+                current_batch=first.runtime.current_batch,
+            ),
+        )
+
+        assert resumed_calls == []
+        assert resumed.status == ExecutionStatus.HALTED
+        assert resumed.completed_batches == 0
+        assert [task.status for task in resumed.plan.tasks] == [
+            stopped_status,
+            TaskStatus.PENDING,
+            TaskStatus.PENDING,
+        ]
+
+    def test_runner_resume_preserves_serialized_halt(self, git_repo: Path) -> None:
+        work_item_id = "WI-2026-RUNNER-HALT"
+        spec_dir = git_repo / "specs" / work_item_id
+        tasks_path = _write_tasks_md(spec_dir, _sample_tasks_md())
+        _write_pipeline_config(git_repo, max_tasks_per_batch=2)
+        first = Executor(
+            git_repo,
+            task_runner=lambda _task, _runtime: TaskStatus.HALTED,
+        ).run(tasks_path)
+        checkpoint = Checkpoint(
+            current_stage="execute",
+            linked_wi_id=work_item_id,
+            feature=FeatureInfo(
+                id=work_item_id,
+                spec_dir=f"specs/{work_item_id}",
+                design_branch="",
+                feature_branch="",
+                current_branch="",
+            ),
+            execute_progress=ExecuteProgress(
+                status=first.status,
+                detail=first.detail,
+                current_batch=first.runtime.current_batch,
+                completed_batches=first.completed_batches,
+                halted=first.halted,
+                error=first.error,
+            ),
+        )
+        save_checkpoint(git_repo, checkpoint)
+        restored_checkpoint = load_checkpoint(git_repo, strict=True)
+        assert restored_checkpoint is not None
+
+        resumed_checkpoint = SDLCRunner(git_repo)._run_execute_stage(
+            restored_checkpoint
+        )
+
+        assert resumed_checkpoint.execute_progress is not None
+        assert resumed_checkpoint.execute_progress.status == ExecutionStatus.HALTED
+        assert resumed_checkpoint.execute_progress.current_batch == 0
+        assert resumed_checkpoint.execute_progress.halted is True
 
     def test_run_halts_task_after_configured_debug_limit(self, git_repo: Path) -> None:
         spec_dir = git_repo / "specs" / "WI-2026-HALT"
@@ -495,7 +599,9 @@ class TestExecutorRun:
         assert result.runtime.debug_rounds["T001"] == 2
         assert "halted" in result.log_path.read_text(encoding="utf-8").lower()
 
-    def test_run_stops_when_circuit_breaker_triggers(self, git_repo: Path) -> None:
+    def test_run_stops_before_calling_the_next_task_after_halt(
+        self, git_repo: Path
+    ) -> None:
         spec_dir = git_repo / "specs" / "WI-2026-BREAK"
         tasks_path = _write_tasks_md(
             spec_dir,
@@ -511,16 +617,21 @@ class TestExecutorRun:
             consecutive_failure_limit=2,
         )
 
-        executor = Executor(
-            git_repo,
-            task_runner=lambda _task, _runtime: TaskStatus.FAILED,
-        )
+        calls: list[str] = []
+
+        def runner(task: Task, _runtime: RuntimeState) -> TaskStatus:
+            calls.append(task.task_id)
+            return TaskStatus.FAILED
+
+        executor = Executor(git_repo, task_runner=runner)
         result = executor.run(tasks_path)
 
         assert result.halted is True
-        assert "Circuit breaker" in result.error
+        assert result.error == "The current execution batch contains a halted task."
         assert result.plan.tasks[0].status == TaskStatus.HALTED
-        assert result.plan.tasks[1].status == TaskStatus.HALTED
+        assert result.plan.tasks[1].status == TaskStatus.PENDING
+        assert result.runtime.consecutive_halts == 1
+        assert calls == ["T001"]
 
     def test_run_persists_formal_truth_surfaces_for_active_work_item(
         self, git_repo: Path
