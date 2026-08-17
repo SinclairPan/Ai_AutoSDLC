@@ -538,6 +538,7 @@ const runAcceptance = async (options) => {
           }
           const savedScroll = [...scrollAncestors].map((node) => ({ node, left: node.scrollLeft, top: node.scrollTop }));
           const originalWindowScroll = { x: scrollX, y: scrollY };
+          const originalActive = document.activeElement;
           const controls = controlNodes.map((node) => ({
             id: controlIds.get(node),
             tag: node.tagName,
@@ -552,6 +553,7 @@ const runAcceptance = async (options) => {
           }));
           for (let index = 0; index < controlNodes.length; index += 1) {
             const node = controlNodes[index];
+            node.focus({ preventScroll: true });
             node.scrollIntoView({ block: "center", inline: "center" });
             await new Promise((resolve) => requestAnimationFrame(resolve));
             const rect = node.getBoundingClientRect();
@@ -582,6 +584,7 @@ const runAcceptance = async (options) => {
               controls[index].ancestorClipReasons.push(...reasons.map((reason) => `${check.ancestor}:${reason}`));
             }
           }
+          originalActive?.focus?.({ preventScroll: true });
           for (const saved of savedScroll) {
             saved.node.scrollLeft = saved.left;
             saved.node.scrollTop = saved.top;
