@@ -1,12 +1,18 @@
 import json
 import re
 import subprocess
+from hashlib import sha256
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
 import pytest
 from scripts.validate_offline_product_site import (
+    ALLOWED_EXTERNAL_URLS,
+    GUIDE_PARTS,
+    GUIDE_PATH_IDS,
+    GUIDE_SOURCE_SHA256,
+    GUIDE_STEPS,
     build_manifest,
     validate_guide_parity,
     validate_site,
@@ -1807,3 +1813,260 @@ def test_guide_parity_rejects_command_outside_pre(tmp_path: Path) -> None:
     issues = validate_guide_parity(source, rendered)
 
     assert "guide_command_not_in_pre" in {issue.code for issue in issues}
+
+
+DOWNLOAD_ASSET_CONTRACTS = (
+    (
+        "Windows AMD64",
+        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
+        "v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip",
+    ),
+    (
+        "macOS Apple Silicon",
+        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
+        "v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+    ),
+    (
+        "Linux AMD64",
+        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
+        "v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
+    ),
+)
+
+GUIDE_PATH_CONTRACTS = (
+    ("path-1a", "existing-offline", "windows"),
+    ("path-1b", "existing-offline", "macos"),
+    ("path-1c", "existing-offline", "linux"),
+    ("path-2a", "existing-online", "windows"),
+    ("path-2b", "existing-online", "macos"),
+    ("path-2c", "existing-online", "linux"),
+    ("path-3a", "new-offline", "windows"),
+    ("path-3b", "new-offline", "macos"),
+    ("path-3c", "new-offline", "linux"),
+    ("path-4a", "new-online", "windows"),
+    ("path-4b", "new-online", "macos"),
+    ("path-4c", "new-online", "linux"),
+)
+
+
+def _offline_site_root() -> Path:
+    return Path("deliverables/ai-sdlc-2.0-offline-product-site")
+
+
+def _guide_markup() -> str:
+    return (_offline_site_root() / "docs/USER_GUIDE.zh-CN.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_downloads_resource_contract() -> None:
+    markup = (_offline_site_root() / "downloads-docs.html").read_text(
+        encoding="utf-8"
+    )
+    document = _parse_document(markup)
+    visible_text = _node_text(document)
+
+    assert _node_text(_single_node(document, tag="h1")) == (
+        "下载正确版本，按一份指南完成接入"
+    )
+    for identity in (
+        "v2.0.0",
+        "737bda39e05c53450e180a20581b7b7a70db9cf0",
+        "3db58121e228a7a1c4c6b760c535d6df1ffdbe84",
+    ):
+        assert identity in visible_text
+
+    local_guide = _single_node(
+        document,
+        tag="a",
+        attribute="data-local-guide-link",
+    )
+    assert local_guide.attributes.get("href") == "docs/USER_GUIDE.zh-CN.html"
+    assert "需要联网" not in _node_text(local_guide)
+
+    rows = _find_nodes(document, tag="tr", attribute="data-download-platform")
+    assert len(rows) == 3
+    for row, (platform, filename, asset_url) in zip(
+        rows, DOWNLOAD_ASSET_CONTRACTS, strict=True
+    ):
+        assert row.attributes.get("data-download-platform")
+        assert platform in _node_text(row)
+        assert filename in _node_text(row)
+        hrefs = {
+            link.attributes.get("href")
+            for link in _find_nodes(row, tag="a")
+        }
+        assert hrefs == {asset_url, f"{asset_url}.sha256"}
+
+    external_links = [
+        link
+        for link in _find_nodes(document, tag="a")
+        if link.attributes.get("href", "").startswith(("http://", "https://"))
+    ]
+    assert external_links
+    assert all(
+        link.attributes.get("href") in ALLOWED_EXTERNAL_URLS
+        for link in external_links
+    )
+    assert all("需要联网" in _node_text(link) for link in external_links)
+    assert "路径 1A" not in visible_text
+    assert "路径 4C" not in visible_text
+
+
+@pytest.mark.parametrize(
+    "url",
+    (
+        "https://example.com/SinclairPan/Ai_AutoSDLC",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.1",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
+        "v2.0.0/ai-sdlc-offline-2.0.0-windows-arm64.zip",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
+        "v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha512",
+    ),
+)
+def test_mutated_official_resource_url_is_rejected(
+    tmp_path: Path, url: str
+) -> None:
+    _write(tmp_path, "index.html", f'<a href="{url}">resource</a>')
+
+    issues = validate_site(tmp_path)
+
+    assert "external_url_not_allowed" in {issue.code for issue in issues}
+
+
+def test_user_guide_source_parity() -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = _offline_site_root() / "docs/USER_GUIDE.zh-CN.html"
+    markup = rendered.read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    assert sha256(source.read_bytes()).hexdigest() == GUIDE_SOURCE_SHA256
+    assert validate_guide_parity(source, rendered) == []
+    paths = _find_nodes(document, tag="section", attribute="data-guide-path")
+    assert [path.attributes.get("id") for path in paths] == list(GUIDE_PATH_IDS)
+    assert [
+        (
+            path.attributes.get("id"),
+            path.attributes.get("data-guide-scenario"),
+            path.attributes.get("data-guide-os"),
+        )
+        for path in paths
+    ] == list(GUIDE_PATH_CONTRACTS)
+
+    for path in paths:
+        steps = _find_nodes(path, tag="article", attribute="data-guide-step")
+        assert [step.attributes.get("data-guide-step") for step in steps] == list(
+            GUIDE_STEPS
+        )
+        for step in steps:
+            parts = _find_nodes(step, attribute="data-guide-part")
+            assert [part.attributes.get("data-guide-part") for part in parts] == list(
+                GUIDE_PARTS
+            )
+            step_text = _node_text(step)
+            for redirect in ("去看另一", "查看另一", "另一节后继续", "另一章后继续"):
+                assert redirect not in step_text
+            for command in _find_nodes(
+                step, tag="code", attribute="data-guide-command"
+            ):
+                assert command.parent is not None
+                assert command.parent.tag == "pre"
+
+    scenario_tabs = _find_nodes(
+        document, tag="a", attribute="data-guide-scenario-selector"
+    )
+    assert [tab.attributes.get("data-guide-scenario-selector") for tab in scenario_tabs] == [
+        "existing-offline",
+        "existing-online",
+        "new-offline",
+        "new-online",
+    ]
+    assert [
+        _node_text(tab) for tab in scenario_tabs
+    ] == [
+        "已有项目 + 离线安装包",
+        "已有项目 + 在线安装",
+        "全新项目 + 离线安装包",
+        "全新项目 + 在线安装",
+    ]
+    assert [tab.attributes.get("href") for tab in scenario_tabs] == [
+        "#path-1a",
+        "#path-2a",
+        "#path-3a",
+        "#path-4a",
+    ]
+    os_tabs = _find_nodes(
+        document, tag="button", attribute="data-guide-tab-scenario"
+    )
+    assert [tab.attributes.get("data-guide-tab-scenario") for tab in os_tabs] == [
+        scenario for _, scenario, _ in GUIDE_PATH_CONTRACTS
+    ]
+
+
+def test_guide_parity_rejects_one_missing_path(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup = _guide_markup().replace(' data-guide-path="path-1a"', "", 1)
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_path_missing" in {issue.code for issue in issues}
+
+
+def test_guide_parity_rejects_one_missing_part(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup = _guide_markup().replace(' data-guide-part="purpose"', "", 1)
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_part_missing" in {issue.code for issue in issues}
+
+
+def test_guide_parity_rejects_one_altered_command(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    markup = _guide_markup().replace(
+        "$ErrorActionPreference = &quot;Stop&quot;",
+        "$ErrorActionPreference = &quot;Continue&quot;",
+        1,
+    )
+    rendered.write_text(markup, encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_command_mismatch" in {issue.code for issue in issues}
+
+
+def test_guide_hides_os_tabs_outside_the_active_scenario() -> None:
+    styles = (_offline_site_root() / "assets/css/pages.css").read_text(
+        encoding="utf-8"
+    )
+
+    assert re.search(
+        r"\.js\s+\.guide-path-tabs\s+\[hidden\]\s*\{[^}]*display:\s*none",
+        styles,
+        flags=re.DOTALL,
+    )
+
+
+def test_built_site_has_no_contract_issues() -> None:
+    assert validate_site(_offline_site_root()) == []
+
+
+def test_focus_visible_contract_can_live_in_shared_stylesheet(tmp_path: Path) -> None:
+    _write(tmp_path, "assets/css/tokens.css", ":root { --focus-ring: blue; }")
+    _write(
+        tmp_path,
+        "assets/css/site.css",
+        ":focus-visible { box-shadow: var(--focus-ring); }",
+    )
+
+    issues = validate_site(tmp_path)
+
+    assert "missing_focus_visible_style" not in {issue.code for issue in issues}

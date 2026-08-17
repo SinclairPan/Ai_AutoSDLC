@@ -387,8 +387,6 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
 def _validate_css(root: Path, stylesheet: Path) -> list[SiteIssue]:
     issues: list[SiteIssue] = []
     contents = stylesheet.read_text(encoding="utf-8")
-    if ":focus-visible" not in contents:
-        issues.append(_issue("missing_focus_visible_style", stylesheet, ":focus-visible"))
     for _, value in _CSS_URL_RE.findall(contents):
         _validate_local_reference(root, stylesheet, value.strip(), issues)
     for _, value in _CSS_STRING_IMPORT_RE.findall(contents):
@@ -418,8 +416,20 @@ def validate_site(root: Path) -> list[SiteIssue]:
             issues.append(_issue("missing_required_page", path, required_page))
     for page in sorted(root.rglob("*.html")):
         issues.extend(_validate_html_page(root, page))
-    for stylesheet in sorted(root.rglob("*.css")):
+    stylesheets = sorted(root.rglob("*.css"))
+    for stylesheet in stylesheets:
         issues.extend(_validate_css(root, stylesheet))
+    if stylesheets and not any(
+        ":focus-visible" in stylesheet.read_text(encoding="utf-8")
+        for stylesheet in stylesheets
+    ):
+        issues.append(
+            _issue(
+                "missing_focus_visible_style",
+                root,
+                "Expected a shared :focus-visible rule.",
+            )
+        )
     for script in sorted(root.rglob("*.js")):
         issues.extend(_validate_javascript(root, script))
     return issues

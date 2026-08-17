@@ -45,6 +45,21 @@
           tab.setAttribute("aria-selected", String(active));
           tab.tabIndex = active ? 0 : -1;
         });
+        const selectedScenario = selected.dataset.guideTabScenario;
+        if (selectedScenario) {
+          tabs.forEach((tab) => {
+            tab.hidden = tab.dataset.guideTabScenario !== selectedScenario;
+          });
+          group
+            .querySelectorAll("[data-guide-scenario-selector]")
+            .forEach((link) => {
+              if (link.dataset.guideScenarioSelector === selectedScenario) {
+                link.setAttribute("aria-current", "true");
+              } else {
+                link.removeAttribute("aria-current");
+              }
+            });
+        }
         panels.forEach((panel) => {
           panel.hidden = panel.id !== selected.getAttribute("aria-controls");
         });
@@ -53,19 +68,22 @@
         }
       };
       const restore = () => activate(location.hash.slice(1), false);
-      tabs.forEach((tab, index) => {
+      tabs.forEach((tab) => {
         tab.addEventListener("click", () => activate(tab.dataset.tab, true));
         tab.addEventListener("keydown", (event) => {
+          const visibleTabs = tabs.filter((candidate) => !candidate.hidden);
+          const index = visibleTabs.indexOf(tab);
+          if (index < 0) return;
           const keyMoves = {
-            ArrowLeft: (index - 1 + tabs.length) % tabs.length,
-            ArrowRight: (index + 1) % tabs.length,
+            ArrowLeft: (index - 1 + visibleTabs.length) % visibleTabs.length,
+            ArrowRight: (index + 1) % visibleTabs.length,
             Home: 0,
-            End: tabs.length - 1,
+            End: visibleTabs.length - 1,
           };
           if (!(event.key in keyMoves)) return;
           event.preventDefault();
-          tabs[keyMoves[event.key]].click();
-          tabs[keyMoves[event.key]].focus();
+          visibleTabs[keyMoves[event.key]].click();
+          visibleTabs[keyMoves[event.key]].focus();
         });
       });
       window.addEventListener("popstate", restore);

@@ -29,13 +29,148 @@
           <a href="platform-capabilities.html">Platform Capabilities</a>
           <a href="downloads-docs.html" aria-current="page">Downloads &amp; Docs</a>
         </nav>
-        <a class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">GitHub</a>
+        <a class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">
+          GitHub <span class="network-label">需要联网</span>
+        </a>
       </div>
     </header>
-    <main id="main" class="site-shell page-main">
-      <section class="page-intro" aria-labelledby="page-title">
+
+    <main id="main" class="site-shell page-main downloads-main">
+      <section class="page-intro downloads-hero" aria-labelledby="page-title">
         <p class="page-eyebrow">Downloads &amp; Docs</p>
-        <h1 id="page-title">下载与文档</h1>
+        <h1 id="page-title">下载正确版本，按一份指南完成接入</h1>
+        <p class="downloads-hero-summary">
+          这里集中提供 AI-SDLC 2.0.0 的正式仓库、Release、README、中文新用户指南和安装资产。
+          安装步骤只在本地指南中展开，资源页保持清晰可核对。
+        </p>
+      </section>
+
+      <section class="downloads-entry-grid" aria-label="版本与指南入口">
+        <article class="downloads-release-panel" aria-labelledby="release-title">
+          <p class="downloads-section-index">01 / VERSION IDENTITY</p>
+          <h2 id="release-title">一眼确认正式版本</h2>
+          <dl class="release-identity">
+            <div>
+              <dt>正式版本</dt>
+              <dd><code>v2.0.0</code></dd>
+            </div>
+            <div>
+              <dt>Tag commit</dt>
+              <dd><code>737bda39e05c53450e180a20581b7b7a70db9cf0</code></dd>
+            </div>
+            <div>
+              <dt>Tag tree</dt>
+              <dd><code>3db58121e228a7a1c4c6b760c535d6df1ffdbe84</code></dd>
+            </div>
+          </dl>
+          <nav class="official-resource-links" aria-label="正式在线资源">
+            <a href="https://github.com/SinclairPan/Ai_AutoSDLC">
+              <span>GitHub 仓库</span><span class="network-label">需要联网</span>
+            </a>
+            <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0">
+              <span>v2.0.0 Release</span><span class="network-label">需要联网</span>
+            </a>
+            <a href="https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/README.md">
+              <span>README v2.0.0</span><span class="network-label">需要联网</span>
+            </a>
+          </nav>
+        </article>
+
+        <article class="downloads-guide-panel" aria-labelledby="guide-title">
+          <p class="downloads-section-index">02 / BEGINNER GUIDE</p>
+          <h2 id="guide-title">第一次使用，从这里开始</h2>
+          <p>
+            中文新用户指南把“已有项目 / 全新项目”“离线包 / 在线安装”和三种操作系统组合成
+            12 条完整路径。每一步都有复制命令、预期结果、问题处理和明确下一步。
+          </p>
+          <a
+            class="button-primary downloads-guide-action"
+            data-local-guide-link
+            href="docs/USER_GUIDE.zh-CN.html"
+          >
+            离线打开中文新用户指南
+          </a>
+          <p class="downloads-local-note">本地只读副本，无网络时仍可使用。</p>
+          <a href="https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/USER_GUIDE.zh-CN.md">
+            GitHub 发布基线 <span class="network-label">需要联网</span>
+          </a>
+        </article>
+      </section>
+
+      <section class="downloads-assets" aria-labelledby="assets-title">
+        <div class="downloads-section-heading">
+          <div>
+            <p class="downloads-section-index">03 / OFFLINE INSTALLERS</p>
+            <h2 id="assets-title">正式离线安装资产</h2>
+          </div>
+          <p>
+            站点不内嵌安装包。下载压缩包时，请同时取得同名 <code>.sha256</code> 文件，
+            并按中文指南校验后再安装。
+          </p>
+        </div>
+
+        <div class="download-table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">平台</th>
+                <th scope="col">正式资产</th>
+                <th scope="col">下载与校验</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr data-download-platform="windows-amd64">
+                <th scope="row">Windows AMD64</th>
+                <td><code>ai-sdlc-offline-2.0.0-windows-amd64.zip</code></td>
+                <td class="download-actions">
+                  <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip">
+                    安装包 <span class="network-label">需要联网</span>
+                  </a>
+                  <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256">
+                    SHA256 <span class="network-label">需要联网</span>
+                  </a>
+                </td>
+              </tr>
+              <tr data-download-platform="macos-arm64">
+                <th scope="row">macOS Apple Silicon</th>
+                <td><code>ai-sdlc-offline-2.0.0-macos-arm64.tar.gz</code></td>
+                <td class="download-actions">
+                  <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz">
+                    安装包 <span class="network-label">需要联网</span>
+                  </a>
+                  <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256">
+                    SHA256 <span class="network-label">需要联网</span>
+                  </a>
+                </td>
+              </tr>
+              <tr data-download-platform="linux-amd64">
+                <th scope="row">Linux AMD64</th>
+                <td><code>ai-sdlc-offline-2.0.0-linux-amd64.tar.gz</code></td>
+                <td class="download-actions">
+                  <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz">
+                    安装包 <span class="network-label">需要联网</span>
+                  </a>
+                  <a href="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha256">
+                    SHA256 <span class="network-label">需要联网</span>
+                  </a>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="downloads-boundary">
+          Windows ARM、macOS Intel 和 Linux ARM 不属于 v2.0.0 正式离线资产范围。
+          离线站点可以断网阅读，但下载仍需联网或由可信渠道提前取得正式资产。
+        </p>
+      </section>
+
+      <section class="downloads-start" aria-labelledby="start-title">
+        <div>
+          <p class="downloads-section-index">04 / NEXT</p>
+          <h2 id="start-title">开始前，只做一个选择</h2>
+          <p>打开指南，根据项目是否存在、是否联网和操作系统，选择唯一一条完整路径。</p>
+        </div>
+        <a class="button-secondary" href="docs/USER_GUIDE.zh-CN.html">打开本地指南</a>
       </section>
     </main>
   </body>
