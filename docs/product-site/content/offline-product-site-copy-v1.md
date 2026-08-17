@@ -350,10 +350,10 @@ AI-SDLC 不对所有问题使用同一种强度：
 
 #### 中文新用户指南
 
-面向第一次安装和初始化 AI-SDLC 的用户。离线站点优先打开与正式源文件版本和摘要绑定的本地只读副本；联网时可以访问 GitHub 权威源。
+面向第一次安装和初始化 AI-SDLC 的用户。离线站点优先打开基于 v2.0.0 发布事实编写并绑定摘要的本地只读副本；联网时还可以访问 GitHub 中随 v2.0.0 发布的基础指南。
 
 - 本地入口：`docs/USER_GUIDE.zh-CN.html`
-- 在线权威源：[USER_GUIDE.zh-CN.md](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/USER_GUIDE.zh-CN.md)
+- v2.0.0 发布基线：[USER_GUIDE.zh-CN.md](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/USER_GUIDE.zh-CN.md)
 
 #### README
 
@@ -389,6 +389,6 @@ Windows ARM、macOS Intel 和 Linux ARM 不属于 v2.0.0 正式离线资产范�
 
 1. 确认版本和操作系统。
 2. 打开中文新用户指南。
-3. 离线安装时，在当前 v2.0.0 中文用户指南中选择“全新空项目”或“已有项目”路径；在线 Git 安装或源码运行时，打开 v2.0.0 README 的安装章节。
+3. 在中文新用户指南中按“已有项目 / 全新项目”“离线包 / 在线安装”和操作系统选择唯一完整路径。
 4. 按每一步的命令、预期结果、异常处理和下一步执行。
 5. 回到 AI-SDLC 2.0 首页继续理解 Loop 与专家复核机制。
