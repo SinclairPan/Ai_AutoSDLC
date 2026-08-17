@@ -48,8 +48,13 @@ new daemon, store, policy engine, or dependency.
   command, including `loop ...`.
 - Do not run it for `self-update`, `--json`, help, completion, bare invocation,
   or source/editable development runtimes.
-- Follow GitHub's HTTPS latest-release redirect and accept only the exact final
-  repository tag URL. Normalize `vX.Y.Z` to `X.Y.Z`.
+- Open GitHub's HTTPS latest-release redirect with the existing 1.5 second
+  timeout. Read only `response.geturl()` and close the response immediately;
+  never download or parse the release HTML body and do not add retries.
+- Parse the final URL with `urlsplit`. Require scheme `https`, host
+  `github.com`, no userinfo, explicit port, query, or fragment, and the exact
+  path `/SinclairPan/Ai_AutoSDLC/releases/tag/<tag>`, where `<tag>` matches
+  `^v\d+\.\d+\.\d+$`. Normalize that tag to `X.Y.Z`.
 - Reuse the existing per-installation cache. A successful result remains fresh
   for 24 hours, so ordinary commands do not make a network request each time.
 - On timeout, network error, malformed redirect, or unwritable cache, continue
@@ -66,7 +71,11 @@ new daemon, store, policy engine, or dependency.
    human-readable and eligible, then calls `maybe_render_update_notice()`.
 2. `evaluate_update_advisor()` reads the installed runtime identity and cache.
 3. When the cache is stale, the existing fetch function resolves the public
-   latest-release redirect within the existing timeout and stores the tag.
+   latest-release redirect within the existing timeout. It adapts the validated
+   final URL back to the current internal fetch contract as
+   `{"tag_name": tag, "html_url": final_url, "draft": false,
+   "prerelease": false}` so `_refresh_cache()`, the cache model, and callers do
+   not change.
 4. If the cached or refreshed tag is newer, the existing rendering path writes
    the prompt to stderr before the command proceeds.
 5. Any discovery failure returns a non-actionable evaluation; it never changes
@@ -78,7 +87,9 @@ new daemon, store, policy engine, or dependency.
   notice hook; after the fix it must invoke it once.
 - Machine-readable Loop output must remain notice-free.
 - Unit tests must cover a valid `v2.0.0` latest redirect and reject a different
-  host, repository, non-tag path, or malformed version.
+  scheme, host, userinfo, port, repository, path, query, fragment, or malformed
+  version. The response double must fail if `.read()` is called, and the test
+  must assert the configured timeout is forwarded unchanged.
 - Unit tests must prove cache freshness prevents a second fetch and discovery
   failure does not block evaluation.
 - Existing ordinary-command, self-update, help, JSON, source-runtime, cache, and
