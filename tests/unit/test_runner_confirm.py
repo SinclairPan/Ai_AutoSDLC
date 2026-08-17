@@ -154,7 +154,7 @@ class TestConfirmMode:
         runner = SDLCRunner(tmp_path)
         monkeypatch.setattr(runner, "_build_executor", build_executor)
 
-        assert runner.check_gate("execute")["verdict"] == GateVerdict.RETRY
+        assert runner.check_gate("execute")["verdict"] == GateVerdict.HALT
         dry_run_verdicts: dict[str, str] = {}
         runner.run(
             dry_run=True,
@@ -163,7 +163,7 @@ class TestConfirmMode:
                 result.verdict.value,
             ),
         )
-        assert dry_run_verdicts["execute"] == "RETRY"
+        assert dry_run_verdicts["execute"] == "HALT"
         assert {path: path.read_bytes() for path in tracked_state} == before
 
         with pytest.raises(PipelineHaltError) as exc_info:

@@ -209,6 +209,7 @@ def _build_context(
     if stage in {"verify", "verification"}:
         ctx.update(build_verification_gate_context(root))
     elif stage == "execute":
+        ctx.setdefault("execution_status", "pending")
         ctx.setdefault("tests_passed", False)
         ctx.setdefault("build_succeeded", False)
         ctx.setdefault("committed", False)
@@ -232,6 +233,11 @@ def _build_context(
                     ctx["target_task_id"] = next_task
         if cp and cp.execute_progress:
             progress = cp.execute_progress
+            ctx["execution_status"] = progress.status.value
+            ctx["detail"] = progress.detail
+            ctx["next_action"] = progress.next_action
+            if progress.target_task_id:
+                ctx["target_task_id"] = progress.target_task_id
             ctx["tests_passed"] = (
                 not progress.halted
                 and progress.total_batches > 0

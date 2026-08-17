@@ -34,7 +34,7 @@ from ai_sdlc.models.frontend_gate_policy import (
 from ai_sdlc.models.frontend_generation_constraints import (
     build_mvp_frontend_generation_constraints,
 )
-from ai_sdlc.models.state import Checkpoint, FeatureInfo
+from ai_sdlc.models.state import Checkpoint, ExecuteProgress, FeatureInfo
 from ai_sdlc.routers.bootstrap import init_project
 
 runner = CliRunner()
@@ -178,6 +178,48 @@ class TestCliIndexAndGate:
 
         assert result.exit_code == 0
         assert "Gate init" in result.output
+
+    def test_gate_execute_halts_legacy_progress_without_explicit_completion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        init_project(tmp_path)
+        spec_dir = tmp_path / "specs" / "001-legacy-execute"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "tasks.md").write_text(
+            "### Task 1.1 — implement\n"
+            "- **Task ID**: T001\n"
+            "- **依赖**：无\n"
+            "- **验收标准（AC）**：\n"
+            "  1. implemented\n",
+            encoding="utf-8",
+        )
+        save_checkpoint(
+            tmp_path,
+            Checkpoint(
+                current_stage="execute",
+                feature=FeatureInfo(
+                    id="001-legacy-execute",
+                    spec_dir="specs/001-legacy-execute",
+                    design_branch="design/001",
+                    feature_branch="feature/001",
+                    current_branch="feature/001",
+                ),
+                execute_progress=ExecuteProgress(
+                    total_batches=1,
+                    completed_batches=1,
+                    current_batch=1,
+                    last_commit_hash="legacy-commit",
+                ),
+            ),
+        )
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(app, ["gate", "execute"])
+
+        assert result.exit_code == 1
+        assert "task_runner_available" in result.output
+        assert "pending" in result.output
+        assert "Gate execute: HALT" in result.output
 
     def test_gate_check_unknown_stage_deduplicates_available_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -770,7 +812,7 @@ class TestCliIndexAndGate:
         assert "Gate done: RETRY" in result.output
 
     @pytest.mark.parametrize("stage", ["verify", "verification"])
-    def test_gate_cli_surfaces_071_visual_a11y_issue_review_from_frontend_gate_summary(
+    def test_project_gate_ignores_framework_scoped_visual_a11y_issue_review(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -801,14 +843,13 @@ class TestCliIndexAndGate:
 
         result = runner.invoke(app, ["gate", stage])
 
-        assert result.exit_code == 1
-        assert f"Gate {stage}: RETRY" in result.output
-        assert "frontend_gate_status_clear" in result.output
-        assert "frontend_visual_a11y_issue_review" in result.output
-        assert "frontend_visual_a11y_evidence_stable_empty" not in result.output
+        assert result.exit_code == 0
+        assert f"Gate {stage}: PASS" in result.output
+        assert "frontend_gate_status_clear" not in result.output
+        assert "frontend_visual_a11y_issue_review" not in result.output
 
     @pytest.mark.parametrize("stage", ["verify", "verification"])
-    def test_gate_cli_surfaces_071_visual_a11y_stable_empty_from_frontend_gate_summary(
+    def test_project_gate_ignores_framework_scoped_visual_a11y_empty_evidence(
         self,
         tmp_path: Path,
         monkeypatch: pytest.MonkeyPatch,
@@ -826,11 +867,10 @@ class TestCliIndexAndGate:
 
         result = runner.invoke(app, ["gate", stage])
 
-        assert result.exit_code == 1
-        assert f"Gate {stage}: RETRY" in result.output
-        assert "frontend_gate_status_clear" in result.output
-        assert "frontend_visual_a11y_evidence_stable_empty" in result.output
-        assert "frontend_visual_a11y_issue_review" not in result.output
+        assert result.exit_code == 0
+        assert f"Gate {stage}: PASS" in result.output
+        assert "frontend_gate_status_clear" not in result.output
+        assert "frontend_visual_a11y_evidence_stable_empty" not in result.output
 
     def test_rules_show_missing_rule_deduplicates_available_list(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

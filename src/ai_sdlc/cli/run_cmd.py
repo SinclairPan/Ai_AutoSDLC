@@ -228,12 +228,9 @@ def run_command(
 
     runner = SDLCRunner(root)
     callback = _confirm_callback if mode == "confirm" else None
-    last_result: Any | None = None
     stage_results: list[tuple[str, Any]] = []
 
     def _record_stage_finish(stage: str, result: Any) -> None:
-        nonlocal last_result
-        last_result = result
         stage_results.append((stage, result))
         _stage_finish_callback(stage, result)
 
@@ -245,14 +242,20 @@ def run_command(
             on_stage_start=lambda stage: _stage_start_callback(stage, dry_run=dry_run),
             on_stage_finish=_record_stage_finish,
         )
-        if (
-            dry_run
-            and last_result is not None
-            and str(getattr(last_result.verdict, "value", last_result.verdict)).upper()
-            != "PASS"
-        ):
+        open_result = next(
+            (
+                stage_result
+                for _, stage_result in reversed(stage_results)
+                if str(
+                    getattr(stage_result.verdict, "value", stage_result.verdict)
+                ).upper()
+                != "PASS"
+            ),
+            None,
+        )
+        if dry_run and open_result is not None:
             verdict = str(
-                getattr(last_result.verdict, "value", last_result.verdict)
+                getattr(open_result.verdict, "value", open_result.verdict)
             ).upper()
             console.print(
                 "[bold yellow]"
@@ -260,10 +263,12 @@ def run_command(
                 f"{cp.current_stage} ({verdict})"
                 "[/bold yellow]"
             )
-            for message in _failed_gate_messages(last_result)[:2]:
+            for message in _failed_gate_messages(open_result)[:2]:
                 console.print(f"  reason: {message}", markup=False)
             console.print("")
-            console.print(render_dry_run_open_gate_guidance(_failed_gate_messages(last_result)))
+            console.print(
+                render_dry_run_open_gate_guidance(_failed_gate_messages(open_result))
+            )
         else:
             console.print(
                 f"\n[bold green]Pipeline completed. Stage: {cp.current_stage}[/bold green]"

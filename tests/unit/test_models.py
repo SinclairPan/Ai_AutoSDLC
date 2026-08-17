@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from ai_sdlc.models import (
     Checkpoint,
     CompletedStage,
@@ -9,6 +11,7 @@ from ai_sdlc.models import (
     ExecuteProgress,
     ExecutionBatch,
     ExecutionPlan,
+    ExecutionStatus,
     FeatureInfo,
     GateCheck,
     GateResult,
@@ -327,6 +330,24 @@ class TestCheckpointModels:
         restored = Checkpoint.model_validate(data)
         assert restored.execute_progress is not None
         assert restored.execute_progress.current_batch == 3
+
+    def test_execute_progress_defaults_legacy_payload_to_pending(self) -> None:
+        progress = ExecuteProgress.model_validate(
+            {
+                "total_batches": 1,
+                "completed_batches": 1,
+                "last_commit_hash": "abc123",
+            }
+        )
+
+        assert progress.status == ExecutionStatus.PENDING
+        assert progress.detail == ""
+        assert progress.next_action == ""
+        assert progress.target_task_id == ""
+
+    def test_execute_progress_rejects_invalid_status(self) -> None:
+        with pytest.raises(ValueError):
+            ExecuteProgress.model_validate({"status": "fabricated"})
 
     def test_checkpoint_no_execute_progress(self) -> None:
         cp = Checkpoint(

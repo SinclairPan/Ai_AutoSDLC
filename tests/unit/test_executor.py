@@ -16,6 +16,7 @@ from ai_sdlc.core.executor import (
     CircuitBreakerError,
     ExecutionLogger,
     ExecutionResult,
+    ExecutionStatus,
     Executor,
 )
 from ai_sdlc.models.state import (
@@ -79,7 +80,6 @@ def _write_pipeline_config(
             "      strategy: by_phase\n"
             f"      max_tasks_per_batch: {max_tasks_per_batch}\n"
             "      auto_archive: true\n"
-            "      auto_commit: true\n"
             "circuit_breaker:\n"
             f"  max_debug_rounds_per_task: {max_debug_rounds_per_task}\n"
             f"  consecutive_failure_limit: {consecutive_failure_limit}\n"
@@ -322,38 +322,157 @@ class TestAdvanceBatchEdgeCases:
 
 
 class TestExecutorRun:
-    def test_run_splits_batches_writes_log_commits_and_summary(
+    def test_run_without_task_runner_returns_needs_user_without_side_effects(
         self, git_repo: Path
     ) -> None:
         spec_dir = git_repo / "specs" / "WI-2026-EXEC"
         tasks_path = _write_tasks_md(spec_dir, _sample_tasks_md())
         _write_pipeline_config(git_repo, max_tasks_per_batch=2)
 
-        before_commits = _git_commit_count(git_repo)
-        executor = Executor(git_repo)
+        before_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        before_status = subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        before_tasks = tasks_path.read_bytes()
 
-        result = executor.run(tasks_path)
+        result = Executor(git_repo).run(tasks_path)
 
         assert result.plan.total_batches == 2
-        assert result.completed_batches == 2
+        assert result.status == ExecutionStatus.NEEDS_USER
+        assert result.completed_batches == 0
         assert result.halted is False
+        assert result.target_task_id == "T001"
+        assert result.detail.startswith("No task runner is available for T001")
+        assert result.next_action.startswith(
+            "Implement T001 with the active AI agent"
+        )
+        assert (
+            "ai-sdlc pr-review start --diff-source local-staged "
+            "--provider local-agent"
+        ) in result.next_action
+        assert result.tasks_path == tasks_path
         assert result.log_path == spec_dir / "task-execution-log.md"
         assert result.summary_path == spec_dir / "development-summary.md"
+        assert not result.log_path.exists()
+        assert not result.summary_path.exists()
+        assert result.commit_hashes == []
+        assert tasks_path.read_bytes() == before_tasks
+        assert all(task.status == TaskStatus.PENDING for task in result.plan.tasks)
+        assert not (git_repo / ".ai-sdlc" / "work-items" / "WI-2026-EXEC").exists()
+        assert subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout == before_head
+        assert subprocess.run(
+            ["git", "status", "--porcelain=v1"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout == before_status
+
+    def test_injected_runner_executes_only_current_batch_without_committing(
+        self, git_repo: Path
+    ) -> None:
+        spec_dir = git_repo / "specs" / "WI-2026-BATCH"
+        tasks_path = _write_tasks_md(spec_dir, _sample_tasks_md())
+        _write_pipeline_config(git_repo, max_tasks_per_batch=2)
+        before_commits = _git_commit_count(git_repo)
+
+        result = Executor(
+            git_repo,
+            task_runner=lambda _task, _runtime: TaskStatus.COMPLETED,
+        ).run(tasks_path)
+
+        assert result.status == ExecutionStatus.NEEDS_USER
+        assert result.completed_batches == 1
+        assert result.target_task_id == "T003"
+        assert [task.status for task in result.plan.tasks] == [
+            TaskStatus.COMPLETED,
+            TaskStatus.COMPLETED,
+            TaskStatus.PENDING,
+        ]
         assert result.log_path.exists()
-        assert result.summary_path.exists()
-        assert len(result.commit_hashes) == 2
-        assert _git_commit_count(git_repo) == before_commits + 2
-        assert result.last_log_timestamp <= result.last_commit_timestamp
+        assert not result.summary_path.exists()
+        assert result.commit_hashes == []
+        assert _git_commit_count(git_repo) == before_commits
+        assert "ai-sdlc stage show execute" in result.next_action
+        assert "at most one repair re-review" in result.next_action
+        assert "user-approved commit" in result.next_action
 
-        log_content = result.log_path.read_text(encoding="utf-8")
-        assert "### Batch 1" in log_content
-        assert "### Batch 2" in log_content
-        assert "**T003**: completed" in log_content
+    def test_injected_runner_resumes_next_batch_without_reopening_completed_tasks(
+        self, git_repo: Path
+    ) -> None:
+        spec_dir = git_repo / "specs" / "WI-2026-RESUME"
+        tasks_path = _write_tasks_md(spec_dir, _sample_tasks_md())
+        _write_pipeline_config(git_repo, max_tasks_per_batch=2)
+        runtime = RuntimeState(current_stage="execute")
+        executed: list[str] = []
 
-        summary = result.summary_path.read_text(encoding="utf-8")
-        assert "Total Tasks: 3" in summary
-        assert "Completed Tasks: 3" in summary
-        assert result.commit_hashes[-1] in summary
+        def runner(task: Task, _runtime: RuntimeState) -> TaskStatus:
+            executed.append(task.task_id)
+            return TaskStatus.COMPLETED
+
+        first = Executor(git_repo, task_runner=runner).run(
+            tasks_path,
+            runtime=runtime,
+        )
+        second = Executor(git_repo, task_runner=runner).run(
+            tasks_path,
+            runtime=runtime,
+        )
+
+        assert first.completed_batches == 1
+        assert first.target_task_id == "T003"
+        assert second.completed_batches == 2
+        assert second.status == ExecutionStatus.NEEDS_USER
+        assert second.target_task_id == "T003"
+        assert executed == ["T001", "T002", "T003"]
+        assert all(task.status == TaskStatus.COMPLETED for task in second.plan.tasks)
+
+    def test_executor_never_claims_commit_created_by_injected_runner(
+        self, git_repo: Path
+    ) -> None:
+        spec_dir = git_repo / "specs" / "WI-2026-RUNNER-COMMIT"
+        tasks_path = _write_tasks_md(spec_dir, _single_task_md())
+        committed = False
+
+        def runner(_task: Task, _runtime: RuntimeState) -> TaskStatus:
+            nonlocal committed
+            if not committed:
+                artifact = git_repo / "runner-output.txt"
+                artifact.write_text("runner-owned\n", encoding="utf-8")
+                subprocess.run(["git", "add", "runner-output.txt"], cwd=git_repo, check=True)
+                subprocess.run(
+                    ["git", "commit", "-m", "test: runner-owned commit"],
+                    cwd=git_repo,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                committed = True
+            return TaskStatus.COMPLETED
+
+        before_commits = _git_commit_count(git_repo)
+        result = Executor(git_repo, task_runner=runner).run(tasks_path)
+
+        assert _git_commit_count(git_repo) == before_commits + 1
+        assert result.status == ExecutionStatus.NEEDS_USER
+        assert result.commit_hashes == []
+        assert result.last_commit_timestamp == ""
 
     def test_run_halts_task_after_configured_debug_limit(self, git_repo: Path) -> None:
         spec_dir = git_repo / "specs" / "WI-2026-HALT"
@@ -370,7 +489,8 @@ class TestExecutorRun:
         )
         result = executor.run(tasks_path)
 
-        assert result.halted is False
+        assert result.status == ExecutionStatus.HALTED
+        assert result.halted is True
         assert result.plan.tasks[0].status == TaskStatus.HALTED
         assert result.runtime.debug_rounds["T001"] == 2
         assert "halted" in result.log_path.read_text(encoding="utf-8").lower()
@@ -411,7 +531,10 @@ class TestExecutorRun:
         (spec_dir / "plan.md").write_text("# Plan\n", encoding="utf-8")
         _write_pipeline_config(git_repo, max_tasks_per_batch=2)
 
-        result = Executor(git_repo).run(tasks_path)
+        result = Executor(
+            git_repo,
+            task_runner=lambda _task, _runtime: TaskStatus.COMPLETED,
+        ).run(tasks_path)
 
         wi_dir = git_repo / ".ai-sdlc" / "work-items" / "WI-2026-ART"
         persisted_plan = YamlStore.load(wi_dir / "execution-plan.yaml", ExecutionPlan)
@@ -420,18 +543,21 @@ class TestExecutorRun:
         latest_summary = (wi_dir / "latest-summary.md").read_text(encoding="utf-8")
 
         assert persisted_plan.total_batches == 2
-        assert persisted_plan.tasks[-1].status == TaskStatus.COMPLETED
+        assert persisted_plan.tasks[:2][0].status == TaskStatus.COMPLETED
+        assert persisted_plan.tasks[:2][1].status == TaskStatus.COMPLETED
+        assert persisted_plan.tasks[-1].status == TaskStatus.PENDING
         assert persisted_runtime.current_stage == "execute"
-        assert persisted_runtime.current_batch == 2
-        assert persisted_runtime.last_committed_task == "T003"
+        assert persisted_runtime.current_batch == 1
+        assert persisted_runtime.last_committed_task == "T002"
         assert persisted_runtime.current_branch != ""
         assert persisted_runtime.last_updated != ""
         assert persisted_working_set.spec_path.endswith("spec.md")
         assert persisted_working_set.plan_path.endswith("plan.md")
         assert persisted_working_set.tasks_path.endswith("tasks.md")
         assert "src/extra.py" in persisted_working_set.active_files
-        assert latest_summary == result.summary_path.read_text(encoding="utf-8")
-        assert "Completed Tasks: 3" in latest_summary
+        assert result.status == ExecutionStatus.NEEDS_USER
+        assert not result.summary_path.exists()
+        assert "Phase 1 complete: 2/2 tasks completed" in latest_summary
 
 
 class TestIsComplete:

@@ -93,9 +93,8 @@ class TestRunCommand:
                 "  - id: execute\n"
                 "    batch:\n"
                 "      strategy: by_phase\n"
-                f"      max_tasks_per_batch: {max_tasks_per_batch}\n"
-                "      auto_archive: true\n"
-                "      auto_commit: true\n"
+            f"      max_tasks_per_batch: {max_tasks_per_batch}\n"
+            "      auto_archive: true\n"
                 "circuit_breaker:\n"
                 f"  max_debug_rounds_per_task: {max_debug_rounds_per_task}\n"
                 f"  consecutive_failure_limit: {consecutive_failure_limit}\n"
@@ -1231,7 +1230,7 @@ class TestRunCommand:
         assert "Pipeline completed. Stage: close" in result.output
         assert "Not a git repository" not in result.output
 
-    def test_run_non_dry_run_executes_batches_updates_checkpoint_and_summary(
+    def test_run_non_dry_run_needs_user_without_real_task_runner(
         self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENAI_CODEX", "1")
@@ -1278,17 +1277,23 @@ class TestRunCommand:
 
         result = runner.invoke(app, ["run"])
 
-        assert result.exit_code == 0, result.output
-        assert "Pipeline completed. Stage: close" in result.output
-        assert (spec_dir / "task-execution-log.md").exists()
-        assert (spec_dir / "development-summary.md").exists()
+        assert result.exit_code == 2, result.output
+        assert "Pipeline halted" in result.output
+        assert "Implement T001 with the active AI agent" in result.output
+        assert not (spec_dir / "task-execution-log.md").exists()
+        assert not (spec_dir / "development-summary.md").exists()
 
         cp = load_checkpoint(git_repo)
         assert cp is not None
         assert cp.execute_progress is not None
+        assert cp.execute_progress.status.value == "needs_user"
         assert cp.execute_progress.total_batches == 2
-        assert cp.execute_progress.completed_batches == 2
-        assert cp.execute_progress.last_committed_task == "T003"
+        assert cp.execute_progress.completed_batches == 0
+        assert cp.execute_progress.last_committed_task == ""
+        assert cp.execute_progress.target_task_id == "T001"
+        assert cp.execute_progress.next_action.startswith(
+            "Implement T001 with the active AI agent"
+        )
 
     def test_run_binds_telemetry_profile_and_mode_from_project_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

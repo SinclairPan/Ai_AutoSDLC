@@ -301,6 +301,8 @@ class SDLCRunner:
     ) -> Checkpoint:
         """Apply a gate result to the checkpoint."""
         if result.verdict == GateVerdict.HALT:
+            if dry_run:
+                return cp
             raise PipelineHaltError(
                 f"Pipeline halted at '{stage}': "
                 f"{[c.message for c in result.checks if not c.passed]}",
@@ -424,6 +426,10 @@ class SDLCRunner:
         )
         result = self._build_executor().run(tasks_file, runtime=runtime)
         cp.execute_progress = ExecuteProgress(
+            status=result.status,
+            detail=result.detail,
+            next_action=result.next_action,
+            target_task_id=result.target_task_id,
             total_batches=result.plan.total_batches,
             completed_batches=result.completed_batches,
             current_batch=result.runtime.current_batch,
@@ -454,6 +460,7 @@ class SDLCRunner:
         ctx["tests_passed"] = False
         ctx["committed"] = False
         ctx["logged"] = False
+        ctx["execution_status"] = "pending"
         if cp is not None and self._execute_has_no_tasks(cp):
             return
         if spec_dir is not None:
@@ -474,6 +481,11 @@ class SDLCRunner:
                     ctx["target_task_id"] = next_task
         if cp and cp.execute_progress:
             progress = cp.execute_progress
+            ctx["execution_status"] = progress.status.value
+            ctx["detail"] = progress.detail
+            ctx["next_action"] = progress.next_action
+            if progress.target_task_id:
+                ctx["target_task_id"] = progress.target_task_id
             log_file = self.root / progress.execution_log if progress.execution_log else None
             if log_file is not None and log_file.exists():
                 ctx["logged"] = log_file.stat().st_size > 30
