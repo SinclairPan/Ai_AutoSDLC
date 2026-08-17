@@ -2390,7 +2390,7 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    assert payload["schemaVersion"] == 2
+    assert payload["schemaVersion"] == 3
     assert re.fullmatch(r"[0-9a-f]{40}", payload["inputs"]["inputCommit"])
     assert payload["inputs"]["copyRootKind"] == "fresh-external-copy"
     assert payload["inputs"]["manifestSha256"] == sha256(
@@ -2399,6 +2399,20 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
     assert payload["summary"] == {
         "stateCount": 135,
         "stateFailures": 0,
+        "stateGeometryCheckCount": 135,
+        "viewportClippingFailures": 0,
+        "ancestorClippingFailures": 0,
+        "controlOverlapFailures": 0,
+        "mobileMenuCount": 1,
+        "mobileMenuFailures": 0,
+        "historyCount": 4,
+        "historyFailures": 0,
+        "tabKeyboardCount": 8,
+        "tabKeyboardFailures": 0,
+        "skipLinkCount": 5,
+        "skipLinkFailures": 0,
+        "guideScenarioCount": 8,
+        "guideScenarioFailures": 0,
         "copyCount": 240,
         "copyFailures": 0,
         "noJsGroupCount": 12,
@@ -2407,6 +2421,19 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
         "accessibilityFailures": 0,
         "runtimeFailures": 0,
     }
+    assert len(payload["mobileMenuResults"]) == 1
+    assert len(payload["historyResults"]) == 4
+    assert len(payload["tabKeyboardResults"]) == 8
+    assert len(payload["skipLinkResults"]) == 5
+    assert len(payload["guideScenarioResults"]) == 8
+    assert all(
+        result["interactiveAudit"]["definition"]
+        == "visible key controls within a shared interaction region; text-only lines excluded"
+        and not result["interactiveAudit"]["viewportClipped"]
+        and not result["interactiveAudit"]["ancestorClipped"]
+        and not result["interactiveAudit"]["overlaps"]
+        for result in payload["stateResults"]
+    )
     ownership = payload["requestOwnership"]
     assert ownership["requestCount"] == 33
     assert ownership["uniqueUrlCount"] == 13
@@ -2463,3 +2490,154 @@ def test_browser_receipt_input_commit_contains_the_bound_evidence() -> None:
     assert sha256(manifest.stdout).hexdigest() == receipt["inputs"]["manifestSha256"]
     assert runner.returncode == 0, runner.stderr.decode()
     assert sha256(runner.stdout).hexdigest() == receipt["inputs"]["runnerSha256"]
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        lambda payload: payload.__setitem__("historyResults", []),
+        lambda payload: payload["stateResults"][0]["interactiveAudit"][
+            "overlaps"
+        ].append({"region": "mutation", "first": "A", "second": "B"}),
+    ),
+)
+def test_browser_receipt_verifier_rejects_interaction_mutation(
+    tmp_path: Path, mutation: Any
+) -> None:
+    runner = Path("scripts/run_offline_product_site_browser_acceptance.mjs")
+    receipt = Path("docs/product-site/design/qa/browser-acceptance-receipt.json")
+    manifest = Path("docs/product-site/design/qa/package-manifest.sha256")
+    payload = json.loads(receipt.read_text(encoding="utf-8"))
+    mutation(payload)
+    mutated = tmp_path / "mutated-receipt.json"
+    mutated.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "node",
+            str(runner),
+            "--verify-receipt",
+            str(mutated),
+            "--site-root",
+            str(_offline_site_root()),
+            "--manifest",
+            str(manifest),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "RECEIPT_INVALID" in result.stderr
+
+
+def _reviewer_attestation_fixture(
+    role: str, reviewer_id: str, reviewed_commit: str
+) -> str:
+    return f"""# Independent reviewer attestation
+
+Reviewer role: `{role}`
+Reviewer ID: `{reviewer_id}`
+Reviewer task: `/root/{reviewer_id}`
+Reviewed product baseline: `{reviewed_commit}`
+Reviewed at UTC: `2026-08-17T20:00:00Z`
+Verdict: `PASS`
+Finding count: `0`
+Canonical content SHA256: `{'0' * 64}`
+Canonical hash rule: `SHA-256 of UTF-8 file bytes after replacing the Canonical content SHA256 value with 64 ASCII zeroes.`
+
+## Input hashes
+
+`fixture`: `{'a' * 64}`
+
+## Scope
+
+Fresh read-only review of the exact commit and all declared evidence inputs.
+
+## Independent verification
+
+Verified independently.
+
+## Findings
+
+None.
+"""
+
+
+def test_reviewer_attestation_verifier_accepts_unique_canonical_outputs(
+    tmp_path: Path,
+) -> None:
+    reviewed_commit = "a" * 40
+    reviewer_dir = tmp_path / "reviewers"
+    reviewer_dir.mkdir()
+    roles = (
+        "requirements-copy",
+        "interaction-accessibility",
+        "visual-offline-delivery",
+    )
+    for index, role in enumerate(roles, 1):
+        path = reviewer_dir / f"reviewer-{index}.md"
+        content = _reviewer_attestation_fixture(
+            role, f"reviewer-{index}", reviewed_commit
+        )
+        canonical = sha256(content.encode()).hexdigest()
+        path.write_text(content.replace("0" * 64, canonical, 1), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "python",
+            "scripts/verify_offline_product_site_reviewer_attestations.py",
+            "--reviewed-commit",
+            reviewed_commit,
+            "--reviewer-dir",
+            str(reviewer_dir),
+            "--fixture-mode",
+            "true",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "REVIEWER_ATTESTATIONS_VALID" in result.stdout
+
+
+def test_reviewer_attestation_verifier_rejects_hash_mutation(tmp_path: Path) -> None:
+    reviewed_commit = "a" * 40
+    reviewer_dir = tmp_path / "reviewers"
+    reviewer_dir.mkdir()
+    roles = (
+        "requirements-copy",
+        "interaction-accessibility",
+        "visual-offline-delivery",
+    )
+    for index, role in enumerate(roles, 1):
+        path = reviewer_dir / f"reviewer-{index}.md"
+        content = _reviewer_attestation_fixture(
+            role, f"reviewer-{index}", reviewed_commit
+        )
+        canonical = sha256(content.encode()).hexdigest()
+        path.write_text(content.replace("0" * 64, canonical, 1), encoding="utf-8")
+    first = reviewer_dir / "reviewer-1.md"
+    first.write_text(first.read_text(encoding="utf-8") + "mutated\n", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            "python",
+            "scripts/verify_offline_product_site_reviewer_attestations.py",
+            "--reviewed-commit",
+            reviewed_commit,
+            "--reviewer-dir",
+            str(reviewer_dir),
+            "--fixture-mode",
+            "true",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "ATTESTATION_INVALID" in result.stderr
