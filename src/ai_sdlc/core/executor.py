@@ -82,6 +82,7 @@ class ExecutionResult:
     completed_batches: int = 0
     last_log_timestamp: str = ""
     last_commit_timestamp: str = ""
+    pending_commit_base_hash: str = ""
     halted: bool = False
     error: str = ""
 
@@ -573,6 +574,158 @@ class Executor:
             error=error,
         )
 
+    def acknowledge_current_batch(
+        self,
+        tasks_file: Path,
+        *,
+        runtime: RuntimeState | None = None,
+    ) -> ExecutionResult:
+        """Record explicit external-agent completion without fabricating a commit."""
+        runtime_state = runtime or RuntimeState(current_stage="execute")
+        initial_batch = runtime_state.current_batch
+        original_runner = self._task_runner
+        self._task_runner = lambda _task, _runtime: TaskExecutionOutcome(
+            status=TaskStatus.COMPLETED,
+            details="explicit external-agent batch acknowledgement",
+        )
+        try:
+            result = self.run(tasks_file, runtime=runtime_state)
+        finally:
+            self._task_runner = original_runner
+
+        if result.halted:
+            return result
+        if result.runtime.current_batch <= initial_batch:
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="No pending execution batch is available to acknowledge.",
+                next_action="Rerun ai-sdlc run to inspect the current execute state.",
+                halted=True,
+            )
+        result.pending_commit_base_hash = self._head_commit()
+        return self._set_acknowledgement_state(
+            result,
+            status=ExecutionStatus.NEEDS_USER,
+            detail="The current batch is acknowledged and logged, but not committed.",
+            next_action="Commit the acknowledged batch, then rerun ai-sdlc run.",
+        )
+
+    def finalize_acknowledged_batch(
+        self,
+        tasks_file: Path,
+        *,
+        runtime: RuntimeState,
+        pending_commit_base_hash: str,
+        last_log_timestamp: str,
+    ) -> ExecutionResult:
+        """Finalize acknowledged progress only after a clean descendant commit."""
+        result = self.run(tasks_file, runtime=runtime)
+        result.last_log_timestamp = last_log_timestamp
+        result.pending_commit_base_hash = pending_commit_base_hash
+        if result.halted:
+            return result
+
+        persisted_plan = load_execution_plan(self.root, tasks_file.parent.name)
+        if persisted_plan is None or not self._same_plan_topology(
+            result.plan, persisted_plan
+        ):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="The acknowledged execution plan no longer matches tasks.md.",
+                next_action="Restore the acknowledged tasks.md topology before rerunning.",
+                halted=True,
+            )
+
+        git = self._git_client_factory(self.root)
+        current_head = git.resolve_revision("HEAD")
+        if current_head == pending_commit_base_hash:
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.NEEDS_USER,
+                detail="The acknowledged batch has not been committed yet.",
+                next_action="Commit the acknowledged batch, then rerun ai-sdlc run.",
+            )
+        if not git.is_ancestor(pending_commit_base_hash, current_head):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="HEAD is not a descendant of the acknowledged batch base commit.",
+                next_action="Inspect branch history before resuming execute.",
+                halted=True,
+            )
+        if self._has_uncommitted_delivery_changes(git):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.NEEDS_USER,
+                detail="The acknowledged batch commit exists, but the worktree is not clean.",
+                next_action="Commit or discard remaining changes, then rerun ai-sdlc run.",
+            )
+
+        complete = result.runtime.current_batch >= result.plan.total_batches
+        if complete:
+            self._write_summary(
+                result.summary_path,
+                plan=result.plan,
+                runtime=result.runtime,
+                commit_hashes=[current_head],
+                halted=False,
+                error="",
+            )
+        target = self._next_pending_task(result.plan)
+        result.status = (
+            ExecutionStatus.COMPLETED if complete else ExecutionStatus.NEEDS_USER
+        )
+        result.detail = (
+            "All acknowledged execution batches are committed."
+            if complete
+            else "The acknowledged batch is committed; the next batch awaits implementation."
+        )
+        result.target_task_id = (
+            target.task_id if target is not None else result.runtime.last_committed_task
+        )
+        result.next_action = (
+            "" if complete else self._implementation_next_action(result.target_task_id)
+        )
+        result.commit_hashes = [current_head]
+        result.completed_batches = result.runtime.current_batch
+        result.last_commit_timestamp = git.head_commit_timestamp()
+        result.pending_commit_base_hash = ""
+        return result
+
+    @staticmethod
+    def _set_acknowledgement_state(
+        result: ExecutionResult,
+        *,
+        status: ExecutionStatus,
+        detail: str,
+        next_action: str,
+        halted: bool = False,
+    ) -> ExecutionResult:
+        result.status = status
+        result.detail = detail
+        result.next_action = next_action
+        result.halted = halted
+        result.error = detail if halted else ""
+        return result
+
+    @staticmethod
+    def _has_uncommitted_delivery_changes(git: GitClient) -> bool:
+        """Ignore only runtime state written by the current CLI invocation."""
+        status = git._run(
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude,top).ai-sdlc/local/**",
+            ":(exclude,top).ai-sdlc/state/checkpoint.yml",
+            ":(exclude,top).ai-sdlc/state/checkpoint.yml.bak",
+            ":(exclude,top).ai-sdlc/state/resume-pack.yaml",
+        )
+        return bool(status)
+
     @staticmethod
     def _next_pending_task(plan: ExecutionPlan) -> Task | None:
         return next(
@@ -677,7 +830,8 @@ class Executor:
         return (
             f"Implement {task_label} with the active AI agent, stage the intended changes, "
             "then run ai-sdlc pr-review start --diff-source local-staged "
-            "--provider local-agent."
+            "--provider local-agent. After review passes, run "
+            "ai-sdlc run --acknowledge-execute-batch --yes before committing the batch."
         )
 
     @staticmethod

@@ -11,7 +11,7 @@ from ai_sdlc.context.state import load_checkpoint, save_checkpoint
 from ai_sdlc.core.close_check import run_close_check
 from ai_sdlc.core.config import load_project_config
 from ai_sdlc.core.dispatcher import StageDispatcher
-from ai_sdlc.core.executor import Executor
+from ai_sdlc.core.executor import ExecutionResult, Executor
 from ai_sdlc.core.frontend_contract_runtime_attachment import (
     build_frontend_contract_runtime_attachment,
     is_frontend_contract_runtime_attachment_work_item,
@@ -400,6 +400,41 @@ class SDLCRunner:
         """Build the execute-stage orchestration entrypoint."""
         return Executor(self.root)
 
+    def acknowledge_execute_batch(self) -> Checkpoint:
+        """Record externally completed batch work before its explicit commit."""
+        cp = self._ensure_checkpoint()
+        if cp.current_stage != "execute":
+            raise PipelineHaltError(
+                "Execute batch acknowledgement is only available at the execute stage."
+            )
+        if cp.execute_progress and cp.execute_progress.pending_commit_base_hash:
+            raise PipelineHaltError(
+                "The current batch is already acknowledged; commit it before "
+                "acknowledging another batch."
+            )
+        spec_dir = self._resolve_spec_dir(cp)
+        if spec_dir is None:
+            raise PipelineHaltError("The execute checkpoint has no active work item.")
+        tasks_file = spec_dir / "tasks.md"
+        if not tasks_file.is_file():
+            raise PipelineHaltError(f"Execute tasks file not found: {tasks_file}")
+
+        progress = cp.execute_progress
+        runtime = RuntimeState(
+            current_stage="execute",
+            current_batch=progress.current_batch if progress else 0,
+            last_committed_task=progress.last_committed_task if progress else "",
+            execution_mode=cp.execution_mode,
+        )
+        result = self._build_executor().acknowledge_current_batch(
+            tasks_file,
+            runtime=runtime,
+        )
+        cp = self._record_execute_result(cp, result, tasks_file)
+        if result.halted:
+            raise PipelineHaltError(result.detail)
+        return cp
+
     def _execute_has_no_tasks(self, cp: Checkpoint) -> bool:
         spec_dir = self._resolve_spec_dir(cp)
         if spec_dir is None:
@@ -424,7 +459,26 @@ class SDLCRunner:
             last_committed_task=progress.last_committed_task if progress else "",
             execution_mode=cp.execution_mode,
         )
-        result = self._build_executor().run(tasks_file, runtime=runtime)
+        executor = self._build_executor()
+        if progress and progress.pending_commit_base_hash:
+            result = executor.finalize_acknowledged_batch(
+                tasks_file,
+                runtime=runtime,
+                pending_commit_base_hash=progress.pending_commit_base_hash,
+                last_log_timestamp=progress.last_log_at,
+            )
+        else:
+            result = executor.run(tasks_file, runtime=runtime)
+        return self._record_execute_result(cp, result, tasks_file)
+
+    def _record_execute_result(
+        self,
+        cp: Checkpoint,
+        result: ExecutionResult,
+        tasks_file: Path,
+    ) -> Checkpoint:
+        """Persist one execute transition without dropping prior commit evidence."""
+        previous = cp.execute_progress
         cp.execute_progress = ExecuteProgress(
             status=result.status,
             detail=result.detail,
@@ -436,9 +490,20 @@ class SDLCRunner:
             last_committed_task=result.runtime.last_committed_task,
             tasks_file=str(tasks_file.relative_to(self.root)),
             execution_log=str(result.log_path.relative_to(self.root)),
-            last_log_at=result.last_log_timestamp,
-            last_commit_at=result.last_commit_timestamp,
-            last_commit_hash=result.commit_hashes[-1] if result.commit_hashes else "",
+            last_log_at=(
+                result.last_log_timestamp
+                or (previous.last_log_at if previous is not None else "")
+            ),
+            last_commit_at=(
+                result.last_commit_timestamp
+                or (previous.last_commit_at if previous is not None else "")
+            ),
+            last_commit_hash=(
+                result.commit_hashes[-1]
+                if result.commit_hashes
+                else (previous.last_commit_hash if previous is not None else "")
+            ),
+            pending_commit_base_hash=result.pending_commit_base_hash,
             halted=result.halted,
             error=result.error,
         )

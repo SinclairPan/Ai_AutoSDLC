@@ -100,6 +100,7 @@ class ExecuteProgress(BaseModel):
     last_log_at: str = ""
     last_commit_at: str = ""
     last_commit_hash: str = ""
+    pending_commit_base_hash: str = ""
     halted: bool = False
     error: str = ""
 

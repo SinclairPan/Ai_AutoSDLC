@@ -28,14 +28,14 @@ checklist:
   - id: run_tests
     action: "运行 pytest 全量测试"
     verify: "0 failures"
-  - id: write_log
-    action: "追加 execution-log.md"
-    verify: "文件已更新"
+  - id: acknowledge_batch
+    action: "本地评审通过后运行 ai-sdlc run --acknowledge-execute-batch --yes"
+    verify: "批次日志已写入且状态为 needs_user"
   - id: commit
     action: "git commit 当前批次"
     verify: "git status clean"
   - id: gate_check
-    action: "运行 execute gate"
+    action: "再次运行 ai-sdlc run，验证提交并执行 execute gate"
     verify: "verdict = PASS"
 
 outputs:

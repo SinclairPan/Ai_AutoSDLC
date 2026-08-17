@@ -188,6 +188,16 @@ def run_command(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Run gates without execution."
     ),
+    acknowledge_execute_batch: bool = typer.Option(
+        False,
+        "--acknowledge-execute-batch",
+        help="Record the externally completed current execute batch before commit.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Confirm execute-batch acknowledgement without an interactive prompt.",
+    ),
 ) -> None:
     """Run the SDLC pipeline from current checkpoint."""
     root = find_project_root()
@@ -227,6 +237,30 @@ def run_command(
         raise typer.Exit(code=1)
 
     runner = SDLCRunner(root)
+    if acknowledge_execute_batch:
+        if dry_run:
+            console.print(
+                "[red]--acknowledge-execute-batch cannot be combined with --dry-run.[/red]"
+            )
+            raise typer.Exit(code=1)
+        if not yes and not typer.confirm(
+            "Acknowledge that the active AI completed and reviewed the current batch?",
+            default=False,
+        ):
+            console.print("[yellow]Execute batch acknowledgement cancelled.[/yellow]")
+            raise typer.Exit(code=1)
+        try:
+            cp = runner.acknowledge_execute_batch()
+        except PipelineHaltError as exc:
+            console.print(f"[red]Execute batch acknowledgement blocked: {exc}[/red]")
+            raise typer.Exit(code=2) from None
+        progress = cp.execute_progress
+        batch_number = progress.current_batch if progress is not None else 0
+        console.print(f"[bold green]Batch {batch_number} acknowledged.[/bold green]")
+        if progress is not None and progress.next_action:
+            console.print(progress.next_action)
+        return
+
     callback = _confirm_callback if mode == "confirm" else None
     stage_results: list[tuple[str, Any]] = []
 

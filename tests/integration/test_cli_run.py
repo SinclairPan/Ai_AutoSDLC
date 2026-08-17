@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -1294,6 +1295,132 @@ class TestRunCommand:
         assert cp.execute_progress.next_action.startswith(
             "Implement T001 with the active AI agent"
         )
+
+    def test_run_acknowledges_external_batch_then_finalizes_after_commit(
+        self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_CODEX", "1")
+        monkeypatch.chdir(git_repo)
+        assert runner.invoke(app, ["init", ".", "--agent-target", "codex"]).exit_code == 0
+        self._write_pipeline_config(git_repo, max_tasks_per_batch=1)
+
+        spec_dir = git_repo / "specs" / "WI-2026-ACK"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "tasks.md").write_text(
+            "### Task 1.1 — implement\n"
+            "- **Task ID**: T001\n"
+            "- **依赖**：无\n"
+            "- **文件**：src/app.py\n"
+            "- **验收标准（AC）**：\n"
+            "  1. app done\n",
+            encoding="utf-8",
+        )
+        save_checkpoint(
+            git_repo,
+            Checkpoint(
+                current_stage="execute",
+                feature=FeatureInfo(
+                    id="WI-2026-ACK",
+                    spec_dir="specs/WI-2026-ACK",
+                    design_branch="design/WI-2026-ACK",
+                    feature_branch="feature/WI-2026-ACK",
+                    current_branch="main",
+                ),
+            ),
+        )
+
+        original_run_gate = SDLCRunner._run_gate
+
+        def gate_wrapper(
+            self: SDLCRunner,
+            stage: str,
+            cp: Checkpoint,
+            *,
+            dry_run: bool = False,
+        ) -> GateResult:
+            if stage == "execute":
+                return original_run_gate(self, stage, cp, dry_run=dry_run)
+            return GateResult(
+                stage=stage,
+                verdict=GateVerdict.PASS,
+                checks=[GateCheck(name=f"{stage}_ok", passed=True)],
+            )
+
+        monkeypatch.setattr(SDLCRunner, "_run_gate", gate_wrapper)
+
+        initial = runner.invoke(app, ["run"])
+        assert initial.exit_code == 2, initial.output
+        assert "--acknowledge-execute-batch" in initial.output
+        assert "--yes" in initial.output
+
+        source = git_repo / "src" / "app.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+
+        acknowledged = runner.invoke(
+            app,
+            ["run", "--acknowledge-execute-batch", "--yes"],
+        )
+        assert acknowledged.exit_code == 0, acknowledged.output
+        assert "Batch 1 acknowledged" in acknowledged.output
+
+        cp = load_checkpoint(git_repo)
+        assert cp is not None
+        assert cp.execute_progress is not None
+        assert cp.execute_progress.status.value == "needs_user"
+        assert cp.execute_progress.completed_batches == 1
+        assert cp.execute_progress.pending_commit_base_hash
+        assert (spec_dir / "task-execution-log.md").is_file()
+
+        before_commit = runner.invoke(app, ["run"])
+        assert before_commit.exit_code == 2, before_commit.output
+        assert "Commit the acknowledged batch" in " ".join(
+            before_commit.output.split()
+        )
+
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "feat: implement acknowledged batch"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        uncommitted = git_repo / "src" / "uncommitted.py"
+        uncommitted.write_text("UNCOMMITTED = True\n", encoding="utf-8")
+        blocked = runner.invoke(app, ["run"])
+        assert blocked.exit_code == 2, blocked.output
+        assert "worktree is not clean" in " ".join(blocked.output.split())
+        uncommitted.unlink()
+
+        finalized = runner.invoke(app, ["run"])
+        assert finalized.exit_code == 0, finalized.output
+        assert "Pipeline completed. Stage: close" in finalized.output
+
+        cp = load_checkpoint(git_repo)
+        assert cp is not None
+        assert cp.execute_progress is not None
+        assert cp.execute_progress.status.value == "completed"
+        assert cp.execute_progress.completed_batches == 1
+        assert cp.execute_progress.current_batch == 1
+        assert cp.execute_progress.last_committed_task == "T001"
+        assert cp.execute_progress.last_commit_hash == head
+        assert cp.execute_progress.pending_commit_base_hash == ""
+        assert (spec_dir / "development-summary.md").is_file()
 
     def test_run_binds_telemetry_profile_and_mode_from_project_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
