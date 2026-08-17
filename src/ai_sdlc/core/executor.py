@@ -603,6 +603,15 @@ class Executor:
                 next_action="Rerun ai-sdlc run to inspect the current execute state.",
                 halted=True,
             )
+        if result.runtime.current_batch >= result.plan.total_batches:
+            self._write_summary(
+                result.summary_path,
+                plan=result.plan,
+                runtime=result.runtime,
+                commit_hashes=[],
+                halted=False,
+                error="",
+            )
         result.pending_commit_base_hash = self._head_commit()
         return self._set_acknowledgement_state(
             result,
@@ -664,14 +673,13 @@ class Executor:
             )
 
         complete = result.runtime.current_batch >= result.plan.total_batches
-        if complete:
-            self._write_summary(
-                result.summary_path,
-                plan=result.plan,
-                runtime=result.runtime,
-                commit_hashes=[current_head],
-                halted=False,
-                error="",
+        if complete and not result.summary_path.is_file():
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="The committed final batch is missing development-summary.md.",
+                next_action="Restore and commit the final development summary before rerunning.",
+                halted=True,
             )
         target = self._next_pending_task(result.plan)
         result.status = (

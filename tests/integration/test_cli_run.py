@@ -1371,6 +1371,7 @@ class TestRunCommand:
         assert cp.execute_progress.completed_batches == 1
         assert cp.execute_progress.pending_commit_base_hash
         assert (spec_dir / "task-execution-log.md").is_file()
+        assert (spec_dir / "development-summary.md").is_file()
 
         before_commit = runner.invoke(app, ["run"])
         assert before_commit.exit_code == 2, before_commit.output
@@ -1421,6 +1422,25 @@ class TestRunCommand:
         assert cp.execute_progress.last_commit_hash == head
         assert cp.execute_progress.pending_commit_base_hash == ""
         assert (spec_dir / "development-summary.md").is_file()
+        delivery_status = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                ".",
+                ":(exclude,top).ai-sdlc/local/**",
+                ":(exclude,top).ai-sdlc/state/checkpoint.yml",
+                ":(exclude,top).ai-sdlc/state/checkpoint.yml.bak",
+                ":(exclude,top).ai-sdlc/state/resume-pack.yaml",
+            ],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert delivery_status == ""
 
     def test_run_binds_telemetry_profile_and_mode_from_project_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
