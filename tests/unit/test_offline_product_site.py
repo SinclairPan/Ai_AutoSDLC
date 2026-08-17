@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from scripts.validate_offline_product_site import (
     build_manifest,
     validate_guide_parity,
@@ -52,6 +53,65 @@ def test_unknown_external_anchor_is_rejected(tmp_path: Path) -> None:
     issues = validate_site(tmp_path)
 
     assert "external_url_not_allowed" in {issue.code for issue in issues}
+
+
+def test_allowed_external_anchor_is_valid(tmp_path: Path) -> None:
+    _write(
+        tmp_path,
+        "index.html",
+        '<a href="https://github.com/SinclairPan/Ai_AutoSDLC">GitHub</a>',
+    )
+
+    issues = validate_site(tmp_path)
+
+    assert "external_url_not_allowed" not in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize(
+    "markup",
+    (
+        '<iframe src="https://cdn.example/frame.html"></iframe>',
+        '<iframe src="ftp://mirror.example/frame.html"></iframe>',
+        '<script src="ftp://mirror.example/runtime.js"></script>',
+        '<video src="//cdn.example/demo.mp4"></video>',
+        '<base href="https://cdn.example/"><main></main>',
+        '<form action="https://cdn.example/submit"></form>',
+        '<button formaction="https://cdn.example/submit"></button>',
+        '<meta http-equiv="refresh" content="0; url=https://cdn.example/next">',
+    ),
+)
+def test_remote_browser_active_html_address_is_rejected(
+    tmp_path: Path, markup: str
+) -> None:
+    _write(tmp_path, "index.html", markup)
+
+    issues = validate_site(tmp_path)
+
+    assert "remote_runtime_asset" in {issue.code for issue in issues}
+
+
+def test_css_string_import_remote_address_is_rejected(tmp_path: Path) -> None:
+    _write(tmp_path, "assets/css/site.css", '@import "https://cdn.example/site.css";')
+
+    issues = validate_site(tmp_path)
+
+    assert "remote_runtime_asset" in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize(
+    "script",
+    (
+        'new WebSocket("wss://socket.example/events");',
+        'const endpoint = "//cdn.example/api";',
+        'const mirror = "ftp://mirror.example/site.js";',
+    ),
+)
+def test_javascript_network_address_is_rejected(tmp_path: Path, script: str) -> None:
+    _write(tmp_path, "assets/js/site.js", script)
+
+    issues = validate_site(tmp_path)
+
+    assert "remote_runtime_asset" in {issue.code for issue in issues}
 
 
 def test_external_url_in_unbound_text_is_rejected(tmp_path: Path) -> None:
@@ -130,3 +190,63 @@ def test_guide_parity_rejects_wrong_frozen_source_sha(tmp_path: Path) -> None:
     issues = validate_guide_parity(source, rendered)
 
     assert "guide_source_sha_mismatch" in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize(
+    ("fragment", "expected_code"),
+    (
+        ('<section data-guide-path="path-9z"></section>', "guide_unknown_path"),
+        (
+            '<section data-guide-path="path-1a"></section>'
+            '<section data-guide-path="path-1a"></section>',
+            "guide_duplicate_path",
+        ),
+        (
+            '<section data-guide-path="path-1a">'
+            '<article data-guide-step="publish"></article></section>',
+            "guide_unknown_step",
+        ),
+        (
+            '<section data-guide-path="path-1a">'
+            '<article data-guide-step="install"></article>'
+            '<article data-guide-step="install"></article></section>',
+            "guide_duplicate_step",
+        ),
+        (
+            '<section data-guide-path="path-1a">'
+            '<article data-guide-step="install">'
+            '<p data-guide-part="warning"></p></article></section>',
+            "guide_unknown_part",
+        ),
+        (
+            '<section data-guide-path="path-1a">'
+            '<article data-guide-step="install">'
+            '<p data-guide-part="purpose"></p><p data-guide-part="purpose"></p>'
+            "</article></section>",
+            "guide_duplicate_part",
+        ),
+    ),
+)
+def test_guide_parity_rejects_noncanonical_inventory_nodes(
+    tmp_path: Path, fragment: str, expected_code: str
+) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    rendered.write_text(f"<main>{fragment}</main>", encoding="utf-8")
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert expected_code in {issue.code for issue in issues}
+
+
+def test_guide_parity_rejects_command_outside_pre(tmp_path: Path) -> None:
+    source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
+    rendered = tmp_path / "USER_GUIDE.zh-CN.html"
+    rendered.write_text(
+        '<main><code data-guide-command="path-1a-install-1">command</code></main>',
+        encoding="utf-8",
+    )
+
+    issues = validate_guide_parity(source, rendered)
+
+    assert "guide_command_not_in_pre" in {issue.code for issue in issues}

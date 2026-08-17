@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import re
 import sys
+from collections import Counter
 from dataclasses import dataclass
 from html import unescape
 from html.parser import HTMLParser
@@ -68,10 +69,14 @@ GUIDE_PATH_IDS = tuple(
 GUIDE_STEPS = ("install", "verify", "initialize", "start")
 GUIDE_PARTS = ("purpose", "location", "command", "expected", "troubleshoot", "next")
 
-_EXTERNAL_URL_RE = re.compile(
-    r"https?://[A-Za-z0-9.-]+(?:/[^\s<>'\"]*)?", re.IGNORECASE
+_NETWORK_URL_RE = re.compile(
+    r"(?:(?:https?|wss?)://[A-Za-z0-9.-]+(?:/[^\s<>'\"]*)?|//[A-Za-z0-9.-]+(?:/[^\s<>'\"]*)?)",
+    re.IGNORECASE,
 )
 _CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
+_CSS_STRING_IMPORT_RE = re.compile(
+    r"@import\s+(['\"])(.*?)\1", re.IGNORECASE | re.DOTALL
+)
 _JS_IMPORT_RE = re.compile(
     r"(?:import\s*(?:[^;]*?\s+from\s+)?|export\s+[^;]*?\s+from\s+)(['\"])(.*?)\1",
     re.DOTALL,
@@ -84,6 +89,26 @@ _GUIDE_HEADING_RE = re.compile(
 )
 _FENCE_RE = re.compile(r"^```[^\n]*\n(.*?)^```\s*$", re.MULTILINE | re.DOTALL)
 
+_NETWORK_BEARING_ATTRS = frozenset(
+    {
+        "action",
+        "archive",
+        "background",
+        "cite",
+        "codebase",
+        "data",
+        "formaction",
+        "href",
+        "imagesrcset",
+        "manifest",
+        "ping",
+        "poster",
+        "profile",
+        "src",
+        "srcset",
+    }
+)
+
 
 class _SiteHTMLParser(HTMLParser):
     """Collect externally observable HTML contract data using stdlib parsing."""
@@ -92,6 +117,7 @@ class _SiteHTMLParser(HTMLParser):
         super().__init__(convert_charrefs=True)
         self.stack: list[tuple[str, dict[str, str]]] = []
         self.runtime_refs: list[tuple[str, str]] = []
+        self.network_attribute_refs: list[tuple[str, str, str]] = []
         self.anchors: list[dict[str, str]] = []
         self.text_nodes: list[tuple[str, tuple[tuple[str, dict[str, str]], ...]]] = []
         self.main_count = 0
@@ -106,8 +132,24 @@ class _SiteHTMLParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
         self.stack.append((tag, attributes))
-        if RUNTIME_REF_ATTRS.get(tag) in attributes:
-            self.runtime_refs.append((tag, attributes[RUNTIME_REF_ATTRS[tag]]))
+        runtime_attr = RUNTIME_REF_ATTRS.get(tag)
+        if runtime_attr and runtime_attr in attributes:
+            self.runtime_refs.append((tag, attributes[runtime_attr]))
+        for key, value in attributes.items():
+            is_anchor_href = tag == "a" and key == "href"
+            is_refresh = (
+                tag == "meta"
+                and key == "content"
+                and attributes.get("http-equiv", "").lower() == "refresh"
+            )
+            is_legacy_runtime_ref = key == runtime_attr
+            if (
+                not is_anchor_href
+                and not is_legacy_runtime_ref
+                and (key in _NETWORK_BEARING_ATTRS or is_refresh)
+                and _NETWORK_URL_RE.search(value)
+            ):
+                self.network_attribute_refs.append((tag, key, value))
         if tag == "a":
             self.anchors.append(attributes)
             if attributes.get("href") == "#main":
@@ -144,6 +186,12 @@ class _SiteHTMLParser(HTMLParser):
             self.text_nodes.append((data, tuple(self.stack)))
 
 
+@dataclass
+class _GuideCommand:
+    in_pre: bool
+    text: list[str]
+
+
 class _GuideHTMLParser(HTMLParser):
     """Collect guide path, step, part, and command nodes without dependencies."""
 
@@ -152,30 +200,39 @@ class _GuideHTMLParser(HTMLParser):
         self.stack: list[tuple[str, dict[str, str]]] = []
         self.path_stack: list[str] = []
         self.step_stack: list[str] = []
-        self.paths: set[str] = set()
-        self.steps: set[tuple[str, str]] = set()
-        self.parts: set[tuple[str, str, str]] = set()
-        self.commands: dict[str, list[str]] = {}
-        self._command_stack: list[str] = []
+        self.paths: list[str] = []
+        self.steps: list[tuple[str | None, str]] = []
+        self.parts: list[tuple[str | None, str | None, str]] = []
+        self.commands: dict[str, list[_GuideCommand]] = {}
+        self._command_stack: list[tuple[str, _GuideCommand]] = []
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
         self.stack.append((tag, attributes))
         path_id = attributes.get("data-guide-path")
         if path_id:
-            self.paths.add(path_id)
+            self.paths.append(path_id)
             self.path_stack.append(path_id)
         step = attributes.get("data-guide-step")
-        if step and self.path_stack:
-            self.steps.add((self.path_stack[-1], step))
+        if step:
+            self.steps.append((self.path_stack[-1] if self.path_stack else None, step))
             self.step_stack.append(step)
         part = attributes.get("data-guide-part")
-        if part and self.path_stack and self.step_stack:
-            self.parts.add((self.path_stack[-1], self.step_stack[-1], part))
+        if part:
+            self.parts.append(
+                (
+                    self.path_stack[-1] if self.path_stack else None,
+                    self.step_stack[-1] if self.step_stack else None,
+                    part,
+                )
+            )
         command_id = attributes.get("data-guide-command")
         if tag == "code" and command_id:
-            self.commands.setdefault(command_id, [])
-            self._command_stack.append(command_id)
+            command = _GuideCommand(
+                in_pre=bool(self.stack[:-1] and self.stack[-2][0] == "pre"), text=[]
+            )
+            self.commands.setdefault(command_id, []).append(command)
+            self._command_stack.append((command_id, command))
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "code" and self._command_stack:
@@ -193,7 +250,7 @@ class _GuideHTMLParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._command_stack:
-            self.commands[self._command_stack[-1]].append(data)
+            self._command_stack[-1][1].text.append(data)
 
 
 def _issue(code: str, path: Path, detail: str) -> SiteIssue:
@@ -205,8 +262,10 @@ def _normalized_url(value: str) -> str:
     return parts._replace(query="", fragment="").geturl()
 
 
-def _is_external(value: str) -> bool:
-    return urlsplit(value).scheme.lower() in {"http", "https"}
+def _is_network_address(value: str) -> bool:
+    normalized = unescape(value).strip()
+    scheme = urlsplit(normalized).scheme.lower()
+    return normalized.startswith("//") or bool(scheme and scheme not in {"data", "mailto", "tel"})
 
 
 def _resolve_local(root: Path, source: Path, value: str) -> tuple[Path | None, str | None]:
@@ -229,7 +288,7 @@ def _validate_local_reference(
 ) -> None:
     if not value or value.startswith("data:"):
         return
-    if _is_external(value) or value.startswith("//"):
+    if _is_network_address(value):
         issues.append(_issue("remote_runtime_asset", page, value))
         return
     target, reason = _resolve_local(root, page, value)
@@ -265,9 +324,12 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
     for _tag, value in parser.runtime_refs:
         _validate_local_reference(root, page, value, issues)
 
+    for tag, attribute, value in parser.network_attribute_refs:
+        issues.append(_issue("remote_runtime_asset", page, f"{tag}[{attribute}]={value}"))
+
     for anchor in parser.anchors:
         href = anchor.get("href", "")
-        if _is_external(href):
+        if _is_network_address(href):
             if _normalized_url(href) not in ALLOWED_EXTERNAL_URLS:
                 issues.append(_issue("external_url_not_allowed", page, href))
         elif href and not href.startswith(("#", "mailto:", "tel:")):
@@ -276,7 +338,7 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
     for text, ancestors in parser.text_nodes:
         hidden_runtime_text = any(tag in {"script", "style"} for tag, _ in ancestors)
         if (
-            _EXTERNAL_URL_RE.search(text)
+            _NETWORK_URL_RE.search(text)
             and not hidden_runtime_text
             and not _is_inert_guide_command(relative_path, ancestors)
         ):
@@ -328,14 +390,16 @@ def _validate_css(root: Path, stylesheet: Path) -> list[SiteIssue]:
         issues.append(_issue("missing_focus_visible_style", stylesheet, ":focus-visible"))
     for _, value in _CSS_URL_RE.findall(contents):
         _validate_local_reference(root, stylesheet, value.strip(), issues)
+    for _, value in _CSS_STRING_IMPORT_RE.findall(contents):
+        _validate_local_reference(root, stylesheet, value.strip(), issues)
     return issues
 
 
 def _validate_javascript(root: Path, script: Path) -> list[SiteIssue]:
     issues: list[SiteIssue] = []
     contents = script.read_text(encoding="utf-8")
-    for url in _EXTERNAL_URL_RE.findall(contents):
-        issues.append(_issue("external_url_in_javascript", script, url))
+    for url in _NETWORK_URL_RE.findall(contents):
+        issues.append(_issue("remote_runtime_asset", script, url))
     for _, value in _JS_IMPORT_RE.findall(contents):
         _validate_local_reference(root, script, value, issues)
     for _, value in _JS_FETCH_RE.findall(contents):
@@ -419,23 +483,71 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
     parser = _GuideHTMLParser()
     parser.feed(rendered_html.read_text(encoding="utf-8"))
     parser.close()
+    expected_paths = set(GUIDE_PATH_IDS)
+    expected_steps = set(GUIDE_STEPS)
+    expected_parts = set(GUIDE_PARTS)
+    path_counts = Counter(parser.paths)
+    step_counts = Counter(parser.steps)
+    part_counts = Counter(parser.parts)
+
+    for path_id, count in path_counts.items():
+        if path_id not in expected_paths:
+            issues.append(_issue("guide_unknown_path", rendered_html, path_id))
+        elif count > 1:
+            issues.append(_issue("guide_duplicate_path", rendered_html, path_id))
     for path_id in GUIDE_PATH_IDS:
-        if path_id not in parser.paths:
+        if path_counts[path_id] == 0:
             issues.append(_issue("guide_path_missing", rendered_html, path_id))
         for step in GUIDE_STEPS:
-            if (path_id, step) not in parser.steps:
+            count = step_counts[(path_id, step)]
+            if count == 0:
                 issues.append(_issue("guide_step_missing", rendered_html, f"{path_id}:{step}"))
+            elif count > 1:
+                issues.append(_issue("guide_duplicate_step", rendered_html, f"{path_id}:{step}"))
             for part in GUIDE_PARTS:
-                if (path_id, step, part) not in parser.parts:
+                count = part_counts[(path_id, step, part)]
+                if count == 0:
                     detail = f"{path_id}:{step}:{part}"
                     issues.append(_issue("guide_part_missing", rendered_html, detail))
 
-    for command_id, expected in _guide_source_commands(source_bytes.decode("utf-8")).items():
-        actual = _normalize_text("".join(parser.commands.get(command_id, [])))
-        if command_id not in parser.commands:
+                elif count > 1:
+                    detail = f"{path_id}:{step}:{part}"
+                    issues.append(_issue("guide_duplicate_part", rendered_html, detail))
+
+    for path_id, step in step_counts:
+        if path_id is None:
+            issues.append(_issue("guide_step_without_path", rendered_html, step))
+        elif path_id in expected_paths and step not in expected_steps:
+            issues.append(_issue("guide_unknown_step", rendered_html, f"{path_id}:{step}"))
+    for path_id, step, part in part_counts:
+        if path_id is None or step is None:
+            issues.append(_issue("guide_part_without_step", rendered_html, part))
+        elif (
+            path_id in expected_paths
+            and step in expected_steps
+            and part not in expected_parts
+        ):
+            issues.append(
+                _issue("guide_unknown_part", rendered_html, f"{path_id}:{step}:{part}")
+            )
+
+    source_commands = _guide_source_commands(source_bytes.decode("utf-8"))
+    for command_id, expected in source_commands.items():
+        command_nodes = parser.commands.get(command_id, [])
+        if not command_nodes:
             issues.append(_issue("guide_command_missing", rendered_html, command_id))
-        elif actual != expected:
+            continue
+        if len(command_nodes) > 1:
+            issues.append(_issue("guide_duplicate_command", rendered_html, command_id))
+        actual = _normalize_text("".join(command_nodes[0].text))
+        if actual != expected:
             issues.append(_issue("guide_command_mismatch", rendered_html, command_id))
+    for command_id, command_nodes in parser.commands.items():
+        if command_id not in source_commands:
+            issues.append(_issue("guide_unknown_command", rendered_html, command_id))
+        for command in command_nodes:
+            if not command.in_pre:
+                issues.append(_issue("guide_command_not_in_pre", rendered_html, command_id))
     return issues
 
 
