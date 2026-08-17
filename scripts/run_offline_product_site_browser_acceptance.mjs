@@ -121,13 +121,15 @@ const verifyReceipt = async (options) => {
     if (!condition) errors.push(message);
   };
 
-  check(receipt.schemaVersion === 1, "schemaVersion must be 1");
+  check([1, 2].includes(receipt.schemaVersion), "schemaVersion must be 1 or 2");
   check(receipt.inputs?.manifestSha256 === await sha256File(manifestPath), "manifest SHA drifted");
   check(
     receipt.inputs?.copiedManifestSha256 === receipt.inputs?.manifestSha256,
     "fresh-copy manifest is not bound to the committed manifest",
   );
-  check(receipt.inputs?.runnerSha256 === await sha256File(runnerPath), "runner SHA drifted");
+  if (receipt.schemaVersion >= 2) {
+    check(receipt.inputs?.runnerSha256 === await sha256File(runnerPath), "runner SHA drifted");
+  }
   check(
     (await fs.readFile(manifestPath, "utf8")) === await buildManifest(siteRoot),
     "site bytes do not match the committed manifest",
@@ -142,6 +144,53 @@ const verifyReceipt = async (options) => {
     );
   } catch {
     errors.push("input commit is not reachable from HEAD");
+  }
+  if (receipt.schemaVersion >= 2) {
+    try {
+      const committedManifest = execFileSync(
+        "git",
+        ["show", `${receipt.inputs.inputCommit}:docs/product-site/design/qa/package-manifest.sha256`],
+      );
+      check(sha256(committedManifest) === receipt.inputs.manifestSha256, "input commit manifest SHA drifted");
+    } catch {
+      errors.push("input commit does not contain the bound manifest");
+    }
+    try {
+      const committedRunner = execFileSync(
+        "git",
+        ["show", `${receipt.inputs.inputCommit}:scripts/run_offline_product_site_browser_acceptance.mjs`],
+      );
+      check(sha256(committedRunner) === receipt.inputs.runnerSha256, "input commit runner SHA drifted");
+    } catch {
+      errors.push("input commit does not contain the bound runner");
+    }
+    const boundPaths = [
+      "deliverables/ai-sdlc-2.0-offline-product-site",
+      "scripts/run_offline_product_site_browser_acceptance.mjs",
+      "scripts/validate_offline_product_site.py",
+      "docs/product-site/design/qa/interaction-verification.md",
+      "docs/product-site/design/qa/package-manifest.sha256",
+      "docs/product-site/design/qa/home-1440x900.png",
+      "docs/product-site/design/qa/home-1366x768.png",
+      "docs/product-site/design/qa/home-1280x800.png",
+      "docs/product-site/design/qa/home-1024x768.png",
+      "docs/product-site/design/qa/home-390x844.png",
+      "docs/product-site/design/qa/loop-1366x768.png",
+      "docs/product-site/design/qa/expert-review-1366x768.png",
+      "docs/product-site/design/qa/platform-1366x768.png",
+      "docs/product-site/design/qa/downloads-1366x768.png",
+      "docs/product-site/design/qa/guide-1366x768.png",
+      "docs/product-site/design/qa/guide-390x844.png",
+    ];
+    try {
+      execFileSync(
+        "git",
+        ["diff", "--quiet", receipt.inputs.inputCommit, "HEAD", "--", ...boundPaths],
+        { stdio: "ignore" },
+      );
+    } catch {
+      errors.push("reviewed product or evidence inputs drifted after input commit");
+    }
   }
 
   const stateFailures = receipt.stateResults?.filter((item) => item.failures.length).length ?? -1;
@@ -480,7 +529,7 @@ const runAcceptance = async (options) => {
     runtimeFailures: runtimeResults.reduce((total, item) => total + item.consoleErrors.length + item.pageErrors.length + item.failedRequests.length, 0),
   };
   const receipt = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     inputs: {
       inputCommit,
       manifestSha256: await sha256File(manifestPath),
