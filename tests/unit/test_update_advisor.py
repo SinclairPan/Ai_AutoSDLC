@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from ai_sdlc.core.update_advisor import (
     AUTO_NOTICE_REPEAT_INTERVAL,
     NOTICE_ACTIONABLE,
@@ -13,10 +15,93 @@ from ai_sdlc.core.update_advisor import (
     ack_notice,
     detect_runtime_identity,
     evaluate_update_advisor,
+    fetch_latest_github_release,
     notice_already_acknowledged,
     notice_recently_rendered,
     record_notice_rendered,
 )
+
+
+def test_latest_release_redirect_returns_existing_fetch_contract(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0"
+
+        def read(self) -> bytes:
+            raise AssertionError("release HTML body must not be read")
+
+    def fake_urlopen(request, *, timeout: float):
+        seen["url"] = request.full_url
+        seen["method"] = request.get_method()
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor.urllib.request.urlopen",
+        fake_urlopen,
+    )
+
+    result = fetch_latest_github_release(1.5)
+
+    assert seen == {
+        "url": "https://github.com/SinclairPan/Ai_AutoSDLC/releases/latest",
+        "method": "HEAD",
+        "timeout": 1.5,
+    }
+    assert result == {
+        "tag_name": "v2.0.0",
+        "html_url": "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0",
+        "draft": False,
+        "prerelease": False,
+    }
+
+
+@pytest.mark.parametrize(
+    "final_url",
+    [
+        "http://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0",
+        "https://example.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0",
+        "https://user@github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0",
+        "https://github.com:443/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0",
+        "https://github.com/Other/Ai_AutoSDLC/releases/tag/v2.0.0",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/latest",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0?x=1",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0#x",
+    ],
+)
+def test_latest_release_redirect_rejects_noncanonical_final_url(
+    monkeypatch,
+    final_url: str,
+) -> None:
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args: object) -> None:
+            return None
+
+        def geturl(self) -> str:
+            return final_url
+
+        def read(self) -> bytes:
+            raise AssertionError("release HTML body must not be read")
+
+    monkeypatch.setattr(
+        "ai_sdlc.core.update_advisor.urllib.request.urlopen",
+        lambda *_args, **_kwargs: Response(),
+    )
+
+    with pytest.raises(ValueError, match="canonical GitHub release tag URL"):
+        fetch_latest_github_release(1.5)
 
 
 def _force_installed(monkeypatch, tmp_path, *, channel: str = "github-archive") -> None:
