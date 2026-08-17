@@ -374,13 +374,6 @@ def _initialize_workitem(
     spec = project_root / "specs" / "001-customer-approval-dashboard" / "spec.md"
     if not spec.is_file():
         raise AssertionError("公开 workitem init 未生成规范目录")
-    validate_output = _run_cli(
-        cli_path,
-        ["program", "validate"],
-        cwd=project_root,
-        evidence_path=evidence_root / "program-validate.txt",
-    )
-    _assert_contains(validate_output, "program validate: PASS")
 
 
 def _run_default_solution(

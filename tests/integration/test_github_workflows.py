@@ -892,7 +892,8 @@ def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choi
     driver = driver_path.read_text(encoding="utf-8")
     contract = driver + support_path.read_text(encoding="utf-8")
 
-    assert '"program validate: PASS"' in driver
+    assert '["program", "validate"]' not in driver
+    assert "program-validate.txt" not in driver
     assert '"program", "solution-confirm", "--dry-run"' in driver
     assert '"--mode", "advanced"' in driver
     assert '"--frontend-stack",' in driver

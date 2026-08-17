@@ -5525,6 +5525,89 @@ specs:
             / "latest.yaml"
         ).exists()
 
+    def test_program_solution_confirm_previews_without_program_manifest(
+        self, initialized_project_dir: Path
+    ) -> None:
+        root = initialized_project_dir
+        assert not (root / "program-manifest.yaml").exists()
+
+        with patch("ai_sdlc.cli.program_cmd.find_project_root", return_value=root):
+            result = runner.invoke(app, ["program", "solution-confirm", "--dry-run"])
+
+        assert result.exit_code == 0
+        assert "Program Frontend Solution Confirm Simple" in result.output
+        assert "recommended_frontend_stack: vue3" in result.output
+        assert not (root / "program-manifest.yaml").exists()
+
+    def test_program_solution_confirm_rejects_explicit_empty_program_manifest(
+        self, initialized_project_dir: Path
+    ) -> None:
+        root = initialized_project_dir
+        (root / "program-manifest.yaml").write_text(
+            'schema_version: "2"\nprogram:\n  goal: "Explicit Program"\nspecs: []\n',
+            encoding="utf-8",
+        )
+
+        with patch("ai_sdlc.cli.program_cmd.find_project_root", return_value=root):
+            result = runner.invoke(app, ["program", "solution-confirm", "--dry-run"])
+
+        assert result.exit_code == 1
+        assert "Manifest invalid" in result.output
+        assert "manifest.specs is empty" in result.output
+
+    def test_program_solution_confirm_rejects_malformed_program_manifest(
+        self, initialized_project_dir: Path
+    ) -> None:
+        root = initialized_project_dir
+        (root / "program-manifest.yaml").write_text(
+            "specs: [unterminated\n",
+            encoding="utf-8",
+        )
+
+        with patch("ai_sdlc.cli.program_cmd.find_project_root", return_value=root):
+            result = runner.invoke(app, ["program", "solution-confirm", "--dry-run"])
+
+        assert result.exit_code == 2
+        assert "Failed to load manifest" in result.output
+
+    def test_program_solution_confirm_rejects_manifest_stat_error(
+        self, initialized_project_dir: Path
+    ) -> None:
+        root = initialized_project_dir
+
+        with (
+            patch("ai_sdlc.cli.program_cmd.find_project_root", return_value=root),
+            patch.object(
+                Path,
+                "lstat",
+                side_effect=PermissionError("manifest metadata denied"),
+            ),
+            patch(
+                "ai_sdlc.cli.program_cmd.ProgramService.build_frontend_solution_confirmation"
+            ) as build_confirmation,
+        ):
+            result = runner.invoke(app, ["program", "solution-confirm", "--dry-run"])
+
+        assert result.exit_code == 2
+        assert "Failed to inspect manifest" in result.output
+        build_confirmation.assert_not_called()
+
+    def test_program_solution_confirm_rejects_broken_manifest_symlink(
+        self, initialized_project_dir: Path
+    ) -> None:
+        root = initialized_project_dir
+        manifest_path = root / "program-manifest.yaml"
+        try:
+            manifest_path.symlink_to(root / "missing-program-manifest.yaml")
+        except OSError as exc:
+            pytest.skip(f"symlink unavailable on this platform: {exc}")
+
+        with patch("ai_sdlc.cli.program_cmd.find_project_root", return_value=root):
+            result = runner.invoke(app, ["program", "solution-confirm", "--dry-run"])
+
+        assert result.exit_code == 2
+        assert "Failed to inspect manifest" in result.output
+
     def test_program_solution_confirm_default_stays_public_when_enterprise_ineligible(
         self, initialized_project_dir: Path
     ) -> None:

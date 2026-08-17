@@ -59,6 +59,17 @@ def _resolve_root() -> Path:
     return root
 
 
+def _manifest_path_exists_strict(path: Path) -> bool:
+    """仅把真实缺失视为 absent，其他路径异常全部交给调用方阻断。"""
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    if not path.exists():
+        raise OSError(f"manifest path exists but its target is unavailable: {path}")
+    return True
+
+
 def _dedupe_cli_text_items(values: object) -> list[str]:
     deduped: list[str] = []
     for value in values or []:
@@ -2203,6 +2214,12 @@ def program_solution_confirm(
     """Preview or execute the structured frontend solution confirmation baseline."""
     root = _resolve_root()
     svc = ProgramService(root, root / manifest)
+    # 普通项目无需 Program；一旦用户创建 manifest，仍执行完整严格校验。
+    try:
+        manifest_exists = _manifest_path_exists_strict(svc.manifest_path)
+    except OSError as exc:
+        console.print(f"[red]Failed to inspect manifest: {exc}[/red]")
+        raise typer.Exit(code=2) from None
 
     try:
         mf = svc.load_manifest()
@@ -2210,14 +2227,15 @@ def program_solution_confirm(
         console.print(f"[red]Failed to load manifest: {exc}[/red]")
         raise typer.Exit(code=2) from None
 
-    result = svc.validate_manifest(mf)
-    if not result.valid:
-        console.print(
-            "[bold red]Manifest invalid; cannot build frontend solution confirmation.[/bold red]"
-        )
-        for e in _dedupe_cli_text_items(result.errors):
-            console.print(f"  - {e}")
-        raise typer.Exit(code=1)
+    if manifest_exists:
+        result = svc.validate_manifest(mf)
+        if not result.valid:
+            console.print(
+                "[bold red]Manifest invalid; cannot build frontend solution confirmation.[/bold red]"
+            )
+            for e in _dedupe_cli_text_items(result.errors):
+                console.print(f"  - {e}")
+            raise typer.Exit(code=1)
 
     normalized_mode = mode.strip().lower()
     if normalized_mode not in {"simple", "advanced"}:
