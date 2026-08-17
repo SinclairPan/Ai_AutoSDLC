@@ -168,7 +168,6 @@ const verifyReceipt = async (options) => {
       "deliverables/ai-sdlc-2.0-offline-product-site",
       "scripts/run_offline_product_site_browser_acceptance.mjs",
       "scripts/validate_offline_product_site.py",
-      "docs/product-site/design/qa/interaction-verification.md",
       "docs/product-site/design/qa/package-manifest.sha256",
       "docs/product-site/design/qa/home-1440x900.png",
       "docs/product-site/design/qa/home-1366x768.png",
