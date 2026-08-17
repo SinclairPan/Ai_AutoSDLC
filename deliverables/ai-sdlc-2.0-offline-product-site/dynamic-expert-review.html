@@ -32,10 +32,311 @@
         <a class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">GitHub</a>
       </div>
     </header>
-    <main id="main" class="site-shell page-main">
-      <section class="page-intro" aria-labelledby="page-title">
+    <main id="main" class="site-shell page-main expert-main">
+      <section class="page-intro expert-hero" aria-labelledby="page-title">
         <p class="page-eyebrow">Dynamic Expert Review</p>
-        <h1 id="page-title">从模型自审，到专家对抗</h1>
+        <h1 id="page-title">让关键结果先经独立挑战，再进入下一步</h1>
+        <p class="expert-hero-summary">
+          AI-SDLC 根据当前结果的主要风险选择一名 Primary Expert；只有出现明确第二风险面时，
+          才加入一名 Cross-risk Expert。专家只读同一冻结输入，原 Writer 保留修改权。
+        </p>
+        <a class="button-primary" href="#expert-workspace">查看专家如何被选择</a>
+      </section>
+
+      <section
+        id="expert-workspace"
+        class="expert-workspace"
+        data-tabs="expert-risk"
+        aria-labelledby="expert-workspace-title"
+      >
+        <div class="expert-workspace-heading">
+          <div>
+            <p class="page-eyebrow">Risk-routed workspace</p>
+            <h2 id="expert-workspace-title">同一张图，按结果风险切换观察视角</h2>
+          </div>
+          <p>
+            Tab 只改变主要风险、Primary Expert 能力、可选交叉风险和示例 Finding；
+            专家数量、输入隔离与复审上限始终不变。
+          </p>
+        </div>
+
+        <div role="tablist" aria-label="复核风险视角">
+          <button
+            id="review-requirement"
+            type="button"
+            role="tab"
+            data-tab="review-requirement"
+            aria-selected="true"
+            aria-controls="review-requirement-panel"
+          >
+            Requirement
+          </button>
+          <button
+            id="review-design"
+            type="button"
+            role="tab"
+            data-tab="review-design"
+            aria-selected="false"
+            aria-controls="review-design-panel"
+            tabindex="-1"
+          >
+            Design Contract
+          </button>
+          <button
+            id="review-implementation"
+            type="button"
+            role="tab"
+            data-tab="review-implementation"
+            aria-selected="false"
+            aria-controls="review-implementation-panel"
+            tabindex="-1"
+          >
+            Implementation
+          </button>
+          <button
+            id="review-frontend"
+            type="button"
+            role="tab"
+            data-tab="review-frontend"
+            aria-selected="false"
+            aria-controls="review-frontend-panel"
+            tabindex="-1"
+          >
+            Frontend Evidence
+          </button>
+          <button
+            id="review-pr"
+            type="button"
+            role="tab"
+            data-tab="review-pr"
+            aria-selected="false"
+            aria-controls="review-pr-panel"
+            tabindex="-1"
+          >
+            Local PR Review
+          </button>
+        </div>
+
+        <section
+          id="review-requirement-panel"
+          class="expert-risk-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="review-requirement"
+        >
+          <p class="expert-risk-index">01 · Requirement</p>
+          <dl class="expert-risk-values">
+            <div data-review-value data-primary-risk>
+              <dt>主要风险</dt>
+              <dd>范围与验收标准是否清楚、可执行、可证明。</dd>
+            </div>
+            <div data-review-value data-primary-expert>
+              <dt>Primary Expert</dt>
+              <dd>scope and acceptance expert</dd>
+            </div>
+            <div data-review-value data-cross-risk>
+              <dt>可选第二风险</dt>
+              <dd>没有明确交叉风险时不增加 Cross-risk Expert。</dd>
+            </div>
+            <div data-review-value data-example-finding>
+              <dt>示例 Finding</dt>
+              <dd>“可用”没有对应可执行验收场景，失败路径也未进入范围。</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          id="review-design-panel"
+          class="expert-risk-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="review-design"
+        >
+          <p class="expert-risk-index">02 · Design Contract</p>
+          <dl class="expert-risk-values">
+            <div data-review-value data-primary-risk>
+              <dt>主要风险</dt>
+              <dd>接口与边界是否覆盖成功、失败和状态漂移。</dd>
+            </div>
+            <div data-review-value data-primary-expert>
+              <dt>Primary Expert</dt>
+              <dd>interface and boundary expert</dd>
+            </div>
+            <div data-review-value data-cross-risk>
+              <dt>可选第二风险</dt>
+              <dd>接口触及权限边界时，才条件加入安全交叉风险。</dd>
+            </div>
+            <div data-review-value data-example-finding>
+              <dt>示例 Finding</dt>
+              <dd>接口只定义成功返回，失败语义与权限边界没有对应任务。</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          id="review-implementation-panel"
+          class="expert-risk-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="review-implementation"
+        >
+          <p class="expert-risk-index">03 · Implementation</p>
+          <dl class="expert-risk-values">
+            <div data-review-value data-primary-risk>
+              <dt>主要风险</dt>
+              <dd>实现行为、错误处理与回归面是否符合当前合同。</dd>
+            </div>
+            <div data-review-value data-primary-expert>
+              <dt>Primary Expert</dt>
+              <dd>behavior and regression expert</dd>
+            </div>
+            <div data-review-value data-cross-risk>
+              <dt>可选第二风险</dt>
+              <dd>错误处理改变用户可见状态时，才加入前端交叉风险。</dd>
+            </div>
+            <div data-review-value data-example-finding>
+              <dt>示例 Finding</dt>
+              <dd>异常分支吞掉错误，现有测试只覆盖成功路径，无法证明回归未发生。</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          id="review-frontend-panel"
+          class="expert-risk-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="review-frontend"
+        >
+          <p class="expert-risk-index">04 · Frontend Evidence</p>
+          <dl class="expert-risk-values">
+            <div data-review-value data-primary-risk>
+              <dt>主要风险</dt>
+              <dd>交互结果与证据身份是否绑定当前页面和当前候选。</dd>
+            </div>
+            <div data-review-value data-primary-expert>
+              <dt>Primary Expert</dt>
+              <dd>interaction and evidence-identity expert</dd>
+            </div>
+            <div data-review-value data-cross-risk>
+              <dt>可选第二风险</dt>
+              <dd>交互包含授权决定时，才条件加入安全边界交叉风险。</dd>
+            </div>
+            <div data-review-value data-example-finding>
+              <dt>示例 Finding</dt>
+              <dd>截图来自旧 digest，且没有记录提交交互后的 console / page error。</dd>
+            </div>
+          </dl>
+        </section>
+
+        <section
+          id="review-pr-panel"
+          class="expert-risk-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="review-pr"
+        >
+          <p class="expert-risk-index">05 · Local PR Review</p>
+          <dl class="expert-risk-values">
+            <div data-review-value data-primary-risk>
+              <dt>主要风险</dt>
+              <dd>跨阶段回归是否穿透需求、设计、实现和当前证据。</dd>
+            </div>
+            <div data-review-value data-primary-expert>
+              <dt>Primary Expert</dt>
+              <dd>cross-stage regression expert</dd>
+            </div>
+            <div data-review-value data-cross-risk>
+              <dt>可选第二风险</dt>
+              <dd>Review Pack 同时触及独立风险面时，才加入对应交叉风险。</dd>
+            </div>
+            <div data-review-value data-example-finding>
+              <dt>示例 Finding</dt>
+              <dd>Review Pack 已改变 API，需求和前端证据仍引用旧响应合同。</dd>
+            </div>
+          </dl>
+        </section>
+
+        <div class="expert-graph-frame" aria-labelledby="expert-graph-title">
+          <div class="expert-graph-heading">
+            <p class="page-eyebrow">Bounded Dynamic Expert Review Graph</p>
+            <h2 id="expert-graph-title">从风险路由到明确退出</h2>
+          </div>
+          <ol class="expert-graph-flow" data-expert-graph aria-label="有界动态专家复核信息流">
+            <li data-graph-node="risk">
+              <span>01 · Risk</span>
+              <strong>定位主要风险</strong>
+              <p>原 Writer 产出当前 Loop 结果；系统只为这份结果识别主要风险。</p>
+            </li>
+            <li data-graph-node="capability">
+              <span>02 · Capabilities</span>
+              <strong>绑定匹配能力</strong>
+              <p>按阶段与内容风险选择专长，不保留固定专家身份。</p>
+            </li>
+            <li data-graph-node="panel">
+              <span>03 · Panel</span>
+              <strong>组成有界面板</strong>
+              <p>一名 Primary Expert；只有第二风险成立时增加一名 Cross-risk Expert，最多两名。</p>
+            </li>
+            <li data-graph-node="isolation">
+              <span>04 · Isolation</span>
+              <strong>冻结同一输入</strong>
+              <p>绑定 <code>input_digest</code> 与内联 <code>review_snapshot</code>；专家只读，不重开可变路径。</p>
+            </li>
+            <li data-graph-node="findings">
+              <span>05 · Findings</span>
+              <strong>定位问题</strong>
+              <p>专家返回位置、风险和修复方向；合并的是 Findings，不是总体 verdict。</p>
+            </li>
+            <li data-graph-node="writer-fix">
+              <span>06 · Original Writer</span>
+              <strong>原 Writer 修复</strong>
+              <p>修改权不转移；Writer 修复同一候选并重跑受影响的验证。</p>
+            </li>
+            <li data-graph-node="rereview">
+              <span>07 · Re-review</span>
+              <strong>最多一次复审</strong>
+              <p>复审前重新绑定输入；候选或分支漂移时，旧结论立即失效。</p>
+            </li>
+            <li data-graph-node="close-stop">
+              <span>08 · Close / Stop</span>
+              <strong>关闭，或明确停下</strong>
+              <p>原 Loop 决定 Close；专家失败或结论无效时 fail-closed，保持 <code>needs_review</code>。</p>
+            </li>
+          </ol>
+        </div>
+      </section>
+
+      <section
+        class="expert-boundary-strip"
+        data-review-boundaries
+        aria-labelledby="expert-boundaries-title"
+      >
+        <div>
+          <p class="page-eyebrow">Hard boundaries</p>
+          <h2 id="expert-boundaries-title">三条不可突破的边界</h2>
+        </div>
+        <ul>
+          <li><strong>专家只读</strong><span>读取同一快照，不直接修改候选。</span></li>
+          <li>
+            <strong>资源边界明确</strong>
+            <span>默认一名 Primary Expert，明确第二风险时最多再加一名。</span>
+          </li>
+          <li><strong>复审不会无限循环</strong><span>最多一次复审；执行失败保持 <code>needs_review</code>。</span></li>
+        </ul>
+      </section>
+
+      <section
+        class="expert-closing"
+        data-review-closing
+        aria-labelledby="expert-closing-title"
+      >
+        <h2 id="expert-closing-title">
+          专家负责把问题说清楚，原 Writer 负责把结果修好，Loop 负责决定能不能关闭。
+        </h2>
+        <a class="button-secondary" href="platform-capabilities.html">
+          查看支撑这一机制的平台能力
+        </a>
       </section>
     </main>
   </body>

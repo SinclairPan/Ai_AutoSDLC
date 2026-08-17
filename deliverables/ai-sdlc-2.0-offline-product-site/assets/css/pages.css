@@ -37,6 +37,237 @@ body:not([data-page="home"]) .page-intro h1 {
   font-size: clamp(2.25rem, 5vw, 4.5rem);
 }
 
+.expert-main {
+  display: grid;
+  gap: clamp(var(--space-7), 7vw, var(--space-8));
+}
+
+.expert-hero {
+  max-width: 69rem;
+}
+
+.expert-hero h1 {
+  max-width: 20ch;
+  font-size: clamp(2.4rem, 4.4vw, 3.75rem) !important;
+}
+
+.expert-hero-summary {
+  max-width: 49rem;
+  margin: var(--space-5) 0 var(--space-6);
+  color: var(--ink-700);
+  font-size: clamp(1rem, 1.5vw, 1.125rem);
+}
+
+.expert-workspace {
+  padding-block: var(--space-7);
+  border-block: 1px solid var(--line-200);
+}
+
+.expert-workspace-heading,
+.expert-graph-heading,
+.expert-closing {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-7);
+}
+
+.expert-workspace-heading h2,
+.expert-graph-heading h2,
+.expert-boundary-strip h2,
+.expert-closing h2 {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.5vw, 2.125rem);
+  line-height: 1.25;
+  letter-spacing: -0.03em;
+}
+
+.expert-workspace-heading > p {
+  max-width: 34rem;
+  margin: 0;
+  color: var(--ink-700);
+}
+
+.expert-workspace [role="tablist"] {
+  margin-block: var(--space-6) 0;
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line-200);
+}
+
+.expert-risk-panel {
+  padding-top: var(--space-5);
+}
+
+.expert-risk-index {
+  margin: 0 0 var(--space-3);
+  color: var(--brand-600);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.expert-risk-values {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+  border-block: 1px solid var(--line-200);
+}
+
+.expert-risk-values > div {
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+}
+
+.expert-risk-values > div + div {
+  border-left: 1px solid var(--line-200);
+}
+
+.expert-risk-values dt {
+  color: var(--brand-600);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.expert-risk-values dd {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-700);
+}
+
+.expert-risk-values [data-primary-expert] dd {
+  color: var(--brand-900);
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  font-weight: 650;
+}
+
+.expert-graph-frame {
+  margin-top: var(--space-7);
+  padding-top: var(--space-7);
+  border-top: 1px solid var(--line-200);
+}
+
+.expert-graph-heading {
+  justify-content: flex-start;
+}
+
+.expert-graph-flow {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  background: linear-gradient(135deg, var(--brand-050), var(--surface) 58%);
+  border-block: 1px solid var(--line-200);
+  list-style: none;
+}
+
+.expert-graph-flow li {
+  position: relative;
+  min-width: 0;
+  padding: var(--space-5);
+}
+
+.expert-graph-flow li + li {
+  border-left: 1px solid var(--line-200);
+}
+
+.expert-graph-flow li:nth-child(n + 5) {
+  border-top: 1px solid var(--line-200);
+}
+
+.expert-graph-flow li:nth-child(5) {
+  border-left: 0;
+}
+
+.expert-graph-flow span {
+  display: block;
+  margin-bottom: var(--space-2);
+  color: var(--brand-600);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.expert-graph-flow strong {
+  display: block;
+  color: var(--brand-900);
+  font-size: 1.0625rem;
+}
+
+.expert-graph-flow p {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-700);
+}
+
+.expert-graph-flow code,
+.expert-boundary-strip code {
+  color: var(--brand-900);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  font-weight: 650;
+}
+
+.expert-boundary-strip {
+  display: grid;
+  grid-template-columns: minmax(14rem, 0.45fr) minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: center;
+  padding-block: var(--space-6);
+  border-block: 1px solid var(--line-200);
+}
+
+.expert-boundary-strip ul {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.expert-boundary-strip li {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+  padding-inline: var(--space-5);
+}
+
+.expert-boundary-strip li + li {
+  border-left: 1px solid var(--line-200);
+}
+
+.expert-boundary-strip li:first-child {
+  padding-left: 0;
+}
+
+.expert-boundary-strip li:last-child {
+  padding-right: 0;
+}
+
+.expert-boundary-strip strong {
+  color: var(--brand-900);
+}
+
+.expert-boundary-strip span {
+  color: var(--ink-700);
+}
+
+.expert-closing {
+  padding-block: var(--space-7);
+}
+
+.expert-closing h2 {
+  max-width: 35ch;
+}
+
+.expert-closing a {
+  flex: none;
+}
+
 .loop-main {
   display: grid;
   gap: clamp(var(--space-7), 7vw, var(--space-8));
@@ -404,6 +635,31 @@ body:not([data-page="home"]) .page-intro h1 {
     top: var(--space-2);
     background: transparent;
   }
+
+  .expert-risk-values,
+  .expert-graph-flow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .expert-risk-values > div:nth-child(3) {
+    border-left: 0;
+  }
+
+  .expert-risk-values > div:nth-child(n + 3) {
+    border-top: 1px solid var(--line-200);
+  }
+
+  .expert-graph-flow li:nth-child(n + 3) {
+    border-top: 1px solid var(--line-200);
+  }
+
+  .expert-graph-flow li:nth-child(2n + 1) {
+    border-left: 0;
+  }
+
+  .expert-boundary-strip {
+    grid-template-columns: 1fr;
+  }
 }
 
 @media (max-width: 40rem) {
@@ -437,6 +693,45 @@ body:not([data-page="home"]) .page-intro h1 {
   }
 
   .loop-closing a {
+    width: 100%;
+  }
+
+  .expert-workspace-heading,
+  .expert-graph-heading,
+  .expert-closing {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .expert-graph-heading {
+    gap: var(--space-3);
+  }
+
+  .expert-workspace [role="tablist"],
+  .expert-risk-values,
+  .expert-graph-flow,
+  .expert-boundary-strip ul {
+    grid-template-columns: 1fr;
+  }
+
+  .expert-workspace [role="tablist"] {
+    display: grid;
+  }
+
+  .expert-risk-values > div,
+  .expert-graph-flow li,
+  .expert-boundary-strip li {
+    padding-inline: 0;
+  }
+
+  .expert-risk-values > div + div,
+  .expert-graph-flow li + li,
+  .expert-boundary-strip li + li {
+    border-top: 1px solid var(--line-200);
+    border-left: 0;
+  }
+
+  .expert-closing a {
     width: 100%;
   }
 }

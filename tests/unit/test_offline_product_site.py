@@ -223,6 +223,40 @@ LOOP_PANEL_CONTRACTS = {
 }
 
 
+EXPERT_RISK_CONTRACTS = {
+    "review-requirement-panel": {
+        "data-primary-risk": ("范围", "验收标准"),
+        "data-primary-expert": ("scope and acceptance expert",),
+        "data-cross-risk": ("交叉风险",),
+        "data-example-finding": ("示例 Finding", "验收"),
+    },
+    "review-design-panel": {
+        "data-primary-risk": ("接口", "边界"),
+        "data-primary-expert": ("interface and boundary expert",),
+        "data-cross-risk": ("交叉风险",),
+        "data-example-finding": ("示例 Finding", "失败"),
+    },
+    "review-implementation-panel": {
+        "data-primary-risk": ("行为", "回归"),
+        "data-primary-expert": ("behavior and regression expert",),
+        "data-cross-risk": ("交叉风险",),
+        "data-example-finding": ("示例 Finding", "测试"),
+    },
+    "review-frontend-panel": {
+        "data-primary-risk": ("交互", "证据身份"),
+        "data-primary-expert": ("interaction and evidence-identity expert",),
+        "data-cross-risk": ("交叉风险",),
+        "data-example-finding": ("示例 Finding", "截图"),
+    },
+    "review-pr-panel": {
+        "data-primary-risk": ("跨阶段回归",),
+        "data-primary-expert": ("cross-stage regression expert",),
+        "data-cross-risk": ("交叉风险",),
+        "data-example-finding": ("示例 Finding", "Review Pack"),
+    },
+}
+
+
 def _single_node(
     root: _HtmlNode,
     *,
@@ -510,6 +544,130 @@ def test_loop_page_covers_state_and_recovery() -> None:
     assert "先停止当前运行" in recovery_text
     assert "提示 recover 或显式 reconcile" in recovery_text
     assert "恢复的是项目事实，而不是模型思维过程" in recovery_text
+
+
+def test_expert_page_exposes_semantic_bounded_review_graph() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    headings = _find_nodes(document, tag="h1")
+    assert [_node_text(heading) for heading in headings] == [
+        "让关键结果先经独立挑战，再进入下一步"
+    ]
+    graph = _single_node(document, tag="ol", attribute="data-expert-graph")
+    steps = [child for child in graph.children if child.tag == "li"]
+    assert [step.attributes.get("data-graph-node") for step in steps] == [
+        "risk",
+        "capability",
+        "panel",
+        "isolation",
+        "findings",
+        "writer-fix",
+        "rereview",
+        "close-stop",
+    ]
+    graph_text = _node_text(graph)
+    for token in (
+        "Risk",
+        "Capabilities",
+        "Primary Expert",
+        "Cross-risk Expert",
+        "input_digest",
+        "review_snapshot",
+        "Findings",
+        "原 Writer",
+        "最多一次复审",
+        "Close",
+        "needs_review",
+        "fail-closed",
+    ):
+        assert token in graph_text
+
+    boundaries = _single_node(document, attribute="data-review-boundaries")
+    boundary_text = _node_text(boundaries)
+    for token in (
+        "专家只读",
+        "默认一名 Primary Expert",
+        "最多再加一名",
+        "最多一次复审",
+        "needs_review",
+    ):
+        assert token in boundary_text
+
+    closing = _single_node(document, attribute="data-review-closing")
+    assert (
+        "专家负责把问题说清楚，原 Writer 负责把结果修好，Loop 负责决定能不能关闭。"
+        in _node_text(closing)
+    )
+    ctas = [
+        node
+        for node in _find_nodes(closing, tag="a")
+        if node.attributes.get("href") == "platform-capabilities.html"
+        and _node_text(node) == "查看支撑这一机制的平台能力"
+    ]
+    assert len(ctas) == 1
+
+
+def test_expert_risk_tabs_change_only_the_four_bound_values() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    workspace = _single_node(document, attribute="data-tabs", value="expert-risk")
+    tabs = [
+        node
+        for node in _find_nodes(workspace, attribute="data-tab")
+        if node.attributes.get("role") == "tab"
+    ]
+    expected_tab_ids = [
+        "review-requirement",
+        "review-design",
+        "review-implementation",
+        "review-frontend",
+        "review-pr",
+    ]
+    assert [tab.attributes.get("id") for tab in tabs] == expected_tab_ids
+    assert [tab.attributes.get("data-tab") for tab in tabs] == expected_tab_ids
+
+    for tab, (panel_id, field_contracts) in zip(
+        tabs, EXPERT_RISK_CONTRACTS.items(), strict=True
+    ):
+        assert tab.attributes.get("aria-controls") == panel_id
+        panel = _single_node(workspace, tag="section", attribute="id", value=panel_id)
+        assert "hidden" not in panel.attributes
+        fields = _find_nodes(panel, attribute="data-review-value")
+        assert len(fields) == 4
+        assert {
+            attribute
+            for field in fields
+            for attribute in field_contracts
+            if attribute in field.attributes
+        } == set(field_contracts)
+        for attribute, required_tokens in field_contracts.items():
+            field_text = _node_text(_single_node(panel, attribute=attribute))
+            missing = [token for token in required_tokens if token not in field_text]
+            assert not missing, f"{panel_id} {attribute} missing {missing}"
+
+
+def test_expert_page_does_not_restore_removed_review_mechanisms() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+    ).read_text(encoding="utf-8")
+
+    for forbidden in (
+        "Veto",
+        "Quorum",
+        "投票",
+        "图数据库",
+        "自主多 Agent Runtime",
+        "Shadow",
+        "Enforce",
+        "缺陷发现率",
+        "成功率",
+    ):
+        assert forbidden not in markup
 
 
 def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:
