@@ -1,5 +1,9 @@
+import json
 import re
+import subprocess
+from html.parser import HTMLParser
 from pathlib import Path
+from typing import Any
 
 import pytest
 from scripts.validate_offline_product_site import (
@@ -16,6 +20,116 @@ TOP_LEVEL_PAGES = (
     "platform-capabilities.html",
     "downloads-docs.html",
 )
+
+
+class _HomeValueParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.items: list[dict[str, Any]] = []
+        self._current: dict[str, Any] | None = None
+        self._stack: list[tuple[str, dict[str, str]]] = []
+
+    def handle_starttag(
+        self, tag: str, attrs: list[tuple[str, str | None]]
+    ) -> None:
+        attributes = {key: value or "" for key, value in attrs}
+        self._stack.append((tag, attributes))
+        classes = set((attributes.get("class") or "").split())
+        if tag == "article" and "home-value" in classes:
+            self._current = {"title": [], "description": [], "links": []}
+            self.items.append(self._current)
+        elif self._current is not None and tag == "a":
+            link = {"href": attributes.get("href"), "text_parts": []}
+            self._current["links"].append(link)
+
+    def handle_data(self, data: str) -> None:
+        if self._current is None or any(
+            attributes.get("aria-hidden") == "true"
+            for _, attributes in self._stack
+        ):
+            return
+        if any(tag == "h3" for tag, _ in self._stack):
+            self._current["title"].append(data)
+        elif any(tag == "a" for tag, _ in self._stack):
+            self._current["links"][-1]["text_parts"].append(data)
+        elif any(
+            tag == "p"
+            and "home-value-label" not in attributes.get("class", "").split()
+            for tag, attributes in self._stack
+        ):
+            self._current["description"].append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        for index in range(len(self._stack) - 1, -1, -1):
+            closing_tag, attributes = self._stack[index]
+            if closing_tag != tag:
+                continue
+            if tag == "article" and "home-value" in attributes.get(
+                "class", ""
+            ).split():
+                self._current = None
+            del self._stack[index:]
+            break
+
+
+def _normalize_html_text(parts: list[str]) -> str:
+    return " ".join("".join(parts).split())
+
+
+def _parse_home_values(markup: str) -> list[dict[str, object]]:
+    parser = _HomeValueParser()
+    parser.feed(markup)
+    parser.close()
+    return [
+        {
+            "title": _normalize_html_text(item["title"]),
+            "description": _normalize_html_text(item["description"]),
+            "links": [
+                {
+                    "href": link["href"],
+                    "text": _normalize_html_text(link["text_parts"]),
+                }
+                for link in item["links"]
+            ],
+        }
+        for item in parser.items
+    ]
+
+
+def _execute_video_config(path: Path) -> dict[str, object]:
+    harness = r"""
+"use strict";
+const fs = require("node:fs");
+const vm = require("node:vm");
+const context = vm.createContext({ window: {} });
+vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+const config = context.window.AISDLC_VIDEO;
+const fields = ["src", "type", "captions", "poster", "title"];
+const before = Object.fromEntries(fields.map((field) => [field, config[field]]));
+const mutationErrors = {};
+for (const field of fields) {
+  try {
+    config[field] = "__mutated__";
+    mutationErrors[field] = null;
+  } catch (error) {
+    mutationErrors[field] = error.name;
+  }
+}
+const after = Object.fromEntries(fields.map((field) => [field, config[field]]));
+process.stdout.write(JSON.stringify({
+  isFrozen: Object.isFrozen(config),
+  before,
+  after,
+  mutationErrors,
+}));
+"""
+    result = subprocess.run(
+        ["node", "-e", harness, str(path.resolve())],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
 
 
 def _write(root: Path, relative: str, text: str) -> None:
@@ -157,12 +271,6 @@ def test_homepage_exposes_approved_value_and_video_contract() -> None:
     homepage = (root / "index.html").read_text(encoding="utf-8")
 
     assert "把不确定的 AI 生成，变成可验证的工程交付" in homepage
-    assert "从一次生成，到持续完成" in homepage
-    assert "从模型自审，到专家对抗" in homepage
-    assert "从零散 Skills，到项目级工程系统" in homepage
-    assert 'href="loop-engineering.html"' in homepage
-    assert 'href="dynamic-expert-review.html"' in homepage
-    assert 'href="platform-capabilities.html"' in homepage
     assert "data-video-empty" in homepage
     assert "data-video-empty-poster" in homepage
     assert "data-video-player" in homepage
@@ -171,15 +279,81 @@ def test_homepage_exposes_approved_value_and_video_contract() -> None:
     assert re.search(r"\b\d{1,2}:\d{2}\b", homepage) is None
 
 
+def test_homepage_value_items_bind_approved_copy_and_matching_ctas() -> None:
+    homepage = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/index.html"
+    ).read_text(encoding="utf-8")
+
+    assert _parse_home_values(homepage) == [
+        {
+            "title": "从一次生成，到持续完成",
+            "description": (
+                "Loop 把目标、执行、验证、反馈与修复连成闭环；证据满足 Close "
+                "条件，任务才真正完成。"
+            ),
+            "links": [
+                {
+                    "text": "看 Loop 如何把任务做完",
+                    "href": "loop-engineering.html",
+                }
+            ],
+        },
+        {
+            "title": "从模型自审，到专家对抗",
+            "description": (
+                "系统按风险选择独立只读专家；Findings 回到原 Writer "
+                "修复，专家数量和复审轮次都有边界。"
+            ),
+            "links": [
+                {
+                    "text": "看专家如何挑战关键结果",
+                    "href": "dynamic-expert-review.html",
+                }
+            ],
+        },
+        {
+            "title": "从零散 Skills，到项目级工程系统",
+            "description": (
+                "跨 AI 工具接入、断点续作、前端方案、组件规范与浏览器验收证据都留在项目中；"
+                "换工具，项目规则、状态与工件不必重建。"
+            ),
+            "links": [
+                {
+                    "text": "查看完整平台能力",
+                    "href": "platform-capabilities.html",
+                }
+            ],
+        },
+    ]
+
+
 def test_homepage_video_defaults_to_an_honest_local_empty_state() -> None:
     root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
     homepage = (root / "index.html").read_text(encoding="utf-8")
-    config = (root / "assets/js/video-config.js").read_text(encoding="utf-8")
 
     assert '<img data-video-empty-poster src="assets/images/video-poster.png" alt="">' in homepage
-    assert re.search(r'\bsrc:\s*""', config)
-    assert 'poster: "assets/images/video-poster.png"' in config
-    assert 'title: "AI-SDLC 2.0 产品实录"' in config
+
+
+def test_video_configuration_is_immutable_and_defaults_to_empty_state() -> None:
+    config_path = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/assets/js/video-config.js"
+    )
+    expected = {
+        "src": "",
+        "type": "video/mp4",
+        "captions": "",
+        "poster": "assets/images/video-poster.png",
+        "title": "AI-SDLC 2.0 产品实录",
+    }
+
+    observed = _execute_video_config(config_path)
+
+    assert observed == {
+        "isFrozen": True,
+        "before": expected,
+        "after": expected,
+        "mutationErrors": dict.fromkeys(expected, "TypeError"),
+    }
 
 
 def test_homepage_keeps_native_video_controls_and_initializes_video() -> None:
