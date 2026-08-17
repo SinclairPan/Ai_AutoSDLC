@@ -47,8 +47,22 @@
 | `expert-review-1366x768.png` | `4ED3B00F1F83FEF29D625906BB5F6B21CCC811272C88E6B9A6BDE4FBF13207EF` |
 | `platform-1366x768.png` | `D30C8A61C121CCED95CE5D74CBEF63D84C4048A340CBD4492300D0859BCA135B` |
 | `downloads-1366x768.png` | `D28F6296BBFC366FA83387944FEC9E14BFF3034C44C60A6D2A520737E856DBD6` |
-| `guide-1366x768.png` | `9C3ADE75D4C9C046CD368651EF3DF9A0C47B8AD772194135D78B6A936834391F` |
+| `guide-1366x768.png` | `345BDD5AA3F5C34F5F887218A885C7C2B38A1012DE8E4A5E6EB26E0D825BD744` |
 | `guide-390x844.png` | `3E863B2BB83DAA618211C9A6E1FACC2072DDDD4D78E607334DD70636025F8DB0` |
+
+## Fix Round 1：指南代表截图同步
+
+独立评审发现原 `guide-1366x768.png` 没有显示 final JS 已设置的高层场景选中态，因此仅重新生成该证据，不修改运行时代码。截图前在同一个 `1366×768` Chromium `file://` 状态中硬断言：
+
+- “已有项目 + 离线安装包”的 `aria-current="true"`；
+- `1B macOS Apple Silicon` 的 `aria-selected="true"`；
+- `#path-1b` 面板 `hidden=false` 且具有可见尺寸；
+- URL Hash 精确为 `#path-1b`；
+- 场景选择器和 OS Tab 均位于截图可见区域；console error 与 page error 均为 `0`。
+
+连续三次 fresh 截图的 SHA-256 均为 `345BDD5AA3F5C34F5F887218A885C7C2B38A1012DE8E4A5E6EB26E0D825BD744`。其余 10 张代表截图重新计算 SHA 后均与上表原值一致，未替换。
+
+证据同步后复跑结果：`93 passed in 0.79s`；Ruff `All checks passed!`；validator `OFFLINE_PRODUCT_SITE_VALID`；两个 Node syntax check 与 `git diff --check` 均 exit `0`。
 
 ## 视觉并排复核
 
