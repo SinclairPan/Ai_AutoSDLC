@@ -334,7 +334,7 @@ AI-SDLC 不对所有问题使用同一种强度：
 
 ### 获取正确版本和权威文档
 
-本页集中提供 AI-SDLC 2.0.0 的正式仓库、Release、README、用户指南、迁移说明和安装资产。安装步骤不在本页重复；请打开中文新用户指南，并在手册内部选择适合自己的完整路径。
+本页集中提供 AI-SDLC 2.0.0 的正式仓库、Release、README、中文新用户指南和安装资产。安装步骤不在本页重复；请打开中文新用户指南，并在手册内部选择适合自己的完整路径。
 
 ### 版本身份
 
@@ -360,12 +360,6 @@ AI-SDLC 不对所有问题使用同一种强度：
 了解产品定位、核心能力、标准工作流和主要 CLI：
 
 - [README v2.0.0](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/README.md)
-
-#### v2 迁移指南
-
-从 `v1.0.2` 升级前阅读版本变化与迁移边界：
-
-- [v2-migration.zh-CN.md](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/docs/v2-migration.zh-CN.md)
 
 #### 产品契约
 
