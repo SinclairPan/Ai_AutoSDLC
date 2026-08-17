@@ -673,7 +673,11 @@ class Executor:
             )
 
         complete = result.runtime.current_batch >= result.plan.total_batches
-        if complete and not result.summary_path.is_file():
+        summary_relative_path = result.summary_path.relative_to(self.root).as_posix()
+        if complete and (
+            not result.summary_path.is_file()
+            or not git.path_exists_at_revision(current_head, summary_relative_path)
+        ):
             return self._set_acknowledgement_state(
                 result,
                 status=ExecutionStatus.HALTED,

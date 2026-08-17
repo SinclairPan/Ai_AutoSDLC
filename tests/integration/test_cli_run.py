@@ -1379,6 +1379,11 @@ class TestRunCommand:
             before_commit.output.split()
         )
 
+        gitignore = git_repo / ".gitignore"
+        gitignore.write_text(
+            "development-summary.md\n",
+            encoding="utf-8",
+        )
         subprocess.run(
             ["git", "add", "."],
             cwd=git_repo,
@@ -1393,13 +1398,14 @@ class TestRunCommand:
             capture_output=True,
             text=True,
         )
-        head = subprocess.run(
-            ["git", "rev-parse", "HEAD"],
+        committed_paths = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
             cwd=git_repo,
             check=True,
             capture_output=True,
             text=True,
-        ).stdout.strip()
+        ).stdout.splitlines()
+        assert "specs/WI-2026-ACK/development-summary.md" not in committed_paths
 
         uncommitted = git_repo / "src" / "uncommitted.py"
         uncommitted.write_text("UNCOMMITTED = True\n", encoding="utf-8")
@@ -1407,6 +1413,34 @@ class TestRunCommand:
         assert blocked.exit_code == 2, blocked.output
         assert "worktree is not clean" in " ".join(blocked.output.split())
         uncommitted.unlink()
+
+        missing_summary = runner.invoke(app, ["run"])
+        assert missing_summary.exit_code == 2, missing_summary.output
+        assert "missing development-summary.md" in " ".join(
+            missing_summary.output.split()
+        )
+
+        subprocess.run(
+            ["git", "add", "-f", "specs/WI-2026-ACK/development-summary.md"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "docs: commit final development summary"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
 
         finalized = runner.invoke(app, ["run"])
         assert finalized.exit_code == 0, finalized.output
