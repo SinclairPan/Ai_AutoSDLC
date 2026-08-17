@@ -168,6 +168,15 @@ def _node_text(node: _HtmlNode) -> str:
     return _normalize_html_text(parts)
 
 
+def _swap_node_content(left: _HtmlNode, right: _HtmlNode) -> None:
+    left.content, right.content = right.content, left.content
+    left.children, right.children = right.children, left.children
+    for child in left.children:
+        child.parent = left
+    for child in right.children:
+        child.parent = right
+
+
 def _is_descendant(node: _HtmlNode, ancestor: _HtmlNode) -> bool:
     current = node.parent
     while current is not None:
@@ -274,105 +283,122 @@ EXPERT_GRAPH_IDENTITY = (
     "也不是第二套状态机；Loop 仍是唯一状态源。"
 )
 
-PLATFORM_CAPABILITY_CONTRACTS = (
+PLATFORM_PANEL_CONTRACTS = (
     (
         "tool-governance",
         "跨 AI 工具治理",
-        {
-            "data-capability-problem": ("换 Agent", "项目规则"),
-            "data-capability-mechanism": (
-                "Codex",
-                "AGENTS.md",
-                "Claude Code",
-                ".claude/CLAUDE.md",
-                "Cursor",
-                ".cursor/rules/ai-sdlc.mdc",
-                "Copilot",
-                ".github/copilot-instructions.md",
-            ),
-            "data-capability-results": (
-                "canonical adapter files",
-                "WorkItem",
-                "Loop",
-                "evidence",
-            ),
-            "data-capability-boundary": ("不是", "实时", "多 Agent"),
-        },
+        ("换 Agent", "项目规则"),
+        ("不是", "实时", "多 Agent"),
     ),
     (
         "continuity",
         "断点续作",
-        {
-            "data-capability-problem": ("中断", "分支", "下一步"),
-            "data-capability-mechanism": (
-                "checkpoint",
-                "status",
-                "handoff",
-                "recover",
-                "reconcile",
-            ),
-            "data-capability-results": (
-                "checkpoint",
-                "handoff",
-                "status / recover",
-                "reconcile",
-            ),
-            "data-capability-boundary": ("模型内部思维", "进程栈", "事务回滚"),
-        },
+        ("中断", "分支", "下一步"),
+        ("模型内部思维", "进程栈", "事务回滚"),
     ),
     (
         "frontend-delivery",
         "前端工程与验收",
-        {
-            "data-capability-problem": ("组件", "主题", "浏览器"),
-            "data-capability-mechanism": (
-                "solution confirmation",
-                "public-primevue",
-                "enterprise-vue2",
-                "Style Pack",
-                "Browser Gate",
-            ),
-            "data-capability-results": (
-                "PrimeVue",
-                "primary / surface / highlight",
-                "theme.ts",
-                "pages/",
-                "views/",
-                "E2E Suite",
-                "无组件库",
-            ),
-            "data-capability-boundary": (
-                "企业环境",
-                "基础可访问性",
-                "WCAG",
-                "无需配置",
-            ),
-        },
+        ("组件", "主题", "浏览器"),
+        ("企业环境", "基础可访问性", "WCAG", "无需配置"),
     ),
     (
         "engineering-controls",
         "工程控制边界",
-        {
-            "data-capability-problem": ("严格", "工程判断"),
-            "data-capability-mechanism": (
-                "fail-closed",
-                "identity",
-                "evidence",
-                "provenance",
-                "Lean Code",
-                "code simplification",
-                "local-first",
-            ),
-            "data-capability-results": (
-                "input_digest",
-                "verification evidence",
-                "needs_user",
-                "non-blocking",
-            ),
-            "data-capability-boundary": ("硬性行数", "远程 AI Provider"),
-        },
+        ("严格", "工程判断"),
+        ("硬性行数", "远程 AI Provider"),
     ),
 )
+
+PLATFORM_ADAPTER_PAIRS = (
+    ("codex", "Codex", "AGENTS.md"),
+    ("claude-code", "Claude Code", ".claude/CLAUDE.md"),
+    ("cursor", "Cursor", ".cursor/rules/ai-sdlc.mdc"),
+    ("copilot", "VS Code / Copilot", ".github/copilot-instructions.md"),
+)
+
+PLATFORM_CONTINUITY_CHAIN = (
+    "checkpoint",
+    "status",
+    "handoff",
+    "recover",
+    "reconcile",
+)
+
+PLATFORM_FRONTEND_ROUTES = {
+    "default": (
+        "默认推荐",
+        "vue3 / public-primevue / modern-saas",
+        "新前端需求的首个推荐；仍需用户显式确认。",
+    ),
+    "advanced": (
+        "高级可选 Style Packs",
+        "vue3 / public-primevue",
+        "仍属于 Vue3 / public-primevue 候选，不是 Vue2 compatibility path。",
+    ),
+    "vue2-compatibility": (
+        "历史 / 企业兼容",
+        "vue2 / enterprise-vue2",
+        "只有明确历史 Vue2 或私有企业约束时选择；组件、网络与授权由企业环境提供。",
+    ),
+    "custom-evidence": (
+        "自定义 / 无组件库",
+        "custom / no component library",
+        "兼容执行与证据路径，不是第三个内置 Provider。",
+    ),
+}
+
+PLATFORM_STYLE_PACKS = (
+    "enterprise-default",
+    "data-console",
+    "high-clarity",
+    "macos-glass",
+)
+
+PLATFORM_BROWSER_CHAIN = (
+    ("browser-entry", "真实 browser entry"),
+    ("browser-gate", "Browser Gate"),
+    ("frontend-evidence", "Frontend Evidence"),
+)
+
+PLATFORM_FRONTEND_RESPONSIBILITIES = {
+    "project-e2e": "项目 E2E Suite 执行项目自己的测试策略与覆盖。",
+    "frontend-evidence": (
+        "Frontend Evidence 消费当前候选的 Browser Gate 工件，检查身份、时效、结构与 Loop 状态。"
+    ),
+}
+
+PLATFORM_CONTROL_LANES = {
+    "strict": ("identity", "evidence", "provenance", "security"),
+    "advisory": ("Lean Code", "code simplification"),
+}
+
+PLATFORM_ROLE_VALUES = {
+    "tool-governance": {
+        "planning-handoff": "先读 canonical 规则、WorkItem 与 Loop 事实，再决定续作范围。",
+        "development": "切换执行工具时仍按同一项目约束修改当前候选。",
+        "testing-review": "按项目身份定位当前 evidence，不用聊天摘要替代验证。",
+        "delivery-owner": "只接受由项目工件支持的 closed 状态，不接受工具自报完成。",
+    },
+    "continuity": {
+        "planning-handoff": "对照 checkpoint、分支、开放门禁与下一步完成接手。",
+        "development": "按 recover 路径续作；发现漂移时停止并显式 reconcile。",
+        "testing-review": "恢复后只复核受影响的当前证据，不沿用过期结论。",
+        "delivery-owner": "恢复链仍未关闭时阻止把中断任务误报为完成。",
+    },
+    "frontend-delivery": {
+        "planning-handoff": "实现前确认 default、advanced、Vue2 compatibility 或 custom 路径。",
+        "development": "按已确认的 Provider、Style Pack、Theme 与目录合同实现。",
+        "testing-review": "只消费当前候选绑定的 Browser Gate 与项目 E2E 证据。",
+        "delivery-owner": "Frontend Evidence 未关闭时阻止误报前端验收完成。",
+    },
+    "engineering-controls": {
+        "planning-handoff": "高风险授权或关键输入缺失时取得用户决定，不替用户猜测。",
+        "development": "严格项先补证据；Lean Code 建议结合行为与维护成本判断。",
+        "testing-review": "核对当前候选的 identity、evidence 与 provenance 后再复核。",
+        "delivery-owner": "严格门禁未关闭时阻止误报，advisory 建议不伪造阻断。",
+    },
+}
 
 
 def _single_node(
@@ -496,15 +522,15 @@ def _assert_platform_capability_contract(document: _HtmlNode) -> None:
     tablist = _single_node(document, tag="div", attribute="role", value="tablist")
     tabs = [child for child in tablist.children if child.attributes.get("role") == "tab"]
     assert [tab.attributes.get("id") for tab in tabs] == [
-        contract[0] for contract in PLATFORM_CAPABILITY_CONTRACTS
+        contract[0] for contract in PLATFORM_PANEL_CONTRACTS
     ]
     assert [_node_text(tab) for tab in tabs] == [
-        contract[1] for contract in PLATFORM_CAPABILITY_CONTRACTS
+        contract[1] for contract in PLATFORM_PANEL_CONTRACTS
     ]
 
     panels = _find_nodes(document, tag="section", attribute="data-tab-panel")
     assert len(panels) == 4
-    for tab_id, _label, region_contracts in PLATFORM_CAPABILITY_CONTRACTS:
+    for tab_id, _label, problem_tokens, boundary_tokens in PLATFORM_PANEL_CONTRACTS:
         panel = _single_node(
             document,
             tag="section",
@@ -512,12 +538,126 @@ def _assert_platform_capability_contract(document: _HtmlNode) -> None:
             value=f"{tab_id}-panel",
         )
         assert panel.attributes.get("aria-labelledby") == tab_id
-        for attribute, required_tokens in region_contracts.items():
+        for attribute, required_tokens in (
+            ("data-capability-problem", problem_tokens),
+            ("data-capability-boundary", boundary_tokens),
+        ):
             regions = _find_nodes(panel, attribute=attribute)
             assert len(regions) == 1, f"{tab_id} must expose one {attribute} region"
             region_text = _node_text(regions[0])
             missing = [token for token in required_tokens if token not in region_text]
             assert not missing, f"{tab_id} {attribute} missing {missing}"
+
+        results = _find_nodes(panel, attribute="data-capability-results")
+        assert len(results) == 1, f"{tab_id} must expose one results region"
+        role_map = _single_node(results[0], attribute="data-role-values")
+        role_nodes = _find_nodes(role_map, attribute="data-role")
+        expected_roles = PLATFORM_ROLE_VALUES[tab_id]
+        assert [node.attributes["data-role"] for node in role_nodes] == list(
+            expected_roles
+        ), f"{tab_id} role order mismatch"
+        actual_role_values = {
+            node.attributes["data-role"]: _node_text(_single_node(node, tag="dd"))
+            for node in role_nodes
+        }
+        assert actual_role_values == expected_roles, f"{tab_id} role value mismatch"
+
+    tool_panel = _single_node(document, attribute="id", value="tool-governance-panel")
+    adapter_rows = _find_nodes(tool_panel, attribute="data-adapter")
+    actual_adapters = [
+        (
+            row.attributes["data-adapter"],
+            _node_text(_single_node(row, attribute="data-adapter-tool")),
+            _node_text(_single_node(row, attribute="data-adapter-path")),
+        )
+        for row in adapter_rows
+    ]
+    assert actual_adapters == list(PLATFORM_ADAPTER_PAIRS), (
+        f"Adapter mapping mismatch: {actual_adapters}"
+    )
+
+    continuity_panel = _single_node(document, attribute="id", value="continuity-panel")
+    continuity_steps = _find_nodes(continuity_panel, attribute="data-continuity-step")
+    assert [step.attributes["data-continuity-step"] for step in continuity_steps] == (
+        list(PLATFORM_CONTINUITY_CHAIN)
+    ), "Continuity chain mismatch"
+    assert [_node_text(step) for step in continuity_steps] == list(
+        PLATFORM_CONTINUITY_CHAIN
+    ), "Continuity chain labels mismatch"
+
+    frontend_panel = _single_node(
+        document, attribute="id", value="frontend-delivery-panel"
+    )
+    route_nodes = _find_nodes(frontend_panel, attribute="data-frontend-route")
+    actual_routes = []
+    for route in route_nodes:
+        actual_routes.append(
+            (
+                route.attributes["data-frontend-route"],
+                _node_text(_single_node(route, attribute="data-route-title")),
+                _node_text(_single_node(route, attribute="data-route-stack")),
+                _node_text(_single_node(route, attribute="data-route-boundary")),
+            )
+        )
+    expected_routes = [
+        (route_id, *contract)
+        for route_id, contract in PLATFORM_FRONTEND_ROUTES.items()
+    ]
+    assert actual_routes == expected_routes, f"Frontend route mismatch: {actual_routes}"
+
+    advanced = _single_node(
+        frontend_panel,
+        attribute="data-frontend-route",
+        value="advanced",
+    )
+    style_packs = _find_nodes(advanced, attribute="data-style-pack")
+    assert [node.attributes["data-style-pack"] for node in style_packs] == list(
+        PLATFORM_STYLE_PACKS
+    ), "Advanced Style Pack identity mismatch"
+    assert [_node_text(node) for node in style_packs] == list(PLATFORM_STYLE_PACKS), (
+        "Advanced Style Pack labels mismatch"
+    )
+
+    browser_chain = _single_node(
+        frontend_panel, attribute="data-browser-evidence-chain"
+    )
+    browser_steps = _find_nodes(browser_chain, attribute="data-browser-step")
+    actual_browser_chain = [
+        (step.attributes["data-browser-step"], _node_text(step))
+        for step in browser_steps
+    ]
+    assert actual_browser_chain == list(PLATFORM_BROWSER_CHAIN), (
+        f"Browser evidence chain mismatch: {actual_browser_chain}"
+    )
+
+    responsibilities = _single_node(
+        frontend_panel, attribute="data-frontend-responsibilities"
+    )
+    responsibility_nodes = _find_nodes(
+        responsibilities, attribute="data-frontend-owner"
+    )
+    actual_responsibilities = {
+        node.attributes["data-frontend-owner"]: _node_text(node)
+        for node in responsibility_nodes
+    }
+    assert actual_responsibilities == PLATFORM_FRONTEND_RESPONSIBILITIES, (
+        f"Frontend responsibility mismatch: {actual_responsibilities}"
+    )
+
+    control_panel = _single_node(
+        document, attribute="id", value="engineering-controls-panel"
+    )
+    lanes = _find_nodes(control_panel, attribute="data-control-lane")
+    actual_lanes = {
+        lane.attributes["data-control-lane"]: tuple(
+            _node_text(item)
+            for item in _find_nodes(lane, attribute="data-control-item")
+        )
+        for lane in lanes
+    }
+    assert actual_lanes == PLATFORM_CONTROL_LANES, (
+        f"Control lane mismatch: {actual_lanes}"
+    )
 
 
 def _parse_home_values(markup: str) -> list[dict[str, object]]:
@@ -1122,7 +1262,7 @@ def test_platform_page_exposes_exactly_four_structured_capability_tabs() -> None
     _assert_platform_capability_contract(workspace)
 
     tabs = _find_nodes(workspace, tag="button", attribute="data-tab")
-    expected_ids = [contract[0] for contract in PLATFORM_CAPABILITY_CONTRACTS]
+    expected_ids = [contract[0] for contract in PLATFORM_PANEL_CONTRACTS]
     assert [tab.attributes.get("data-tab") for tab in tabs] == expected_ids
     assert [tab.attributes.get("aria-controls") for tab in tabs] == [
         f"{tab_id}-panel" for tab_id in expected_ids
@@ -1144,6 +1284,100 @@ def test_platform_page_keeps_every_capability_readable_without_javascript() -> N
     assert all(_node_text(panel) for panel in panels)
 
 
+def test_shared_navigation_collapses_at_platform_tablet_acceptance_width() -> None:
+    stylesheet = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/assets/css/site.css"
+    ).read_text(encoding="utf-8")
+
+    tablet_rule = re.search(
+        r"@media \(max-width: 64rem\) \{(?P<rules>.*?)(?=\n@media|\Z)",
+        stylesheet,
+        re.DOTALL,
+    )
+    assert tablet_rule is not None
+    assert ".js [data-nav-toggle]" in tablet_rule.group("rules")
+    assert '.js [data-nav-menu]:not([data-open="true"])' in tablet_rule.group(
+        "rules"
+    )
+
+
+def test_platform_contract_rejects_swapped_adapter_paths() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    codex = _single_node(document, attribute="data-adapter", value="codex")
+    claude = _single_node(document, attribute="data-adapter", value="claude-code")
+    _swap_node_content(
+        _single_node(codex, attribute="data-adapter-path"),
+        _single_node(claude, attribute="data-adapter-path"),
+    )
+
+    with pytest.raises(AssertionError, match="Adapter mapping mismatch"):
+        _assert_platform_capability_contract(document)
+
+
+def test_platform_contract_rejects_default_and_vue2_route_swap() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    default = _single_node(document, attribute="data-frontend-route", value="default")
+    vue2 = _single_node(
+        document,
+        attribute="data-frontend-route",
+        value="vue2-compatibility",
+    )
+    _swap_node_content(default, vue2)
+
+    with pytest.raises(AssertionError, match="Frontend route mismatch"):
+        _assert_platform_capability_contract(document)
+
+
+def test_platform_contract_rejects_browser_gate_and_frontend_evidence_swap() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    browser_gate = _single_node(
+        document, attribute="data-browser-step", value="browser-gate"
+    )
+    frontend_evidence = _single_node(
+        document,
+        attribute="data-browser-step",
+        value="frontend-evidence",
+    )
+    _swap_node_content(browser_gate, frontend_evidence)
+
+    with pytest.raises(AssertionError, match="Browser evidence chain mismatch"):
+        _assert_platform_capability_contract(document)
+
+
+def test_platform_contract_rejects_lean_code_in_strict_lane() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    lean_code = _single_node(
+        document, attribute="data-control-item", value="Lean Code"
+    )
+    strict_identity = _single_node(
+        document, attribute="data-control-item", value="identity"
+    )
+    assert lean_code.parent is not None
+    assert strict_identity.parent is not None
+    lean_parent = lean_code.parent
+    strict_parent = strict_identity.parent
+    lean_parent.children.remove(lean_code)
+    lean_parent.content.remove(lean_code)
+    strict_parent.children.append(lean_code)
+    strict_parent.content.append(lean_code)
+    lean_code.parent = strict_parent
+
+    with pytest.raises(AssertionError, match="Control lane mismatch"):
+        _assert_platform_capability_contract(document)
+
+
 def test_platform_page_closes_with_bounded_claims_and_download_cta() -> None:
     markup = Path(
         "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
@@ -1161,6 +1395,10 @@ def test_platform_page_closes_with_bounded_claims_and_download_cta() -> None:
         "recover",
         "PrimeVue",
         "enterprise-vue2",
+        "enterprise-default",
+        "data-console",
+        "high-clarity",
+        "macos-glass",
         "Browser Gate",
         "code simplification",
         "local-first",

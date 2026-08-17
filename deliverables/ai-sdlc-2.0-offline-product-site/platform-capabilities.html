@@ -52,7 +52,7 @@
             <h2 id="platform-workspace-title">从 AI-Coding 断点，检查项目侧控制机制</h2>
           </div>
           <p>
-            每个视角都从一个现实问题出发，只展开对应机制、可检查结果和不能外推的边界。
+            每个视角都从一个现实问题出发，只展开对应机制、可检查结果、角色可判断动作和不能外推的边界。
           </p>
         </div>
 
@@ -125,34 +125,40 @@
               <div class="platform-mechanism" data-capability-mechanism>
                 <p class="platform-mechanism-label">Canonical adapter map</p>
                 <div class="adapter-matrix" role="table" aria-label="AI 工具与项目侧规则入口">
-                  <div role="row">
-                    <span role="cell">Codex</span>
-                    <code role="cell">AGENTS.md</code>
+                  <div role="row" data-adapter="codex">
+                    <span role="cell" data-adapter-tool>Codex</span>
+                    <code role="cell" data-adapter-path>AGENTS.md</code>
                   </div>
-                  <div role="row">
-                    <span role="cell">Claude Code</span>
-                    <code role="cell">.claude/CLAUDE.md</code>
+                  <div role="row" data-adapter="claude-code">
+                    <span role="cell" data-adapter-tool>Claude Code</span>
+                    <code role="cell" data-adapter-path>.claude/CLAUDE.md</code>
                   </div>
-                  <div role="row">
-                    <span role="cell">Cursor</span>
-                    <code role="cell">.cursor/rules/ai-sdlc.mdc</code>
+                  <div role="row" data-adapter="cursor">
+                    <span role="cell" data-adapter-tool>Cursor</span>
+                    <code role="cell" data-adapter-path>.cursor/rules/ai-sdlc.mdc</code>
                   </div>
-                  <div role="row">
-                    <span role="cell">VS Code / Copilot</span>
-                    <code role="cell">.github/copilot-instructions.md</code>
+                  <div role="row" data-adapter="copilot">
+                    <span role="cell" data-adapter-tool>VS Code / Copilot</span>
+                    <code role="cell" data-adapter-path>.github/copilot-instructions.md</code>
                   </div>
                 </div>
                 <p class="platform-mechanism-note">
                   Adapter 对齐各工具的 canonical 入口；统一治理概念和项目工件继续留在仓库中。
                 </p>
               </div>
-              <div class="platform-results">
+              <div class="platform-results" data-capability-results>
                 <h4>可检查结果</h4>
-                <ul data-capability-results>
+                <ul>
                   <li><strong>canonical adapter files</strong><span>每个专用入口都有明确的项目侧规则载体。</span></li>
                   <li><strong>WorkItem / Loop state</strong><span>工作身份、开放状态与 Close 结果由仓库工件承载。</span></li>
                   <li><strong>evidence artifacts</strong><span>验证和复核 evidence 不依赖某一个 Agent 的对话摘要。</span></li>
                 </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>先读 canonical 规则、WorkItem 与 Loop 事实，再决定续作范围。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>切换执行工具时仍按同一项目约束修改当前候选。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>按项目身份定位当前 evidence，不用聊天摘要替代验证。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>只接受由项目工件支持的 closed 状态，不接受工具自报完成。</dd></div>
+                </dl>
               </div>
               <p class="platform-boundary" data-capability-boundary>
                 <strong>边界</strong>
@@ -181,21 +187,27 @@
               <div class="platform-mechanism" data-capability-mechanism>
                 <p class="platform-mechanism-label">Project fact recovery</p>
                 <ol class="continuity-flow">
-                  <li><code>checkpoint</code><span>记录阶段、分支、开放门禁与下一步。</span></li>
-                  <li><code>status</code><span>读取当前本地事实。</span></li>
-                  <li><code>handoff</code><span>生成跨会话、跨人员可读摘要。</span></li>
-                  <li><code>recover</code><span>比较 checkpoint、分支和项目工件。</span></li>
-                  <li><code>reconcile</code><span>只在明确要求且条件安全时重建状态。</span></li>
+                  <li><code data-continuity-step="checkpoint">checkpoint</code><span>记录阶段、分支、开放门禁与下一步。</span></li>
+                  <li><code data-continuity-step="status">status</code><span>读取当前本地事实。</span></li>
+                  <li><code data-continuity-step="handoff">handoff</code><span>生成跨会话、跨人员可读摘要。</span></li>
+                  <li><code data-continuity-step="recover">recover</code><span>比较 checkpoint、分支和项目工件。</span></li>
+                  <li><code data-continuity-step="reconcile">reconcile</code><span>只在明确要求且条件安全时重建状态。</span></li>
                 </ol>
               </div>
-              <div class="platform-results">
+              <div class="platform-results" data-capability-results>
                 <h4>可检查结果</h4>
-                <ul data-capability-results>
+                <ul>
                   <li><strong>checkpoint</strong><span>阶段、分支、门禁与下一步的项目记录。</span></li>
                   <li><strong>human-readable handoff</strong><span>简洁交接摘要，重要事实仍回到工件复核。</span></li>
                   <li><strong>status / recover output</strong><span>指出一致项、漂移项与可执行恢复路径。</span></li>
                   <li><strong>explicit reconcile</strong><span>过期状态不会静默覆盖更新后的项目事实。</span></li>
                 </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>对照 checkpoint、分支、开放门禁与下一步完成接手。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>按 recover 路径续作；发现漂移时停止并显式 reconcile。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>恢复后只复核受影响的当前证据，不沿用过期结论。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>恢复链仍未关闭时阻止把中断任务误报为完成。</dd></div>
+                </dl>
               </div>
               <p class="platform-boundary" data-capability-boundary>
                 <strong>边界</strong>
@@ -228,38 +240,66 @@
                   <span>solution confirmation · 人工确认</span>
                   <span>Provider / Style Pack / Theme contract</span>
                 </div>
-                <div class="frontend-routes">
-                  <div>
-                    <strong>默认推荐</strong>
-                    <code>vue3 / public-primevue / modern-saas</code>
+                <div class="frontend-routes" aria-label="前端方案路径">
+                  <div data-frontend-route="default">
+                    <strong data-route-title>默认推荐</strong>
+                    <code data-route-stack>vue3 / public-primevue / modern-saas</code>
                     <span>PrimeVue + @primeuix/themes + primeicons</span>
+                    <p data-route-boundary>新前端需求的首个推荐；仍需用户显式确认。</p>
                   </div>
-                  <div>
-                    <strong>企业兼容</strong>
-                    <code>vue2 / enterprise-vue2</code>
+                  <div data-frontend-route="advanced">
+                    <strong data-route-title>高级可选 Style Packs</strong>
+                    <code data-route-stack>vue3 / public-primevue</code>
+                    <span class="frontend-style-packs" aria-label="高级可选样式包">
+                      <span data-style-pack="enterprise-default">enterprise-default</span>
+                      <span data-style-pack="data-console">data-console</span>
+                      <span data-style-pack="high-clarity">high-clarity</span>
+                      <span data-style-pack="macos-glass">macos-glass</span>
+                    </span>
+                    <p data-route-boundary>仍属于 Vue3 / public-primevue 候选，不是 Vue2 compatibility path。</p>
+                  </div>
+                  <div data-frontend-route="vue2-compatibility">
+                    <strong data-route-title>历史 / 企业兼容</strong>
+                    <code data-route-stack>vue2 / enterprise-vue2</code>
                     <span>Provider profile 定义映射与安装策略</span>
+                    <p data-route-boundary>只有明确历史 Vue2 或私有企业约束时选择；组件、网络与授权由企业环境提供。</p>
                   </div>
-                  <div>
-                    <strong>兼容证据</strong>
-                    <code>custom / no component library</code>
+                  <div data-frontend-route="custom-evidence">
+                    <strong data-route-title>自定义 / 无组件库</strong>
+                    <code data-route-stack>custom / no component library</code>
                     <span>项目提供可加载入口与兼容工件</span>
+                    <p data-route-boundary>兼容执行与证据路径，不是第三个内置 Provider。</p>
                   </div>
                 </div>
-                <div class="frontend-flow frontend-flow-output" aria-label="浏览器证据链">
-                  <span>真实 browser entry</span>
-                  <span>Browser Gate</span>
-                  <span>Frontend Evidence</span>
+                <div
+                  class="frontend-flow frontend-flow-output"
+                  data-browser-evidence-chain
+                  aria-label="浏览器证据链"
+                >
+                  <span data-browser-step="browser-entry">真实 browser entry</span>
+                  <span data-browser-step="browser-gate">Browser Gate</span>
+                  <span data-browser-step="frontend-evidence">Frontend Evidence</span>
+                </div>
+                <div class="frontend-responsibilities" data-frontend-responsibilities>
+                  <p data-frontend-owner="project-e2e">项目 E2E Suite 执行项目自己的测试策略与覆盖。</p>
+                  <p data-frontend-owner="frontend-evidence">Frontend Evidence 消费当前候选的 Browser Gate 工件，检查身份、时效、结构与 Loop 状态。</p>
                 </div>
               </div>
-              <div class="platform-results">
+              <div class="platform-results" data-capability-results>
                 <h4>可检查结果</h4>
-                <ul data-capability-results>
+                <ul>
                   <li><strong>Vue3 / PrimeVue 主题合同</strong><span><code>definePreset(Aura) + #1770e6 + darkModeSelector=false</code>，覆盖 <code>primary / surface / highlight</code>，并以 <code>theme.ts</code> 为唯一入口。</span></li>
                   <li><strong>页面目录约束</strong><span>新项目默认 <code>pages/</code>；历史项目可沿用 <code>views/</code>，二者不同时新建。</span></li>
                   <li><strong>真实浏览器工件</strong><span>Browser Gate 绑定 origin、交互、console / page error、截图与基础可访问性结果。</span></li>
                   <li><strong>项目测试策略</strong><span>项目自己的 E2E Suite 负责覆盖策略；Playwright 或其他 Runner 可产出兼容证据。</span></li>
                   <li><strong>自定义或无组件库路径</strong><span>提供可加载 browser entry 和兼容 Browser Gate 工件后，由 Frontend Evidence 消费。</span></li>
                 </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>实现前确认 default、advanced、Vue2 compatibility 或 custom 路径。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>按已确认的 Provider、Style Pack、Theme 与目录合同实现。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>只消费当前候选绑定的 Browser Gate 与项目 E2E 证据。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>Frontend Evidence 未关闭时阻止误报前端验收完成。</dd></div>
+                </dl>
               </div>
               <p class="platform-boundary" data-capability-boundary>
                 <strong>边界</strong>
@@ -288,14 +328,22 @@
               <div class="platform-mechanism" data-capability-mechanism>
                 <p class="platform-mechanism-label">Two-level control plane</p>
                 <div class="control-lanes">
-                  <div>
+                  <div data-control-lane="strict">
                     <span>Strict · fail-closed</span>
-                    <strong>identity · evidence · provenance · security</strong>
+                    <ul class="control-items" aria-label="严格控制项">
+                      <li data-control-item="identity">identity</li>
+                      <li data-control-item="evidence">evidence</li>
+                      <li data-control-item="provenance">provenance</li>
+                      <li data-control-item="security">security</li>
+                    </ul>
                     <p>身份漂移、缺失证据、秘密或高风险授权不满足时，停止并给出明确状态。</p>
                   </div>
-                  <div>
+                  <div data-control-lane="advisory">
                     <span>Advisory · non-blocking</span>
-                    <strong>Lean Code · code simplification</strong>
+                    <ul class="control-items" aria-label="建议控制项">
+                      <li data-control-item="Lean Code">Lean Code</li>
+                      <li data-control-item="code simplification">code simplification</li>
+                    </ul>
                     <p>体积、重复、复杂度和职责拆分给出建议，不替代行为正确性与工程判断。</p>
                   </div>
                 </div>
@@ -303,14 +351,20 @@
                   规则、状态、扫描与工件采用 local-first 边界；外部 Provider 的数据处理仍由所选服务决定。
                 </p>
               </div>
-              <div class="platform-results">
+              <div class="platform-results" data-capability-results>
                 <h4>可检查结果</h4>
-                <ul data-capability-results>
+                <ul>
                   <li><strong>identity binding</strong><span><code>input_digest</code> 与当前候选绑定，漂移时拒绝复用旧结论。</span></li>
                   <li><strong>verification evidence</strong><span>测试、构建、浏览器或复核证据缺失时保持未完成。</span></li>
                   <li><strong>explicit stop states</strong><span>缺少决定进入 <code>needs_user</code>，修复或复核缺口分别进入对应状态。</span></li>
                   <li><strong>non-blocking advice</strong><span>精简建议可以解释和取舍，不改变 Loop 状态或 Close 权。</span></li>
                 </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>高风险授权或关键输入缺失时取得用户决定，不替用户猜测。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>严格项先补证据；Lean Code 建议结合行为与维护成本判断。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>核对当前候选的 identity、evidence 与 provenance 后再复核。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>严格门禁未关闭时阻止误报，advisory 建议不伪造阻断。</dd></div>
+                </dl>
               </div>
               <p class="platform-boundary" data-capability-boundary>
                 <strong>边界</strong>

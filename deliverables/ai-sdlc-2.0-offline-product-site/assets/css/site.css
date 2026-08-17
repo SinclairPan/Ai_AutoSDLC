@@ -436,7 +436,7 @@ html:not(.js) [data-tab-panel][hidden] {
   text-decoration: none;
 }
 
-@media (max-width: 62rem) {
+@media (max-width: 64rem) {
   .site-header .site-shell {
     min-height: 4rem;
     flex-wrap: wrap;
