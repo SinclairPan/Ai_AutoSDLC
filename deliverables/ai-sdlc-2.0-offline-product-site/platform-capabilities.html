@@ -32,10 +32,300 @@
         <a class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">GitHub</a>
       </div>
     </header>
-    <main id="main" class="site-shell page-main">
-      <section class="page-intro" aria-labelledby="page-title">
+    <main id="main" class="site-shell page-main platform-main">
+      <section class="page-intro platform-hero" aria-labelledby="page-title">
         <p class="page-eyebrow">Platform Capabilities</p>
-        <h1 id="page-title">从零散 Skills，到项目级工程系统</h1>
+        <h1 id="page-title">把零散 Skills，变成留在项目里的工程系统</h1>
+        <p class="platform-hero-summary">
+          AI-SDLC 不与 Coding Agent 争夺生成能力。它把团队需要长期保留的规则、状态、前端约束、验证证据和恢复路径放到项目侧。
+        </p>
+      </section>
+
+      <section
+        class="platform-workspace"
+        data-tabs="platform-capabilities"
+        aria-labelledby="platform-workspace-title"
+      >
+        <div class="platform-workspace-heading">
+          <div>
+            <p class="page-eyebrow">Capability explorer</p>
+            <h2 id="platform-workspace-title">从 AI-Coding 断点，检查项目侧控制机制</h2>
+          </div>
+          <p>
+            每个视角都从一个现实问题出发，只展开对应机制、可检查结果和不能外推的边界。
+          </p>
+        </div>
+
+        <div class="platform-explorer">
+          <div class="platform-tablist" role="tablist" aria-label="平台能力">
+            <button
+              id="tool-governance"
+              type="button"
+              role="tab"
+              data-tab="tool-governance"
+              aria-controls="tool-governance-panel"
+              aria-selected="true"
+            >
+              跨 AI 工具治理
+            </button>
+            <button
+              id="continuity"
+              type="button"
+              role="tab"
+              data-tab="continuity"
+              aria-controls="continuity-panel"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              断点续作
+            </button>
+            <button
+              id="frontend-delivery"
+              type="button"
+              role="tab"
+              data-tab="frontend-delivery"
+              aria-controls="frontend-delivery-panel"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              前端工程与验收
+            </button>
+            <button
+              id="engineering-controls"
+              type="button"
+              role="tab"
+              data-tab="engineering-controls"
+              aria-controls="engineering-controls-panel"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              工程控制边界
+            </button>
+          </div>
+
+          <div class="platform-panels">
+            <section
+              id="tool-governance-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="tool-governance"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">01</p>
+                <div>
+                  <p class="platform-panel-label">跨 AI 工具治理</p>
+                  <h3>执行入口可以替换，项目事实不跟聊天窗口走</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                换 Agent 后，项目规则是否要重新解释，既有状态与工件是否只能留在上一个聊天窗口？
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Canonical adapter map</p>
+                <div class="adapter-matrix" role="table" aria-label="AI 工具与项目侧规则入口">
+                  <div role="row">
+                    <span role="cell">Codex</span>
+                    <code role="cell">AGENTS.md</code>
+                  </div>
+                  <div role="row">
+                    <span role="cell">Claude Code</span>
+                    <code role="cell">.claude/CLAUDE.md</code>
+                  </div>
+                  <div role="row">
+                    <span role="cell">Cursor</span>
+                    <code role="cell">.cursor/rules/ai-sdlc.mdc</code>
+                  </div>
+                  <div role="row">
+                    <span role="cell">VS Code / Copilot</span>
+                    <code role="cell">.github/copilot-instructions.md</code>
+                  </div>
+                </div>
+                <p class="platform-mechanism-note">
+                  Adapter 对齐各工具的 canonical 入口；统一治理概念和项目工件继续留在仓库中。
+                </p>
+              </div>
+              <div class="platform-results">
+                <h4>可检查结果</h4>
+                <ul data-capability-results>
+                  <li><strong>canonical adapter files</strong><span>每个专用入口都有明确的项目侧规则载体。</span></li>
+                  <li><strong>WorkItem / Loop state</strong><span>工作身份、开放状态与 Close 结果由仓库工件承载。</span></li>
+                  <li><strong>evidence artifacts</strong><span>验证和复核 evidence 不依赖某一个 Agent 的对话摘要。</span></li>
+                </ul>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                这是规则入口与项目事实治理，不是实时多 Agent 编排；不同工具不会因此共享隐式会话，也不保证拥有相同能力。
+              </p>
+            </section>
+
+            <section
+              id="continuity-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="continuity"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">02</p>
+                <div>
+                  <p class="platform-panel-label">断点续作</p>
+                  <h3>从当前分支和工件重建下一步</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                长任务中断、会话压缩或换人后，团队如何确认当前分支、开放门禁与下一步仍然一致？
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Project fact recovery</p>
+                <ol class="continuity-flow">
+                  <li><code>checkpoint</code><span>记录阶段、分支、开放门禁与下一步。</span></li>
+                  <li><code>status</code><span>读取当前本地事实。</span></li>
+                  <li><code>handoff</code><span>生成跨会话、跨人员可读摘要。</span></li>
+                  <li><code>recover</code><span>比较 checkpoint、分支和项目工件。</span></li>
+                  <li><code>reconcile</code><span>只在明确要求且条件安全时重建状态。</span></li>
+                </ol>
+              </div>
+              <div class="platform-results">
+                <h4>可检查结果</h4>
+                <ul data-capability-results>
+                  <li><strong>checkpoint</strong><span>阶段、分支、门禁与下一步的项目记录。</span></li>
+                  <li><strong>human-readable handoff</strong><span>简洁交接摘要，重要事实仍回到工件复核。</span></li>
+                  <li><strong>status / recover output</strong><span>指出一致项、漂移项与可执行恢复路径。</span></li>
+                  <li><strong>explicit reconcile</strong><span>过期状态不会静默覆盖更新后的项目事实。</span></li>
+                </ul>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                恢复的是项目事实，不是模型内部思维、进程栈或事务回滚；工件较新或分支不一致时，当前 run 会先停止。
+              </p>
+            </section>
+
+            <section
+              id="frontend-delivery-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="frontend-delivery"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">03</p>
+                <div>
+                  <p class="platform-panel-label">前端工程与验收</p>
+                  <h3>把方案确认、主题约束与浏览器结果连成一条证据链</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                组件、主题、页面实现和浏览器验收分散时，如何证明“能编译”的页面也是当前候选上真实可用的页面？
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Governed frontend path</p>
+                <div class="frontend-flow" aria-label="前端治理链">
+                  <span>frontend requirement</span>
+                  <span>solution confirmation · 人工确认</span>
+                  <span>Provider / Style Pack / Theme contract</span>
+                </div>
+                <div class="frontend-routes">
+                  <div>
+                    <strong>默认推荐</strong>
+                    <code>vue3 / public-primevue / modern-saas</code>
+                    <span>PrimeVue + @primeuix/themes + primeicons</span>
+                  </div>
+                  <div>
+                    <strong>企业兼容</strong>
+                    <code>vue2 / enterprise-vue2</code>
+                    <span>Provider profile 定义映射与安装策略</span>
+                  </div>
+                  <div>
+                    <strong>兼容证据</strong>
+                    <code>custom / no component library</code>
+                    <span>项目提供可加载入口与兼容工件</span>
+                  </div>
+                </div>
+                <div class="frontend-flow frontend-flow-output" aria-label="浏览器证据链">
+                  <span>真实 browser entry</span>
+                  <span>Browser Gate</span>
+                  <span>Frontend Evidence</span>
+                </div>
+              </div>
+              <div class="platform-results">
+                <h4>可检查结果</h4>
+                <ul data-capability-results>
+                  <li><strong>Vue3 / PrimeVue 主题合同</strong><span><code>definePreset(Aura) + #1770e6 + darkModeSelector=false</code>，覆盖 <code>primary / surface / highlight</code>，并以 <code>theme.ts</code> 为唯一入口。</span></li>
+                  <li><strong>页面目录约束</strong><span>新项目默认 <code>pages/</code>；历史项目可沿用 <code>views/</code>，二者不同时新建。</span></li>
+                  <li><strong>真实浏览器工件</strong><span>Browser Gate 绑定 origin、交互、console / page error、截图与基础可访问性结果。</span></li>
+                  <li><strong>项目测试策略</strong><span>项目自己的 E2E Suite 负责覆盖策略；Playwright 或其他 Runner 可产出兼容证据。</span></li>
+                  <li><strong>自定义或无组件库路径</strong><span>提供可加载 browser entry 和兼容 Browser Gate 工件后，由 Frontend Evidence 消费。</span></li>
+                </ul>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                <code>enterprise-vue2</code> 只提供企业兼容 profile，组件、网络和授权由企业环境提供；基础可访问性检查不构成 WCAG 认证，自定义前端也不承诺无需配置即可运行。
+              </p>
+            </section>
+
+            <section
+              id="engineering-controls-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="engineering-controls"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">04</p>
+                <div>
+                  <p class="platform-panel-label">工程控制边界</p>
+                  <h3>必须证明的事情严格，需要判断的事情保留空间</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                如果所有规则都同样严格，治理会僵化；如果都交给工程判断，身份、证据和安全缺口又可能被改写成完成。
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Two-level control plane</p>
+                <div class="control-lanes">
+                  <div>
+                    <span>Strict · fail-closed</span>
+                    <strong>identity · evidence · provenance · security</strong>
+                    <p>身份漂移、缺失证据、秘密或高风险授权不满足时，停止并给出明确状态。</p>
+                  </div>
+                  <div>
+                    <span>Advisory · non-blocking</span>
+                    <strong>Lean Code · code simplification</strong>
+                    <p>体积、重复、复杂度和职责拆分给出建议，不替代行为正确性与工程判断。</p>
+                  </div>
+                </div>
+                <p class="platform-mechanism-note">
+                  规则、状态、扫描与工件采用 local-first 边界；外部 Provider 的数据处理仍由所选服务决定。
+                </p>
+              </div>
+              <div class="platform-results">
+                <h4>可检查结果</h4>
+                <ul data-capability-results>
+                  <li><strong>identity binding</strong><span><code>input_digest</code> 与当前候选绑定，漂移时拒绝复用旧结论。</span></li>
+                  <li><strong>verification evidence</strong><span>测试、构建、浏览器或复核证据缺失时保持未完成。</span></li>
+                  <li><strong>explicit stop states</strong><span>缺少决定进入 <code>needs_user</code>，修复或复核缺口分别进入对应状态。</span></li>
+                  <li><strong>non-blocking advice</strong><span>精简建议可以解释和取舍，不改变 Loop 状态或 Close 权。</span></li>
+                </ul>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                不使用硬性行数阈值阻止 Close，也不把本地优先治理外推为远程 AI Provider 的离线保证；AI-SDLC 不负责自动合并或自动发布。
+              </p>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="platform-closing" data-platform-closing aria-labelledby="platform-closing-title">
+        <h2 id="platform-closing-title">
+          Prompt 和 Skills 告诉 AI 怎么做；AI-SDLC 继续管理它做到哪一步、凭什么继续，以及何时可以结束。
+        </h2>
+        <a class="button-primary" href="downloads-docs.html">下载 AI-SDLC 2.0.0</a>
       </section>
     </main>
   </body>

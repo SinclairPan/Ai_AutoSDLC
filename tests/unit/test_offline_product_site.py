@@ -274,6 +274,106 @@ EXPERT_GRAPH_IDENTITY = (
     "也不是第二套状态机；Loop 仍是唯一状态源。"
 )
 
+PLATFORM_CAPABILITY_CONTRACTS = (
+    (
+        "tool-governance",
+        "跨 AI 工具治理",
+        {
+            "data-capability-problem": ("换 Agent", "项目规则"),
+            "data-capability-mechanism": (
+                "Codex",
+                "AGENTS.md",
+                "Claude Code",
+                ".claude/CLAUDE.md",
+                "Cursor",
+                ".cursor/rules/ai-sdlc.mdc",
+                "Copilot",
+                ".github/copilot-instructions.md",
+            ),
+            "data-capability-results": (
+                "canonical adapter files",
+                "WorkItem",
+                "Loop",
+                "evidence",
+            ),
+            "data-capability-boundary": ("不是", "实时", "多 Agent"),
+        },
+    ),
+    (
+        "continuity",
+        "断点续作",
+        {
+            "data-capability-problem": ("中断", "分支", "下一步"),
+            "data-capability-mechanism": (
+                "checkpoint",
+                "status",
+                "handoff",
+                "recover",
+                "reconcile",
+            ),
+            "data-capability-results": (
+                "checkpoint",
+                "handoff",
+                "status / recover",
+                "reconcile",
+            ),
+            "data-capability-boundary": ("模型内部思维", "进程栈", "事务回滚"),
+        },
+    ),
+    (
+        "frontend-delivery",
+        "前端工程与验收",
+        {
+            "data-capability-problem": ("组件", "主题", "浏览器"),
+            "data-capability-mechanism": (
+                "solution confirmation",
+                "public-primevue",
+                "enterprise-vue2",
+                "Style Pack",
+                "Browser Gate",
+            ),
+            "data-capability-results": (
+                "PrimeVue",
+                "primary / surface / highlight",
+                "theme.ts",
+                "pages/",
+                "views/",
+                "E2E Suite",
+                "无组件库",
+            ),
+            "data-capability-boundary": (
+                "企业环境",
+                "基础可访问性",
+                "WCAG",
+                "无需配置",
+            ),
+        },
+    ),
+    (
+        "engineering-controls",
+        "工程控制边界",
+        {
+            "data-capability-problem": ("严格", "工程判断"),
+            "data-capability-mechanism": (
+                "fail-closed",
+                "identity",
+                "evidence",
+                "provenance",
+                "Lean Code",
+                "code simplification",
+                "local-first",
+            ),
+            "data-capability-results": (
+                "input_digest",
+                "verification evidence",
+                "needs_user",
+                "non-blocking",
+            ),
+            "data-capability-boundary": ("硬性行数", "远程 AI Provider"),
+        },
+    ),
+)
+
 
 def _single_node(
     root: _HtmlNode,
@@ -390,6 +490,34 @@ def _assert_expert_graph_contract(document: _HtmlNode) -> None:
     assert "专家执行失败、超时或输出无效时，保持 needs_review 并 Stop" in _node_text(
         stop
     )
+
+
+def _assert_platform_capability_contract(document: _HtmlNode) -> None:
+    tablist = _single_node(document, tag="div", attribute="role", value="tablist")
+    tabs = [child for child in tablist.children if child.attributes.get("role") == "tab"]
+    assert [tab.attributes.get("id") for tab in tabs] == [
+        contract[0] for contract in PLATFORM_CAPABILITY_CONTRACTS
+    ]
+    assert [_node_text(tab) for tab in tabs] == [
+        contract[1] for contract in PLATFORM_CAPABILITY_CONTRACTS
+    ]
+
+    panels = _find_nodes(document, tag="section", attribute="data-tab-panel")
+    assert len(panels) == 4
+    for tab_id, _label, region_contracts in PLATFORM_CAPABILITY_CONTRACTS:
+        panel = _single_node(
+            document,
+            tag="section",
+            attribute="id",
+            value=f"{tab_id}-panel",
+        )
+        assert panel.attributes.get("aria-labelledby") == tab_id
+        for attribute, required_tokens in region_contracts.items():
+            regions = _find_nodes(panel, attribute=attribute)
+            assert len(regions) == 1, f"{tab_id} must expose one {attribute} region"
+            region_text = _node_text(regions[0])
+            missing = [token for token in required_tokens if token not in region_text]
+            assert not missing, f"{tab_id} {attribute} missing {missing}"
 
 
 def _parse_home_values(markup: str) -> list[dict[str, object]]:
@@ -977,6 +1105,88 @@ def test_expert_page_does_not_restore_removed_review_mechanisms() -> None:
         "成功率",
     ):
         assert forbidden not in markup
+
+
+def test_platform_page_exposes_exactly_four_structured_capability_tabs() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    assert _node_text(_single_node(document, tag="h1")) == (
+        "把零散 Skills，变成留在项目里的工程系统"
+    )
+    workspace = _single_node(
+        document, attribute="data-tabs", value="platform-capabilities"
+    )
+    _assert_platform_capability_contract(workspace)
+
+    tabs = _find_nodes(workspace, tag="button", attribute="data-tab")
+    expected_ids = [contract[0] for contract in PLATFORM_CAPABILITY_CONTRACTS]
+    assert [tab.attributes.get("data-tab") for tab in tabs] == expected_ids
+    assert [tab.attributes.get("aria-controls") for tab in tabs] == [
+        f"{tab_id}-panel" for tab_id in expected_ids
+    ]
+
+
+def test_platform_page_keeps_every_capability_readable_without_javascript() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    workspace = _single_node(
+        document, attribute="data-tabs", value="platform-capabilities"
+    )
+
+    panels = _find_nodes(workspace, tag="section", attribute="data-tab-panel")
+    assert len(panels) == 4
+    assert all("hidden" not in panel.attributes for panel in panels)
+    assert all(_node_text(panel) for panel in panels)
+
+
+def test_platform_page_closes_with_bounded_claims_and_download_cta() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    visible_text = _node_text(document)
+
+    for required in (
+        "Codex",
+        "Claude Code",
+        "Cursor",
+        "Copilot",
+        "checkpoint",
+        "handoff",
+        "recover",
+        "PrimeVue",
+        "enterprise-vue2",
+        "Browser Gate",
+        "code simplification",
+        "local-first",
+    ):
+        assert required in visible_text
+    for unsupported_claim in (
+        "macOS Intel",
+        "完整 E2E 平台",
+        "附送私有组件包",
+        "完全离线 AI 推理",
+    ):
+        assert unsupported_claim not in visible_text
+
+    closing = _single_node(document, attribute="data-platform-closing")
+    assert (
+        "Prompt 和 Skills 告诉 AI 怎么做；AI-SDLC 继续管理它做到哪一步、"
+        "凭什么继续，以及何时可以结束。"
+        in _node_text(closing)
+    )
+    ctas = [
+        node
+        for node in _find_nodes(closing, tag="a")
+        if node.attributes.get("href") == "downloads-docs.html"
+        and _node_text(node) == "下载 AI-SDLC 2.0.0"
+    ]
+    assert len(ctas) == 1
 
 
 def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:
