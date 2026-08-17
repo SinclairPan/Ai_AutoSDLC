@@ -1,4 +1,4 @@
-"""Direct-formal work item scaffold helpers (008)."""
+"""Project-neutral WorkItem scaffold helpers."""
 
 from __future__ import annotations
 
@@ -18,12 +18,12 @@ _CANONICAL_DOC_NAMES = ("spec.md", "plan.md", "tasks.md", "task-execution-log.md
 
 
 class WorkitemScaffoldError(Exception):
-    """Raised when direct-formal scaffold generation fails."""
+    """Raised when WorkItem scaffold generation fails."""
 
 
 @dataclass(frozen=True, slots=True)
 class WorkitemScaffoldResult:
-    """Outcome of creating the canonical direct-formal document set."""
+    """Outcome of creating the canonical WorkItem document set."""
 
     work_item_id: str
     title: str
@@ -151,7 +151,7 @@ class WorkitemScaffolder:
         """Resolve and validate the canonical work item id without writing files."""
         title_clean = title.strip()
         if not title_clean:
-            raise WorkitemScaffoldError("title is required for direct-formal init")
+            raise WorkitemScaffoldError("title is required for WorkItem init")
         state_path = root / PROJECT_STATE_PATH
         if not state_path.is_file():
             raise WorkitemScaffoldError(self._missing_bootstrap_message(root))
@@ -234,7 +234,7 @@ class WorkitemScaffolder:
         if input_text and input_text.strip():
             parts.append(input_text.strip())
         else:
-            parts.append("待补充：请补充用户描述、缺陷现象或 framework capability 背景。")
+            parts.append("待补充：请补充用户需求、缺陷现象或交付背景。")
         refs: list[str] = []
         if related_plan and related_plan.strip():
             refs.append(f"`{related_plan.strip()}`")
@@ -258,7 +258,10 @@ class WorkitemScaffolder:
             "[PRD 中对应的章节或用户描述]": input_text,
             "[本功能覆盖什么、明确不覆盖什么]": "待补充：请明确覆盖范围与明确不覆盖范围。",
             "[标题]": "待补标题",
-            "[作为...，我希望...，以便...]": "作为框架维护者，我希望直接生成 formal work item 文档，以便避免双轨产物。",
+            "[作为...，我希望...，以便...]": (
+                f"作为项目成员，我希望交付「{title}」，"
+                "以便满足已确认的需求与验收标准。"
+            ),
             "[为什么排在这个优先级]": "待补充：请说明当前用户故事的优先级依据。",
             "[如何独立验证这个故事]": "待补充：请补充独立验证方式。",
             "[边界情况 1]": "待补充边界情况 1",
@@ -284,7 +287,10 @@ class WorkitemScaffolder:
             "[NNN-short-name]": work_item_id,
             "[DATE]": created_date,
             "[spec.md 路径]": f"specs/{work_item_id}/spec.md",
-            "[一段话描述本功能的交付目标和推荐实现方式]": "待补充：请概述 direct-formal 或等价 canonical 交付目标。",
+            "[一段话描述本功能的交付目标和推荐实现方式]": (
+                f"围绕「{title}」收敛范围、实现路径、验证方式与回退边界；"
+                "未确认内容保持草稿，不进入 execute。"
+            ),
             "[从 tech-stack.yml 填充]": "待补充",
             "[从 PRD 提取]": "待补充",
             "[从 constitution.md 和 spec.md 提取]": "待补充",
@@ -348,44 +354,44 @@ class WorkitemScaffolder:
             "---\n\n"
             "## 分批策略\n\n"
             "```text\n"
-            "Batch 1: formal baseline freeze\n"
-            "Batch 2: implementation scaffold and parser-friendly structure\n"
-            "Batch 3: docs alignment and focused verification\n"
+            "Batch 1: requirement and acceptance contract\n"
+            "Batch 2: implementation and test paths\n"
+            "Batch 3: verification and independent review\n"
             "```\n\n"
             "---\n\n"
-            "## Batch 1：formal baseline freeze\n\n"
-            "### Task 1.1 冻结 direct-formal 正式真值\n\n"
+            "## Batch 1：需求与验收契约\n\n"
+            "### Task 1.1 收敛需求与验收契约\n\n"
             "- **任务编号**：T11\n"
             "- **优先级**：P0\n"
             "- **依赖**：无\n"
             "- **文件**：spec.md, plan.md, tasks.md, task-execution-log.md\n"
             "- **可并行**：否\n"
             "- **验收标准**：\n"
-            f"  1. canonical formal docs 已直接位于 `specs/{work_item_id}/`\n"
-            "  2. formal work item 不依赖第二套 canonical docs 才能进入 review\n"
-            "- **验证**：文档对账 + `uv run ai-sdlc verify constraints`\n\n"
-            "## Batch 2：implementation scaffold and parser-friendly structure\n\n"
-            "### Task 2.1 实现 direct-formal 脚手架\n\n"
+            f"  1. `specs/{work_item_id}/spec.md` 说明需求、范围与可测量验收标准\n"
+            "  2. 未确认内容保留为草稿，并在进入 execute 前确认\n"
+            "- **验证**：项目成员对账需求、边界与验收标准\n\n"
+            "## Batch 2：实现与测试路径\n\n"
+            "### Task 2.1 确认实现与测试路径\n\n"
             "- **任务编号**：T21\n"
             "- **优先级**：P0\n"
             "- **依赖**：T11\n"
-            "- **文件**：src/ai_sdlc/core/workitem_scaffold.py, tests/unit/test_workitem_scaffold.py\n"
+            "- **文件**：待确认项目实现路径与测试路径\n"
             "- **可并行**：否\n"
             "- **验收标准**：\n"
-            "  1. helper 能稳定生成 parser-friendly `spec.md / plan.md / tasks.md / task-execution-log.md`\n"
-            "  2. helper 只引用 external design docs，不复制正文\n"
-            "- **验证**：`uv run pytest tests/unit/test_workitem_scaffold.py -q`\n\n"
-            "## Batch 3：docs alignment and focused verification\n\n"
-            "### Task 3.1 暴露 direct-formal CLI 并完成 focused verification\n\n"
+            "  1. 实现文件、测试文件和回退边界均已具体化\n"
+            "  2. 项目特定路径与命令已在进入 execute 前确认\n"
+            "- **验证**：待确认项目测试命令与最小回归范围\n\n"
+            "## Batch 3：验证与独立评审\n\n"
+            "### Task 3.1 完成验证与独立评审\n\n"
             "- **任务编号**：T31\n"
             "- **优先级**：P1\n"
             "- **依赖**：T21\n"
-            "- **文件**：src/ai_sdlc/cli/workitem_cmd.py, tests/integration/test_cli_workitem_init.py, tests/unit/test_command_names.py\n"
+            "- **文件**：待确认验证证据与评审输出路径\n"
             "- **可并行**：否\n"
             "- **验收标准**：\n"
-            "  1. CLI 能直接初始化 formal work item\n"
-            "  2. command discovery 与 focused verification 一致\n"
-            "- **验证**：`uv run pytest tests/integration/test_cli_workitem_init.py tests/unit/test_command_names.py -q`\n"
+            "  1. 相关测试、静态检查与必要 smoke 均有真实结果\n"
+            "  2. 独立评审结论已记录，且项目特定命令在进入 execute 前确认\n"
+            "- **验证**：待确认项目验证命令与本地独立评审入口\n"
         )
         return f"{self._render_frontmatter(related_plan, related_docs)}{body}"
 
@@ -411,12 +417,12 @@ class WorkitemScaffolder:
             "`NNN-feature-name`": f"`{work_item_id}`",
             "### Batch YYYY-MM-DD-X | T0XX-T0YY": f"### Batch {created_date}-001 | T11-T31",
             "- 覆盖任务：": "- 覆盖任务：`T11`、`T21`、`T31`",
-            "- 覆盖阶段：": "- 覆盖阶段：Batch 1-3 baseline scaffold",
-            "- 预读范围：": "- 预读范围：`spec.md`、`plan.md`、`tasks.md`、framework rules",
-            "- 激活的规则：": "- 激活的规则：计划对账、关闭检查、单次提交",
+            "- 覆盖阶段：": "- 覆盖阶段：需求、实现、验证草稿",
+            "- 预读范围：": "- 预读范围：`spec.md`、`plan.md`、`tasks.md`、项目规则",
+            "- 激活的规则：": "- 激活的规则：待确认",
             "- 命令：": "- 命令：待执行",
             "- 结果：": "- 结果：待执行",
-            "##### T0XX | 任务名称": "##### T11-T31 | direct-formal baseline scaffold",
+            "##### T0XX | 任务名称": "##### T11-T31 | WorkItem draft",
             "- 改动范围：": "- 改动范围：待补充",
             "- 改动内容：": "- 改动内容：待补充",
             "- 新增/调整的测试：": "- 新增/调整的测试：待补充",
@@ -438,7 +444,7 @@ class WorkitemScaffolder:
             "无 / AD-001: ...": "无",
             "-\n": "- 待补充\n",
             "- 已完成 git 提交：`是` / `否`（须与 **本批唯一一次** commit 对齐）": (
-                "- 已完成 git 提交：否（须与 **本批唯一一次** commit 对齐）"
+                "- 已完成 git 提交：待执行"
             ),
             "- 提交哈希：`xxxxxxx`（**仅在**上述 commit **成功之后** 填写 **一次**；不要求归档草稿中预填哈希后再二次修订）": (
                 "- 提交哈希：待本批提交后生成"

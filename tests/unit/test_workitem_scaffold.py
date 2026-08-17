@@ -1,4 +1,4 @@
-"""Unit tests for direct-formal work item scaffold generation (008)."""
+"""Unit tests for project-neutral work item scaffold generation."""
 
 from __future__ import annotations
 
@@ -48,17 +48,17 @@ def test_scaffold_generates_parser_friendly_formal_docs_with_refs(
 
     result = WorkitemScaffolder(template_dir=TEMPLATE_DIR).scaffold(
         root=root,
-        title="Direct Formal Entry",
-        input_text="用户要求 direct-to-formal 创建 canonical docs",
-        related_plan=".cursor/plans/direct-formal.md",
+        title="Payment retry policy",
+        input_text="支付失败后按退避策略重试",
+        related_plan="docs/payment-retry-plan.md",
         related_docs=(
-            "docs/superpowers/specs/direct-formal-design.md",
-            "docs/superpowers/plans/direct-formal-plan.md",
+            "docs/payment-api.md",
+            "docs/service-slo.md",
         ),
     )
 
-    assert result.work_item_id == "008-direct-formal-entry"
-    assert result.spec_dir == root / "specs" / "008-direct-formal-entry"
+    assert result.work_item_id == "008-payment-retry-policy"
+    assert result.spec_dir == root / "specs" / "008-payment-retry-policy"
     assert tuple(path.name for path in result.created_paths) == (
         "spec.md",
         "plan.md",
@@ -67,40 +67,50 @@ def test_scaffold_generates_parser_friendly_formal_docs_with_refs(
     )
     assert not (root / "docs" / "superpowers").exists()
 
+    for path in result.created_paths:
+        text = path.read_text(encoding="utf-8")
+        assert "direct-formal" not in text
+        assert "作为框架维护者" not in text
+        assert "workitem_scaffold.py" not in text
+        assert "T11-T31 | direct-formal" not in text
+
     spec_text = (result.spec_dir / "spec.md").read_text(encoding="utf-8")
-    assert spec_text.startswith("# 功能规格：Direct Formal Entry\n\n")
-    assert "**功能编号**：`008-direct-formal-entry`" in spec_text
-    assert "direct-to-formal 创建 canonical docs" in spec_text
+    assert spec_text.startswith("# 功能规格：Payment retry policy\n\n")
+    assert "**功能编号**：`008-payment-retry-policy`" in spec_text
+    assert "支付失败后按退避策略重试" in spec_text
+    assert "作为项目成员" in spec_text
 
     plan_fm, plan_body = parse_markdown_frontmatter(result.spec_dir / "plan.md")
     assert plan_fm == {
-        "related_plan": ".cursor/plans/direct-formal.md",
+        "related_plan": "docs/payment-retry-plan.md",
         "related_doc": [
-            "docs/superpowers/specs/direct-formal-design.md",
-            "docs/superpowers/plans/direct-formal-plan.md",
+            "docs/payment-api.md",
+            "docs/service-slo.md",
         ],
     }
-    assert plan_body.lstrip().startswith("# 实施计划：Direct Formal Entry")
-    assert "specs/008-direct-formal-entry/spec.md" in plan_body
+    assert plan_body.lstrip().startswith("# 实施计划：Payment retry policy")
+    assert "specs/008-payment-retry-policy/spec.md" in plan_body
     assert "[原则 2]" not in plan_body
-    assert "specs/008-direct-formal-entry/" in plan_body
+    assert "specs/008-payment-retry-policy/" in plan_body
     assert "├── spec.md" in plan_body
     assert "├── tasks.md" in plan_body
     assert "└── task-execution-log.md" in plan_body
 
     tasks_fm, tasks_body = parse_markdown_frontmatter(result.spec_dir / "tasks.md")
     assert tasks_fm == plan_fm
-    assert tasks_body.lstrip().startswith("# 任务分解：Direct Formal Entry")
-    assert "### Task 1.1 冻结 direct-formal 正式真值" in tasks_body
-    assert "### Task 2.1 实现 direct-formal 脚手架" in tasks_body
+    assert tasks_body.lstrip().startswith("# 任务分解：Payment retry policy")
+    assert "### Task 1.1 收敛需求与验收契约" in tasks_body
+    assert "### Task 2.1 确认实现与测试路径" in tasks_body
+    assert "### Task 3.1 完成验证与独立评审" in tasks_body
+    assert "进入 execute 前确认" in tasks_body
 
     exec_log_text = (result.spec_dir / "task-execution-log.md").read_text(encoding="utf-8")
-    assert "# 任务执行日志：Direct Formal Entry" in exec_log_text
+    assert "# 任务执行日志：Payment retry policy" in exec_log_text
     assert f"**功能编号**：`{result.work_item_id}`" in exec_log_text
     assert "统一验证命令" in exec_log_text
     assert "代码审查结论" in exec_log_text
     assert "任务/计划同步状态" in exec_log_text
-    assert "已完成 git 提交：否" in exec_log_text
+    assert "已完成 git 提交：待执行" in exec_log_text
 
     parsed = TasksParser().parse(result.spec_dir / "tasks.md")
     assert parsed.total_tasks == 3

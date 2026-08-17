@@ -1,9 +1,8 @@
-"""Integration tests: ai-sdlc workitem init (FR-008 / SC-008)."""
+"""Integration tests for project-neutral ``ai-sdlc workitem init``."""
 
 from __future__ import annotations
 
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -13,7 +12,6 @@ from unittest.mock import patch
 
 import pytest
 import typer
-import yaml
 from typer.testing import CliRunner
 
 from ai_sdlc.cli.main import app
@@ -24,12 +22,7 @@ from ai_sdlc.routers.bootstrap import init_project
 REPO_ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
-_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 _INIT_ARGS = ["workitem", "init", "--title=Direct Formal Entry", "--wi-id=008-direct-formal-entry"]
-
-
-def _plain_cli_output(output: str) -> str:
-    return " ".join(_ANSI_RE.sub("", output).split())
 
 
 @pytest.fixture(autouse=True)
@@ -92,13 +85,6 @@ def _dependency_overlay_site_packages(tmp_path: Path) -> Path:
                 shutil.copy2(item, target)
 
     return overlay
-
-
-def _write_manifest_yaml(root: Path, text: str) -> None:
-    (root / "program-manifest.yaml").write_text(
-        text.strip() + "\n",
-        encoding="utf-8",
-    )
 
 
 def _init_git_repo(root: Path) -> None:
@@ -180,14 +166,13 @@ class TestCliWorkitemInit:
         assert "ai-sdlc init ." in result.output
         assert not (root / "specs").exists()
 
-    def test_workitem_init_generates_direct_formal_docs(
+    def test_workitem_init_generates_project_workitem_docs(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = tmp_path / "repo"
         root.mkdir()
         init_project(root)
         _init_git_repo(root)
-        _checkout_branch(root, "feature/008-direct-formal-entry-docs")
         monkeypatch.chdir(root)
 
         result = runner.invoke(
@@ -196,20 +181,22 @@ class TestCliWorkitemInit:
                 "workitem",
                 "init",
                 "--title",
-                "Direct Formal Entry",
+                "Payment retry policy",
                 "--wi-id",
-                "008-direct-formal-entry",
+                "008-payment-retry-policy",
+                "--input",
+                "支付失败后按退避策略重试",
                 "--related-plan",
-                ".cursor/plans/direct-formal.md",
+                "docs/payment-retry-plan.md",
                 "--related-doc",
-                "docs/superpowers/specs/direct-formal-design.md",
+                "docs/payment-api.md",
             ],
         )
         assert result.exit_code == 0
-        assert "specs/008-direct-formal-entry" in result.output
+        assert "specs/008-payment-retry-policy" in result.output
         assert "canonical formal docs" in result.output.lower()
 
-        wi_dir = root / "specs" / "008-direct-formal-entry"
+        wi_dir = root / "specs" / "008-payment-retry-policy"
         assert (wi_dir / "spec.md").is_file()
         assert (wi_dir / "plan.md").is_file()
         assert (wi_dir / "tasks.md").is_file()
@@ -217,67 +204,52 @@ class TestCliWorkitemInit:
         assert not (root / "docs" / "superpowers" / "plans").exists()
 
         fm, _ = parse_markdown_frontmatter(wi_dir / "tasks.md")
-        assert fm["related_plan"] == ".cursor/plans/direct-formal.md"
-        assert fm["related_doc"] == ["docs/superpowers/specs/direct-formal-design.md"]
+        assert fm["related_plan"] == "docs/payment-retry-plan.md"
+        assert fm["related_doc"] == ["docs/payment-api.md"]
+
+        spec_text = (wi_dir / "spec.md").read_text(encoding="utf-8")
+        assert "Payment retry policy" in spec_text
+        assert "支付失败后按退避策略重试" in spec_text
+        assert "作为项目成员" in spec_text
 
         exec_log_text = (wi_dir / "task-execution-log.md").read_text(encoding="utf-8")
         assert "统一验证命令" in exec_log_text
         assert "代码审查结论" in exec_log_text
         assert "任务/计划同步状态" in exec_log_text
-        assert "已完成 git 提交：否" in exec_log_text
+        assert "已完成 git 提交：待执行" in exec_log_text
         assert all(token in exec_log_text for token in ("merge-pending", "archived(reason)", "retained(reason)"))
 
-    def test_workitem_init_deduplicates_manifest_sync_blockers(
-        self, tmp_path: Path
+    def test_workitem_init_leaves_existing_program_manifest_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = tmp_path / "repo"
         root.mkdir()
-        spec_dir = root / "specs" / "008-direct-formal-entry"
-        scaffold_result = SimpleNamespace(
-            spec_dir=spec_dir,
-            work_item_id="008-direct-formal-entry",
-            created_paths=(),
+        init_project(root)
+        manifest_path = root / "program-manifest.yaml"
+        manifest_path.write_text(
+            'schema_version: "2"\nprogram:\n  goal: "Existing"\nspecs: []\n',
+            encoding="utf-8",
         )
-        manifest_sync = SimpleNamespace(
-            status="blocked",
-            blockers=[
-                "manifest sync blocked",
-                "manifest sync blocked",
-            ],
-            next_required_actions=[],
-            written_paths=[],
-        )
+        before_bytes = manifest_path.read_bytes()
+        before_mtime = manifest_path.stat().st_mtime_ns
+        monkeypatch.chdir(root)
 
-        with (
-            patch("ai_sdlc.cli.workitem_cmd.find_project_root", return_value=root),
-            patch("ai_sdlc.cli.workitem_cmd._ensure_workitem_init_git_preflight"),
-            patch(
-                "ai_sdlc.cli.workitem_cmd.WorkitemScaffolder.preview_work_item_id",
-                return_value="008-direct-formal-entry",
-            ),
-            patch(
-                "ai_sdlc.cli.workitem_cmd.WorkitemScaffolder.scaffold",
-                return_value=scaffold_result,
-            ),
-            patch(
-                "ai_sdlc.cli.workitem_cmd.ProgramService.ensure_manifest_spec_entry",
-                return_value=manifest_sync,
-            ),
-        ):
-            result = runner.invoke(
-                app,
-                [
-                    "workitem",
-                    "init",
-                    "--title",
-                    "Direct Formal Entry",
-                    "--wi-id",
-                    "008-direct-formal-entry",
-                ],
-            )
+        result = runner.invoke(
+            app,
+            [
+                "workitem",
+                "init",
+                "--title",
+                "Payment retry policy",
+                "--wi-id",
+                "008-payment-retry-policy",
+            ],
+        )
 
         assert result.exit_code == 0
-        assert result.output.count("manifest sync blocked") == 1
+        assert manifest_path.read_bytes() == before_bytes
+        assert manifest_path.stat().st_mtime_ns == before_mtime
+        assert "program truth handoff" not in result.output.lower()
 
     def test_workitem_init_deduplicates_created_paths_display(
         self, tmp_path: Path
@@ -291,16 +263,8 @@ class TestCliWorkitemInit:
             work_item_id="008-direct-formal-entry",
             created_paths=(created_path, created_path),
         )
-        manifest_sync = SimpleNamespace(
-            status="existing",
-            blockers=[],
-            next_required_actions=[],
-            written_paths=[],
-        )
-
         with (
             patch("ai_sdlc.cli.workitem_cmd.find_project_root", return_value=root),
-            patch("ai_sdlc.cli.workitem_cmd._ensure_workitem_init_git_preflight"),
             patch(
                 "ai_sdlc.cli.workitem_cmd.WorkitemScaffolder.preview_work_item_id",
                 return_value="008-direct-formal-entry",
@@ -308,10 +272,6 @@ class TestCliWorkitemInit:
             patch(
                 "ai_sdlc.cli.workitem_cmd.WorkitemScaffolder.scaffold",
                 return_value=scaffold_result,
-            ),
-            patch(
-                "ai_sdlc.cli.workitem_cmd.ProgramService.ensure_manifest_spec_entry",
-                return_value=manifest_sync,
             ),
         ):
             result = runner.invoke(
@@ -329,13 +289,21 @@ class TestCliWorkitemInit:
         assert result.exit_code == 0
         assert result.output.count("specs/008-direct-formal-entry/spec.md") == 1
 
-    def test_workitem_init_blocks_main_branch_until_docs_branch_is_checked_out(
+    def test_workitem_init_succeeds_on_arbitrary_existing_branch(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = tmp_path / "repo"
         root.mkdir()
         init_project(root)
         _init_git_repo(root)
+        _checkout_branch(root, "developer/payment-retry")
+        before_branch = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
         monkeypatch.chdir(root)
 
         result = runner.invoke(
@@ -344,31 +312,36 @@ class TestCliWorkitemInit:
                 "workitem",
                 "init",
                 "--title",
-                "Direct Formal Entry",
+                "Payment retry policy",
                 "--wi-id",
-                "008-direct-formal-entry",
+                "008-payment-retry-policy",
             ],
         )
 
-        assert result.exit_code == 1
-        assert "main" in result.output
-        assert "docs branch" in result.output.lower()
-        assert "feature/008-direct-formal-entry-docs" in result.output
+        assert result.exit_code == 0
+        assert "developer/payment-retry" in result.output
+        assert (root / "specs" / "008-payment-retry-policy").is_dir()
         assert (
-            "git checkout -b feature/008-direct-formal-entry-docs"
-            in _plain_cli_output(result.output)
+            subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            == before_branch
         )
-        assert not (root / "specs" / "008-direct-formal-entry").exists()
 
-    def test_workitem_init_blocks_dirty_docs_branch(
+    def test_workitem_init_succeeds_with_unrelated_tracked_modification(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = tmp_path / "repo"
         root.mkdir()
         init_project(root)
         _init_git_repo(root)
-        _checkout_branch(root, "feature/008-direct-formal-entry-docs")
-        (root / "dirty.txt").write_text("pending\n", encoding="utf-8")
+        dirty_path = root / "README.md"
+        dirty_path.write_text("unrelated pending change\n", encoding="utf-8")
+        before_dirty = dirty_path.read_bytes()
         monkeypatch.chdir(root)
 
         result = runner.invoke(
@@ -377,40 +350,35 @@ class TestCliWorkitemInit:
                 "workitem",
                 "init",
                 "--title",
-                "Direct Formal Entry",
+                "Payment retry policy",
                 "--wi-id",
-                "008-direct-formal-entry",
+                "008-payment-retry-policy",
             ],
         )
 
-        assert result.exit_code == 1
-        assert "clean working tree" in result.output.lower()
-        assert "feature/008-direct-formal-entry-docs" in result.output
-        assert not (root / "specs" / "008-direct-formal-entry").exists()
+        assert result.exit_code == 0
+        assert "unrelated changes" in result.output.lower()
+        assert dirty_path.read_bytes() == before_dirty
+        assert (root / "specs" / "008-payment-retry-policy").is_dir()
 
     @pytest.mark.parametrize("dirty_tree", [False, True])
-    def test_workitem_init_adapter_before_clean_tree_preflight(
+    def test_workitem_init_adapter_runs_after_informational_git_status(
         self, dirty_tree: bool, adapter_receipt: tuple[Path, list[str]]
     ) -> None:
         root, calls = adapter_receipt
         _init_git_repo(root)
-        _checkout_branch(root, "feature/008-direct-formal-entry-docs")
         dirty_path = root / "dirty.txt"
         if dirty_tree:
             dirty_path.write_text("pending\n", encoding="utf-8")
 
         result = runner.invoke(app, _INIT_ARGS)
 
-        if dirty_tree:
-            assert result.exit_code == 1
-            assert calls == []
-            assert not (root / "adapter-proof.txt").exists()
-            dirty_path.unlink()
-            result = runner.invoke(app, _INIT_ARGS)
-
         assert result.exit_code == 0
         assert calls == ["adapter"]
         assert (root / "specs" / "008-direct-formal-entry" / "spec.md").is_file()
+        if dirty_tree:
+            assert dirty_path.read_text(encoding="utf-8") == "pending\n"
+            assert "unrelated changes" in result.output.lower()
 
     def test_workitem_init_missing_title_does_not_run_adapter(
         self, adapter_receipt: tuple[Path, list[str]]
@@ -499,59 +467,13 @@ class TestCliWorkitemInit:
         assert calls == []
         assert not (root / "adapter-proof.txt").exists()
 
-    def test_workitem_init_materializes_program_manifest_entry_and_guides_truth_sync(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        root = tmp_path / "repo"
-        root.mkdir()
-        init_project(root)
-        _write_manifest_yaml(
-            root,
-            """
-schema_version: "2"
-program:
-  goal: "Demo truth ledger"
-specs: []
-""",
-        )
-        monkeypatch.chdir(root)
-
-        result = runner.invoke(
-            app,
-            [
-                "workitem",
-                "init",
-                "--title",
-                "Program Truth Handoff Example",
-                "--wi-id",
-                "148-program-truth-handoff-example",
-            ],
-        )
-
-        assert result.exit_code == 0
-        assert "program truth handoff" in result.output.lower()
-        assert "program-manifest.yaml" in result.output
-        assert "python -m ai_sdlc program truth sync --execute --yes" in result.output
-
-        manifest = yaml.safe_load(
-            (root / "program-manifest.yaml").read_text(encoding="utf-8")
-        )
-        assert manifest["specs"] == [
-            {
-                "id": "148-program-truth-handoff-example",
-                "path": "specs/148-program-truth-handoff-example",
-                "depends_on": [],
-            }
-        ]
-
-    def test_workitem_init_bootstraps_program_manifest_when_missing(
+    def test_workitem_init_does_not_bootstrap_program_manifest(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         root = tmp_path / "repo"
         root.mkdir()
         init_project(root)
         _init_git_repo(root)
-        _checkout_branch(root, "feature/149-bootstrap-manifest-docs")
         monkeypatch.chdir(root)
 
         result = runner.invoke(
@@ -560,25 +482,15 @@ specs: []
                 "workitem",
                 "init",
                 "--title",
-                "Bootstrap Manifest",
+                "Payment retry policy",
                 "--wi-id",
-                "149-bootstrap-manifest",
+                "149-payment-retry-policy",
             ],
         )
 
         assert result.exit_code == 0
-        assert "program truth handoff" in result.output.lower()
-        manifest = yaml.safe_load(
-            (root / "program-manifest.yaml").read_text(encoding="utf-8")
-        )
-        assert manifest["schema_version"] == "2"
-        assert manifest["specs"] == [
-            {
-                "id": "149-bootstrap-manifest",
-                "path": "specs/149-bootstrap-manifest",
-                "depends_on": [],
-            }
-        ]
+        assert "program truth handoff" not in result.output.lower()
+        assert not (root / "program-manifest.yaml").exists()
 
     def test_workitem_init_skips_existing_sequences_when_project_state_lags(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
