@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import pytest
@@ -151,11 +152,68 @@ def test_source_bound_guide_command_url_is_inert(tmp_path: Path) -> None:
     assert "external_url_in_unbound_text" not in {issue.code for issue in issues}
 
 
-def test_missing_configured_video_is_rejected(tmp_path: Path) -> None:
+def test_homepage_exposes_approved_value_and_video_contract() -> None:
+    root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
+    homepage = (root / "index.html").read_text(encoding="utf-8")
+
+    assert "把不确定的 AI 生成，变成可验证的工程交付" in homepage
+    assert "从一次生成，到持续完成" in homepage
+    assert "从模型自审，到专家对抗" in homepage
+    assert "从零散 Skills，到项目级工程系统" in homepage
+    assert 'href="loop-engineering.html"' in homepage
+    assert 'href="dynamic-expert-review.html"' in homepage
+    assert 'href="platform-capabilities.html"' in homepage
+    assert "data-video-empty" in homepage
+    assert "data-video-empty-poster" in homepage
+    assert "data-video-player" in homepage
+    assert "data-video-title" in homepage
+    assert 'src="assets/js/video-config.js"' in homepage
+    assert re.search(r"\b\d{1,2}:\d{2}\b", homepage) is None
+
+
+def test_homepage_video_defaults_to_an_honest_local_empty_state() -> None:
+    root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
+    homepage = (root / "index.html").read_text(encoding="utf-8")
+    config = (root / "assets/js/video-config.js").read_text(encoding="utf-8")
+
+    assert '<img data-video-empty-poster src="assets/images/video-poster.png" alt="">' in homepage
+    assert re.search(r'\bsrc:\s*""', config)
+    assert 'poster: "assets/images/video-poster.png"' in config
+    assert 'title: "AI-SDLC 2.0 产品实录"' in config
+
+
+def test_homepage_keeps_native_video_controls_and_initializes_video() -> None:
+    root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
+    homepage = (root / "index.html").read_text(encoding="utf-8")
+    site_js = (root / "assets/js/site.js").read_text(encoding="utf-8")
+
+    assert re.search(
+        r"<video\b[^>]*\bcontrols\b[^>]*\bpreload=\"metadata\"[^>]*\bplaysinline\b",
+        homepage,
+    )
+    initializer = re.search(
+        r'document\.addEventListener\("DOMContentLoaded",\s*\(\)\s*=>\s*\{(?P<body>.*?)\}\);',
+        site_js,
+        re.DOTALL,
+    )
+    assert initializer is not None
+    assert "setupVideo();" in initializer.group("body")
+
+
+@pytest.mark.parametrize("field", ("src", "poster", "captions"))
+def test_missing_configured_video_media_is_rejected(
+    tmp_path: Path, field: str
+) -> None:
+    values = {"src": "", "poster": "", "captions": ""}
+    values[field] = f"assets/video/missing-{field}.mp4"
     _write(
         tmp_path,
         "assets/js/video-config.js",
-        'window.AISDLC_VIDEO = {src:"assets/video/missing.mp4",poster:"",captions:""};',
+        "window.AISDLC_VIDEO = {"
+        f'src:"{values["src"]}",'
+        f'poster:"{values["poster"]}",'
+        f'captions:"{values["captions"]}"'
+        "};",
     )
 
     issues = validate_video_config(tmp_path)
@@ -174,11 +232,37 @@ def test_empty_video_with_existing_poster_is_valid(tmp_path: Path) -> None:
     assert validate_video_config(tmp_path) == []
 
 
-def test_configured_video_path_cannot_escape_site_root(tmp_path: Path) -> None:
+def test_existing_configured_video_media_is_valid(tmp_path: Path) -> None:
+    _write(tmp_path, "assets/video/demo.mp4", "video")
+    _write(tmp_path, "assets/images/video-poster.png", "poster")
+    _write(tmp_path, "assets/video/demo.vtt", "WEBVTT")
     _write(
         tmp_path,
         "assets/js/video-config.js",
-        'window.AISDLC_VIDEO = {src:"../outside.mp4",poster:"",captions:""};',
+        "window.AISDLC_VIDEO = {"
+        'src:"assets/video/demo.mp4",'
+        'poster:"assets/images/video-poster.png",'
+        'captions:"assets/video/demo.vtt"'
+        "};",
+    )
+
+    assert validate_video_config(tmp_path) == []
+
+
+@pytest.mark.parametrize("field", ("src", "poster", "captions"))
+def test_configured_video_media_path_cannot_escape_site_root(
+    tmp_path: Path, field: str
+) -> None:
+    values = {"src": "", "poster": "", "captions": ""}
+    values[field] = f"../outside-{field}.mp4"
+    _write(
+        tmp_path,
+        "assets/js/video-config.js",
+        "window.AISDLC_VIDEO = {"
+        f'src:"{values["src"]}",'
+        f'poster:"{values["poster"]}",'
+        f'captions:"{values["captions"]}"'
+        "};",
     )
 
     issues = validate_video_config(tmp_path)

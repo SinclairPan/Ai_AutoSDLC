@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="assets/css/tokens.css">
     <link rel="stylesheet" href="assets/css/site.css">
     <link rel="stylesheet" href="assets/css/pages.css">
+    <script src="assets/js/video-config.js" defer></script>
     <script src="assets/js/site.js" defer></script>
   </head>
   <body data-page="home">
@@ -32,10 +33,93 @@
         <a class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">GitHub</a>
       </div>
     </header>
-    <main id="main" class="site-shell page-main">
-      <section class="page-intro" aria-labelledby="page-title">
-        <p class="page-eyebrow">AI-SDLC 2.0</p>
-        <h1 id="page-title">把不确定的 AI 生成，变成可验证的工程交付</h1>
+    <main id="main" class="site-shell page-main home-main">
+      <section class="home-hero" aria-labelledby="page-title">
+        <div class="home-hero-copy">
+          <p class="page-eyebrow">AI-SDLC 2.0</p>
+          <h1 id="page-title">把不确定的 AI 生成，变成可验证的工程交付</h1>
+          <p class="home-hero-summary">
+            AI-SDLC 把需求、Loop、证据与独立复核带进项目，让 AI
+            知道下一步，也知道什么时候必须停下。
+          </p>
+          <div class="home-hero-actions" aria-label="首页主要操作">
+            <a class="button-primary" href="#product-video" data-video-trigger>
+              观看产品实录
+            </a>
+            <a class="home-hero-link" href="loop-engineering.html">
+              从 Loop Engineering 开始 <span aria-hidden="true">→</span>
+            </a>
+          </div>
+          <p class="home-hero-facts">
+            AI-SDLC 2.0 <span aria-hidden="true">·</span> Open Source
+            <span aria-hidden="true">·</span> Local-first
+            <span aria-hidden="true">·</span> Codex / Claude Code / Cursor / Copilot
+          </p>
+        </div>
+
+        <figure id="product-video" class="video-shell">
+          <div
+            class="video-empty"
+            data-video-empty
+            tabindex="-1"
+            aria-labelledby="video-title video-status"
+          >
+            <div class="video-empty-copy">
+              <p id="video-title" data-video-title>AI-SDLC 2.0 产品实录</p>
+              <p id="video-status" class="video-status" role="status" aria-live="polite">
+                产品实录即将加入
+              </p>
+            </div>
+            <img data-video-empty-poster src="assets/images/video-poster.png" alt="">
+          </div>
+          <video
+            data-video-player
+            controls
+            preload="metadata"
+            playsinline
+            hidden
+            aria-label="AI-SDLC 2.0 产品实录"
+          ></video>
+        </figure>
+      </section>
+
+      <section class="home-values" aria-labelledby="home-values-title">
+        <p class="page-eyebrow">Why AI-SDLC</p>
+        <h2 id="home-values-title">真正的差距，不在生成速度，而在交付能力。</h2>
+        <div class="home-value-grid">
+          <article class="home-value">
+            <p class="home-value-label">01 · Loop Engineering</p>
+            <h3>从一次生成，到持续完成</h3>
+            <p>
+              Loop 把目标、执行、验证、反馈与修复连成闭环；证据满足 Close
+              条件，任务才真正完成。
+            </p>
+            <a href="loop-engineering.html">
+              看 Loop 如何把任务做完 <span aria-hidden="true">→</span>
+            </a>
+          </article>
+          <article class="home-value">
+            <p class="home-value-label">02 · Dynamic Expert Review</p>
+            <h3>从模型自审，到专家对抗</h3>
+            <p>
+              系统按风险选择独立只读专家；Findings 回到原 Writer
+              修复，专家数量和复审轮次都有边界。
+            </p>
+            <a href="dynamic-expert-review.html">
+              看专家如何挑战关键结果 <span aria-hidden="true">→</span>
+            </a>
+          </article>
+          <article class="home-value">
+            <p class="home-value-label">03 · Platform Capabilities</p>
+            <h3>从零散 Skills，到项目级工程系统</h3>
+            <p>
+              跨 AI 工具接入、断点续作、前端方案、组件规范与浏览器验收证据都留在项目中；换工具，项目规则、状态与工件不必重建。
+            </p>
+            <a href="platform-capabilities.html">
+              查看完整平台能力 <span aria-hidden="true">→</span>
+            </a>
+          </article>
+        </div>
       </section>
     </main>
   </body>

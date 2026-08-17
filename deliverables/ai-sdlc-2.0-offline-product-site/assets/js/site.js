@@ -74,9 +74,43 @@
     });
   };
 
+  const setupVideo = (root = document, config = window.AISDLC_VIDEO) => {
+    const empty = root.querySelector("[data-video-empty]");
+    const emptyPoster = root.querySelector("[data-video-empty-poster]");
+    const video = root.querySelector("[data-video-player]");
+    const title = root.querySelector("[data-video-title]");
+    const trigger = root.querySelector("[data-video-trigger]");
+    if (!empty || !video || !config) return;
+    if (title && config.title) title.textContent = config.title;
+    if (emptyPoster && config.poster) emptyPoster.src = config.poster;
+    if (!config.src) {
+      trigger?.addEventListener("click", (event) => {
+        event.preventDefault();
+        empty.focus();
+      });
+      return;
+    }
+    const source = document.createElement("source");
+    source.src = config.src;
+    source.type = config.type;
+    video.append(source);
+    if (config.captions) {
+      const track = document.createElement("track");
+      track.kind = "captions";
+      track.srclang = "zh-CN";
+      track.label = "中文字幕";
+      track.src = config.captions;
+      video.append(track);
+    }
+    video.poster = config.poster;
+    video.hidden = false;
+    empty.hidden = true;
+  };
+
   document.addEventListener("DOMContentLoaded", () => {
     setupMobileNavigation();
     setupTabs();
     setupExternalLinks();
+    setupVideo();
   });
 })();
