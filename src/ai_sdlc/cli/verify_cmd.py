@@ -8,6 +8,7 @@ import typer
 from rich.console import Console
 
 from ai_sdlc.core.verify_constraints import (
+    ConstraintProfile,
     build_constraint_report,
     build_verification_gate_context,
     build_verification_governance_bundle,
@@ -61,6 +62,12 @@ def verify_constraints(
         "--json",
         help="Machine-readable report on stdout.",
     ),
+    profile: ConstraintProfile = typer.Option(
+        ConstraintProfile.PROJECT,
+        "--profile",
+        help="Verification scope: project or self-development.",
+        case_sensitive=False,
+    ),
 ) -> None:
     """Validate the constitution, checkpoint spec_dir, and task acceptance criteria."""
     root = find_project_root()
@@ -76,8 +83,8 @@ def verify_constraints(
             console.print(f"[red]{msg}[/red]")
         raise typer.Exit(code=1)
 
-    report = build_constraint_report(root)
-    verification_context = build_verification_gate_context(root)
+    report = build_constraint_report(root, profile=profile)
+    verification_context = build_verification_gate_context(root, profile=profile)
     verification_sources = tuple(
         verification_context.get("verification_sources", (report.source_name,))
     )
@@ -160,12 +167,14 @@ def verify_constraints(
             json.dumps(
                 {
                     "ok": len(effective_blockers) == 0,
+                    "profile": report.profile.value,
                     "blockers": effective_blockers,
                     "advisories": advisories,
                     "root": str(root),
                     "verification_gate": {
                         "name": report.gate_name,
                         "source_name": report.source_name,
+                        "profile": report.profile.value,
                         "sources": list(verification_sources),
                         "check_objects": list(report.check_objects),
                         "coverage_gaps": list(report.coverage_gaps),

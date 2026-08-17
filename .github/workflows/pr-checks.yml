@@ -59,4 +59,4 @@ jobs:
         run: |
           git branch --force main HEAD^1
           git switch --create "$GITHUB_HEAD_REF" HEAD^2
-          uv run ai-sdlc verify constraints
+          uv run ai-sdlc verify constraints --profile self-development

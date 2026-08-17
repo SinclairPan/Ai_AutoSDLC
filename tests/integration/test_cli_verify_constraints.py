@@ -55,7 +55,22 @@ from ai_sdlc.models.frontend_solution_confirmation import (
 from ai_sdlc.models.state import Checkpoint, FeatureInfo
 from ai_sdlc.routers.bootstrap import init_project
 
-runner = CliRunner()
+
+class _SelfDevelopmentCliRunner(CliRunner):
+    """Keep this historical framework-governance suite explicit about scope."""
+
+    def invoke(self, cli, args=None, **kwargs):  # type: ignore[no-untyped-def,override]
+        normalized_args = list(args or ())
+        if (
+            normalized_args[:2] == ["verify", "constraints"]
+            and "--profile" not in normalized_args
+        ):
+            normalized_args[2:2] = ["--profile", "self-development"]
+        return super().invoke(cli, normalized_args, **kwargs)
+
+
+runner = _SelfDevelopmentCliRunner()
+project_runner = CliRunner()
 SAMPLE_FIXTURE_ROOT = (
     Path(__file__).resolve().parents[1]
     / "fixtures"
@@ -755,6 +770,39 @@ def _write_frontend_evidence_class_checkpoint(
 
 
 class TestCliVerifyConstraints:
+    def test_json_defaults_to_project_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        init_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = project_runner.invoke(app, ["verify", "constraints", "--json"])
+
+        payload = json.loads(result.output)
+        assert payload["profile"] == "project"
+        assert payload["verification_gate"]["profile"] == "project"
+        assert payload["verification_gate"]["release_gate"] is None
+        assert (
+            "framework_defect_backlog"
+            not in payload["verification_gate"]["check_objects"]
+        )
+
+    def test_json_accepts_explicit_self_development_profile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        init_project(tmp_path)
+        monkeypatch.chdir(tmp_path)
+
+        result = runner.invoke(
+            app,
+            ["verify", "constraints", "--profile", "self-development", "--json"],
+        )
+
+        payload = json.loads(result.output)
+        assert payload["profile"] == "self-development"
+        assert payload["verification_gate"]["profile"] == "self-development"
+        assert "framework_defect_backlog" in payload["verification_gate"]["check_objects"]
+
     def test_exit_1_missing_constitution(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

@@ -6,6 +6,7 @@ import json
 import re
 import tomllib
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 
 import yaml
@@ -484,6 +485,22 @@ FRAMEWORK_DEFECT_BACKLOG_REQUIRED_FIELDS = (
     "风险等级",
     "可验证成功标准",
     "是否需要回归测试补充",
+)
+
+
+class ConstraintProfile(str, Enum):
+    """Select consumer-project or framework self-development verification."""
+
+    PROJECT = "project"
+    SELF_DEVELOPMENT = "self-development"
+
+
+PROJECT_VERIFICATION_GATE_OBJECTS = (
+    "required_governance_files",
+    "branch_lifecycle",
+    "checkpoint_spec_dir",
+    "tasks_acceptance",
+    "skip_registry_mapping",
 )
 VERIFICATION_GATE_OBJECTS = (
     "required_governance_files",
@@ -1378,8 +1395,9 @@ class ConstraintReport:
     root: str
     source_name: str
     blockers: tuple[str, ...]
+    profile: ConstraintProfile = ConstraintProfile.PROJECT
     gate_name: str = "Verification Gate"
-    check_objects: tuple[str, ...] = VERIFICATION_GATE_OBJECTS
+    check_objects: tuple[str, ...] = PROJECT_VERIFICATION_GATE_OBJECTS
     coverage_gaps: tuple[str, ...] = ()
     release_gate: dict[str, object] | None = None
     evidence_kinds: tuple[str, ...] = ("event", "structured_report")
@@ -1661,9 +1679,25 @@ class FrontendPublicPrimeVueImportBoundaryReport:
         }
 
 
-def build_constraint_report(root: Path) -> ConstraintReport:
+def build_constraint_report(
+    root: Path,
+    *,
+    profile: ConstraintProfile = ConstraintProfile.PROJECT,
+) -> ConstraintReport:
     """Build a structured report for verify constraints."""
     checkpoint = load_checkpoint(root)
+    if profile is ConstraintProfile.PROJECT:
+        return ConstraintReport(
+            root=str(root),
+            gate_name="Verification Gate",
+            source_name="verify constraints",
+            profile=profile,
+            check_objects=PROJECT_VERIFICATION_GATE_OBJECTS,
+            blockers=tuple(collect_constraint_blockers(root, profile=profile)),
+            coverage_gaps=(),
+            release_gate=None,
+        )
+
     frontend_runtime_attachment = _frontend_contract_runtime_attachment(root, checkpoint)
     frontend_contract_report = _frontend_contract_attachment_report(root, checkpoint)
     frontend_gate_report = _frontend_gate_attachment_report(root, checkpoint)
@@ -1755,7 +1789,7 @@ def build_constraint_report(root: Path) -> ConstraintReport:
     blockers = _merge_unique_strings(
         _merge_unique_strings(
             _merge_unique_strings(
-                tuple(collect_constraint_blockers(root)),
+                tuple(collect_constraint_blockers(root, profile=profile)),
                 _frontend_contract_runtime_attachment_gate_blockers(
                     frontend_runtime_attachment
                 ),
@@ -1871,6 +1905,7 @@ def build_constraint_report(root: Path) -> ConstraintReport:
         root=str(root),
         gate_name="Verification Gate",
         source_name="verify constraints",
+        profile=profile,
         check_objects=check_objects,
         blockers=blockers,
         coverage_gaps=coverage_gaps,
@@ -1878,9 +1913,31 @@ def build_constraint_report(root: Path) -> ConstraintReport:
     )
 
 
-def build_verification_gate_context(root: Path) -> dict[str, object]:
+def build_verification_gate_context(
+    root: Path,
+    *,
+    profile: ConstraintProfile = ConstraintProfile.PROJECT,
+) -> dict[str, object]:
     """Build the explicit Verification Gate context consumed by runner and gate CLI."""
-    report = build_constraint_report(root)
+    report = build_constraint_report(root, profile=profile)
+    if profile is ConstraintProfile.PROJECT:
+        governance = build_verification_governance_bundle(
+            report,
+            decision_subject=f"verify:{root}",
+            evidence_refs=("verify-constraints:structured-report",),
+        )
+        decision_result = str(governance["gate_decision_payload"]["decision_result"])
+        return {
+            "verification_profile": profile.value,
+            "verification_sources": (report.source_name,),
+            "verification_check_objects": report.check_objects,
+            "constraint_blockers": report.blockers if decision_result == "block" else (),
+            "coverage_gaps": report.coverage_gaps if decision_result == "block" else (),
+            "release_gate": None,
+            "verification_governance": governance,
+            "provenance_phase1": load_phase1_provenance_gate_payload(root),
+        }
+
     checkpoint = load_checkpoint(root)
     frontend_runtime_attachment = _frontend_contract_runtime_attachment(root, checkpoint)
     frontend_contract_report = _frontend_contract_attachment_report(root, checkpoint)
@@ -1977,6 +2034,7 @@ def build_verification_gate_context(root: Path) -> dict[str, object]:
         ),
     )
     context: dict[str, object] = {
+        "verification_profile": profile.value,
         "verification_sources": verification_sources,
         "verification_check_objects": report.check_objects,
         "constraint_blockers": report.blockers if decision_result == "block" else (),
@@ -2134,7 +2192,11 @@ def build_verification_governance_bundle(
     }
 
 
-def collect_constraint_blockers(root: Path) -> list[str]:
+def collect_constraint_blockers(
+    root: Path,
+    *,
+    profile: ConstraintProfile = ConstraintProfile.PROJECT,
+) -> list[str]:
     """Return human-readable BLOCKER lines (empty list if none)."""
     blockers: list[str] = []
     cp = load_checkpoint(root)
@@ -2146,21 +2208,23 @@ def collect_constraint_blockers(root: Path) -> list[str]:
             f"{CONSTITUTION_REL.as_posix()}"
         )
 
-    blockers.extend(_framework_defect_backlog_blockers(root))
     blockers.extend(_formal_artifact_target_blockers(root))
-    blockers.extend(_backlog_breach_reference_blockers(root))
-    blockers.extend(_release_docs_consistency_blockers(root))
-    blockers.extend(_readme_cli_path_blockers(root))
-    blockers.extend(_beginner_guide_cli_path_blockers(root))
-    blockers.extend(_agent_instruction_cli_path_blockers(root))
-    blockers.extend(_adapter_template_cli_path_blockers(root))
-    blockers.extend(_frontend_solution_confirmation_instruction_blockers(root))
-    blockers.extend(_adapter_template_comment_policy_blockers(root))
-    blockers.extend(_reconcile_smoke_contract_blockers(root))
-    blockers.extend(_doc_first_surface_blockers(root))
-    blockers.extend(_verification_profile_blockers(root))
-    blockers.extend(_feature_regression_guard_blockers(root))
+    blockers.extend(_consumer_frontend_solution_confirmation_instruction_blockers(root))
     blockers.extend(collect_text_quality_blockers(root))
+    if profile is ConstraintProfile.SELF_DEVELOPMENT:
+        blockers.extend(_framework_defect_backlog_blockers(root))
+        blockers.extend(_backlog_breach_reference_blockers(root))
+        blockers.extend(_release_docs_consistency_blockers(root))
+        blockers.extend(_readme_cli_path_blockers(root))
+        blockers.extend(_beginner_guide_cli_path_blockers(root))
+        blockers.extend(_agent_instruction_cli_path_blockers(root))
+        blockers.extend(_adapter_template_cli_path_blockers(root))
+        blockers.extend(_framework_frontend_instruction_consistency_blockers(root))
+        blockers.extend(_adapter_template_comment_policy_blockers(root))
+        blockers.extend(_reconcile_smoke_contract_blockers(root))
+        blockers.extend(_doc_first_surface_blockers(root))
+        blockers.extend(_verification_profile_blockers(root))
+        blockers.extend(_feature_regression_guard_blockers(root))
 
     if cp is None or cp.feature is None:
         return _dedupe_text_items(blockers)
@@ -2196,14 +2260,15 @@ def collect_constraint_blockers(root: Path) -> list[str]:
                 "keep doc-first work in design/decompose and out of code/tests"
             )
 
-    blockers.extend(_frontend_evidence_class_blockers(spec_path))
     blockers.extend(_skip_registry_mapping_blockers(root, spec_path, cp))
     blockers.extend(_branch_lifecycle_blockers(root, spec_path))
-    blockers.extend(_feature_contract_blockers(root, cp))
-    frontend_contract_report = _frontend_contract_attachment_report(root, cp)
-    if frontend_contract_report is not None:
-        blockers.extend(frontend_contract_report.blockers)
-    blockers.extend(_release_gate_blockers(root, cp))
+    if profile is ConstraintProfile.SELF_DEVELOPMENT:
+        blockers.extend(_frontend_evidence_class_blockers(spec_path))
+        blockers.extend(_feature_contract_blockers(root, cp))
+        frontend_contract_report = _frontend_contract_attachment_report(root, cp)
+        if frontend_contract_report is not None:
+            blockers.extend(frontend_contract_report.blockers)
+        blockers.extend(_release_gate_blockers(root, cp))
     return _dedupe_text_items(blockers)
 
 
@@ -4666,8 +4731,37 @@ def _adapter_template_cli_path_blockers(root: Path) -> list[str]:
 
 def _frontend_solution_confirmation_instruction_blockers(root: Path) -> list[str]:
     """Keep frontend implementation blocked until the user confirms the stack."""
+    return _frontend_solution_confirmation_instruction_blockers_for_rels(
+        root,
+        FRONTEND_SOLUTION_CONFIRMATION_RELS,
+    )
+
+
+def _consumer_frontend_solution_confirmation_instruction_blockers(
+    root: Path,
+) -> list[str]:
+    """Validate the installed project instruction without framework source files."""
+    return _frontend_solution_confirmation_instruction_blockers_for_rels(
+        root,
+        (AGENTS_REL,),
+    )
+
+
+def _framework_frontend_instruction_consistency_blockers(root: Path) -> list[str]:
+    """Validate framework rules and generated adapter templates."""
+    return _frontend_solution_confirmation_instruction_blockers_for_rels(
+        root,
+        (PIPELINE_RULE_REL, *ADAPTER_TEMPLATE_CLI_PATH_RELS),
+    )
+
+
+def _frontend_solution_confirmation_instruction_blockers_for_rels(
+    root: Path,
+    rels: tuple[Path, ...],
+) -> list[str]:
+    """Validate frontend confirmation markers for selected instruction files."""
     existing_rels = [
-        rel for rel in FRONTEND_SOLUTION_CONFIRMATION_RELS if (root / rel).is_file()
+        rel for rel in rels if (root / rel).is_file()
     ]
     if not existing_rels:
         return []

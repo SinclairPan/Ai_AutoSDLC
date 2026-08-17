@@ -241,7 +241,7 @@ bash packaging/offline/build_offline_bundle.sh
 ```powershell
 uv run pytest -q
 uv run ruff check src tests scripts
-uv run ai-sdlc verify constraints
+uv run ai-sdlc verify constraints --profile self-development
 uv build
 ```
 
