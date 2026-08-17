@@ -225,36 +225,54 @@ LOOP_PANEL_CONTRACTS = {
 
 EXPERT_RISK_CONTRACTS = {
     "review-requirement-panel": {
-        "data-primary-risk": ("范围", "验收标准"),
-        "data-primary-expert": ("scope and acceptance expert",),
-        "data-cross-risk": ("交叉风险",),
-        "data-example-finding": ("示例 Finding", "验收"),
+        "data-primary-risk": "范围与验收标准是否清楚、可执行、可证明。",
+        "data-primary-expert": "scope and acceptance expert",
+        "data-cross-risk": "没有明确交叉风险时不增加 Cross-risk Expert。",
+        "data-example-finding": (
+            "“可用”没有对应可执行验收场景，失败路径也未进入范围。"
+        ),
     },
     "review-design-panel": {
-        "data-primary-risk": ("接口", "边界"),
-        "data-primary-expert": ("interface and boundary expert",),
-        "data-cross-risk": ("交叉风险",),
-        "data-example-finding": ("示例 Finding", "失败"),
+        "data-primary-risk": "接口与边界是否覆盖成功、失败和状态漂移。",
+        "data-primary-expert": "interface and boundary expert",
+        "data-cross-risk": "接口触及权限边界时，才条件加入安全交叉风险。",
+        "data-example-finding": (
+            "接口只定义成功返回，失败语义与权限边界没有对应任务。"
+        ),
     },
     "review-implementation-panel": {
-        "data-primary-risk": ("行为", "回归"),
-        "data-primary-expert": ("behavior and regression expert",),
-        "data-cross-risk": ("交叉风险",),
-        "data-example-finding": ("示例 Finding", "测试"),
+        "data-primary-risk": "实现行为、错误处理与回归面是否符合当前合同。",
+        "data-primary-expert": "behavior and regression expert",
+        "data-cross-risk": "错误处理改变用户可见状态时，才加入前端交叉风险。",
+        "data-example-finding": (
+            "异常分支吞掉错误，现有测试只覆盖成功路径，无法证明回归未发生。"
+        ),
     },
     "review-frontend-panel": {
-        "data-primary-risk": ("交互", "证据身份"),
-        "data-primary-expert": ("interaction and evidence-identity expert",),
-        "data-cross-risk": ("交叉风险",),
-        "data-example-finding": ("示例 Finding", "截图"),
+        "data-primary-risk": "交互结果与证据身份是否绑定当前页面和当前候选。",
+        "data-primary-expert": "interaction and evidence-identity expert",
+        "data-cross-risk": "交互包含授权决定时，才条件加入安全边界交叉风险。",
+        "data-example-finding": (
+            "截图来自旧 digest，且没有记录提交交互后的 console / page error。"
+        ),
     },
     "review-pr-panel": {
-        "data-primary-risk": ("跨阶段回归",),
-        "data-primary-expert": ("cross-stage regression expert",),
-        "data-cross-risk": ("交叉风险",),
-        "data-example-finding": ("示例 Finding", "Review Pack"),
+        "data-primary-risk": "跨阶段回归是否穿透需求、设计、实现和当前证据。",
+        "data-primary-expert": "cross-stage regression expert",
+        "data-cross-risk": (
+            "Review Pack 同时触及独立风险面时，才加入对应交叉风险。"
+        ),
+        "data-example-finding": (
+            "Review Pack 已改变 API，需求和前端证据仍引用旧响应合同。"
+        ),
     },
 }
+
+EXPERT_GRAPH_IDENTITY = (
+    "这是一张 Writer 与临时只读专家之间关系的说明性拓扑。"
+    "它不是持久 Graph，不是图数据库，不是专家调度运行时或自主多 Agent Runtime，"
+    "也不是第二套状态机；Loop 仍是唯一状态源。"
+)
 
 
 def _single_node(
@@ -290,6 +308,88 @@ def _assert_local_pr_review_contract(document: _HtmlNode) -> None:
         "fix/rerun",
         "final report",
     ], f"Local PR Review steps out of contract: {labels}"
+
+
+def _assert_expert_risk_contract(document: _HtmlNode) -> None:
+    for panel_id, field_contracts in EXPERT_RISK_CONTRACTS.items():
+        panel = _single_node(document, tag="section", attribute="id", value=panel_id)
+        fields = _find_nodes(panel, attribute="data-review-value")
+        assert len(fields) == 4, f"{panel_id} must bind exactly four risk values"
+        for attribute, expected_text in field_contracts.items():
+            field = _single_node(panel, attribute=attribute)
+            actual = _node_text(_single_node(field, tag="dd"))
+            assert actual == expected_text, (
+                f"{panel_id} {attribute} stage contract mismatch: {actual}"
+            )
+
+
+def _assert_expert_graph_contract(document: _HtmlNode) -> None:
+    graph = _single_node(document, tag="ol", attribute="data-expert-graph")
+    steps = [child for child in graph.children if child.tag == "li"]
+    assert [step.attributes.get("data-graph-node") for step in steps] == [
+        "risk",
+        "capability",
+        "expert-routing",
+        "isolation",
+        "findings",
+        "writer-fix",
+        "rereview",
+        "outcomes",
+    ]
+
+    routing = _single_node(
+        graph, tag="li", attribute="data-graph-node", value="expert-routing"
+    )
+    branches = _single_node(routing, tag="ol", attribute="data-expert-branches")
+    branch_nodes = [child for child in branches.children if child.tag == "li"]
+    assert [node.attributes.get("data-expert-branch") for node in branch_nodes] == [
+        "primary",
+        "cross-risk",
+    ]
+    primary, cross_risk = branch_nodes
+    assert primary.attributes.get("data-route") == "required"
+    assert "Primary Expert · 必选主路径" in _node_text(primary)
+    assert cross_risk.attributes.get("data-route") == "conditional", (
+        "Cross-risk Expert must be conditional"
+    )
+    assert (
+        "只有存在明确第二风险面时，才加入一名 Cross-risk Expert。"
+        in _node_text(cross_risk)
+    ), "Cross-risk Expert condition is incomplete"
+
+    findings = _single_node(
+        graph, tag="li", attribute="data-graph-node", value="findings"
+    )
+    assert findings.attributes.get("data-merge-from") == "primary cross-risk"
+    assert "Primary 主路径与条件 Cross-risk 支路在 Findings 汇合" in _node_text(
+        findings
+    )
+
+    writer_fix = _single_node(
+        graph, tag="li", attribute="data-graph-node", value="writer-fix"
+    )
+    assert "Findings 回到原 Writer；修改权不转移" in _node_text(writer_fix)
+    rereview = _single_node(
+        graph, tag="li", attribute="data-graph-node", value="rereview"
+    )
+    assert "最多一次修复后复审" in _node_text(rereview)
+
+    outcomes = _single_node(
+        graph, tag="li", attribute="data-graph-node", value="outcomes"
+    )
+    outcome_list = _single_node(outcomes, tag="ul", attribute="data-review-outcomes")
+    outcome_nodes = [child for child in outcome_list.children if child.tag == "li"]
+    assert [node.attributes.get("data-review-outcome") for node in outcome_nodes] == [
+        "close",
+        "needs-review",
+    ]
+    close, stop = outcome_nodes
+    assert close.attributes.get("data-route") == "conditions-met"
+    assert "满足原 Loop 的 Close 条件时关闭" in _node_text(close)
+    assert stop.attributes.get("data-route") == "expert-failure"
+    assert "专家执行失败、超时或输出无效时，保持 needs_review 并 Stop" in _node_text(
+        stop
+    )
 
 
 def _parse_home_values(markup: str) -> list[dict[str, object]]:
@@ -337,6 +437,164 @@ process.stdout.write(JSON.stringify({
   before,
   after,
   mutationErrors,
+}));
+"""
+    result = subprocess.run(
+        ["node", "-e", harness, str(path.resolve())],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return json.loads(result.stdout)
+
+
+def _execute_tab_browser_contract(path: Path) -> dict[str, object]:
+    harness = r"""
+"use strict";
+const fs = require("node:fs");
+const vm = require("node:vm");
+const tabIds = [
+  "review-requirement",
+  "review-design",
+  "review-implementation",
+  "review-frontend",
+  "review-pr",
+];
+
+function boot(initialHash = "") {
+  class FakeElement {
+    constructor(id, panelId = "") {
+      this.id = id;
+      this.dataset = panelId ? { tab: id } : {};
+      this.attributes = panelId
+        ? { "aria-controls": panelId, "aria-selected": "false" }
+        : {};
+      this.hidden = false;
+      this.tabIndex = 0;
+      this.listeners = {};
+    }
+    addEventListener(type, listener) {
+      (this.listeners[type] ||= []).push(listener);
+    }
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+    }
+    getAttribute(name) {
+      return this.attributes[name] ?? null;
+    }
+    click() {
+      for (const listener of this.listeners.click || []) listener({});
+    }
+    focus() {
+      document.activeElement = this;
+    }
+    key(key) {
+      const event = { key, preventDefault() {} };
+      for (const listener of this.listeners.keydown || []) listener(event);
+    }
+  }
+
+  const tabs = tabIds.map(
+    (id) => new FakeElement(id, `${id}-panel`),
+  );
+  const panels = tabIds.map((id) => new FakeElement(`${id}-panel`));
+  const group = {
+    querySelectorAll(selector) {
+      if (selector === "[data-tab]") return tabs;
+      if (selector === "[data-tab-panel]") return panels;
+      return [];
+    },
+  };
+  const readyListeners = [];
+  const windowListeners = {};
+  const document = {
+    activeElement: null,
+    documentElement: { classList: { add() {} } },
+    addEventListener(type, listener) {
+      if (type === "DOMContentLoaded") readyListeners.push(listener);
+    },
+    querySelector() {
+      return null;
+    },
+    querySelectorAll(selector) {
+      return selector === "[data-tabs]" ? [group] : [];
+    },
+  };
+  const location = { hash: initialHash };
+  const historyEntries = [initialHash];
+  let historyIndex = 0;
+  const fireWindow = (type) => {
+    for (const listener of windowListeners[type] || []) listener({});
+  };
+  const history = {
+    pushState(_state, _title, hash) {
+      historyEntries.splice(historyIndex + 1);
+      historyEntries.push(hash);
+      historyIndex = historyEntries.length - 1;
+      location.hash = hash;
+    },
+    back() {
+      if (historyIndex === 0) return;
+      historyIndex -= 1;
+      location.hash = historyEntries[historyIndex];
+      fireWindow("popstate");
+      fireWindow("hashchange");
+    },
+  };
+  const window = {
+    addEventListener(type, listener) {
+      (windowListeners[type] ||= []).push(listener);
+    },
+  };
+  const context = vm.createContext({
+    console,
+    document,
+    history,
+    location,
+    window,
+  });
+  vm.runInContext(fs.readFileSync(process.argv[1], "utf8"), context);
+  for (const listener of readyListeners) listener();
+
+  const snapshot = () => ({
+    hash: location.hash,
+    selected: tabs.find((tab) => tab.getAttribute("aria-selected") === "true")?.id,
+    visiblePanels: panels.filter((panel) => !panel.hidden).map((panel) => panel.id),
+    focused: document.activeElement?.id || null,
+  });
+  return { tabs, panels, history, snapshot };
+}
+
+const session = boot();
+const defaultState = session.snapshot();
+const clicks = [];
+for (const tab of session.tabs) {
+  tab.click();
+  clicks.push(session.snapshot());
+}
+
+session.tabs[2].click();
+session.tabs[2].focus();
+session.tabs[2].key("ArrowRight");
+const arrowRight = session.snapshot();
+session.tabs[3].key("Home");
+const home = session.snapshot();
+session.tabs[0].key("End");
+const end = session.snapshot();
+session.tabs[4].key("ArrowLeft");
+const arrowLeft = session.snapshot();
+
+session.tabs[0].click();
+session.tabs[1].click();
+session.history.back();
+const back = session.snapshot();
+const reload = boot("#review-pr").snapshot();
+
+process.stdout.write(JSON.stringify({
+  defaultState,
+  clicks,
+  keys: { arrowRight, home, end, arrowLeft },
+  history: { back, reload },
 }));
 """
     result = subprocess.run(
@@ -556,34 +814,12 @@ def test_expert_page_exposes_semantic_bounded_review_graph() -> None:
     assert [_node_text(heading) for heading in headings] == [
         "让关键结果先经独立挑战，再进入下一步"
     ]
-    graph = _single_node(document, tag="ol", attribute="data-expert-graph")
-    steps = [child for child in graph.children if child.tag == "li"]
-    assert [step.attributes.get("data-graph-node") for step in steps] == [
-        "risk",
-        "capability",
-        "panel",
-        "isolation",
-        "findings",
-        "writer-fix",
-        "rereview",
-        "close-stop",
-    ]
-    graph_text = _node_text(graph)
-    for token in (
-        "Risk",
-        "Capabilities",
-        "Primary Expert",
-        "Cross-risk Expert",
-        "input_digest",
-        "review_snapshot",
-        "Findings",
-        "原 Writer",
-        "最多一次复审",
-        "Close",
-        "needs_review",
-        "fail-closed",
-    ):
-        assert token in graph_text
+    _assert_expert_graph_contract(document)
+
+    identity = _single_node(document, attribute="data-graph-identity")
+    assert _node_text(identity) == EXPERT_GRAPH_IDENTITY
+    assert markup.count("图数据库") == 1
+    assert markup.count("自主多 Agent Runtime") == 1
 
     boundaries = _single_node(document, attribute="data-review-boundaries")
     boundary_text = _node_text(boundaries)
@@ -631,24 +867,99 @@ def test_expert_risk_tabs_change_only_the_four_bound_values() -> None:
     assert [tab.attributes.get("id") for tab in tabs] == expected_tab_ids
     assert [tab.attributes.get("data-tab") for tab in tabs] == expected_tab_ids
 
-    for tab, (panel_id, field_contracts) in zip(
-        tabs, EXPERT_RISK_CONTRACTS.items(), strict=True
-    ):
+    for tab, panel_id in zip(tabs, EXPERT_RISK_CONTRACTS, strict=True):
         assert tab.attributes.get("aria-controls") == panel_id
         panel = _single_node(workspace, tag="section", attribute="id", value=panel_id)
         assert "hidden" not in panel.attributes
-        fields = _find_nodes(panel, attribute="data-review-value")
-        assert len(fields) == 4
-        assert {
-            attribute
-            for field in fields
-            for attribute in field_contracts
-            if attribute in field.attributes
-        } == set(field_contracts)
-        for attribute, required_tokens in field_contracts.items():
-            field_text = _node_text(_single_node(panel, attribute=attribute))
-            missing = [token for token in required_tokens if token not in field_text]
-            assert not missing, f"{panel_id} {attribute} missing {missing}"
+    _assert_expert_risk_contract(document)
+
+
+def test_expert_graph_contract_rejects_unconditional_cross_risk() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    cross_risk = _single_node(
+        document, tag="li", attribute="data-expert-branch", value="cross-risk"
+    )
+    cross_risk.attributes["data-route"] = "required"
+
+    with pytest.raises(AssertionError, match="Cross-risk Expert must be conditional"):
+        _assert_expert_graph_contract(document)
+
+
+def test_expert_risk_contract_rejects_stage_expert_swap() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    requirement = _single_node(
+        _single_node(
+            document,
+            tag="section",
+            attribute="id",
+            value="review-requirement-panel",
+        ),
+        attribute="data-primary-expert",
+    )
+    implementation = _single_node(
+        _single_node(
+            document,
+            tag="section",
+            attribute="id",
+            value="review-implementation-panel",
+        ),
+        attribute="data-primary-expert",
+    )
+    requirement_value = _single_node(requirement, tag="dd")
+    implementation_value = _single_node(implementation, tag="dd")
+    requirement_value.content, implementation_value.content = (
+        implementation_value.content,
+        requirement_value.content,
+    )
+
+    with pytest.raises(AssertionError, match="stage contract mismatch"):
+        _assert_expert_risk_contract(document)
+
+
+def test_site_javascript_executes_complete_expert_tab_browser_contract() -> None:
+    site_js = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/assets/js/site.js"
+    )
+
+    observed = _execute_tab_browser_contract(site_js)
+
+    tab_ids = [
+        "review-requirement",
+        "review-design",
+        "review-implementation",
+        "review-frontend",
+        "review-pr",
+    ]
+    assert observed["defaultState"] == {
+        "hash": "",
+        "selected": "review-requirement",
+        "visiblePanels": ["review-requirement-panel"],
+        "focused": None,
+    }
+    assert [state["selected"] for state in observed["clicks"]] == tab_ids
+    assert [state["hash"] for state in observed["clicks"]] == [
+        f"#{tab_id}" for tab_id in tab_ids
+    ]
+    assert [state["visiblePanels"] for state in observed["clicks"]] == [
+        [f"{tab_id}-panel"] for tab_id in tab_ids
+    ]
+    assert {
+        key: (state["selected"], state["focused"])
+        for key, state in observed["keys"].items()
+    } == {
+        "arrowRight": ("review-frontend", "review-frontend"),
+        "home": ("review-requirement", "review-requirement"),
+        "end": ("review-pr", "review-pr"),
+        "arrowLeft": ("review-frontend", "review-frontend"),
+    }
+    assert observed["history"]["back"]["selected"] == "review-requirement"
+    assert observed["history"]["reload"]["selected"] == "review-pr"
 
 
 def test_expert_page_does_not_restore_removed_review_mechanisms() -> None:
@@ -660,8 +971,6 @@ def test_expert_page_does_not_restore_removed_review_mechanisms() -> None:
         "Veto",
         "Quorum",
         "投票",
-        "图数据库",
-        "自主多 Agent Runtime",
         "Shadow",
         "Enforce",
         "缺陷发现率",

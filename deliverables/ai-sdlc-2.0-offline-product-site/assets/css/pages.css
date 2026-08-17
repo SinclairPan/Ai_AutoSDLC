@@ -155,34 +155,88 @@ body:not([data-page="home"]) .page-intro h1 {
 }
 
 .expert-graph-flow {
+  position: relative;
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-areas:
+    "risk capability ."
+    "routing routing routing"
+    ". isolation findings"
+    ". . writer"
+    ". . rereview"
+    "outcomes outcomes outcomes";
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-7) var(--space-6);
   margin: var(--space-6) 0 0;
   padding: 0;
-  background: linear-gradient(135deg, var(--brand-050), var(--surface) 58%);
-  border-block: 1px solid var(--line-200);
   list-style: none;
 }
 
-.expert-graph-flow li {
+.expert-graph-flow > li {
   position: relative;
   min-width: 0;
   padding: var(--space-5);
+  background: linear-gradient(135deg, var(--brand-050), var(--surface) 72%);
+  border-top: 0.1875rem solid var(--brand-600);
 }
 
-.expert-graph-flow li + li {
-  border-left: 1px solid var(--line-200);
+.expert-graph-flow > li[data-graph-node="risk"] {
+  grid-area: risk;
 }
 
-.expert-graph-flow li:nth-child(n + 5) {
-  border-top: 1px solid var(--line-200);
+.expert-graph-flow > li[data-graph-node="capability"] {
+  grid-area: capability;
 }
 
-.expert-graph-flow li:nth-child(5) {
-  border-left: 0;
+.expert-graph-flow > li[data-graph-node="isolation"] {
+  grid-area: isolation;
 }
 
-.expert-graph-flow span {
+.expert-graph-flow > li[data-graph-node="expert-routing"] {
+  grid-area: routing;
+}
+
+.expert-graph-flow > li[data-graph-node="findings"] {
+  grid-area: findings;
+}
+
+.expert-graph-flow > li[data-graph-node="writer-fix"] {
+  grid-area: writer;
+}
+
+.expert-graph-flow > li[data-graph-node="rereview"] {
+  grid-area: rereview;
+}
+
+.expert-graph-flow > li[data-graph-node="outcomes"] {
+  grid-area: outcomes;
+}
+
+.expert-graph-flow > li[data-graph-node="risk"]::after,
+.expert-graph-flow > li[data-graph-node="isolation"]::after {
+  position: absolute;
+  top: 50%;
+  right: calc(var(--space-6) * -1);
+  width: var(--space-6);
+  border-top: 1px solid var(--brand-600);
+  content: "";
+}
+
+.expert-graph-flow > li[data-graph-node="capability"]::after,
+.expert-graph-flow > li[data-graph-node="expert-routing"]::after,
+.expert-graph-flow > li[data-graph-node="findings"]::after,
+.expert-graph-flow > li[data-graph-node="writer-fix"]::after,
+.expert-graph-flow > li[data-graph-node="rereview"]::after {
+  position: absolute;
+  bottom: calc(var(--space-7) * -1);
+  left: 50%;
+  height: var(--space-7);
+  border-left: 1px solid var(--brand-600);
+  content: "";
+}
+
+.expert-node-label,
+.expert-branches span,
+.expert-outcomes span {
   display: block;
   margin-bottom: var(--space-2);
   color: var(--brand-600);
@@ -193,7 +247,9 @@ body:not([data-page="home"]) .page-intro h1 {
   text-transform: uppercase;
 }
 
-.expert-graph-flow strong {
+.expert-graph-flow > li > strong,
+.expert-branches strong,
+.expert-outcomes strong {
   display: block;
   color: var(--brand-900);
   font-size: 1.0625rem;
@@ -202,6 +258,65 @@ body:not([data-page="home"]) .page-intro h1 {
 .expert-graph-flow p {
   margin: var(--space-2) 0 0;
   color: var(--ink-700);
+}
+
+.expert-routing,
+.expert-decisions {
+  padding: var(--space-6) !important;
+}
+
+.expert-branches,
+.expert-outcomes {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-6);
+  margin: var(--space-5) 0 0;
+  padding: var(--space-5) 0 0;
+  border-top: 1px solid var(--line-200);
+  list-style: none;
+}
+
+.expert-branches > li,
+.expert-outcomes > li {
+  min-width: 0;
+  padding: var(--space-4) var(--space-5);
+  background: var(--surface);
+  border-left: 0.1875rem solid var(--brand-600);
+}
+
+.expert-branches > li[data-route="conditional"],
+.expert-outcomes > li[data-route="expert-failure"] {
+  border-left-style: dashed;
+}
+
+.expert-branches::before,
+.expert-outcomes::before {
+  position: absolute;
+  top: 0;
+  left: 25%;
+  width: 50%;
+  border-top: 1px solid var(--brand-600);
+  content: "";
+}
+
+.expert-merge::before {
+  position: absolute;
+  top: -1.6rem;
+  left: var(--space-5);
+  color: var(--brand-600);
+  content: "汇合 ↓";
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.expert-graph-identity {
+  max-width: 68rem;
+  margin: var(--space-6) auto 0;
+  padding: var(--space-4) var(--space-5);
+  color: var(--ink-700);
+  background: var(--brand-050);
+  border-left: 0.1875rem solid var(--brand-600);
 }
 
 .expert-graph-flow code,
@@ -636,8 +751,7 @@ body:not([data-page="home"]) .page-intro h1 {
     background: transparent;
   }
 
-  .expert-risk-values,
-  .expert-graph-flow {
+  .expert-risk-values {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
@@ -649,12 +763,26 @@ body:not([data-page="home"]) .page-intro h1 {
     border-top: 1px solid var(--line-200);
   }
 
-  .expert-graph-flow li:nth-child(n + 3) {
-    border-top: 1px solid var(--line-200);
+  .expert-graph-flow {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-6);
   }
 
-  .expert-graph-flow li:nth-child(2n + 1) {
-    border-left: 0;
+  .expert-graph-flow > li:not(:last-child)::after {
+    top: auto !important;
+    right: auto !important;
+    bottom: calc(var(--space-6) * -1) !important;
+    left: var(--space-6) !important;
+    width: 0 !important;
+    height: var(--space-6) !important;
+    border-top: 0 !important;
+    border-left: 1px solid var(--brand-600) !important;
+    content: "";
+  }
+
+  .expert-graph-flow > li:last-child::after {
+    content: none;
   }
 
   .expert-boundary-strip {
@@ -709,7 +837,8 @@ body:not([data-page="home"]) .page-intro h1 {
 
   .expert-workspace [role="tablist"],
   .expert-risk-values,
-  .expert-graph-flow,
+  .expert-branches,
+  .expert-outcomes,
   .expert-boundary-strip ul {
     grid-template-columns: 1fr;
   }
@@ -719,16 +848,28 @@ body:not([data-page="home"]) .page-intro h1 {
   }
 
   .expert-risk-values > div,
-  .expert-graph-flow li,
   .expert-boundary-strip li {
     padding-inline: 0;
   }
 
   .expert-risk-values > div + div,
-  .expert-graph-flow li + li,
   .expert-boundary-strip li + li {
     border-top: 1px solid var(--line-200);
     border-left: 0;
+  }
+
+  .expert-branches,
+  .expert-outcomes {
+    gap: var(--space-4);
+  }
+
+  .expert-branches::before,
+  .expert-outcomes::before {
+    left: 0;
+    width: 0;
+    height: calc(100% - var(--space-5));
+    border-top: 0;
+    border-left: 1px solid var(--brand-600);
   }
 
   .expert-closing a {

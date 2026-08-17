@@ -263,47 +263,76 @@
             <h2 id="expert-graph-title">从风险路由到明确退出</h2>
           </div>
           <ol class="expert-graph-flow" data-expert-graph aria-label="有界动态专家复核信息流">
-            <li data-graph-node="risk">
-              <span>01 · Risk</span>
+            <li class="expert-graph-node" data-graph-node="risk">
+              <span class="expert-node-label">01 · Risk</span>
               <strong>定位主要风险</strong>
               <p>原 Writer 产出当前 Loop 结果；系统只为这份结果识别主要风险。</p>
             </li>
-            <li data-graph-node="capability">
-              <span>02 · Capabilities</span>
+            <li class="expert-graph-node" data-graph-node="capability">
+              <span class="expert-node-label">02 · Capabilities</span>
               <strong>绑定匹配能力</strong>
               <p>按阶段与内容风险选择专长，不保留固定专家身份。</p>
             </li>
-            <li data-graph-node="panel">
-              <span>03 · Panel</span>
-              <strong>组成有界面板</strong>
-              <p>一名 Primary Expert；只有第二风险成立时增加一名 Cross-risk Expert，最多两名。</p>
+            <li class="expert-graph-node expert-routing" data-graph-node="expert-routing">
+              <span class="expert-node-label">03 · Panel</span>
+              <strong>主路径与条件支路</strong>
+              <ol class="expert-branches" data-expert-branches aria-label="专家选择分支">
+                <li data-expert-branch="primary" data-route="required">
+                  <span>Required</span>
+                  <strong>Primary Expert · 必选主路径</strong>
+                  <p>读取冻结输入，挑战当前结果的主要风险。</p>
+                </li>
+                <li data-expert-branch="cross-risk" data-route="conditional">
+                  <span>Conditional</span>
+                  <strong>Cross-risk Expert · 条件支路</strong>
+                  <p>只有存在明确第二风险面时，才加入一名 Cross-risk Expert。</p>
+                </li>
+              </ol>
             </li>
-            <li data-graph-node="isolation">
-              <span>04 · Isolation</span>
+            <li class="expert-graph-node" data-graph-node="isolation">
+              <span class="expert-node-label">04 · Isolation</span>
               <strong>冻结同一输入</strong>
               <p>绑定 <code>input_digest</code> 与内联 <code>review_snapshot</code>；专家只读，不重开可变路径。</p>
             </li>
-            <li data-graph-node="findings">
-              <span>05 · Findings</span>
+            <li
+              class="expert-graph-node expert-merge"
+              data-graph-node="findings"
+              data-merge-from="primary cross-risk"
+            >
+              <span class="expert-node-label">05 · Merge</span>
               <strong>定位问题</strong>
-              <p>专家返回位置、风险和修复方向；合并的是 Findings，不是总体 verdict。</p>
+              <p>Primary 主路径与条件 Cross-risk 支路在 Findings 汇合；合并问题，不生成总体 verdict。</p>
             </li>
-            <li data-graph-node="writer-fix">
-              <span>06 · Original Writer</span>
+            <li class="expert-graph-node" data-graph-node="writer-fix">
+              <span class="expert-node-label">06 · Original Writer</span>
               <strong>原 Writer 修复</strong>
-              <p>修改权不转移；Writer 修复同一候选并重跑受影响的验证。</p>
+              <p>Findings 回到原 Writer；修改权不转移。Writer 修复同一候选并重跑受影响的验证。</p>
             </li>
-            <li data-graph-node="rereview">
-              <span>07 · Re-review</span>
-              <strong>最多一次复审</strong>
-              <p>复审前重新绑定输入；候选或分支漂移时，旧结论立即失效。</p>
+            <li class="expert-graph-node" data-graph-node="rereview">
+              <span class="expert-node-label">07 · Re-review</span>
+              <strong>最多一次修复后复审</strong>
+              <p>原 Writer 定向修复并重跑受影响验证后，最多一次修复后复审；复审前重新绑定输入。</p>
             </li>
-            <li data-graph-node="close-stop">
-              <span>08 · Close / Stop</span>
-              <strong>关闭，或明确停下</strong>
-              <p>原 Loop 决定 Close；专家失败或结论无效时 fail-closed，保持 <code>needs_review</code>。</p>
+            <li class="expert-graph-node expert-decisions" data-graph-node="outcomes">
+              <span class="expert-node-label">08 · Conditional exits</span>
+              <strong>Close 与 Stop 是两个条件出口</strong>
+              <ul class="expert-outcomes" data-review-outcomes aria-label="复核条件出口">
+                <li data-review-outcome="close" data-route="conditions-met">
+                  <span>Conditions met</span>
+                  <strong>Close</strong>
+                  <p>满足原 Loop 的 Close 条件时关闭。</p>
+                </li>
+                <li data-review-outcome="needs-review" data-route="expert-failure">
+                  <span>Fail-closed</span>
+                  <strong><code>needs_review</code> / Stop</strong>
+                  <p>专家执行失败、超时或输出无效时，保持 <code>needs_review</code> 并 Stop。</p>
+                </li>
+              </ul>
             </li>
           </ol>
+          <p class="expert-graph-identity" data-graph-identity>
+            这是一张 Writer 与临时只读专家之间关系的说明性拓扑。它不是持久 Graph，不是图数据库，不是专家调度运行时或自主多 Agent Runtime，也不是第二套状态机；Loop 仍是唯一状态源。
+          </p>
         </div>
       </section>
 
