@@ -1,0 +1,44 @@
+.page-main {
+  min-height: calc(100vh - 4.5rem);
+  padding-block: clamp(var(--space-7), 10vw, var(--space-8));
+}
+
+.page-intro {
+  max-width: 58rem;
+}
+
+.page-eyebrow {
+  margin: 0 0 var(--space-4);
+  color: var(--brand-600);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.page-intro h1 {
+  max-width: 18ch;
+  margin: 0;
+  font-size: clamp(2.5rem, 6vw, 5.25rem);
+  line-height: 1.08;
+  letter-spacing: -0.045em;
+}
+
+.page-intro::after {
+  display: block;
+  width: min(14rem, 45vw);
+  height: 0.25rem;
+  margin-top: var(--space-7);
+  background: linear-gradient(90deg, var(--brand-600), var(--warm-light));
+  content: "";
+}
+
+body:not([data-page="home"]) .page-intro h1 {
+  font-size: clamp(2.25rem, 5vw, 4.5rem);
+}
+
+@media (max-width: 40rem) {
+  .page-main {
+    padding-block: var(--space-7);
+  }
+}

@@ -8,11 +8,24 @@ from scripts.validate_offline_product_site import (
     validate_video_config,
 )
 
+TOP_LEVEL_PAGES = (
+    "index.html",
+    "loop-engineering.html",
+    "dynamic-expert-review.html",
+    "platform-capabilities.html",
+    "downloads-docs.html",
+)
+
 
 def _write(root: Path, relative: str, text: str) -> None:
     path = root / relative
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def test_top_level_page_shells_exist() -> None:
+    root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
+    assert [name for name in TOP_LEVEL_PAGES if not (root / name).is_file()] == []
 
 
 def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:
