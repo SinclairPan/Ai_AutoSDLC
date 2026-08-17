@@ -555,7 +555,8 @@ const runAcceptance = async (options) => {
             const node = controlNodes[index];
             node.focus({ preventScroll: true });
             node.scrollIntoView({ block: "center", inline: "center" });
-            await new Promise((resolve) => requestAnimationFrame(resolve));
+            for (const animation of node.getAnimations({ subtree: true })) animation.finish();
+            await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
             const rect = node.getBoundingClientRect();
             controls[index].viewportRect = rectObject(rect);
             if (rect.left < -0.5) controls[index].viewportClipReasons.push("left");
