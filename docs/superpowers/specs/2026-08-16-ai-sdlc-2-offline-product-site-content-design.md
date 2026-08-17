@@ -55,7 +55,7 @@
 
 产品价值主题不能从 AI-SDLC 自身已有模块直接罗列生成。内容设计先研究高关注度的 AI Coding Skills、开发方法、工作流和直接影响开发连续性的插件，再反查 v2.0.0 的真实实现。
 
-本次样本冻结于 `2026-08-16`。候选集由 GitHub Search 对 `agent skills + coding`、`Claude Code skills + development`、`coding agent + workflow/methodology`、`spec-driven development + AI coding` 四组查询取并集，再采用以下可复核口径筛选：
+本次样本冻结于 `2026-08-17`。候选集由 GitHub Search 对 `agent skills + coding`、`Claude Code skills + development`、`coding agent + workflow/methodology`、`spec-driven development + AI coding` 四组查询取并集，再采用以下可复核口径筛选：
 
 - GitHub 公开仓库。
 - GitHub API 在采样时识别根许可证为 `MIT` 或 `Apache-2.0`。
@@ -73,20 +73,20 @@ Stars、许可证、默认分支与 commit 由 GitHub API 在同一采样批次�
 - 每个候选的纳入或排除决定、排除理由，以及 Stars 并列时按仓库 ID 升序排序的规则。
 - 最终 Top 10 列表、清单自身 SHA256 和生成环境说明。
 
-冻结 commit 只证明所分析的源码版本，不能单独证明采样时的候选池和 Stars 排名；没有上述清单时，Top 10 只能作为待复核草案，不得用于产品价值结论。
+冻结 commit 只证明所分析的源码版本，不能单独证明采样时的候选池和 Stars 排名；没有上述清单时，Top 10 只能作为待复核草案，不得用于产品价值结论。当前机器可读清单为 [`docs/product-site/research/2026-08-17-ai-coding-top10-snapshot.json`](../../product-site/research/2026-08-17-ai-coding-top10-snapshot.json)，其最终字节摘要记录在同名 `.sha256` 文件中。
 
 | 排名 | 冻结项目 | Stars | License | 冻结源码 | 主要市场形态 |
 |---|---|---:|---|---|---|
-| 1 | [obra/superpowers](https://github.com/obra/superpowers) | 272,856 | MIT | [`b36e082`](https://github.com/obra/superpowers/tree/b36e0829c6d0140e93cfef2ca599b1b07d4a7797) | 可组合 Skills 与开发方法论 |
-| 2 | [affaan-m/ECC](https://github.com/affaan-m/ECC) | 240,523 | MIT | [`06c5e11`](https://github.com/affaan-m/ECC/tree/06c5e118c4d3e6c3b7f9445f973a2194c82de193) | Skills、Agents、Memory、Hooks、安全与验证系统 |
-| 3 | [mattpocock/skills](https://github.com/mattpocock/skills) | 219,406 | MIT | [`068b6e0`](https://github.com/mattpocock/skills/tree/068b6e0c62393147daf03530149cdce209c93da8) | 小型、可改、可组合的真实工程 Skills |
-| 4 | [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) | 145,853 | MIT | [`ebe9c99`](https://github.com/msitarzewski/agency-agents/tree/ebe9c99acb5c96f9468de368d8bead775387d1a7) | 专业角色与交付物导向的 Agent 库 |
-| 5 | [github/spec-kit](https://github.com/github/spec-kit) | 129,580 | MIT | [`bf88c9f`](https://github.com/github/spec-kit/tree/bf88c9f9a82fa370c7a7257aa2b3cf10b457b65c) | Intent-driven Spec Workflow Harness |
-| 6 | [garrytan/gstack](https://github.com/garrytan/gstack) | 128,287 | MIT | [`ae8914a`](https://github.com/garrytan/gstack/tree/ae8914af7edaf248f5b0dcd60518d2f6890ad0da) | 产品、设计、工程、QA 与发布 Skills 工具组 |
-| 7 | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | 117,367 | MIT | [`a38d04c`](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5) | UI/UX 设计知识、规则与多栈实现 Skill |
-| 8 | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | 104,171 | MIT | [`2ed6c52`](https://github.com/DietrichGebert/ponytail/tree/2ed6c52c9d7e5e56942508591085fd45dea277d3) | 代码极简与 YAGNI Skill |
-| 9 | [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 90,921 | Apache-2.0 | [`fae697a`](https://github.com/thedotmack/claude-mem/tree/fae697a45d107aae567d605916391ab64d8ecae1) | 跨会话上下文采集、压缩与回注 |
-| 10 | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | 87,796 | MIT | [`df1edb2`](https://github.com/addyosmani/agent-skills/tree/df1edb2e05487d0aa6d93c747141e0aed1187f25) | 按研发阶段组织的工程 Skills 集合 |
+| 1 | [obra/superpowers](https://github.com/obra/superpowers) | 272,885 | MIT | [`b36e082`](https://github.com/obra/superpowers/tree/b36e0829c6d0140e93cfef2ca599b1b07d4a7797) | 可组合 Skills 与开发方法论 |
+| 2 | [affaan-m/ECC](https://github.com/affaan-m/ECC) | 240,537 | MIT | [`06c5e11`](https://github.com/affaan-m/ECC/tree/06c5e118c4d3e6c3b7f9445f973a2194c82de193) | Skills、Agents、Memory、Hooks、安全与验证系统 |
+| 3 | [mattpocock/skills](https://github.com/mattpocock/skills) | 219,496 | MIT | [`068b6e0`](https://github.com/mattpocock/skills/tree/068b6e0c62393147daf03530149cdce209c93da8) | 小型、可改、可组合的真实工程 Skills |
+| 4 | [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) | 145,876 | MIT | [`ebe9c99`](https://github.com/msitarzewski/agency-agents/tree/ebe9c99acb5c96f9468de368d8bead775387d1a7) | 专业角色与交付物导向的 Agent 库 |
+| 5 | [github/spec-kit](https://github.com/github/spec-kit) | 129,593 | MIT | [`bf88c9f`](https://github.com/github/spec-kit/tree/bf88c9f9a82fa370c7a7257aa2b3cf10b457b65c) | Intent-driven Spec Workflow Harness |
+| 6 | [garrytan/gstack](https://github.com/garrytan/gstack) | 128,297 | MIT | [`ae8914a`](https://github.com/garrytan/gstack/tree/ae8914af7edaf248f5b0dcd60518d2f6890ad0da) | 产品、设计、工程、QA 与发布 Skills 工具组 |
+| 7 | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | 117,391 | MIT | [`a38d04c`](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5) | UI/UX 设计知识、规则与多栈实现 Skill |
+| 8 | [Graphify-Labs/graphify](https://github.com/Graphify-Labs/graphify) | 107,188 | Apache-2.0 | [`0738af3`](https://github.com/Graphify-Labs/graphify/tree/0738af373af9cf5c95f862cc5f3327fd96b4ea23) | 本地代码图谱、可解释关系与多 AI Coding 工具 Skill |
+| 9 | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | 104,229 | MIT | [`2ed6c52`](https://github.com/DietrichGebert/ponytail/tree/2ed6c52c9d7e5e56942508591085fd45dea277d3) | 代码极简与 YAGNI Skill |
+| 10 | [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 90,925 | Apache-2.0 | [`fae697a`](https://github.com/thedotmack/claude-mem/tree/fae697a45d107aae567d605916391ab64d8ecae1) | 跨会话上下文采集、压缩与回注 |
 
 [OpenSpec](https://github.com/Fission-AI/OpenSpec) 与 [BMAD Method](https://github.com/bmad-code-org/BMAD-METHOD) 作为相似工作流参照，用于校准轻量变更规格和 AI 驱动开发方法，但不进入上述 Top 10 排名。
 
