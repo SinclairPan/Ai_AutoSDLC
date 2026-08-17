@@ -2390,7 +2390,7 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
 
     assert result.returncode == 0, result.stdout + result.stderr
     payload = json.loads(receipt.read_text(encoding="utf-8"))
-    assert payload["schemaVersion"] == 1
+    assert payload["schemaVersion"] == 2
     assert re.fullmatch(r"[0-9a-f]{40}", payload["inputs"]["inputCommit"])
     assert payload["inputs"]["copyRootKind"] == "fresh-external-copy"
     assert payload["inputs"]["manifestSha256"] == sha256(
@@ -2430,3 +2430,36 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
         and capture["assertions"]["pageScrollY"] == 0
         for capture in expert["captures"]
     )
+
+
+def test_browser_receipt_input_commit_contains_the_bound_evidence() -> None:
+    receipt = json.loads(
+        Path("docs/product-site/design/qa/browser-acceptance-receipt.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    input_commit = receipt["inputs"]["inputCommit"]
+
+    manifest = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{input_commit}:docs/product-site/design/qa/package-manifest.sha256",
+        ],
+        check=False,
+        capture_output=True,
+    )
+    runner = subprocess.run(
+        [
+            "git",
+            "show",
+            f"{input_commit}:scripts/run_offline_product_site_browser_acceptance.mjs",
+        ],
+        check=False,
+        capture_output=True,
+    )
+
+    assert manifest.returncode == 0, manifest.stderr.decode()
+    assert sha256(manifest.stdout).hexdigest() == receipt["inputs"]["manifestSha256"]
+    assert runner.returncode == 0, runner.stderr.decode()
+    assert sha256(runner.stdout).hexdigest() == receipt["inputs"]["runnerSha256"]

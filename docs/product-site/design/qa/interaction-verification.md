@@ -58,7 +58,7 @@
 
 ## Task 10 Fix Round 1：可移植证据与专家截图
 
-runner 从空的 `/private/tmp` 根复制清单绑定的站点后运行，receipt 记录输入 commit、manifest SHA、复制根、runner SHA、完整结果数组与逐请求归属。本轮 receipt SHA-256 为 `cbeaad1d957789c745a2fbece5a9763ba6253d8cb4ff24e51780b33e4b92c1a9`；manifest SHA-256 为 `3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d`。
+runner 从空的 `/private/tmp` 根复制清单绑定的站点后运行，receipt 记录输入 commit、manifest SHA、复制根、runner SHA、完整结果数组与逐请求归属。本轮 receipt SHA-256 为 `6f1c75f8077cec876461d56c1635b8ee51847a56e105c50cb13e03c049441cae`；manifest SHA-256 为 `3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d`。schema 2 verifier 还会从 input commit `7d1409a1c9f2a377a61a64a66fdbcbe2e361b2ab` 直接读取 manifest 与 runner，并确认产品、runner、validator、manifest 和 11 张截图到当前评审提交没有漂移。
 
 专家截图固定为 `#review-design` 与选中、聚焦的 Design Contract Tab；截图前强制 `tablist.scrollLeft=0`、`scrollX=0`、`scrollY=0`、双 `requestAnimationFrame` 与禁用 animation/transition。连续两次捕获均为 `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7`。receipt 同时保存 header/Tab 的元素矩形、文字矩形、`scrollWidth/clientWidth`、重叠与裁切数组；两次均为 `unclipped=true`、`clipped=[]`、`overlaps=[]`。
 

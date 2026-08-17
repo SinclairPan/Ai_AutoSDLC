@@ -1,14 +1,14 @@
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "inputs": {
-    "inputCommit": "532d55991b24631c68cfde34377dadd4df049bb2",
+    "inputCommit": "7d1409a1c9f2a377a61a64a66fdbcbe2e361b2ab",
     "manifestSha256": "3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d",
     "manifestEntryCount": 13,
     "sourceSiteRoot": "/Users/sinclairpan/project/AI-SDLC_ParticipatingVersion/.worktrees/ai-sdlc-2-offline-product-site-build/deliverables/ai-sdlc-2.0-offline-product-site",
-    "copiedSiteRoot": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site",
+    "copiedSiteRoot": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site",
     "copyRootKind": "fresh-external-copy",
     "copiedManifestSha256": "3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d",
-    "runnerSha256": "db10b0b365c4a62c61061492357819ae274109bd631be814483dc6923ca3ed06",
+    "runnerSha256": "53d7831dab9a791b90097c54bff1596a7394601f9a8038a13314510b2962473f",
     "playwrightModule": "/Users/sinclairpan/.nvm/versions/node/v24.11.1/lib/node_modules/@playwright/cli/node_modules/playwright/index.mjs",
     "browserExecutable": "/Users/sinclairpan/Library/Caches/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-mac-arm64/chrome-headless-shell"
   },
@@ -3680,265 +3680,265 @@
     "requests": [
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/index.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/index.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/index.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/index.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/video-config.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/video-config.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/video-config.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/video-config.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/video-poster.png",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/images/video-poster.png",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/video-poster.png",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/images/video-poster.png",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/hero-layers.png",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/images/hero-layers.png",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/images/hero-layers.png",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/images/hero-layers.png",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/loop-engineering.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/loop-engineering.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/loop-engineering.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/dynamic-expert-review.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/dynamic-expert-review.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/dynamic-expert-review.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/platform-capabilities.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/platform-capabilities.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/platform-capabilities.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/downloads-docs.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/downloads-docs.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/downloads-docs.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/docs/USER_GUIDE.zh-CN.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/docs/USER_GUIDE.zh-CN.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/docs/USER_GUIDE.zh-CN.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-final-202c385722344ed7aa69894bfaa0e79d/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-task10-fix1-bound-66dcc28edbc2493ca8e61f4d967d10cc/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       }
