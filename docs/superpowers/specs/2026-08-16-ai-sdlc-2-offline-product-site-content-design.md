@@ -160,7 +160,7 @@ Top 10 项目名、Stars、排名和逐项目对照仅保留在本内部设计�
 - Hero 不使用超高首屏；主标题、副标题和首要动作在一屏内形成完整认知。
 - 端到端架构图在笔记本上优先使用可阅读的纵向或分段流程，而不是缩小整张宽图。
 - 三个核心价值入口最多两列；窄视口下按 `Goal to Close → Evidence → Expert Review` 顺序单列排列。
-- `Built for production use` 只显示三个紧凑摘要，不在首页展开完整能力墙。
+- “面向生产交付”区域只显示三个紧凑摘要，不在首页展开完整能力墙。
 
 #### 工作流实录
 
@@ -249,15 +249,15 @@ Project Init / Adopt
 
 首页不平铺功能列表，也不从 CLI 模块名组织内容。基于市场研究，首屏之后只展开三个最强结果价值：
 
-1. **From Goal to Close**：从需求、设计、实现到证据和提交前审查，AI-SDLC 管理的是一项工作何时可以关闭，而不只是一次代码生成。
-2. **Evidence Before Completion**：任务验证、测试、构建、前端浏览器证据或独立复核不足时，系统保持未完成或进入明确失败状态。
-3. **Bounded Expert Collaboration**：专家按当前结果风险临时选择、只读检查、将 Findings 交回原 Writer，并限制修复与复审次数。
+1. **从意图到可信交付**：从需求、设计、实现到证据和提交前审查，AI-SDLC 管理的是一项工作何时可以关闭，而不只是一次代码生成。
+2. **证据先于完成**：任务验证、测试、构建、前端浏览器证据或独立复核不足时，系统保持未完成或进入明确失败状态。
+3. **有界专家复核**：专家按当前结果风险临时选择、只读检查、将 Findings 交回原 Writer，并限制修复与复审次数。
 
-三个主价值之后使用一个紧凑的 `Built for production use` 区域，只提供以下摘要和进入 Platform Capabilities 的入口：
+三个主价值之后使用一个紧凑的“面向生产交付”区域，只提供以下摘要和进入 Platform Capabilities 的入口：
 
-- **Durable Project State**：checkpoint、status、handoff、recover 与 reconcile 让工程事实跨会话延续。
-- **Governed Frontend Delivery**：技术栈与组件方案确认、Provider/Style Pack/Theme 合同和浏览器证据在同一上下文中传递。
-- **Agent-portable, Local-first Adoption**：新项目或已有项目均可接入；AI 工具可以替换，规则、状态与工件留在项目侧。
+- **持久化项目状态**：checkpoint、status、handoff、recover 与 reconcile 让工程事实跨会话延续。
+- **受治理的前端交付**：技术栈与组件方案确认、Provider/Style Pack/Theme 合同和浏览器证据在同一上下文中传递。
+- **跨 AI 工具、本地优先接入**：新项目或已有项目均可接入；AI 工具可以替换，规则、状态与工件留在项目侧。
 
 不得把 Codex、GPT 或其他模型写成产品主角。模型是可替换的执行引擎；AI-SDLC 管理工作状态、证据和完成权。不得在首页展示 Top 10 项目、Stars、Logo 墙或逐品牌优劣表。
 
@@ -324,7 +324,7 @@ Project Init / Adopt
 
 页面标题建议：
 
-> From Agent Skills to Governed Delivery
+> 从智能体技能到受治理的工程交付
 
 副标题不得使用“功能更多”或“替代所有工具”的口径，应强调：AI Coding Agent 负责生成、修改和执行候选结果，AI-SDLC 负责保存项目事实、约束状态迁移、消费验证证据并决定下一步。
 
@@ -333,9 +333,9 @@ Project Init / Adopt
 1. AI Coding 生态正在从通用对话走向专业 Skills、Spec Workflow、角色分工、长期上下文和垂直工程能力。
 2. 这些能力已经成为行业共同基础，不属于 AI-SDLC 独有。
 3. AI-SDLC 的差异是把方法和能力组合成有状态、可失败、可恢复、可关闭的生产系统。
-4. 用一张紧凑价值图呈现七个系统主题；From Intent to Close、Evidence Before Completion、Bounded Expert Challenge 只给摘要并深链接到两项核心机制页。
+4. 用一张紧凑价值图呈现七个系统主题；“从意图到可信交付”“证据先于完成”“有界专家复核”只给摘要并深链接到两项核心机制页。
 5. 只深入解释平台页负责的四组通用机制：项目事实恢复、工具可替换与本地接入、前端意图到浏览器证据、克制的工程控制。
-6. 用 `What AI-SDLC does not claim` 收束，并链接 Loop Engineering、Dynamic Expert Review 与 Downloads & Docs。
+6. 用“AI-SDLC 不作何种承诺”收束，并链接 Loop Engineering、Dynamic Expert Review 与 Downloads & Docs。
 
 前台只描述不带品牌的市场能力层，不展示 Top 10 项目名、Stars、排名、Logo、总分或逐仓勾选矩阵。
 
@@ -343,17 +343,17 @@ Project Init / Adopt
 
 | 系统价值 | 解决的 AI Coding 痛点 | 用户结果 | 主要内容归属 |
 |---|---|---|---|
-| **From Intent to Close** | 需求、计划、实现和验收分散，Agent 写完代码就把任务当作完成 | 在正式绑定 WorkItem 的交付路径中，需求、设计、任务、实现、验证和 Close 使用同一身份与工件链 | 首页总览；Loop Engineering 详解 |
-| **Evidence Before Completion** | 模型以文字总结代替真实测试、构建、浏览器和审查结果 | 完成由可检查证据与状态决定，不由 Agent 自报 | Platform 总览；Loop Engineering 详解 |
-| **Bounded Expert Challenge** | 同一上下文自审容易重复盲点，无界多 Agent 讨论又带来成本和冲突 | 按风险选择临时只读专家，Findings 回到原 Writer，修复和复审有上限 | Dynamic Expert Review 详解 |
-| **Recoverable Project Truth** | 会话压缩、中断或换人后，只剩不可靠的聊天记忆 | 跨会话继续读取项目事实、开放门禁、当前分支和下一步 | Platform Capabilities 详解 |
-| **Frontend Intent to Evidence** | 技术栈、组件、主题、实现与浏览器验收各自为政，页面“能编译”却未必可用 | 技术方案、组件治理、主题约束、页面运行与浏览器验收在同一交付上下文中传递 | Platform Capabilities 详解 |
-| **Agent-portable Governance** | 每换一个 Agent 就重新解释规则，项目治理被锁在工具聊天窗口里 | 更换 AI 工具时，项目侧规则、状态和工件不随聊天窗口消失 | Platform Capabilities 详解 |
-| **Proportional Engineering Control** | Agent 容易过度设计；治理系统也可能为了“规范”增加无价值阻断 | 对证据与身份严格，对代码精简保持建议性；遇到缺口时停止、求证或恢复 | Platform Capabilities 详解 |
+| **从意图到可信交付** | 需求、计划、实现和验收分散，Agent 写完代码就把任务当作完成 | 在正式绑定 WorkItem 的交付路径中，需求、设计、任务、实现、验证和 Close 使用同一身份与工件链 | 首页总览；Loop Engineering 详解 |
+| **证据先于完成** | 模型以文字总结代替真实测试、构建、浏览器和审查结果 | 完成由可检查证据与状态决定，不由 Agent 自报 | Platform 总览；Loop Engineering 详解 |
+| **有界专家复核** | 同一上下文自审容易重复盲点，无界多 Agent 讨论又带来成本和冲突 | 按风险选择临时只读专家，Findings 回到原 Writer，修复和复审有上限 | Dynamic Expert Review 详解 |
+| **可恢复的项目事实** | 会话压缩、中断或换人后，只剩不可靠的聊天记忆 | 跨会话继续读取项目事实、开放门禁、当前分支和下一步 | Platform Capabilities 详解 |
+| **从前端意图到验收证据** | 技术栈、组件、主题、实现与浏览器验收各自为政，页面“能编译”却未必可用 | 技术方案、组件治理、主题约束、页面运行与浏览器验收在同一交付上下文中传递 | Platform Capabilities 详解 |
+| **跨 AI 工具的一致治理** | 每换一个 Agent 就重新解释规则，项目治理被锁在工具聊天窗口里 | 更换 AI 工具时，项目侧规则、状态和工件不随聊天窗口消失 | Platform Capabilities 详解 |
+| **与风险匹配的工程控制** | Agent 容易过度设计；治理系统也可能为了“规范”增加无价值阻断 | 对证据与身份严格，对代码精简保持建议性；遇到缺口时停止、求证或恢复 | Platform Capabilities 详解 |
 
 同一主题只在主要归属页面完整解释。其他页面使用一段摘要和深链接，不能复制成重复 Feature Tour。
 
-### 8.4 Recoverable Project Truth
+### 8.4 可恢复的项目事实
 
 从生产问题“长任务跨会话后只剩聊天记忆，无法确认做到哪里”出发，展示以下机制链：
 
@@ -375,9 +375,9 @@ checkpoint
 
 不得描述为自动捕获全部对话、向量长期记忆、跨项目语义回注、事务回滚或精确恢复到进程中断的上一条指令。
 
-### 8.5 Agent-portable, Local-first Adoption
+### 8.5 跨 AI 工具的一致治理与本地优先接入
 
-页面使用名称 `AI Tool Adapter Matrix`，不得写成“多 Agent 编排适配器”。
+页面使用名称“AI 工具适配矩阵”，不得写成“多 Agent 编排适配器”。
 
 公开支持面包括 Claude Code、Codex、Cursor、VS Code/Copilot 和 generic 入口。每个 Adapter 将统一项目规则安装到对应工具的 canonical 路径；项目一次使用一个当前适配目标，也可以显式切换。
 
@@ -398,7 +398,7 @@ checkpoint
 
 “离线产品站”“离线安装包”“本地优先治理”和“完全离线 AI 推理”是四个不同概念，正文必须分开。
 
-### 8.6 Governed Frontend Delivery
+### 8.6 受治理的前端交付
 
 前端能力不能写成“内置几个组件库”，而要表达为从方案选择到浏览器证据的治理链：
 
@@ -417,9 +417,9 @@ frontend requirement
 
 | 路径 | 公开定位 | 必须说明的边界 |
 |---|---|---|
-| `vue3 / public-primevue / modern-saas` | **Built-in default recommendation** | PrimeVue 是第三方组件库；AI-SDLC 提供 Provider profile、语义组件映射、白名单、Style Pack、Theme Token、唯一 `theme.ts` 入口和交付约束。推荐不等于已经安装或应用。 |
-| `vue2 / enterprise-vue2` | **Built-in enterprise compatibility path** | AI-SDLC 内置私有 Provider profile、组件映射、白名单和安装策略；信服云组件包、网络、授权与目标环境由企业侧提供，站点不公开私有 registry 地址，也不声称安装包内附送组件库。 |
-| 自定义或不使用组件库 | **Compatible execution and evidence path** | 不是第三个内置 Provider。项目需提供可加载 browser entry、执行上下文和兼容 Browser Gate 工件，再由 Frontend Evidence 消费。 |
+| `vue3 / public-primevue / modern-saas` | **内置默认推荐路径** | PrimeVue 是第三方组件库；AI-SDLC 提供 Provider profile、语义组件映射、白名单、Style Pack、Theme Token、唯一 `theme.ts` 入口和交付约束。推荐不等于已经安装或应用。 |
+| `vue2 / enterprise-vue2` | **内置企业兼容路径** | AI-SDLC 内置私有 Provider profile、组件映射、白名单和安装策略；信服云组件包、网络、授权与目标环境由企业侧提供，站点不公开私有 registry 地址，也不声称安装包内附送组件库。 |
+| 自定义或不使用组件库 | **兼容执行与证据路径** | 不是第三个内置 Provider。项目需提供可加载 browser entry、执行上下文和兼容 Browser Gate 工件，再由 Frontend Evidence 消费。 |
 
 Vue3 默认治理可展开但不堆砌依赖名：页面重点说明 `primary / surface / highlight` 主题语义、`theme.ts` 唯一入口、`pages/` 与历史 `views/` 的互斥约束，以及公开默认方案与高级自定义选择并存。
 
@@ -432,7 +432,7 @@ Vue3 默认治理可展开但不堆砌依赖名：页面重点说明 `primary / 
 
 不得把基础可访问性检查写成 WCAG 认证，不得把 Frontend Evidence 写成完整 E2E 平台，也不得声称任意自定义前端无需配置即可运行。
 
-### 8.7 Proportional Engineering Control
+### 8.7 与风险匹配的工程控制
 
 该主题用于表达 AI-SDLC 对不同问题使用不同强度的控制：
 
@@ -443,7 +443,7 @@ Vue3 默认治理可展开但不堆砌依赖名：页面重点说明 `primary / 
 
 这不是硬性极简策略，也没有公开实验支持“减少多少代码、时间或成本”。前台不得使用代码行数、效率或成本提升数字。
 
-### 8.8 Positioning Boundaries
+### 8.8 产品定位边界
 
 页面结尾使用一个紧凑边界区，不再增加第二张市场分层图。AI-SDLC 2.0 不以最大 Skills/角色目录、长期语义记忆或自动学习、Coding Agent/IDE/通用 Agent Runtime、大规模 UI 设计知识库、通用云部署平台作为产品目标，也不引入持久投票、常驻委员会或第二套专家治理状态机。
 
@@ -838,11 +838,11 @@ AI-SDLC-2.0-Product-Site/
 
 - 产品主题从冻结 Top 10 市场样本反向抽象，不从 AI-SDLC 模块名直接罗列。
 - 市场通用能力与 AI-SDLC 组合式差异分开说明。
-- Seven-theme taxonomy 在首页和三个机制页之间具有唯一主要归属，不重复成为功能墙。
-- Platform Capabilities 只完整展开 Recoverable Project Truth、Agent-portable Local-first Adoption、Governed Frontend Delivery、Proportional Engineering Control 四组机制；其余三个主题只摘要并深链接。
-- Recoverable Project Truth 不冒充长期语义记忆。
+- 七主题价值体系在首页和三个机制页之间具有唯一主要归属，不重复成为功能墙。
+- Platform Capabilities 只完整展开“可恢复的项目事实”“跨 AI 工具的一致治理与本地优先接入”“受治理的前端交付”“与风险匹配的工程控制”四组机制；其余三个主题只摘要并深链接。
+- “可恢复的项目事实”不冒充长期语义记忆。
 - AI Tool Adapter 不冒充多 Agent 并行编排。
-- 前端三条路径分别标注 Built-in default、Built-in enterprise compatibility、Compatible evidence path。
+- 前端三条路径分别标注“内置默认推荐路径”“内置企业兼容路径”“兼容执行与证据路径”。
 - 代码精简保持非阻断，证据与 Close 保持严格状态语义。
 - 前台不展示 Top 10 名称、Stars、Logo 墙或逐项目优劣矩阵。
 - 明确列出 AI-SDLC 不做 Skills 市场、长期记忆、IDE、Agent Runtime、设计知识库或自动部署平台。
