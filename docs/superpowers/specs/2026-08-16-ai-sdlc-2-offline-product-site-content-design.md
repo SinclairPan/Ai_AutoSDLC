@@ -8,12 +8,13 @@
 
 ## 2. 产品目标
 
-网站应让第一次接触 AI-SDLC 的开发者在不依赖讲解人的情况下完成四件事：
+网站应让第一次接触 AI-SDLC 的开发者在不依赖讲解人的情况下完成五件事：
 
 1. 理解 AI-SDLC 与通用 AI Coding Agent 的职责差异。
-2. 理解 Loop Engineering 如何把需求、设计、实现、前端证据和提交前审查组织成可关闭的工程闭环。
-3. 理解有界动态专家复核如何在不引入无限 Agent 讨论的前提下挑战实质结果。
-4. 根据自己的项目状态、安装方式和操作系统，独立完成 AI-SDLC 2.0.0 的安装、验证、初始化和首次需求输入。
+2. 理解 AI-SDLC 如何把市场上常见的 Spec、Skills、专家复核和验证方法组织成具有状态、失败语义、恢复路径与 Close 权的本地交付控制层。
+3. 理解 Loop Engineering 如何把需求、设计、实现、前端证据和提交前审查组织成可关闭的工程闭环。
+4. 理解有界动态专家复核如何在不引入无限 Agent 讨论的前提下挑战实质结果。
+5. 根据自己的项目状态、安装方式和操作系统，独立完成 AI-SDLC 2.0.0 的安装、验证、初始化和首次需求输入。
 
 网站表面必须是一套完整的 AI-SDLC 2.0 产品官网和技术说明站。正文不得出现“参赛材料”“课题响应”“评分项”“评委问答”“覆盖矩阵”“30 秒答案”等表述。
 
@@ -50,6 +51,41 @@
 
 代码精简只能描述为非阻断建议，不改变 Loop 状态，也不阻止 Close。
 
+### 3.4 市场反向研究基线
+
+产品价值主题不能从 AI-SDLC 自身已有模块直接罗列生成。内容设计先研究高关注度的 AI Coding Skills、开发方法、工作流和直接影响开发连续性的插件，再反查 v2.0.0 的真实实现。
+
+本次样本冻结于 `2026-08-16`。候选集由 GitHub Search 对 `agent skills + coding`、`Claude Code skills + development`、`coding agent + workflow/methodology`、`spec-driven development + AI coding` 四组查询取并集，再采用以下可复核口径筛选：
+
+- GitHub 公开仓库。
+- GitHub API 在采样时识别根许可证为 `MIT` 或 `Apache-2.0`。
+- 能直接安装到 AI Coding 工具，或提供面向软件交付的 Skill、方法、角色、Spec Workflow、前端工程能力、代码精简或跨会话连续性。
+- 按 GitHub Stars 降序取前十。
+- 排除 Awesome/资源清单、完整 IDE、完整 Coding Agent 或通用 Agent Runtime、MCP 工具、单语言框架和非软件交付领域技能。
+
+Stars、许可证、默认分支与 commit 由 GitHub API 在同一采样批次读取。这是一套有明确边界的市场样本，不是对 GitHub 全站的绝对排名。Stars 只表示采样时的公开关注度，不能推导质量、采用率、成熟度、性能或竞赛得分。
+
+| 排名 | 冻结项目 | Stars | License | 冻结源码 | 主要市场形态 |
+|---|---|---:|---|---|---|
+| 1 | [obra/superpowers](https://github.com/obra/superpowers) | 272,856 | MIT | [`b36e082`](https://github.com/obra/superpowers/tree/b36e0829c6d0140e93cfef2ca599b1b07d4a7797) | 可组合 Skills 与开发方法论 |
+| 2 | [affaan-m/ECC](https://github.com/affaan-m/ECC) | 240,523 | MIT | [`06c5e11`](https://github.com/affaan-m/ECC/tree/06c5e118c4d3e6c3b7f9445f973a2194c82de193) | Skills、Agents、Memory、Hooks、安全与验证系统 |
+| 3 | [mattpocock/skills](https://github.com/mattpocock/skills) | 219,406 | MIT | [`068b6e0`](https://github.com/mattpocock/skills/tree/068b6e0c62393147daf03530149cdce209c93da8) | 小型、可改、可组合的真实工程 Skills |
+| 4 | [msitarzewski/agency-agents](https://github.com/msitarzewski/agency-agents) | 145,853 | MIT | [`ebe9c99`](https://github.com/msitarzewski/agency-agents/tree/ebe9c99acb5c96f9468de368d8bead775387d1a7) | 专业角色与交付物导向的 Agent 库 |
+| 5 | [github/spec-kit](https://github.com/github/spec-kit) | 129,580 | MIT | [`bf88c9f`](https://github.com/github/spec-kit/tree/bf88c9f9a82fa370c7a7257aa2b3cf10b457b65c) | Intent-driven Spec Workflow Harness |
+| 6 | [garrytan/gstack](https://github.com/garrytan/gstack) | 128,287 | MIT | [`ae8914a`](https://github.com/garrytan/gstack/tree/ae8914af7edaf248f5b0dcd60518d2f6890ad0da) | 产品、设计、工程、QA 与发布 Skills 工具组 |
+| 7 | [nextlevelbuilder/ui-ux-pro-max-skill](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill) | 117,367 | MIT | [`a38d04c`](https://github.com/nextlevelbuilder/ui-ux-pro-max-skill/tree/a38d04c3d5c298c851dbe5e6ee1965ee3de42cb5) | UI/UX 设计知识、规则与多栈实现 Skill |
+| 8 | [DietrichGebert/ponytail](https://github.com/DietrichGebert/ponytail) | 104,171 | MIT | [`2ed6c52`](https://github.com/DietrichGebert/ponytail/tree/2ed6c52c9d7e5e56942508591085fd45dea277d3) | 代码极简与 YAGNI Skill |
+| 9 | [thedotmack/claude-mem](https://github.com/thedotmack/claude-mem) | 90,921 | Apache-2.0 | [`fae697a`](https://github.com/thedotmack/claude-mem/tree/fae697a45d107aae567d605916391ab64d8ecae1) | 跨会话上下文采集、压缩与回注 |
+| 10 | [addyosmani/agent-skills](https://github.com/addyosmani/agent-skills) | 87,796 | MIT | [`df1edb2`](https://github.com/addyosmani/agent-skills/tree/df1edb2e05487d0aa6d93c747141e0aed1187f25) | 按研发阶段组织的工程 Skills 集合 |
+
+[OpenSpec](https://github.com/Fission-AI/OpenSpec) 与 [BMAD Method](https://github.com/bmad-code-org/BMAD-METHOD) 作为相似工作流参照，用于校准轻量变更规格和 AI 驱动开发方法，但不进入上述 Top 10 排名。
+
+市场研究得出四项共同趋势：专业能力正在 Skill 化，意图正在 Spec 化，开发职责正在角色化，长任务正在状态化与记忆化。AI-SDLC 的公开主张不能是“这些能力只有我有”，而应是：
+
+> AI-SDLC 2.0 把已经成熟的工程方法组织成一套具有项目状态、证据、失败语义、恢复路径和 Close 权的本地交付系统。
+
+Top 10 项目名、Stars、排名和逐项目对照仅保留在本内部设计依据中，不进入产品站前台。
+
 ## 4. 受众与阅读方式
 
 ### 4.1 核心受众
@@ -61,27 +97,31 @@
 
 ### 4.2 三层阅读深度
 
-1. **快速浏览**：从首页理解产品定位、完整工作流和两项核心能力。
-2. **机制阅读**：进入 Loop Engineering 或 Dynamic Expert Review，理解状态、反馈、失败语义和边界。
+1. **快速浏览**：从首页理解产品定位、完整工作流和系统价值主题。
+2. **机制阅读**：进入 Platform Capabilities、Loop Engineering 或 Dynamic Expert Review，理解状态、反馈、失败语义和边界。
 3. **动手验证**：在 Downloads & Docs 中选择一条自包含安装路径，复制命令完成安装和初始化。
 
 ## 5. 顶层信息架构
 
-离线站点采用一个 HTML 入口文件和四个产品视图。建议使用 `index.html` 内部 Hash 路由，直接双击即可打开，不需要后台服务或依赖安装。这里的“一个 HTML 入口”不等于“所有视频字节也必须编码进同一个文件”；视频、字幕和 poster 可以作为同一离线包中的本地相对资源。
+离线站点采用一个 HTML 入口文件和五个产品视图。建议使用 `index.html` 内部 Hash 路由，直接双击即可打开，不需要后台服务或依赖安装。这里的“一个 HTML 入口”不等于“所有视频字节也必须编码进同一个文件”；视频、字幕和 poster 可以作为同一离线包中的本地相对资源。
 
 主导航固定为：
 
 1. `AI-SDLC 2.0`
 2. `Loop Engineering`
 3. `Dynamic Expert Review`
-4. `Downloads & Docs`
+4. `Platform Capabilities`
+5. `Downloads & Docs`
 
 对应内部地址：
 
 - `#home`
 - `#loop-engineering`
 - `#dynamic-expert-review`
+- `#platform-capabilities`
 - `#downloads-docs`
+
+导航顺序刻意先完成两项核心机制的主线阅读，再进入通用平台能力；本文后续章节按内容设计依赖组织，不代表导航优先级。
 
 前台不得使用“课题一”“课题二”作为导航或页面标题。
 
@@ -119,7 +159,8 @@
 
 - Hero 不使用超高首屏；主标题、副标题和首要动作在一屏内形成完整认知。
 - 端到端架构图在笔记本上优先使用可阅读的纵向或分段流程，而不是缩小整张宽图。
-- Loop Engineering 与 Dynamic Expert Review 两个入口在窄视口下改为上下排列。
+- 三个核心价值入口最多两列；窄视口下按 `Goal to Close → Evidence → Expert Review` 顺序单列排列。
+- `Built for production use` 只显示三个紧凑摘要，不在首页展开完整能力墙。
 
 #### 工作流实录
 
@@ -128,11 +169,13 @@
 - 章节列表在空间不足时位于播放器下方，不与视频并排挤压。
 - 全屏入口始终可见；全屏用于增强观看，不得成为看清视频内容的唯一方式。
 
-#### Loop Engineering 与 Dynamic Expert Review
+#### Platform Capabilities、Loop Engineering 与 Dynamic Expert Review
 
 - Loop 卡片和角色卡片在笔记本窄窗口下使用单列阅读顺序。
 - BDERG 和 Loop 生命周期图提供纵向布局，不能通过缩小字体强塞进横向画布。
 - 机制对比表在窄屏下按比较维度拆成卡片，保持双方结论相邻。
+- Platform Capabilities 的价值主题最多两列；成熟度边界在窄屏下改为逐主题纵向卡片。
+- 平台页的系统价值图在窄屏下使用纵向层次，不展示 Top 10 Logo 墙或横向品牌表。
 
 #### Downloads & Docs
 
@@ -183,6 +226,7 @@
 
 - `Explore Loop Engineering`
 - `Explore Expert Review`
+- `Explore Platform Capabilities`
 - `Download v2.0.0`
 
 ### 7.2 端到端产品架构
@@ -201,14 +245,21 @@ Project Init / Adopt
 
 需要明确：Frontend Evidence 是条件启用的 Loop；Local PR Review 是跨阶段复核，不是与前四类完全同构的强制阶段。
 
-### 7.3 两项核心能力
+### 7.3 市场反向抽象出的系统价值
 
-并列介绍：
+首页不平铺功能列表，也不从 CLI 模块名组织内容。基于市场研究，首屏之后只展开三个最强结果价值：
 
-- **Loop Engineering**：管理一项结果如何从输入、反馈和修复走向可信 Close。
-- **Dynamic Expert Review**：在 Close 前，用临时、只读、输入绑定的专家上下文挑战当前实质结果。
+1. **From Goal to Close**：从需求、设计、实现到证据和提交前审查，AI-SDLC 管理的是一项工作何时可以关闭，而不只是一次代码生成。
+2. **Evidence Before Completion**：任务验证、测试、构建、前端浏览器证据或独立复核不足时，系统保持未完成或进入明确失败状态。
+3. **Bounded Expert Collaboration**：专家按当前结果风险临时选择、只读检查、将 Findings 交回原 Writer，并限制修复与复审次数。
 
-不得把 Codex、GPT 或其他模型写成产品主角。模型是可替换的执行引擎；AI-SDLC 管理工作状态、证据和完成权。
+三个主价值之后使用一个紧凑的 `Built for production use` 区域，只提供以下摘要和进入 Platform Capabilities 的入口：
+
+- **Durable Project State**：checkpoint、status、handoff、recover 与 reconcile 让工程事实跨会话延续。
+- **Governed Frontend Delivery**：技术栈与组件方案确认、Provider/Style Pack/Theme 合同和浏览器证据在同一上下文中传递。
+- **Agent-portable, Local-first Adoption**：新项目或已有项目均可接入；AI 工具可以替换，规则、状态与工件留在项目侧。
+
+不得把 Codex、GPT 或其他模型写成产品主角。模型是可替换的执行引擎；AI-SDLC 管理工作状态、证据和完成权。不得在首页展示 Top 10 项目、Stars、Logo 墙或逐品牌优劣表。
 
 ### 7.4 AI-SDLC 2.0 工作流实录
 
@@ -263,13 +314,156 @@ Project Init / Adopt
 - GitHub、README、中文用户指南和 v2 迁移指南入口。
 - `Install → Verify → Init → Enter your first requirement` 的四步摘要。
 
-## 8. 页面二：Loop Engineering
+首页的 Platform Capabilities 入口应落到平台页的价值总览，不落到某条零散命令或单一 Adapter 说明。
+
+## 8. Platform Capabilities 内容规范
 
 ### 8.1 页面目标
 
+说明 AI-SDLC 不是又一个 Skills 集合、专家人格库、长期记忆插件或 Spec 模板生成器，而是把这些工程方法接入同一项目身份、状态、证据、失败和 Close 语义的本地交付控制层。
+
+页面标题建议：
+
+> From Agent Skills to Governed Delivery
+
+副标题不得使用“功能更多”或“替代所有工具”的口径，应强调：AI Coding Agent 负责生成、修改和执行候选结果，AI-SDLC 负责保存项目事实、约束状态迁移、消费验证证据并决定下一步。
+
+### 8.2 页面叙事顺序
+
+1. AI Coding 生态正在从通用对话走向专业 Skills、Spec Workflow、角色分工、长期上下文和垂直工程能力。
+2. 这些能力已经成为行业共同基础，不属于 AI-SDLC 独有。
+3. AI-SDLC 的差异是把方法和能力组合成有状态、可失败、可恢复、可关闭的生产系统。
+4. 用一张紧凑价值图呈现七个系统主题；From Intent to Close、Evidence Before Completion、Bounded Expert Challenge 只给摘要并深链接到两项核心机制页。
+5. 只深入解释平台页负责的四组通用机制：项目事实恢复、工具可替换与本地接入、前端意图到浏览器证据、克制的工程控制。
+6. 用 `What AI-SDLC does not claim` 收束，并链接 Loop Engineering、Dynamic Expert Review 与 Downloads & Docs。
+
+前台只描述不带品牌的市场能力层，不展示 Top 10 项目名、Stars、排名、Logo、总分或逐仓勾选矩阵。
+
+### 8.3 七个系统价值主题
+
+| 系统价值 | 解决的 AI Coding 痛点 | 用户结果 | 主要内容归属 |
+|---|---|---|---|
+| **From Intent to Close** | 需求、计划、实现和验收分散，Agent 写完代码就把任务当作完成 | 在正式绑定 WorkItem 的交付路径中，需求、设计、任务、实现、验证和 Close 使用同一身份与工件链 | 首页总览；Loop Engineering 详解 |
+| **Evidence Before Completion** | 模型以文字总结代替真实测试、构建、浏览器和审查结果 | 完成由可检查证据与状态决定，不由 Agent 自报 | Platform 总览；Loop Engineering 详解 |
+| **Bounded Expert Challenge** | 同一上下文自审容易重复盲点，无界多 Agent 讨论又带来成本和冲突 | 按风险选择临时只读专家，Findings 回到原 Writer，修复和复审有上限 | Dynamic Expert Review 详解 |
+| **Recoverable Project Truth** | 会话压缩、中断或换人后，只剩不可靠的聊天记忆 | 跨会话继续读取项目事实、开放门禁、当前分支和下一步 | Platform Capabilities 详解 |
+| **Frontend Intent to Evidence** | 技术栈、组件、主题、实现与浏览器验收各自为政，页面“能编译”却未必可用 | 技术方案、组件治理、主题约束、页面运行与浏览器验收在同一交付上下文中传递 | Platform Capabilities 详解 |
+| **Agent-portable Governance** | 每换一个 Agent 就重新解释规则，项目治理被锁在工具聊天窗口里 | 更换 AI 工具时，项目侧规则、状态和工件不随聊天窗口消失 | Platform Capabilities 详解 |
+| **Proportional Engineering Control** | Agent 容易过度设计；治理系统也可能为了“规范”增加无价值阻断 | 对证据与身份严格，对代码精简保持建议性；遇到缺口时停止、求证或恢复 | Platform Capabilities 详解 |
+
+同一主题只在主要归属页面完整解释。其他页面使用一段摘要和深链接，不能复制成重复 Feature Tour。
+
+### 8.4 Recoverable Project Truth
+
+从生产问题“长任务跨会话后只剩聊天记忆，无法确认做到哪里”出发，展示以下机制链：
+
+```text
+checkpoint
+  → status
+  → human-readable handoff
+  → compare branch and project artifacts
+  → recover
+  → reconcile when explicitly required
+```
+
+正文必须说明：
+
+- checkpoint 记录阶段、分支、开放门禁和下一步，不保存“模型脑内状态”。
+- `status` 读取当前本地事实；`recover` 对照 checkpoint、当前分支和项目工件给出恢复路径。
+- `handoff` 服务于跨会话人工可读交接；重要事实仍需回到受治理工件验证。
+- 发现 checkpoint 过期、分支变化或工件不一致时，不能把旧状态直接当作完成。
+
+不得描述为自动捕获全部对话、向量长期记忆、跨项目语义回注、事务回滚或精确恢复到进程中断的上一条指令。
+
+### 8.5 Agent-portable, Local-first Adoption
+
+页面使用名称 `AI Tool Adapter Matrix`，不得写成“多 Agent 编排适配器”。
+
+公开支持面包括 Claude Code、Codex、Cursor、VS Code/Copilot 和 generic 入口。每个 Adapter 将统一项目规则安装到对应工具的 canonical 路径；项目一次使用一个当前适配目标，也可以显式切换。
+
+该能力的价值不是“支持工具数量最多”，而是：
+
+- AI 工具是可替换执行入口。
+- WorkItem、Loop 状态、checkpoint、验证工件和 Close 结果保留在项目侧。
+- Adapter 差异不会改变同一项目的产品治理概念。
+
+不得宣称多个工具共享实时会话、隐式上下文可无损迁移、所有 Adapter 具有完全一致的并行能力，或 AI-SDLC 在支持工具数量上领先市场。
+
+同一章节用以下事实说明项目如何落地，但不把安装能力写成核心创新：
+
+- 新项目通过 `init` 接入；已有项目通过 `init → adopt` 扫描和索引现有事实。
+- Windows、macOS、Linux 提供受支持的在线安装路径和正式离线发行资产。
+- 核心规则、状态、扫描、Loop、复核输入和证据工件本地优先。
+- 代码外发默认关闭；如果用户选择远程 AI Provider，数据边界由该 Provider 单独决定。
+
+“离线产品站”“离线安装包”“本地优先治理”和“完全离线 AI 推理”是四个不同概念，正文必须分开。
+
+### 8.6 Governed Frontend Delivery
+
+前端能力不能写成“内置几个组件库”，而要表达为从方案选择到浏览器证据的治理链：
+
+```text
+frontend requirement
+  → solution recommendation
+  → explicit human confirmation
+  → Provider / Style Pack / Theme contract
+  → page and generation constraints
+  → managed or project-owned implementation
+  → browser entry and E2E evidence
+  → Frontend Evidence state
+```
+
+三种路径必须分别标注成熟度：
+
+| 路径 | 公开定位 | 必须说明的边界 |
+|---|---|---|
+| `vue3 / public-primevue / modern-saas` | **Built-in default recommendation** | PrimeVue 是第三方组件库；AI-SDLC 提供 Provider profile、语义组件映射、白名单、Style Pack、Theme Token、唯一 `theme.ts` 入口和交付约束。推荐不等于已经安装或应用。 |
+| `vue2 / enterprise-vue2` | **Built-in enterprise compatibility path** | AI-SDLC 内置私有 Provider profile、组件映射、白名单和安装策略；信服云组件包、网络、授权与目标环境由企业侧提供，站点不公开私有 registry 地址，也不声称安装包内附送组件库。 |
+| 自定义或不使用组件库 | **Compatible execution and evidence path** | 不是第三个内置 Provider。项目需提供可加载 browser entry、执行上下文和兼容 Browser Gate 工件，再由 Frontend Evidence 消费。 |
+
+Vue3 默认治理可展开但不堆砌依赖名：页面重点说明 `primary / surface / highlight` 主题语义、`theme.ts` 唯一入口、`pages/` 与历史 `views/` 的互斥约束，以及公开默认方案与高级自定义选择并存。
+
+同一章节继续说明 AI-SDLC 如何消费并绑定代码与浏览器证据；测试、TDD、Review 与 Browser QA 已是市场常见能力，不能宣称由 AI-SDLC 首创：
+
+- Implementation 任务记录 verification/evidence；测试、lint、build 和其他项目验证结果可进入关闭判断。
+- Frontend Evidence 读取真实 browser entry、交互、console/page error、截图、视觉结果与基础可访问性证据。
+- Playwright 是内置可选执行路径；Codex browser control、浏览器插件、Cypress、Selenium 或企业 E2E Runner 可以输出兼容的项目本地 Browser Gate 工件。
+- 项目自己的 E2E Suite 与 Frontend Evidence 互补：前者执行项目测试策略，后者验证工件身份、时效、结构和 Loop 状态。
+
+不得把基础可访问性检查写成 WCAG 认证，不得把 Frontend Evidence 写成完整 E2E 平台，也不得声称任意自定义前端无需配置即可运行。
+
+### 8.7 Proportional Engineering Control
+
+该主题用于表达 AI-SDLC 对不同问题使用不同强度的控制：
+
+- 输入身份、验证证据、审查漂移和 Close 条件使用明确状态与拒绝语义。
+- 技术栈和前端方案在实现前保留人工确认。
+- 代码体积、重复、复杂度和拆分只生成非阻断精简建议，由实现者结合行为正确性、维护成本和交付价值决定是否采纳。
+- 缺少用户决定进入 `needs_user`，结果需修复进入 `needs_fix`，专家复核未完成进入 `needs_review`；不会把失败改写为通过，也不会无限自动重试。
+
+这不是硬性极简策略，也没有公开实验支持“减少多少代码、时间或成本”。前台不得使用代码行数、效率或成本提升数字。
+
+### 8.8 Positioning Boundaries
+
+页面结尾使用一个紧凑边界区，不再增加第二张市场分层图。AI-SDLC 2.0 不以最大 Skills/角色目录、长期语义记忆或自动学习、Coding Agent/IDE/通用 Agent Runtime、大规模 UI 设计知识库、通用云部署平台作为产品目标，也不引入持久投票、常驻委员会或第二套专家治理状态机。
+
+该区只说明产品取舍，不做品牌比较；不得使用 Logo、红叉、冠军色、总分、Stars 或“有/无”勾选墙，也不得给出未经同任务、同模型、同预算实验支持的速度、质量或成本排名。
+
+### 8.9 平台能力表达合同
+
+每个主题必须使用以下链路生成最终正文：
+
+> 现实生产问题 → 行业共同方法 → AI-SDLC 的组合方式 → CLI/状态 → 可检查工件 → 失败行为 → 明确边界
+
+前台可以自然写成连续叙事、机制图和状态示例，不把这七项渲染为问答模板或评分清单。
+
+## 9. Loop Engineering 内容规范
+
+### 9.1 页面目标
+
 说明 AI-SDLC 如何把“模型输出了一段代码”提升为“一个可检查、可反馈、可修复、可关闭的工程结果”。页面应呈现一条完整生命周期，而不是五个平铺功能卡。
 
-### 8.2 内容顺序
+### 9.2 内容顺序
 
 1. AI Coding 的完成幻觉：目标漂移、跨阶段丢上下文、测试后补、界面只看截图、提交前才发现跨阶段回归。
 2. 一个 WorkItem 的完整生命周期。
@@ -281,7 +475,7 @@ Project Init / Adopt
 8. CLI、工件和开发者验证。
 9. 适用场景与能力边界。
 
-### 8.3 五类 Loop
+### 9.3 五类 Loop
 
 #### Requirement
 
@@ -313,7 +507,7 @@ Project Init / Adopt
 - 关注需求、设计、实现、测试和前端证据之间的回归。
 - 不递归审查 Reviewer 或最终报告。
 
-### 8.4 每类 Loop 的统一卡片
+### 9.4 每类 Loop 的统一卡片
 
 每个 Loop 使用同一内容结构：
 
@@ -329,9 +523,9 @@ Project Init / Adopt
 10. close/freeze 条件。
 11. 失败语义和恢复方式。
 
-### 8.5 支撑能力
+### 9.5 支撑能力
 
-支撑能力必须嵌入相应生命周期节点，不做独立 Feature Tour：
+支撑能力在 Loop 页面中必须嵌入相应生命周期节点；其平台级机制统一深链接到 Platform Capabilities，不在本页复制成独立 Feature Tour：
 
 - `init` 与已有项目 `adopt`。
 - checkpoint、status、recover。
@@ -339,9 +533,9 @@ Project Init / Adopt
 - 人工方案确认。
 - 可检查工件和本地优先边界。
 
-## 9. 页面三：Dynamic Expert Review
+## 10. Dynamic Expert Review 内容规范
 
-### 9.1 页面目标
+### 10.1 页面目标
 
 说明 AI-SDLC 如何把专家协作和对抗限制在可预测、可检查、不会无限扩张的复核关系中。
 
@@ -351,13 +545,13 @@ Project Init / Adopt
 
 `Bounded Dynamic Expert Review Graph（BDERG）` 只作为机制图标题，不作为独立运行时产品名称。
 
-### 9.2 BDERG 事实声明
+### 10.2 BDERG 事实声明
 
 机制图旁固定说明：
 
 > BDERG 是对 Writer 与临时只读专家复核关系的说明性拓扑，不是持久化 Graph、调度器、专家注册表或第二状态机。
 
-### 9.3 三种职责
+### 10.3 三种职责
 
 - **Writer**：当前或原实现代理，负责生成实质结果，并拥有唯一修复权。
 - **Primary Expert**：根据当前内容和主风险选择的一名只读专家。
@@ -365,7 +559,7 @@ Project Init / Adopt
 
 Cross-risk Expert 是条件角色。产品不得宣称所有 Loop 永远运行三个 Agent。
 
-### 9.4 机制图
+### 10.4 机制图
 
 ```text
 Writer 产出
@@ -378,14 +572,14 @@ Writer 产出
   → 原有 Loop Close 或 needs_review
 ```
 
-### 9.5 Bounded / Dynamic / Expert / Review Graph
+### 10.5 Bounded / Dynamic / Expert / Review Graph
 
 - **Bounded**：最多两名只读专家；同一结果最多一次修复和一次复审；禁止递归审查。
 - **Dynamic**：角色由当前工件内容和风险信号决定，不使用固定常驻专家名单。
 - **Expert**：新鲜、只读、无修改权的临时上下文，不代表认证身份或永久权威。
 - **Review Graph**：解释一次复核中的关系和信息流，不代表持久图数据库或 Agent 网络。
 
-### 9.6 输入绑定和职责隔离
+### 10.6 输入绑定和职责隔离
 
 页面必须解释：
 
@@ -396,7 +590,7 @@ Writer 产出
 - 修复责任始终返回原 Writer。
 - close/freeze 在同一进程重新计算输入，发生漂移时拒绝关闭。
 
-### 9.7 跨风险三职责实例
+### 10.7 跨风险三职责实例
 
 选用“为已有系统增加具备权限控制的发布审批功能”作为说明案例，覆盖：
 
@@ -406,7 +600,7 @@ Writer 产出
 
 该实例用于展示 Writer、Primary Expert 和 Cross-risk Expert 三种实际职责。必须同时说明：这是明确交叉风险下的选择结果，不代表所有结果都固定使用三种职责。
 
-### 9.8 机制对比
+### 10.8 机制对比
 
 只比较可验证的机制差异：
 
@@ -421,13 +615,13 @@ Writer 产出
 
 没有同模型、同任务、同预算的正式实验前，不得声称“发现更多缺陷”“质量提高”“交付更快”或“成本更低”。
 
-## 10. 页面四：Downloads & Docs
+## 11. 页面五：Downloads & Docs
 
-### 10.1 页面目标
+### 11.1 页面目标
 
 让用户不依赖讲解或外部跳转，完成版本确认、下载、安装、验证、项目初始化和第一条需求输入。
 
-### 10.2 公共资源
+### 11.2 公共资源
 
 - GitHub 仓库。
 - v2.0.0 Release。
@@ -439,7 +633,7 @@ Writer 产出
 - 在线安装器与适用前提。
 - License 和产品契约。
 
-### 10.3 New User Guide 路径选择
+### 11.3 New User Guide 路径选择
 
 用户只需要完成三个选择：
 
@@ -467,7 +661,7 @@ Writer 产出
 
 原子步骤仍逐项保留，但不得把十几项操作同时平铺为一个无层级的长清单。
 
-### 10.4 步骤组件合同
+### 11.4 步骤组件合同
 
 每一步固定包含六个区域：
 
@@ -486,7 +680,7 @@ Writer 产出
 - 明确区分安装目录和业务项目目录。
 - 正常成功路径不要求额外执行 `adapter status` 或 `run --dry-run`。
 
-### 10.5 路径一：Existing Project · Offline Package
+### 11.5 路径一：Existing Project · Offline Package
 
 完整顺序：
 
@@ -508,7 +702,7 @@ Writer 产出
 16. 核对“原任务文件不会被修改”、识别结果和推荐继续点。
 17. 在所选 AI 工具中输入增量需求。
 
-### 10.6 路径二：Existing Project · Online Install
+### 11.6 路径二：Existing Project · Online Install
 
 完整顺序：
 
@@ -529,7 +723,7 @@ Writer 产出
 
 在线安装不得默认把 `.venv` 创建在业务项目根目录中。在线安装正文必须基于 v2.0.0 正式安装器，而不是只给裸 `pip install` 命令。
 
-### 10.7 路径三：New Project · Offline Package
+### 11.7 路径三：New Project · Offline Package
 
 完整顺序：
 
@@ -548,7 +742,7 @@ Writer 产出
 
 全新项目不得执行 `adopt .`。
 
-### 10.8 路径四：New Project · Online Install
+### 11.8 路径四：New Project · Online Install
 
 完整顺序：
 
@@ -566,7 +760,7 @@ Writer 产出
 
 全新项目不得执行 `adopt .`，安装环境不得与业务项目目录混在一起。
 
-### 10.9 就地异常处理
+### 11.9 就地异常处理
 
 每条路径必须在相关步骤中重复提供处理办法，不依赖公共 FAQ：
 
@@ -589,7 +783,7 @@ Writer 产出
 
 页面底部可以提供额外的 `Troubleshooting` 索引，但四条成功路径不依赖该索引。
 
-## 11. 离线交付合同
+## 12. 离线交付合同
 
 建议交付结构：
 
@@ -614,9 +808,9 @@ AI-SDLC-2.0-Product-Site/
 - 不建议将完整 MP4 Base64 编码进 HTML，以避免体积、内存和兼容性问题；如果后续明确把“单物理文件”提升为硬约束，则必须重新评估视频体积和浏览器兼容性后再修改交付合同。
 - GitHub、Release 和下载链接在联网时可访问；离线时正文、命令和产品说明仍可完整阅读。
 
-## 12. 内容语气与禁用表达
+## 13. 内容语气与禁用表达
 
-### 12.1 推荐语气
+### 13.1 推荐语气
 
 - 具体、克制、工程化。
 - 先说明用户问题，再解释机制。
@@ -624,7 +818,7 @@ AI-SDLC-2.0-Product-Site/
 - 命令与预期结果使用可复核事实。
 - 营销表达服务于产品价值，不取代技术解释。
 
-### 12.2 禁用表达
+### 13.2 禁用表达
 
 - “首创多 Agent 软件工程系统”。
 - “行业绝对领先”。
@@ -636,11 +830,24 @@ AI-SDLC-2.0-Product-Site/
 - “每次固定三个 Agent”。
 - “完全离线运行”，除非明确限定为核心治理和本地工件；远程 AI Provider 必须单独说明。
 
-## 13. 内部编辑完整性检查
+## 14. 内部编辑完整性检查
 
 本节用于内容制作与验收，不进入前台页面。
 
-### 13.1 Loop Engineering 完整性
+### 14.1 Platform Capabilities 完整性
+
+- 产品主题从冻结 Top 10 市场样本反向抽象，不从 AI-SDLC 模块名直接罗列。
+- 市场通用能力与 AI-SDLC 组合式差异分开说明。
+- Seven-theme taxonomy 在首页和三个机制页之间具有唯一主要归属，不重复成为功能墙。
+- Platform Capabilities 只完整展开 Recoverable Project Truth、Agent-portable Local-first Adoption、Governed Frontend Delivery、Proportional Engineering Control 四组机制；其余三个主题只摘要并深链接。
+- Recoverable Project Truth 不冒充长期语义记忆。
+- AI Tool Adapter 不冒充多 Agent 并行编排。
+- 前端三条路径分别标注 Built-in default、Built-in enterprise compatibility、Compatible evidence path。
+- 代码精简保持非阻断，证据与 Close 保持严格状态语义。
+- 前台不展示 Top 10 名称、Stars、Logo 墙或逐项目优劣矩阵。
+- 明确列出 AI-SDLC 不做 Skills 市场、长期记忆、IDE、Agent Runtime、设计知识库或自动部署平台。
+
+### 14.2 Loop Engineering 完整性
 
 - 清晰目标输入。
 - 自动拆分与计划。
@@ -653,7 +860,7 @@ AI-SDLC-2.0-Product-Site/
 - 多类型任务和五类 Loop。
 - 可运行安装入口、README 和新用户指南。
 
-### 13.2 Dynamic Expert Review 完整性
+### 14.3 Dynamic Expert Review 完整性
 
 - Writer、Primary Expert、Cross-risk Expert 三种清晰职责。
 - 明确的读写权限和信息传递。
@@ -667,19 +874,24 @@ AI-SDLC-2.0-Product-Site/
 
 内部检查只验证内容完整性，不得以“要求覆盖矩阵”的形式渲染到产品站。
 
-## 14. 验收标准
+## 15. 验收标准
 
-### 14.1 内容验收
+### 15.1 内容验收
 
-- 四个主导航全部使用英文产品名称。
+- 五个主导航全部使用英文产品名称。
+- 主导航顺序固定为 `AI-SDLC 2.0 → Loop Engineering → Dynamic Expert Review → Platform Capabilities → Downloads & Docs`。
 - 前台不出现赛事、评分或材料响应话术。
-- 两项核心能力页面可以独立理解，不依赖先阅读首页。
+- Platform Capabilities、Loop Engineering 和 Dynamic Expert Review 三个机制页面都可以独立理解，不依赖先阅读首页。
 - 所有能力事实与 v2.0.0 标签树一致。
 - BDERG 不被描述为持久运行时或第二状态机。
 - Cross-risk Expert 的条件性和最多两名只读专家边界清晰。
 - 未提供正式实验时不出现性能、质量或效率提升数字。
+- Platform Capabilities 可以独立说明 AI-SDLC 与 Skills、Spec Workflow、Memory Plugin 和垂直工程能力的控制层差异。
+- 市场研究样本记录查询日期、许可证、Stars 和冻结 source ref；前台不显示榜单。
+- 所有比较使用 `industry baseline / AI-SDLC integration / boundary`，不把“非核心定位”写成“竞品没有”。
+- `enterprise-vue2` 不被写成随产品附送的私有组件包；自定义/无组件库路径不被写成第三个内置 Provider。
 
-### 14.2 视频验收
+### 15.2 视频验收
 
 - 播放器位于首页。
 - 支持播放、字幕、章节和全屏。
@@ -687,7 +899,7 @@ AI-SDLC-2.0-Product-Site/
 - 视频缺失或错误时正文仍可使用。
 - 元数据与实际视频一致。
 
-### 14.3 新用户指南验收
+### 15.3 新用户指南验收
 
 - 四条路径全部自包含。
 - 每条路径分别覆盖 Windows、macOS 和 Linux 的受支持平台。
@@ -698,7 +910,7 @@ AI-SDLC-2.0-Product-Site/
 - 全新项目不执行 `adopt`。
 - 三个平台分别完成一次从零人工复现后，才能把对应路径标记为可用。
 
-### 14.4 离线站点验收
+### 15.4 离线站点验收
 
 - 直接双击 `index.html` 可浏览所有正文。
 - 无后台、无构建步骤、无外部 CDN 依赖。
@@ -707,9 +919,9 @@ AI-SDLC-2.0-Product-Site/
 - 在线链接不可用时不影响离线正文。
 - 离线安装包不属于站点交付物；下载链接在联网时指向正式 Release，断网时仍应显示资产名、平台和校验说明。
 
-### 14.5 笔记本与窄窗口验收
+### 15.5 笔记本与窄窗口验收
 
-- 在 `1366 × 768`、`1280 × 720`、`1440 × 900` 和 `1024 × 768` 下逐页检查全部四个产品视图。
+- 在 `1366 × 768`、`1280 × 720`、`1440 × 900` 和 `1024 × 768` 下逐页检查全部五个产品视图。
 - 在 `1366 × 768` 的 Windows 125% 缩放等效空间下完成导航、播放、全屏、路径选择和复制命令流程。
 - 浏览器缩放至 150% 后，核心内容和操作仍可到达。
 - 页面主体无横向滚动，长命令只在命令块内部滚动。
@@ -717,7 +929,7 @@ AI-SDLC-2.0-Product-Site/
 - Hash 导航目标不被吸顶导航遮挡。
 - 大屏版本只增加空间和信息并列程度，不出现仅在大屏可见的关键内容。
 
-## 15. 非目标
+## 16. 非目标
 
 本设计不负责：
 
