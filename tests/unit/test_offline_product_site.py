@@ -71,6 +71,7 @@ def test_allowed_external_anchor_is_valid(tmp_path: Path) -> None:
     "markup",
     (
         '<iframe src="https://cdn.example/frame.html"></iframe>',
+        '<iframe src="https://[2001:db8::1]/frame.html"></iframe>',
         '<iframe src="ftp://mirror.example/frame.html"></iframe>',
         '<script src="ftp://mirror.example/runtime.js"></script>',
         '<video src="//cdn.example/demo.mp4"></video>',
@@ -102,6 +103,7 @@ def test_css_string_import_remote_address_is_rejected(tmp_path: Path) -> None:
     "script",
     (
         'new WebSocket("wss://socket.example/events");',
+        'new WebSocket("wss://[2001:db8::1]/socket");',
         'const endpoint = "//cdn.example/api";',
         'const mirror = "ftp://mirror.example/site.js";',
     ),

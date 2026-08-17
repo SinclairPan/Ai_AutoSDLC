@@ -69,8 +69,9 @@ GUIDE_PATH_IDS = tuple(
 GUIDE_STEPS = ("install", "verify", "initialize", "start")
 GUIDE_PARTS = ("purpose", "location", "command", "expected", "troubleshoot", "next")
 
+_NETWORK_HOST_RE = r"(?:[A-Za-z0-9.-]+|\[[0-9A-Fa-f:.]+\])"
 _NETWORK_URL_RE = re.compile(
-    r"(?:(?:https?|wss?)://[A-Za-z0-9.-]+(?:/[^\s<>'\"]*)?|//[A-Za-z0-9.-]+(?:/[^\s<>'\"]*)?)",
+    rf"(?:(?:[A-Za-z][A-Za-z0-9+.-]*:)?//{_NETWORK_HOST_RE}(?::[0-9]+)?(?:/[^\s<>'\"]*)?)",
     re.IGNORECASE,
 )
 _CSS_URL_RE = re.compile(r"url\(\s*(['\"]?)(.*?)\1\s*\)", re.IGNORECASE)
