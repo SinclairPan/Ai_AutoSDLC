@@ -65,6 +65,16 @@
 
 Stars、许可证、默认分支与 commit 由 GitHub API 在同一采样批次读取。这是一套有明确边界的市场样本，不是对 GitHub 全站的绝对排名。Stars 只表示采样时的公开关注度，不能推导质量、采用率、成熟度、性能或竞赛得分。
 
+研究结论进入正文生产前，必须同时生成内部机器可读采样清单并记录 SHA256。清单至少包含：
+
+- UTC 采样时间；完整 REST API 请求参数，包括 `q / sort / order / per_page / page`。
+- 每组查询的分页范围、GitHub 返回总数和去重后的候选全集。
+- 仓库 ID、`owner/name`、Stars、根许可证、默认分支、冻结 commit 和 API 响应来源。
+- 每个候选的纳入或排除决定、排除理由，以及 Stars 并列时按仓库 ID 升序排序的规则。
+- 最终 Top 10 列表、清单自身 SHA256 和生成环境说明。
+
+冻结 commit 只证明所分析的源码版本，不能单独证明采样时的候选池和 Stars 排名；没有上述清单时，Top 10 只能作为待复核草案，不得用于产品价值结论。
+
 | 排名 | 冻结项目 | Stars | License | 冻结源码 | 主要市场形态 |
 |---|---|---:|---|---|---|
 | 1 | [obra/superpowers](https://github.com/obra/superpowers) | 272,856 | MIT | [`b36e082`](https://github.com/obra/superpowers/tree/b36e0829c6d0140e93cfef2ca599b1b07d4a7797) | 可组合 Skills 与开发方法论 |
@@ -634,8 +644,9 @@ Writer 产出
 ### 11.3 页面呈现合同
 
 - 每项公共资源使用统一资源卡，显示名称、用途、版本或适用范围、访问入口和离线可用性。
-- 《中文新用户指南》只显示手册简介、适用对象和“打开用户指南”入口，不在资源卡下展开安装命令。
+- 《中文新用户指南》只显示手册简介、适用对象和“打开用户指南”入口，不在资源卡下展开安装命令。该入口优先打开离线包内与正式源文件摘要绑定的本地只读副本；联网权威源链接作为次级入口。
 - 四种安装场景、逐步命令、预期输出和异常处理全部属于用户手册内部结构，不进入产品站主导航、二级导航或页面章节。
+- 本地用户指南是文档资源，不是第六个产品视图；打开后提供明确返回 `Downloads & Docs` 的入口。
 - GitHub、Release、README 和用户指南均为公共内容，不归属 Loop Engineering 或 Dynamic Expert Review。
 - 离线安装包只提供正式 Release 下载链接、资产名和 SHA256 校验入口，站点交付目录不携带安装包二进制。
 
@@ -800,6 +811,8 @@ Writer 产出
 ```text
 AI-SDLC-2.0-Product-Site/
 ├── index.html
+├── docs/
+│   └── USER_GUIDE.zh-CN.html
 └── assets/
     ├── ai-sdlc-product-walkthrough.mp4
     ├── ai-sdlc-product-walkthrough.vtt
@@ -810,6 +823,7 @@ AI-SDLC-2.0-Product-Site/
 
 - 双击 `index.html` 即可浏览全部文字内容和导航。
 - 这是“单 HTML 入口的离线站点包”，不是“所有媒体均内嵌的单文件 artifact”。
+- `docs/USER_GUIDE.zh-CN.html` 是从正式中文用户指南源文件生成并绑定版本与 SHA256 的本地只读副本，只由 `Downloads & Docs` 资源卡打开，不进入主导航，也不作为第六个产品视图。
 - HTML、CSS、JavaScript、图标和字体 fallback 不依赖 CDN。
 - 视频、字幕和 poster 使用固定本地相对路径。
 - 产品站交付目录不包含 Windows、macOS 或 Linux 离线安装包；下载按钮仅指向正式 Release 资产。
@@ -925,6 +939,7 @@ AI-SDLC-2.0-Product-Site/
 - 直接双击 `index.html` 可浏览所有正文。
 - 无后台、无构建步骤、无外部 CDN 依赖。
 - Hash 导航、资源卡、文档入口和外部链接提示在本地文件协议下正常工作。
+- 断网时可以从 `Downloads & Docs` 打开本地中文用户指南并返回产品站；联网权威源不可达不影响手册阅读。
 - 所有本地资源使用相对路径。
 - 在线链接不可用时不影响离线正文。
 - 离线安装包不属于站点交付物；下载链接在联网时指向正式 Release，断网时仍应显示资产名、平台和校验说明。
