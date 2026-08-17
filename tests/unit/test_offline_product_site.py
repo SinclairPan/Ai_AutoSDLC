@@ -177,6 +177,87 @@ def _is_descendant(node: _HtmlNode, ancestor: _HtmlNode) -> bool:
     return False
 
 
+LOOP_PANEL_CONTRACTS = {
+    "requirement-panel": {
+        "data-loop-input": ("目标", "范围", "验收标准"),
+        "data-loop-state": ("needs_user", "决定"),
+        "data-loop-feedback": ("唯一下一步", "用户"),
+        "data-loop-close": ("未漂移", "Requirement Freeze"),
+        "data-loop-evidence": (
+            "objective",
+            "acceptance criteria",
+            "input_digest",
+            "review_snapshot",
+        ),
+    },
+    "design-contract-panel": {
+        "data-loop-input": ("冻结需求", "接口", "数据边界", "技术栈", "实现约束"),
+        "data-loop-state": ("needs_fix", "设计覆盖", "任务映射"),
+        "data-loop-feedback": ("Findings", "原 Writer", "覆盖报告"),
+        "data-loop-close": ("工件彼此一致", "关键边界", "复核输入保持不变"),
+        "data-loop-evidence": ("spec.md", "plan.md", "tasks.md", "coverage / report"),
+    },
+    "implementation-panel": {
+        "data-loop-input": ("当前候选", "required tasks", "允许修改", "验证命令"),
+        "data-loop-state": ("blocked task", "needs_fix", "needs_review"),
+        "data-loop-feedback": ("原 Writer", "测试", "lint", "build", "项目验证"),
+        "data-loop-close": ("required tasks", "当前候选证据", "独立复核"),
+        "data-loop-evidence": (
+            "required tasks",
+            "verification-evidence.json",
+            "test / lint / build",
+        ),
+    },
+    "frontend-evidence-panel": {
+        "data-loop-input": ("browser entry", "目标页面", "交互路径", "证据身份"),
+        "data-loop-state": ("needs_review", "浏览器证据", "独立核验"),
+        "data-loop-feedback": ("原 Writer", "Browser Gate"),
+        "data-loop-close": ("页面", "交互", "错误证据", "身份匹配", "时效漂移"),
+        "data-loop-evidence": (
+            "browser entry",
+            "interactions",
+            "console / page errors",
+            "screenshots",
+        ),
+    },
+}
+
+
+def _single_node(
+    root: _HtmlNode,
+    *,
+    tag: str | None = None,
+    attribute: str | None = None,
+    value: str | None = None,
+) -> _HtmlNode:
+    nodes = _find_nodes(root, tag=tag, attribute=attribute, value=value)
+    assert len(nodes) == 1
+    return nodes[0]
+
+
+def _assert_loop_panel_contract(document: _HtmlNode) -> None:
+    for panel_id, region_contracts in LOOP_PANEL_CONTRACTS.items():
+        panel = _single_node(document, tag="section", attribute="id", value=panel_id)
+        for attribute, required_tokens in region_contracts.items():
+            region = _single_node(panel, attribute=attribute)
+            region_text = _node_text(region)
+            missing = [token for token in required_tokens if token not in region_text]
+            assert not missing, f"{panel_id} {attribute} missing {missing}"
+
+
+def _assert_local_pr_review_contract(document: _HtmlNode) -> None:
+    rail = _single_node(document, attribute="id", value="local-pr-review")
+    step_list = _single_node(rail, tag="ol")
+    steps = [child for child in step_list.children if child.tag == "li"]
+    labels = [_node_text(_single_node(step, tag="strong")) for step in steps]
+    assert labels == [
+        "Review Pack",
+        "Findings",
+        "fix/rerun",
+        "final report",
+    ], f"Local PR Review steps out of contract: {labels}"
+
+
 def _parse_home_values(markup: str) -> list[dict[str, object]]:
     parser = _HomeValueParser()
     parser.feed(markup)
@@ -267,7 +348,7 @@ def test_loop_page_covers_formal_workitem_lifecycle() -> None:
         node
         for node in _find_nodes(document, tag="a")
         if node.attributes.get("href") == "dynamic-expert-review.html"
-        and "让专家挑战结果" in _node_text(node)
+        and _node_text(node) == "继续了解专家如何挑战 Loop 结果"
     ]
     assert len(expert_ctas) == 1
 
@@ -334,11 +415,62 @@ def test_loop_page_keeps_pr_review_cross_stage() -> None:
             if attribute in node.attributes
         }
         assert present == required_panel_regions
+    _assert_loop_panel_contract(document)
 
     review_rails = _find_nodes(document, attribute="id", value="local-pr-review")
     assert len(review_rails) == 1
     assert "提交前跨阶段复核（按需）" in _node_text(review_rails[0])
     assert not _is_descendant(review_rails[0], tab_groups[0])
+    _assert_local_pr_review_contract(document)
+
+
+def test_loop_panel_contract_rejects_swapped_evidence() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    requirement = _single_node(
+        document, tag="section", attribute="id", value="requirement-panel"
+    )
+    frontend = _single_node(
+        document, tag="section", attribute="id", value="frontend-evidence-panel"
+    )
+    requirement_evidence = _single_node(requirement, attribute="data-loop-evidence")
+    frontend_evidence = _single_node(frontend, attribute="data-loop-evidence")
+    requirement_evidence.content, frontend_evidence.content = (
+        frontend_evidence.content,
+        requirement_evidence.content,
+    )
+
+    with pytest.raises(
+        AssertionError, match="requirement-panel data-loop-evidence missing"
+    ):
+        _assert_loop_panel_contract(document)
+
+
+@pytest.mark.parametrize("mutation", ("delete", "reorder"))
+def test_local_pr_review_contract_rejects_missing_or_reordered_step(
+    mutation: str,
+) -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    rail = _single_node(document, attribute="id", value="local-pr-review")
+    step_list = _single_node(rail, tag="ol")
+    steps = [child for child in step_list.children if child.tag == "li"]
+    if mutation == "delete":
+        step_list.children.remove(steps[1])
+    else:
+        first_index = step_list.children.index(steps[0])
+        second_index = step_list.children.index(steps[1])
+        step_list.children[first_index], step_list.children[second_index] = (
+            step_list.children[second_index],
+            step_list.children[first_index],
+        )
+
+    with pytest.raises(AssertionError, match="Local PR Review steps out of contract"):
+        _assert_local_pr_review_contract(document)
 
 
 def test_loop_page_covers_state_and_recovery() -> None:
@@ -372,6 +504,12 @@ def test_loop_page_covers_state_and_recovery() -> None:
     ):
         cursor = recovery_text.index(step, cursor + 1)
     assert "输入发生漂移后，旧证据立即失效；重新绑定前拒绝复用" in recovery_text
+    for token in ("checkpoint", "branch", "artifact", "recover", "reconcile"):
+        assert token in recovery_text
+    assert "fail-closed" in recovery_text
+    assert "先停止当前运行" in recovery_text
+    assert "提示 recover 或显式 reconcile" in recovery_text
+    assert "恢复的是项目事实，而不是模型思维过程" in recovery_text
 
 
 def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:

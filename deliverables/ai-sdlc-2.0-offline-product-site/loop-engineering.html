@@ -133,6 +133,11 @@
           输入发生漂移后，旧证据立即失效；重新绑定前拒绝复用。系统会基于当前工件重算状态，
           不让过期结论穿过 Freeze 或 Close。
         </p>
+        <p class="loop-drift-rule">
+          当 <code>checkpoint</code>、<code>branch</code> 或 <code>artifact</code>
+          不一致时，AI-SDLC 会 fail-closed：先停止当前运行，再提示 <code>recover</code> 或显式
+          <code>reconcile</code>。恢复的是项目事实，而不是模型思维过程。
+        </p>
       </section>
 
       <section
@@ -382,7 +387,7 @@
         <ol class="local-review-steps">
           <li><strong>Review Pack</strong><span>绑定 Git range、暂存区、工作区或补丁。</span></li>
           <li><strong>Findings</strong><span>检查跨阶段回归、修复与当前验证证据。</span></li>
-          <li><strong>fix / rerun</strong><span>原 Writer 修复候选并重跑必要验证。</span></li>
+          <li><strong>fix/rerun</strong><span>原 Writer 修复候选并重跑必要验证。</span></li>
           <li><strong>final report</strong><span>无未解决 Finding 才生成最终报告，否则保持未关闭。</span></li>
         </ol>
       </section>
@@ -392,7 +397,7 @@
           Loop 的价值不是不停重试，而是在每次反馈后知道该继续、该修复，还是该停下。
         </h2>
         <a class="button-secondary" href="dynamic-expert-review.html">
-          让专家挑战结果 <span aria-hidden="true">→</span>
+          继续了解专家如何挑战 Loop 结果
         </a>
       </section>
     </main>
