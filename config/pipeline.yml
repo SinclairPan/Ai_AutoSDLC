@@ -47,7 +47,6 @@ stages:
       max_tasks_per_batch: 12     # 单批次最大任务数
       tdd_enforced: true          # 是否强制 TDD
       auto_archive: true          # 每批自动归档
-      auto_commit: true           # 每批自动提交
       max_debug_retries: 3        # 单任务最大调试轮数
     gate:
       require_all_tests_pass: true

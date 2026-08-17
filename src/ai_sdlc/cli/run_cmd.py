@@ -188,6 +188,16 @@ def run_command(
     dry_run: bool = typer.Option(
         False, "--dry-run", help="Run gates without execution."
     ),
+    acknowledge_execute_batch: bool = typer.Option(
+        False,
+        "--acknowledge-execute-batch",
+        help="Record the externally completed current execute batch before commit.",
+    ),
+    yes: bool = typer.Option(
+        False,
+        "--yes",
+        help="Confirm execute-batch acknowledgement without an interactive prompt.",
+    ),
 ) -> None:
     """Run the SDLC pipeline from current checkpoint."""
     root = find_project_root()
@@ -227,13 +237,34 @@ def run_command(
         raise typer.Exit(code=1)
 
     runner = SDLCRunner(root)
+    if acknowledge_execute_batch:
+        if dry_run:
+            console.print(
+                "[red]--acknowledge-execute-batch cannot be combined with --dry-run.[/red]"
+            )
+            raise typer.Exit(code=1)
+        if not yes and not typer.confirm(
+            "Acknowledge that the active AI completed and reviewed the current batch?",
+            default=False,
+        ):
+            console.print("[yellow]Execute batch acknowledgement cancelled.[/yellow]")
+            raise typer.Exit(code=1)
+        try:
+            cp = runner.acknowledge_execute_batch()
+        except PipelineHaltError as exc:
+            console.print(f"[red]Execute batch acknowledgement blocked: {exc}[/red]")
+            raise typer.Exit(code=2) from None
+        progress = cp.execute_progress
+        batch_number = progress.current_batch if progress is not None else 0
+        console.print(f"[bold green]Batch {batch_number} acknowledged.[/bold green]")
+        if progress is not None and progress.next_action:
+            console.print(progress.next_action)
+        return
+
     callback = _confirm_callback if mode == "confirm" else None
-    last_result: Any | None = None
     stage_results: list[tuple[str, Any]] = []
 
     def _record_stage_finish(stage: str, result: Any) -> None:
-        nonlocal last_result
-        last_result = result
         stage_results.append((stage, result))
         _stage_finish_callback(stage, result)
 
@@ -245,14 +276,20 @@ def run_command(
             on_stage_start=lambda stage: _stage_start_callback(stage, dry_run=dry_run),
             on_stage_finish=_record_stage_finish,
         )
-        if (
-            dry_run
-            and last_result is not None
-            and str(getattr(last_result.verdict, "value", last_result.verdict)).upper()
-            != "PASS"
-        ):
+        open_result = next(
+            (
+                stage_result
+                for _, stage_result in reversed(stage_results)
+                if str(
+                    getattr(stage_result.verdict, "value", stage_result.verdict)
+                ).upper()
+                != "PASS"
+            ),
+            None,
+        )
+        if dry_run and open_result is not None:
             verdict = str(
-                getattr(last_result.verdict, "value", last_result.verdict)
+                getattr(open_result.verdict, "value", open_result.verdict)
             ).upper()
             console.print(
                 "[bold yellow]"
@@ -260,10 +297,12 @@ def run_command(
                 f"{cp.current_stage} ({verdict})"
                 "[/bold yellow]"
             )
-            for message in _failed_gate_messages(last_result)[:2]:
+            for message in _failed_gate_messages(open_result)[:2]:
                 console.print(f"  reason: {message}", markup=False)
             console.print("")
-            console.print(render_dry_run_open_gate_guidance(_failed_gate_messages(last_result)))
+            console.print(
+                render_dry_run_open_gate_guidance(_failed_gate_messages(open_result))
+            )
         else:
             console.print(
                 f"\n[bold green]Pipeline completed. Stage: {cp.current_stage}[/bold green]"

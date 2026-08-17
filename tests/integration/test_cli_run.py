@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -93,9 +94,8 @@ class TestRunCommand:
                 "  - id: execute\n"
                 "    batch:\n"
                 "      strategy: by_phase\n"
-                f"      max_tasks_per_batch: {max_tasks_per_batch}\n"
-                "      auto_archive: true\n"
-                "      auto_commit: true\n"
+            f"      max_tasks_per_batch: {max_tasks_per_batch}\n"
+            "      auto_archive: true\n"
                 "circuit_breaker:\n"
                 f"  max_debug_rounds_per_task: {max_debug_rounds_per_task}\n"
                 f"  consecutive_failure_limit: {consecutive_failure_limit}\n"
@@ -1231,7 +1231,7 @@ class TestRunCommand:
         assert "Pipeline completed. Stage: close" in result.output
         assert "Not a git repository" not in result.output
 
-    def test_run_non_dry_run_executes_batches_updates_checkpoint_and_summary(
+    def test_run_non_dry_run_needs_user_without_real_task_runner(
         self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv("OPENAI_CODEX", "1")
@@ -1278,17 +1278,204 @@ class TestRunCommand:
 
         result = runner.invoke(app, ["run"])
 
-        assert result.exit_code == 0, result.output
-        assert "Pipeline completed. Stage: close" in result.output
-        assert (spec_dir / "task-execution-log.md").exists()
-        assert (spec_dir / "development-summary.md").exists()
+        assert result.exit_code == 2, result.output
+        assert "Pipeline halted" in result.output
+        normalized_output = " ".join(result.output.split())
+        assert "Implement T001 with the active AI agent" in normalized_output
+        assert not (spec_dir / "task-execution-log.md").exists()
+        assert not (spec_dir / "development-summary.md").exists()
 
         cp = load_checkpoint(git_repo)
         assert cp is not None
         assert cp.execute_progress is not None
+        assert cp.execute_progress.status.value == "needs_user"
         assert cp.execute_progress.total_batches == 2
-        assert cp.execute_progress.completed_batches == 2
-        assert cp.execute_progress.last_committed_task == "T003"
+        assert cp.execute_progress.completed_batches == 0
+        assert cp.execute_progress.last_committed_task == ""
+        assert cp.execute_progress.target_task_id == "T001"
+        assert cp.execute_progress.next_action.startswith(
+            "Implement T001 with the active AI agent"
+        )
+
+    def test_run_acknowledges_external_batch_then_finalizes_after_commit(
+        self, git_repo: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("OPENAI_CODEX", "1")
+        monkeypatch.chdir(git_repo)
+        assert runner.invoke(app, ["init", ".", "--agent-target", "codex"]).exit_code == 0
+        self._write_pipeline_config(git_repo, max_tasks_per_batch=1)
+
+        spec_dir = git_repo / "specs" / "WI-2026-ACK"
+        spec_dir.mkdir(parents=True)
+        (spec_dir / "tasks.md").write_text(
+            "### Task 1.1 — implement\n"
+            "- **Task ID**: T001\n"
+            "- **依赖**：无\n"
+            "- **文件**：src/app.py\n"
+            "- **验收标准（AC）**：\n"
+            "  1. app done\n",
+            encoding="utf-8",
+        )
+        save_checkpoint(
+            git_repo,
+            Checkpoint(
+                current_stage="execute",
+                feature=FeatureInfo(
+                    id="WI-2026-ACK",
+                    spec_dir="specs/WI-2026-ACK",
+                    design_branch="design/WI-2026-ACK",
+                    feature_branch="feature/WI-2026-ACK",
+                    current_branch="main",
+                ),
+            ),
+        )
+
+        original_run_gate = SDLCRunner._run_gate
+
+        def gate_wrapper(
+            self: SDLCRunner,
+            stage: str,
+            cp: Checkpoint,
+            *,
+            dry_run: bool = False,
+        ) -> GateResult:
+            if stage == "execute":
+                return original_run_gate(self, stage, cp, dry_run=dry_run)
+            return GateResult(
+                stage=stage,
+                verdict=GateVerdict.PASS,
+                checks=[GateCheck(name=f"{stage}_ok", passed=True)],
+            )
+
+        monkeypatch.setattr(SDLCRunner, "_run_gate", gate_wrapper)
+
+        initial = runner.invoke(app, ["run"])
+        assert initial.exit_code == 2, initial.output
+        assert "--acknowledge-execute-batch" in initial.output
+        assert "--yes" in initial.output
+
+        source = git_repo / "src" / "app.py"
+        source.parent.mkdir(parents=True)
+        source.write_text("VALUE = 1\n", encoding="utf-8")
+
+        acknowledged = runner.invoke(
+            app,
+            ["run", "--acknowledge-execute-batch", "--yes"],
+        )
+        assert acknowledged.exit_code == 0, acknowledged.output
+        assert "Batch 1 acknowledged" in acknowledged.output
+
+        cp = load_checkpoint(git_repo)
+        assert cp is not None
+        assert cp.execute_progress is not None
+        assert cp.execute_progress.status.value == "needs_user"
+        assert cp.execute_progress.completed_batches == 1
+        assert cp.execute_progress.pending_commit_base_hash
+        assert (spec_dir / "task-execution-log.md").is_file()
+        assert (spec_dir / "development-summary.md").is_file()
+
+        before_commit = runner.invoke(app, ["run"])
+        assert before_commit.exit_code == 2, before_commit.output
+        assert "Commit the acknowledged batch" in " ".join(
+            before_commit.output.split()
+        )
+
+        gitignore = git_repo / ".gitignore"
+        gitignore.write_text(
+            "development-summary.md\n",
+            encoding="utf-8",
+        )
+        subprocess.run(
+            ["git", "add", "."],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "feat: implement acknowledged batch"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        committed_paths = subprocess.run(
+            ["git", "ls-tree", "-r", "--name-only", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+        assert "specs/WI-2026-ACK/development-summary.md" not in committed_paths
+
+        uncommitted = git_repo / "src" / "uncommitted.py"
+        uncommitted.write_text("UNCOMMITTED = True\n", encoding="utf-8")
+        blocked = runner.invoke(app, ["run"])
+        assert blocked.exit_code == 2, blocked.output
+        assert "worktree is not clean" in " ".join(blocked.output.split())
+        uncommitted.unlink()
+
+        missing_summary = runner.invoke(app, ["run"])
+        assert missing_summary.exit_code == 2, missing_summary.output
+        assert "missing development-summary.md" in " ".join(
+            missing_summary.output.split()
+        )
+
+        subprocess.run(
+            ["git", "add", "-f", "specs/WI-2026-ACK/development-summary.md"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "commit", "-m", "docs: commit final development summary"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        head = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+
+        finalized = runner.invoke(app, ["run"])
+        assert finalized.exit_code == 0, finalized.output
+        assert "Pipeline completed. Stage: close" in finalized.output
+
+        cp = load_checkpoint(git_repo)
+        assert cp is not None
+        assert cp.execute_progress is not None
+        assert cp.execute_progress.status.value == "completed"
+        assert cp.execute_progress.completed_batches == 1
+        assert cp.execute_progress.current_batch == 1
+        assert cp.execute_progress.last_committed_task == "T001"
+        assert cp.execute_progress.last_commit_hash == head
+        assert cp.execute_progress.pending_commit_base_hash == ""
+        assert (spec_dir / "development-summary.md").is_file()
+        delivery_status = subprocess.run(
+            [
+                "git",
+                "status",
+                "--porcelain",
+                "--untracked-files=all",
+                "--",
+                ".",
+                ":(exclude,top).ai-sdlc/local/**",
+                ":(exclude,top).ai-sdlc/state/checkpoint.yml",
+                ":(exclude,top).ai-sdlc/state/checkpoint.yml.bak",
+                ":(exclude,top).ai-sdlc/state/resume-pack.yaml",
+            ],
+            cwd=git_repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert delivery_status == ""
 
     def test_run_binds_telemetry_profile_and_mode_from_project_config(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

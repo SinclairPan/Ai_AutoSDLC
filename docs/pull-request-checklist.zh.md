@@ -18,7 +18,7 @@
 ## AI-SDLC 门禁
 
 - [ ] `ai-sdlc run --dry-run` 没有未解释的失败；
-- [ ] `uv run ai-sdlc verify constraints` 没有 BLOCKER；
+- [ ] `uv run ai-sdlc verify constraints --profile self-development` 没有 BLOCKER；
 - [ ] checkpoint 与当前分支、任务和证据一致；
 - [ ] 前端变更包含浏览器、视觉或可访问性证据；
 - [ ] 高影响动作具备确认、回滚或恢复路径。

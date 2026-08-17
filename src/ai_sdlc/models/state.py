@@ -75,9 +75,22 @@ class MultiAgentInfo(BaseModel):
     tool_capability: str = ""
 
 
+class ExecutionStatus(str, Enum):
+    """Truthful lifecycle state for execute-stage orchestration."""
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    HALTED = "halted"
+    NEEDS_USER = "needs_user"
+
+
 class ExecuteProgress(BaseModel):
     """Progress tracking for the EXECUTE stage."""
 
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    detail: str = ""
+    next_action: str = ""
+    target_task_id: str = ""
     total_batches: int = 0
     completed_batches: int = 0
     current_batch: int = 0
@@ -87,6 +100,7 @@ class ExecuteProgress(BaseModel):
     last_log_at: str = ""
     last_commit_at: str = ""
     last_commit_hash: str = ""
+    pending_commit_base_hash: str = ""
     halted: bool = False
     error: str = ""
 

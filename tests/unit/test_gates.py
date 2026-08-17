@@ -722,14 +722,40 @@ class TestReviewGate:
 class TestExecuteGate:
     def test_pass(self) -> None:
         result = ExecuteGate().check(
-            {"tests_passed": True, "committed": True, "logged": True}
+            {
+                "execution_status": "completed",
+                "tests_passed": True,
+                "committed": True,
+                "logged": True,
+            }
         )
         assert result.verdict == GateVerdict.PASS
+
+    @pytest.mark.parametrize("status", [None, "pending", "needs_user", "halted"])
+    def test_halts_before_artifact_checks_without_completed_status(
+        self, status: str | None
+    ) -> None:
+        context = {
+            "tests_passed": True,
+            "build_succeeded": True,
+            "committed": True,
+            "logged": True,
+            "next_action": "Implement T001 with the active AI agent",
+        }
+        if status is not None:
+            context["execution_status"] = status
+
+        result = ExecuteGate().check(context)
+
+        assert result.verdict == GateVerdict.HALT
+        assert [check.name for check in result.checks] == ["task_runner_available"]
+        assert "Implement T001" in result.checks[0].message
 
     def test_stays_local_and_advisory_only_even_with_governance_payload(self) -> None:
         result = ExecuteGate().check(
             {
                 "tests_passed": True,
+                "execution_status": "completed",
                 "committed": True,
                 "logged": True,
                 "verification_governance": {
@@ -743,6 +769,7 @@ class TestExecuteGate:
         result = ExecuteGate().check(
             {
                 "tests_passed": True,
+                "execution_status": "completed",
                 "committed": True,
                 "logged": True,
                 "provenance_phase1": {

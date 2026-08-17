@@ -34,6 +34,7 @@ from ai_sdlc.core.frontend_visual_a11y_evidence_provider import (
     write_frontend_visual_a11y_evidence_artifact,
 )
 from ai_sdlc.core.verify_constraints import (
+    ConstraintProfile,
     ConstraintReport,
     FeatureContractEvidence,
     FeatureContractSurface,
@@ -44,10 +45,16 @@ from ai_sdlc.core.verify_constraints import (
     FrontendQualityPlatformVerificationReport,
     FrontendSolutionConfirmationVerificationReport,
     FrontendThemeTokenGovernanceVerificationReport,
-    build_constraint_report,
-    build_verification_gate_context,
     build_verification_governance_bundle,
-    collect_constraint_blockers,
+)
+from ai_sdlc.core.verify_constraints import (
+    build_constraint_report as _build_constraint_report,
+)
+from ai_sdlc.core.verify_constraints import (
+    build_verification_gate_context as _build_verification_gate_context,
+)
+from ai_sdlc.core.verify_constraints import (
+    collect_constraint_blockers as _collect_constraint_blockers,
 )
 from ai_sdlc.generators.frontend_cross_provider_consistency_artifacts import (
     materialize_frontend_cross_provider_consistency_artifacts,
@@ -115,6 +122,139 @@ from ai_sdlc.models.frontend_theme_token_governance import (
 )
 from ai_sdlc.models.gate import GateResult, GateVerdict
 from ai_sdlc.models.state import Checkpoint, FeatureInfo
+
+
+# This module exercises AI-SDLC's own governance contract. Consumer-profile
+# behavior is tested through the module-qualified calls below so the historical
+# framework assertions remain explicit about their intended scope.
+def build_constraint_report(root: Path) -> ConstraintReport:
+    return _build_constraint_report(
+        root,
+        profile=ConstraintProfile.SELF_DEVELOPMENT,
+    )
+
+
+def build_verification_gate_context(root: Path) -> dict[str, object]:
+    return _build_verification_gate_context(
+        root,
+        profile=ConstraintProfile.SELF_DEVELOPMENT,
+    )
+
+
+def collect_constraint_blockers(root: Path) -> list[str]:
+    return _collect_constraint_blockers(
+        root,
+        profile=ConstraintProfile.SELF_DEVELOPMENT,
+    )
+
+
+def _write_consumer_checkpoint(root: Path, work_item_id: str) -> None:
+    memory = root / ".ai-sdlc" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "constitution.md").write_text(
+        "# Consumer constitution\n",
+        encoding="utf-8",
+    )
+    spec_dir = root / "specs" / f"{work_item_id}-consumer-work"
+    spec_dir.mkdir(parents=True, exist_ok=True)
+    (spec_dir / "spec.md").write_text("# Consumer work\n", encoding="utf-8")
+    save_checkpoint(
+        root,
+        Checkpoint(
+            current_stage="verify",
+            feature=FeatureInfo(
+                id=work_item_id,
+                spec_dir=f"specs/{work_item_id}-consumer-work",
+                design_branch="team/design",
+                feature_branch="team/feature",
+                current_branch="developer-branch",
+            ),
+        ),
+    )
+
+
+@pytest.mark.parametrize(
+    "work_item_id",
+    ("012", "018", "073", "148", "149", "150", "151", "153", "189"),
+)
+def test_project_profile_ignores_framework_work_item_number_collisions(
+    tmp_path: Path,
+    work_item_id: str,
+) -> None:
+    _write_consumer_checkpoint(tmp_path, work_item_id)
+
+    report = verify_constraints_module.build_constraint_report(
+        tmp_path,
+        profile=verify_constraints_module.ConstraintProfile.PROJECT,
+    )
+    context = verify_constraints_module.build_verification_gate_context(
+        tmp_path,
+        profile=verify_constraints_module.ConstraintProfile.PROJECT,
+    )
+
+    self_only_objects = {
+        "framework_defect_backlog",
+        "reconcile_smoke_contract",
+        "verification_profiles",
+        "feature_contract_surfaces",
+        "frontend_solution_confirmation_consistency",
+    }
+    assert report.profile is verify_constraints_module.ConstraintProfile.PROJECT
+    assert report.release_gate is None
+    assert not (self_only_objects & set(report.check_objects))
+    assert not any(
+        key.startswith("frontend_")
+        for key in context
+        if key.endswith("_verification")
+    )
+    assert context["verification_profile"] == "project"
+
+
+def test_project_profile_keeps_consumer_agents_frontend_confirmation_rule(
+    tmp_path: Path,
+) -> None:
+    memory = tmp_path / ".ai-sdlc" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "constitution.md").write_text(
+        "# Consumer constitution\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "AGENTS.md").write_text(
+        "前端需求必须先讨论，但这里缺少确认边界。\n",
+        encoding="utf-8",
+    )
+
+    blockers = verify_constraints_module.collect_constraint_blockers(
+        tmp_path,
+        profile=verify_constraints_module.ConstraintProfile.PROJECT,
+    )
+
+    assert any(
+        "frontend solution confirmation instruction drift" in item
+        for item in blockers
+    )
+    assert any("AGENTS.md" in item for item in blockers)
+
+
+def test_self_development_profile_keeps_framework_report_objects(tmp_path: Path) -> None:
+    memory = tmp_path / ".ai-sdlc" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "constitution.md").write_text(
+        "# Framework constitution\n",
+        encoding="utf-8",
+    )
+
+    report = verify_constraints_module.build_constraint_report(
+        tmp_path,
+        profile=verify_constraints_module.ConstraintProfile.SELF_DEVELOPMENT,
+    )
+
+    assert report.profile is verify_constraints_module.ConstraintProfile.SELF_DEVELOPMENT
+    assert {
+        "framework_defect_backlog",
+        "reconcile_smoke_contract",
+        "verification_profiles",
+    }.issubset(report.check_objects)
 
 
 def test_feature_contract_runtime_objects_canonicalize_evidence_sets() -> None:

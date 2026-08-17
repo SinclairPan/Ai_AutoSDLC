@@ -183,6 +183,7 @@ class TestExecutionRules:
         gate = ExecuteGate()
         result = gate.check(
             {
+                "execution_status": "completed",
                 "tests_passed": True,
                 "committed": True,
                 "logged": True,

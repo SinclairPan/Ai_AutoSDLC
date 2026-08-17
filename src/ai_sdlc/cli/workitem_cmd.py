@@ -26,10 +26,6 @@ from ai_sdlc.core.frontend_inheritance_truth import (
     summarize_frontend_inheritance_status_for_display,
 )
 from ai_sdlc.core.plan_check import PlanCheckResult, format_json, run_plan_check
-from ai_sdlc.core.program_service import (
-    PROGRAM_TRUTH_SYNC_EXECUTE_COMMAND,
-    ProgramService,
-)
 from ai_sdlc.core.task_guard import evaluate_task_guard
 from ai_sdlc.core.workitem_scaffold import WorkitemScaffolder, WorkitemScaffoldError
 from ai_sdlc.core.workitem_truth import (
@@ -77,67 +73,29 @@ def _format_cli_path(path: Path) -> str:
     return path.as_posix()
 
 
-def _preferred_docs_branch_name(work_item_id: str) -> str:
-    """Return the preferred Stage-1 docs branch name."""
-    return f"feature/{work_item_id}-docs"
-
-
-def _alternate_docs_branch_name(work_item_id: str) -> str:
-    """Return the alternate Stage-1 docs branch name supported by the contract."""
-    return f"design/{work_item_id}-docs"
-
-
-def _ensure_workitem_init_git_preflight(root: Path, work_item_id: str) -> None:
-    """Block direct-formal init when the repo is not on a clean docs branch."""
+def _render_workitem_init_git_status(root: Path) -> None:
+    """Show branch and dirty-tree context without controlling project Git flow."""
     if not is_git_repo(root):
         return
 
     git = GitClient(root)
-    preferred_branch = _preferred_docs_branch_name(work_item_id)
-    alternate_branch = _alternate_docs_branch_name(work_item_id)
-    accepted_branches = {preferred_branch, alternate_branch}
-
     try:
         current_branch = git.current_branch().strip()
-        if current_branch not in accepted_branches:
-            if git.branch_exists(preferred_branch):
-                branch_guidance = (
-                    f"Switch to the docs branch first: `git checkout {preferred_branch}`."
-                )
-            elif git.branch_exists(alternate_branch):
-                branch_guidance = (
-                    f"Switch to the alternate docs branch: "
-                    f"`git checkout {alternate_branch}`."
-                )
-            else:
-                branch_guidance = (
-                    "Create and switch to the docs branch first: "
-                    f"`git checkout -b {preferred_branch}`."
-                )
-
-            raise WorkitemScaffoldError(
-                "workitem init only materializes canonical Stage-1 docs from the docs "
-                f"branch for `{work_item_id}`; current branch is `{current_branch}`. "
-                f"{branch_guidance} The supported alternate is `{alternate_branch}`."
-            )
-
+        console.print(f"[dim]Git branch: {current_branch or '(detached)'}[/dim]")
         if git.has_uncommitted_changes():
-            raise WorkitemScaffoldError(
-                "workitem init requires a clean working tree on "
-                f"`{current_branch}` before writing `specs/{work_item_id}`. "
-                "Commit or stash changes first."
+            console.print(
+                "[yellow]Git notice: unrelated changes exist; WorkItem init will "
+                "only create its canonical draft files.[/yellow]"
             )
     except GitError as exc:
-        raise WorkitemScaffoldError(
-            f"workitem init git preflight failed: {exc}"
-        ) from exc
+        console.print(f"[yellow]Git status unavailable: {exc}[/yellow]")
 
 
 @workitem_app.command(
     "init",
     help=(
-        "Create canonical formal docs directly under specs/<WI>/ "
-        "(spec.md + plan.md + tasks.md). Does not create docs/superpowers/*."
+        "Initialize one project WorkItem draft under specs/<WI>/ "
+        "(spec.md + plan.md + tasks.md + task-execution-log.md)."
     ),
 )
 def workitem_init(
@@ -168,7 +126,7 @@ def workitem_init(
         help="Optional external design/doc reference. Can be provided multiple times.",
     ),
 ) -> None:
-    """Direct-formal work item entry for new framework capabilities."""
+    """Initialize one project WorkItem draft."""
     root = find_project_root()
     if root is None:
         console.print("[red]Not inside an AI-SDLC project.[/red]")
@@ -176,12 +134,12 @@ def workitem_init(
 
     scaffolder = WorkitemScaffolder()
     try:
-        work_item_id = scaffolder.preview_work_item_id(
+        scaffolder.preview_work_item_id(
             root=root,
             title=title,
             wi_id=wi_id,
         )
-        _ensure_workitem_init_git_preflight(root, work_item_id)
+        _render_workitem_init_git_status(root)
         _run_workitem_adapter(ctx)
         result = scaffolder.scaffold(
             root=root,
@@ -203,35 +161,6 @@ def workitem_init(
         _format_cli_path(path.relative_to(root)) for path in result.created_paths
     ):
         console.print(f"  - {path_label}")
-    manifest_sync = ProgramService(root).ensure_manifest_spec_entry(
-        spec_id=result.work_item_id,
-        spec_path=result.spec_dir,
-    )
-    if manifest_sync.status == "added":
-        console.print(
-            "[cyan]Program truth handoff: materialized manifest mapping in "
-            f"{', '.join(_dedupe_cli_text_items(manifest_sync.written_paths))}[/cyan]"
-        )
-        console.print(
-            f"[cyan]Next required action: {PROGRAM_TRUTH_SYNC_EXECUTE_COMMAND}[/cyan]"
-        )
-    elif manifest_sync.status == "existing":
-        console.print(
-            "[cyan]Program truth handoff: manifest mapping already exists; "
-            f"next required action: {PROGRAM_TRUTH_SYNC_EXECUTE_COMMAND}[/cyan]"
-        )
-    elif manifest_sync.status == "blocked":
-        console.print(
-            "[yellow]Program truth handoff could not materialize automatically.[/yellow]"
-        )
-        for blocker in _dedupe_cli_text_items(manifest_sync.blockers):
-            console.print(f"  - {blocker}")
-        for action in _dedupe_cli_text_items(manifest_sync.next_required_actions):
-            console.print(f"  - next action: {action}")
-    elif manifest_sync.status == "not_applicable":
-        console.print(
-            "[dim]Program truth handoff skipped: program-manifest.yaml not found.[/dim]"
-        )
     if related_plan or related_doc:
         console.print(
             "[dim]External design inputs were recorded as references only; "

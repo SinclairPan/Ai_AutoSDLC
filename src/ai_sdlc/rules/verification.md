@@ -63,7 +63,7 @@
   - 退化防线：若变更触碰既有用户可见能力、CLI 输出、adapter 指引、配置字段、生成模板或文档主路径，必须补充既有入口 / 既有选项 / 既有输出的回归测试或真实命令证据；不得只验证新功能 happy path。
   - 收口要求：latest batch 必须显式写 `验证画像：code-change`；不得用 `docs-only` / `rules-only` / `truth-only` 伪装代码改动。
 
-`close-check` 负责对 latest batch 的画像与 execution-log 中的 fresh evidence 做只读核验；`verify constraints` 负责确认本仓库规则文档和 PR checklist 对上述画像的定义保持一致。
+`close-check` 负责对 latest batch 的画像与 execution-log 中的 fresh evidence 做只读核验；普通用户项目使用默认的 `verify constraints`，AI-SDLC 仓库自身维护才显式使用 `verify constraints --profile self-development` 检查框架规则文档和 PR checklist 的一致性。
 
 ## Reconcile Smoke Contract
 

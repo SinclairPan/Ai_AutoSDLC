@@ -34,11 +34,18 @@ def test_github_workflows_are_valid_yaml() -> None:
         "git branch --force main HEAD^1",
         'git switch --create "$GITHUB_HEAD_REF" HEAD^2',
     )
+    self_development_command = (
+        "uv run ai-sdlc verify constraints --profile self-development"
+    )
     assert all(token in pr_checks for token in required) and pr_checks.index(
         "Pytest smoke"
     ) < pr_checks.index(required[2]) < pr_checks.index(required[3]) < pr_checks.index(
-        "uv run ai-sdlc verify constraints"
+        self_development_command
     )
+
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    assert "ai-sdlc verify constraints" in readme
+    assert self_development_command in readme
 
 
 def test_cross_platform_core_runs_minimal_review_smoke_on_three_platforms() -> None:
@@ -885,7 +892,8 @@ def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choi
     driver = driver_path.read_text(encoding="utf-8")
     contract = driver + support_path.read_text(encoding="utf-8")
 
-    assert '"program validate: PASS"' in driver
+    assert '["program", "validate"]' not in driver
+    assert "program-validate.txt" not in driver
     assert '"program", "solution-confirm", "--dry-run"' in driver
     assert '"--mode", "advanced"' in driver
     assert '"--frontend-stack",' in driver

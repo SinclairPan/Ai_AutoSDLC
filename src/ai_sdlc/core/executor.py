@@ -13,6 +13,7 @@ import yaml
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.context.state import (
     build_execute_working_set,
+    load_execution_plan,
     save_execution_plan,
     save_latest_summary,
     save_runtime_state,
@@ -22,6 +23,7 @@ from ai_sdlc.generators.doc_gen import TasksParser
 from ai_sdlc.models.state import (
     ExecutionBatch,
     ExecutionPlan,
+    ExecutionStatus,
     RuntimeState,
     Task,
     TaskStatus,
@@ -51,7 +53,6 @@ class ExecutorSettings:
 
     max_tasks_per_batch: int = 12
     auto_archive: bool = True
-    auto_commit: bool = True
     max_debug_rounds_per_task: int = MAX_DEBUG_ROUNDS
     consecutive_failure_limit: int = MAX_CONSECUTIVE_HALTS
 
@@ -72,10 +73,16 @@ class ExecutionResult:
     runtime: RuntimeState
     log_path: Path
     summary_path: Path
+    status: ExecutionStatus = ExecutionStatus.PENDING
+    detail: str = ""
+    tasks_path: Path | None = None
+    target_task_id: str = ""
+    next_action: str = ""
     commit_hashes: list[str] = field(default_factory=list)
     completed_batches: int = 0
     last_log_timestamp: str = ""
     last_commit_timestamp: str = ""
+    pending_commit_base_hash: str = ""
     halted: bool = False
     error: str = ""
 
@@ -88,6 +95,10 @@ TaskRunner = Callable[[Task, RuntimeState], TaskStatus | TaskExecutionOutcome]
 
 class CircuitBreakerError(Exception):
     """Raised when consecutive task HALTs trigger the circuit breaker (BR-031)."""
+
+
+class TaskRunnerHeadChangedError(Exception):
+    """Raised when an injected task runner changes the repository HEAD."""
 
 
 class BatchExecutor:
@@ -208,8 +219,13 @@ class BatchExecutor:
         statuses = [
             self._task_map[tid].status for tid in batch.tasks if tid in self._task_map
         ]
-        terminal = {TaskStatus.COMPLETED, TaskStatus.HALTED, TaskStatus.CANCELLED}
-        if not all(s in terminal for s in statuses):
+        if any(status == TaskStatus.HALTED for status in statuses):
+            batch.status = TaskStatus.HALTED
+            return batch
+        if any(status == TaskStatus.CANCELLED for status in statuses):
+            batch.status = TaskStatus.CANCELLED
+            return batch
+        if not statuses or not all(status == TaskStatus.COMPLETED for status in statuses):
             return batch
 
         batch.status = TaskStatus.COMPLETED
@@ -312,7 +328,7 @@ class Executor:
         git_client_factory: type[GitClient] = GitClient,
     ) -> None:
         self.root = root.resolve()
-        self._task_runner = task_runner or self._default_task_runner
+        self._task_runner = task_runner
         self._git_client_factory = git_client_factory
         self._settings = self._load_settings()
 
@@ -337,6 +353,66 @@ class Executor:
 
         plan = TasksParser().parse(tasks_file)
         plan = self._rebatch_plan(plan, self._settings.max_tasks_per_batch)
+        work_item_id = spec_dir.name
+        persisted_plan = load_execution_plan(self.root, work_item_id)
+        if persisted_plan is not None and self._same_plan_topology(
+            plan,
+            persisted_plan,
+        ):
+            self._restore_persisted_plan_state(
+                plan,
+                persisted_plan,
+                runtime_state,
+            )
+        else:
+            self._restore_completed_batches(plan, runtime_state.current_batch)
+
+        stopped_task = self._first_stopped_task(plan)
+        if stopped_task is not None:
+            detail = (
+                f"Task {stopped_task.task_id} remains {stopped_task.status.value}; "
+                "AI-SDLC will not run the next task or promote the batch."
+            )
+            return ExecutionResult(
+                plan=plan,
+                runtime=runtime_state,
+                log_path=log_path,
+                summary_path=summary_path,
+                status=ExecutionStatus.HALTED,
+                detail=detail,
+                tasks_path=tasks_file,
+                target_task_id=stopped_task.task_id,
+                next_action=(
+                    f"Inspect and explicitly resolve {stopped_task.task_id} before "
+                    "rerunning; AI-SDLC preserves the stopped state by default."
+                ),
+                completed_batches=runtime_state.current_batch,
+                halted=True,
+                error=detail,
+            )
+
+        pending_task = self._next_pending_task(plan)
+        if self._task_runner is None:
+            target_task_id = pending_task.task_id if pending_task is not None else ""
+            detail = (
+                f"No task runner is available for {target_task_id}; "
+                "AI-SDLC will not fabricate execution progress."
+                if target_task_id
+                else "No task runner is available; AI-SDLC will not fabricate execution progress."
+            )
+            next_action = self._implementation_next_action(target_task_id)
+            return ExecutionResult(
+                plan=plan,
+                runtime=runtime_state,
+                log_path=log_path,
+                summary_path=summary_path,
+                status=ExecutionStatus.NEEDS_USER,
+                detail=detail,
+                tasks_path=tasks_file,
+                target_task_id=target_task_id,
+                next_action=next_action,
+            )
+
         logger_ = ExecutionLogger(log_path)
         executor = BatchExecutor(
             plan,
@@ -345,7 +421,6 @@ class Executor:
             max_consecutive_halts=self._settings.consecutive_failure_limit,
         )
         task_map = {task.task_id: task for task in plan.tasks}
-        work_item_id = spec_dir.name
         latest_summary = ""
 
         self._persist_truth_surfaces(
@@ -358,16 +433,12 @@ class Executor:
             latest_summary=latest_summary,
         )
 
-        commit_hashes: list[str] = []
         last_log_timestamp = ""
-        last_commit_timestamp = ""
         halted = False
         error = ""
-
-        while True:
-            batch = executor.get_current_batch()
-            if batch is None:
-                break
+        runner_head_changed = False
+        batch = executor.get_current_batch()
+        if batch is not None:
             if batch.started_at is None:
                 batch.started_at = now_iso()
             self._persist_truth_surfaces(
@@ -383,12 +454,10 @@ class Executor:
             try:
                 for task_id in batch.tasks:
                     task = task_map[task_id]
-                    if task.status in {
-                        TaskStatus.COMPLETED,
-                        TaskStatus.HALTED,
-                        TaskStatus.CANCELLED,
-                    }:
+                    if task.status == TaskStatus.COMPLETED:
                         continue
+                    if task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}:
+                        break
                     runtime_state.current_task = task.task_id
                     self._persist_truth_surfaces(
                         work_item_id=work_item_id,
@@ -414,6 +483,8 @@ class Executor:
                         latest_summary=latest_summary,
                     )
                     self._sync_summary_log(log_path, summary_log_path)
+                    if task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}:
+                        break
 
                 next_batch = executor.advance_batch()
                 batch_summary = self._batch_summary(batch, plan)
@@ -434,48 +505,29 @@ class Executor:
                     batch=next_batch or batch,
                     latest_summary=latest_summary,
                 )
-
-                if self._settings.auto_commit:
-                    commit_hashes.append(
-                        self._git_client_factory(self.root).add_and_commit(
-                            f"feat(execute): batch {batch.batch_id}"
-                        )
-                    )
-                    last_commit_timestamp = self._git_client_factory(
-                        self.root
-                    ).head_commit_timestamp()
-
-                if next_batch is None:
-                    self._write_summary(
-                        summary_path,
-                        plan=plan,
-                        runtime=runtime_state,
-                        commit_hashes=commit_hashes,
-                        halted=False,
-                        error="",
-                    )
-                    latest_summary = summary_path.read_text(encoding="utf-8")
-                    self._persist_truth_surfaces(
-                        work_item_id=work_item_id,
-                        plan=plan,
-                        runtime=runtime_state,
-                        spec_dir=spec_dir,
-                        tasks_file=tasks_file,
-                        batch=batch,
-                        latest_summary=latest_summary,
-                    )
+                if any(
+                    task_map[task_id].status
+                    in {TaskStatus.HALTED, TaskStatus.CANCELLED}
+                    for task_id in batch.tasks
+                ):
+                    halted = True
+                    error = "The current execution batch contains a halted task."
+            except TaskRunnerHeadChangedError as exc:
+                halted = True
+                runner_head_changed = True
+                error = str(exc)
+                self._persist_truth_surfaces(
+                    work_item_id=work_item_id,
+                    plan=plan,
+                    runtime=runtime_state,
+                    spec_dir=spec_dir,
+                    tasks_file=tasks_file,
+                    batch=batch,
+                    latest_summary=latest_summary,
+                )
             except CircuitBreakerError as exc:
                 halted = True
                 error = str(exc)
-                self._write_summary(
-                    summary_path,
-                    plan=plan,
-                    runtime=runtime_state,
-                    commit_hashes=commit_hashes,
-                    halted=True,
-                    error=error,
-                )
-                latest_summary = summary_path.read_text(encoding="utf-8")
                 self._persist_truth_surfaces(
                     work_item_id=work_item_id,
                     plan=plan,
@@ -485,48 +537,23 @@ class Executor:
                     batch=batch,
                     latest_summary=latest_summary,
                 )
-                break
-            except GitError as exc:
-                halted = True
-                error = str(exc)
-                self._write_summary(
-                    summary_path,
-                    plan=plan,
-                    runtime=runtime_state,
-                    commit_hashes=commit_hashes,
-                    halted=True,
-                    error=error,
-                )
-                latest_summary = summary_path.read_text(encoding="utf-8")
-                self._persist_truth_surfaces(
-                    work_item_id=work_item_id,
-                    plan=plan,
-                    runtime=runtime_state,
-                    spec_dir=spec_dir,
-                    tasks_file=tasks_file,
-                    batch=batch,
-                    latest_summary=latest_summary,
-                )
-                break
 
-        if not summary_path.exists():
-            self._write_summary(
-                summary_path,
-                plan=plan,
-                runtime=runtime_state,
-                commit_hashes=commit_hashes,
-                halted=halted,
-                error=error,
-            )
-            latest_summary = summary_path.read_text(encoding="utf-8")
-            self._persist_truth_surfaces(
-                work_item_id=work_item_id,
-                plan=plan,
-                runtime=runtime_state,
-                spec_dir=spec_dir,
-                tasks_file=tasks_file,
-                batch=executor.get_current_batch(),
-                latest_summary=latest_summary,
+        target = self._next_pending_task(plan)
+        target_task_id = (
+            target.task_id if target is not None else runtime_state.last_committed_task
+        )
+        status = ExecutionStatus.HALTED if halted else ExecutionStatus.NEEDS_USER
+        detail = (
+            error
+            if halted
+            else "The current batch ran, but review and a user-approved commit are still required."
+        )
+
+        next_action = self._post_batch_next_action(target_task_id)
+        if runner_head_changed:
+            next_action = (
+                "Inspect the unexpected commit and ask the user whether to keep or "
+                "revert it before rerunning AI-SDLC; no automatic rollback was performed."
             )
 
         return ExecutionResult(
@@ -534,18 +561,300 @@ class Executor:
             runtime=runtime_state,
             log_path=log_path,
             summary_path=summary_path,
-            commit_hashes=commit_hashes,
+            status=status,
+            detail=detail,
+            tasks_path=tasks_file,
+            target_task_id=target_task_id,
+            next_action=next_action,
+            commit_hashes=[],
             completed_batches=runtime_state.current_batch,
             last_log_timestamp=last_log_timestamp,
-            last_commit_timestamp=last_commit_timestamp,
+            last_commit_timestamp="",
             halted=halted,
             error=error,
         )
 
+    def acknowledge_current_batch(
+        self,
+        tasks_file: Path,
+        *,
+        runtime: RuntimeState | None = None,
+    ) -> ExecutionResult:
+        """Record explicit external-agent completion without fabricating a commit."""
+        runtime_state = runtime or RuntimeState(current_stage="execute")
+        initial_batch = runtime_state.current_batch
+        original_runner = self._task_runner
+        self._task_runner = lambda _task, _runtime: TaskExecutionOutcome(
+            status=TaskStatus.COMPLETED,
+            details="explicit external-agent batch acknowledgement",
+        )
+        try:
+            result = self.run(tasks_file, runtime=runtime_state)
+        finally:
+            self._task_runner = original_runner
+
+        if result.halted:
+            return result
+        if result.runtime.current_batch <= initial_batch:
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="No pending execution batch is available to acknowledge.",
+                next_action="Rerun ai-sdlc run to inspect the current execute state.",
+                halted=True,
+            )
+        if result.runtime.current_batch >= result.plan.total_batches:
+            self._write_summary(
+                result.summary_path,
+                plan=result.plan,
+                runtime=result.runtime,
+                commit_hashes=[],
+                halted=False,
+                error="",
+            )
+        result.pending_commit_base_hash = self._head_commit()
+        return self._set_acknowledgement_state(
+            result,
+            status=ExecutionStatus.NEEDS_USER,
+            detail="The current batch is acknowledged and logged, but not committed.",
+            next_action="Commit the acknowledged batch, then rerun ai-sdlc run.",
+        )
+
+    def finalize_acknowledged_batch(
+        self,
+        tasks_file: Path,
+        *,
+        runtime: RuntimeState,
+        pending_commit_base_hash: str,
+        last_log_timestamp: str,
+    ) -> ExecutionResult:
+        """Finalize acknowledged progress only after a clean descendant commit."""
+        result = self.run(tasks_file, runtime=runtime)
+        result.last_log_timestamp = last_log_timestamp
+        result.pending_commit_base_hash = pending_commit_base_hash
+        if result.halted:
+            return result
+
+        persisted_plan = load_execution_plan(self.root, tasks_file.parent.name)
+        if persisted_plan is None or not self._same_plan_topology(
+            result.plan, persisted_plan
+        ):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="The acknowledged execution plan no longer matches tasks.md.",
+                next_action="Restore the acknowledged tasks.md topology before rerunning.",
+                halted=True,
+            )
+
+        git = self._git_client_factory(self.root)
+        current_head = git.resolve_revision("HEAD")
+        if current_head == pending_commit_base_hash:
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.NEEDS_USER,
+                detail="The acknowledged batch has not been committed yet.",
+                next_action="Commit the acknowledged batch, then rerun ai-sdlc run.",
+            )
+        if not git.is_ancestor(pending_commit_base_hash, current_head):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="HEAD is not a descendant of the acknowledged batch base commit.",
+                next_action="Inspect branch history before resuming execute.",
+                halted=True,
+            )
+        if self._has_uncommitted_delivery_changes(git):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.NEEDS_USER,
+                detail="The acknowledged batch commit exists, but the worktree is not clean.",
+                next_action="Commit or discard remaining changes, then rerun ai-sdlc run.",
+            )
+
+        complete = result.runtime.current_batch >= result.plan.total_batches
+        summary_relative_path = result.summary_path.relative_to(self.root).as_posix()
+        if complete and (
+            not result.summary_path.is_file()
+            or not git.path_exists_at_revision(current_head, summary_relative_path)
+        ):
+            return self._set_acknowledgement_state(
+                result,
+                status=ExecutionStatus.HALTED,
+                detail="The committed final batch is missing development-summary.md.",
+                next_action="Restore and commit the final development summary before rerunning.",
+                halted=True,
+            )
+        target = self._next_pending_task(result.plan)
+        result.status = (
+            ExecutionStatus.COMPLETED if complete else ExecutionStatus.NEEDS_USER
+        )
+        result.detail = (
+            "All acknowledged execution batches are committed."
+            if complete
+            else "The acknowledged batch is committed; the next batch awaits implementation."
+        )
+        result.target_task_id = (
+            target.task_id if target is not None else result.runtime.last_committed_task
+        )
+        result.next_action = (
+            "" if complete else self._implementation_next_action(result.target_task_id)
+        )
+        result.commit_hashes = [current_head]
+        result.completed_batches = result.runtime.current_batch
+        result.last_commit_timestamp = git.head_commit_timestamp()
+        result.pending_commit_base_hash = ""
+        return result
+
     @staticmethod
-    def _default_task_runner(_task: Task, _runtime: RuntimeState) -> TaskStatus:
-        """Framework-native execution placeholder: mark task as completed."""
-        return TaskStatus.COMPLETED
+    def _set_acknowledgement_state(
+        result: ExecutionResult,
+        *,
+        status: ExecutionStatus,
+        detail: str,
+        next_action: str,
+        halted: bool = False,
+    ) -> ExecutionResult:
+        result.status = status
+        result.detail = detail
+        result.next_action = next_action
+        result.halted = halted
+        result.error = detail if halted else ""
+        return result
+
+    @staticmethod
+    def _has_uncommitted_delivery_changes(git: GitClient) -> bool:
+        """Ignore only runtime state written by the current CLI invocation."""
+        status = git._run(
+            "status",
+            "--porcelain",
+            "--untracked-files=all",
+            "--",
+            ".",
+            ":(exclude,top).ai-sdlc/local/**",
+            ":(exclude,top).ai-sdlc/state/checkpoint.yml",
+            ":(exclude,top).ai-sdlc/state/checkpoint.yml.bak",
+            ":(exclude,top).ai-sdlc/state/resume-pack.yaml",
+        )
+        return bool(status)
+
+    @staticmethod
+    def _next_pending_task(plan: ExecutionPlan) -> Task | None:
+        return next(
+            (
+                task
+                for task in plan.tasks
+                if task.status not in {
+                    TaskStatus.COMPLETED,
+                    TaskStatus.HALTED,
+                    TaskStatus.CANCELLED,
+                }
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _restore_completed_batches(
+        plan: ExecutionPlan,
+        completed_batches: int,
+    ) -> None:
+        """Rebuild prior batch truth when resuming from checkpoint progress."""
+        task_map = {task.task_id: task for task in plan.tasks}
+        for batch in plan.batches[:completed_batches]:
+            batch.status = TaskStatus.COMPLETED
+            for task_id in batch.tasks:
+                task = task_map.get(task_id)
+                if task is not None:
+                    task.status = TaskStatus.COMPLETED
+
+    @staticmethod
+    def _same_plan_topology(
+        plan: ExecutionPlan,
+        persisted: ExecutionPlan,
+    ) -> bool:
+        current_tasks = [
+            task.model_dump(mode="json", exclude={"status"}) for task in plan.tasks
+        ]
+        persisted_tasks = [
+            task.model_dump(mode="json", exclude={"status"})
+            for task in persisted.tasks
+        ]
+        current_batches = [
+            batch.model_dump(
+                mode="json",
+                exclude={"status", "started_at", "completed_at"},
+            )
+            for batch in plan.batches
+        ]
+        persisted_batches = [
+            batch.model_dump(
+                mode="json",
+                exclude={"status", "started_at", "completed_at"},
+            )
+            for batch in persisted.batches
+        ]
+        return current_tasks == persisted_tasks and current_batches == persisted_batches
+
+    @staticmethod
+    def _restore_persisted_plan_state(
+        plan: ExecutionPlan,
+        persisted: ExecutionPlan,
+        runtime: RuntimeState,
+    ) -> None:
+        for task, persisted_task in zip(plan.tasks, persisted.tasks, strict=True):
+            task.status = persisted_task.status
+        for batch, persisted_batch in zip(
+            plan.batches,
+            persisted.batches,
+            strict=True,
+        ):
+            batch.status = persisted_batch.status
+            batch.started_at = persisted_batch.started_at
+            batch.completed_at = persisted_batch.completed_at
+
+        stopped_batch_indexes = [
+            index
+            for index, batch in enumerate(plan.batches)
+            if any(
+                task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}
+                for task in plan.tasks
+                if task.task_id in batch.tasks
+            )
+        ]
+        if stopped_batch_indexes:
+            runtime.current_batch = min(runtime.current_batch, stopped_batch_indexes[0])
+        plan.current_batch = runtime.current_batch
+
+    @staticmethod
+    def _first_stopped_task(plan: ExecutionPlan) -> Task | None:
+        return next(
+            (
+                task
+                for task in plan.tasks
+                if task.status in {TaskStatus.HALTED, TaskStatus.CANCELLED}
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _implementation_next_action(task_id: str) -> str:
+        task_label = task_id or "the next pending task"
+        return (
+            f"Implement {task_label} with the active AI agent, stage the intended changes, "
+            "then run ai-sdlc pr-review start --diff-source local-staged "
+            "--provider local-agent. After review passes, run "
+            "ai-sdlc run --acknowledge-execute-batch --yes before committing the batch."
+        )
+
+    @staticmethod
+    def _post_batch_next_action(task_id: str) -> str:
+        next_task = f" Next pending task: {task_id}." if task_id else ""
+        return (
+            "Run ai-sdlc stage show execute, stage the current batch, then run "
+            "ai-sdlc pr-review start --diff-source local-staged --provider local-agent. "
+            "Allow at most one repair re-review, obtain a user-approved commit, and rerun "
+            f"ai-sdlc run.{next_task}"
+        )
 
     def _persist_truth_surfaces(
         self,
@@ -625,9 +934,15 @@ class Executor:
             TaskStatus.HALTED,
             TaskStatus.CANCELLED,
         }:
-            outcome = self._normalize_outcome(
-                self._task_runner(task, executor.runtime)
-            )
+            try:
+                raw_outcome = self._invoke_task_runner(task, executor.runtime)
+            except TaskRunnerHeadChangedError:
+                task.status = TaskStatus.HALTED
+                batch = executor.get_current_batch()
+                if batch is not None:
+                    batch.status = TaskStatus.HALTED
+                raise
+            outcome = self._normalize_outcome(raw_outcome)
             updated = executor.advance_task(task.task_id, outcome.status)
             last_log_timestamp = logger_.log_task(
                 task.task_id,
@@ -637,6 +952,43 @@ class Executor:
             if updated.status == TaskStatus.FAILED:
                 continue
         return last_log_timestamp
+
+    def _invoke_task_runner(
+        self,
+        task: Task,
+        runtime: RuntimeState,
+    ) -> TaskStatus | TaskExecutionOutcome:
+        before_head = self._head_commit()
+        runner_error: Exception | None = None
+        raw_outcome: TaskStatus | TaskExecutionOutcome | None = None
+        try:
+            if self._task_runner is None:  # pragma: no cover - guarded by run()
+                raise RuntimeError("Task runner is unavailable")
+            raw_outcome = self._task_runner(task, runtime)
+        except Exception as exc:  # Preserve runner failure after the HEAD check.
+            runner_error = exc
+
+        after_head = self._head_commit()
+        if after_head != before_head:
+            raise TaskRunnerHeadChangedError(
+                f"Task runner changed HEAD while executing {task.task_id}; the task and "
+                "batch remain halted. Inspect the unexpected commit and ask the user "
+                "whether to keep or revert it before rerunning."
+            ) from runner_error
+        if runner_error is not None:
+            raise runner_error
+        if raw_outcome is None:  # pragma: no cover - TaskRunner contract excludes None.
+            raise RuntimeError("Task runner returned no outcome")
+        return raw_outcome
+
+    def _head_commit(self) -> str:
+        try:
+            return self._git_client_factory(self.root).resolve_revision("HEAD")
+        except GitError as exc:
+            raise TaskRunnerHeadChangedError(
+                "AI-SDLC could not verify repository HEAD around the task runner; "
+                "the task was not advanced."
+            ) from exc
 
     @staticmethod
     def _normalize_outcome(
@@ -671,7 +1023,6 @@ class Executor:
             settings.max_tasks_per_batch,
         )
         settings.auto_archive = bool(batch_cfg.get("auto_archive", settings.auto_archive))
-        settings.auto_commit = bool(batch_cfg.get("auto_commit", settings.auto_commit))
         settings.max_debug_rounds_per_task = self._int_or_default(
             circuit_cfg.get("max_debug_rounds_per_task"),
             settings.max_debug_rounds_per_task,

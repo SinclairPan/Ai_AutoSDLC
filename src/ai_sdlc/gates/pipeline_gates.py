@@ -20,6 +20,7 @@ from ai_sdlc.gates.task_ac_checks import (
     first_task_missing_acceptance,
 )
 from ai_sdlc.models.gate import GateCheck, GateResult, GateVerdict
+from ai_sdlc.models.state import ExecutionStatus
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
 
@@ -757,6 +758,28 @@ class ExecuteGate:
             committed (bool): Whether changes are committed.
             logged (bool): Whether execution is logged.
         """
+        raw_status = context.get("execution_status", ExecutionStatus.PENDING.value)
+        execution_status = str(getattr(raw_status, "value", raw_status)).strip().lower()
+        if execution_status != ExecutionStatus.COMPLETED.value:
+            detail = str(context.get("detail", "")).strip()
+            next_action = str(context.get("next_action", "")).strip()
+            message_parts = [f"execution status is {execution_status or 'pending'}"]
+            if detail:
+                message_parts.append(detail)
+            if next_action:
+                message_parts.append(next_action)
+            return GateResult(
+                stage="execute",
+                verdict=GateVerdict.HALT,
+                checks=[
+                    GateCheck(
+                        name="task_runner_available",
+                        passed=False,
+                        message="; ".join(message_parts),
+                    )
+                ],
+            )
+
         checks: list[GateCheck] = []
 
         spec_dir_raw = context.get("spec_dir")

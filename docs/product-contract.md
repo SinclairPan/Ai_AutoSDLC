@@ -88,4 +88,7 @@ ai-sdlc verify constraints
 python scripts/validate_public_release_identity.py .
 ```
 
+上述命令默认验证普通用户项目；仅 AI-SDLC 仓库自身维护使用
+`ai-sdlc verify constraints --profile self-development`。
+
 交付关闭还必须通过测试、lint、构建、离线包完整性校验和目标平台 smoke。

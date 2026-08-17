@@ -1005,7 +1005,7 @@ stages:
     gate: { max_critical_issues: 0, max_high_issues: 3 }
     max_retries: 2
   - id: execute
-    batch: { strategy: by_phase, max_tasks_per_batch: 12, tdd_enforced: true, auto_archive: true, auto_commit: true, max_debug_retries: 3 }
+    batch: { strategy: by_phase, max_tasks_per_batch: 12, tdd_enforced: true, auto_archive: true, max_debug_retries: 3 }
     gate: { require_all_tests_pass: true, require_build_success: true, require_full_regression: true }
   - id: close
     gate: { require_summary: true, require_final_verification: true }
