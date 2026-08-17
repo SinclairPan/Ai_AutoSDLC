@@ -1,41 +1,91 @@
 # AI-SDLC 2.0 离线产品站最终对抗验收
 
-Reviewed baseline commit: f8dc8cf4abdba7b1ec1803b463015d069a84844d
-Deliverable manifest SHA256: f71a9f6009766246dfeb85de7ce7a12d87667e779ec733064ca63feee3899dc0
+Reviewed baseline commit: 17f4970fb1b8aaaff39d95d98eb1d0a56ce4420d
+Browser receipt input commit: 7d1409a1c9f2a377a61a64a66fdbcbe2e361b2ab
+Deliverable manifest SHA256: 3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d
+Browser receipt SHA256: 6f1c75f8077cec876461d56c1635b8ee51847a56e105c50cb13e03c049441cae
 Final result: PASS / PASS / PASS
 
 ## 冻结范围
 
 - 交付根目录：`deliverables/ai-sdlc-2.0-offline-product-site/`
 - 闭世界清单：`docs/product-site/design/qa/package-manifest.sha256`，共 13 个交付文件；路径均相对交付根、按路径排序、不包含清单自身。
-- Validator：`cc05bc8df80b1a3f6bd4064548017202eafd445f891c80503d5f6414d97a0067`
-- Unit contract：`c06f1be37cd9cd6ef728ee2ea03f859468ee31c5688709f6a76f8ecab3b2d738`
-- 批准文案：`2ee0d75cb38e742b98ac956a588f37f276fefbe095284cf1ac7838a4ce688ffa`
-- 冻结指南源：`8466b8535cea8f0a17e15181060b954ad84a815be96c7e2b269f84cfce054d67`
-- 视觉规范：`08f0ff785f2a4229f56477c6cab4e2d32ea5d43627f47e18eb2f16bee930d31c`
-- 批准首页视觉参考：`0526f97df004537c3d3c758fe22127ebabe524965ba9143fe5a5523d72fb206d`
-- 资产评审记录：`307655cdb9ea0bfb25fa3ce5e20cbcb91cff65276e80e658e5416e83c4f99491`
-- 交互 QA 记录：`8ac5380fabcdd75846365beaca4b1f437b06a50b976103da0f0e0b5ea4ba8d80`
+- 浏览器 runner：`scripts/run_offline_product_site_browser_acceptance.mjs`，SHA-256 `53d7831dab9a791b90097c54bff1596a7394601f9a8038a13314510b2962473f`。
+- 持久 receipt：`docs/product-site/design/qa/browser-acceptance-receipt.json`，schema version 2。
+- Validator：`e69488dc53aff35e21664320c9d4f8b21b10fde801766884d67016d65e44dc17`。
+- Unit contract：`01a7af0dd1d21ec3488d2b68fb1b8850bd4b9824dc08f9a0fd48a2a1fa7b72f5`。
+- 交互记录：`33b934b02d98134c8f19a654f97d57ad5c14a605c1fa784ac2b606ec872a1b6f`。
+- 批准文案：`2ee0d75cb38e742b98ac956a588f37f276fefbe095284cf1ac7838a4ce688ffa`。
+- 冻结指南源：`8466b8535cea8f0a17e15181060b954ad84a815be96c7e2b269f84cfce054d67`。
+- 视觉规范：`08f0ff785f2a4229f56477c6cab4e2d32ea5d43627f47e18eb2f16bee930d31c`。
+
+## Fix Round 1 闭环
+
+### 1. 全站外链边界
+
+六个 HTML 入口共有 28 个 allowlisted `http(s)` anchor。每个 anchor 都在静态 HTML 中显示唯一的“需要联网”标记，并带有 `target="_blank"` 与 `rel="noopener noreferrer"`。合同已提升到 validator 和全站参数化测试；旧的仅依赖运行时 JavaScript 设置属性不再作为接受证据。
+
+TDD 证据：初始 focused run 为 `4 failed`；validator 增加三类失败代码后为 `1 failed, 3 passed`；补齐 28 个静态合同后为 `5 passed`。完整 validator 返回 `OFFLINE_PRODUCT_SITE_VALID`。
+
+### 2. 可达 baseline 与可移植 receipt
+
+旧的 amend/dangling baseline 不再作为证据。线性历史保留 `532d5599…`，产品、runner、receipt、截图和 manifest 的后继提交均可从当前分支到达。fresh clone 中：
+
+- `git show 17f4970fb1b8aaaff39d95d98eb1d0a56ce4420d` 成功；
+- schema 2 verifier 从 input commit `7d1409a1…` 直接读取并重算 committed manifest 与 runner SHA；
+- verifier 同时确认交付目录、runner、validator、manifest 和 11 张截图从 input commit 到 reviewed baseline 无漂移；
+- persisted receipt 在 fresh clone 自校验通过；
+- fresh clone 内完整 Chromium runner 再次得到与本记录相同的零失败摘要。
+
+实践专家首轮发现 receipt 曾错误绑定父提交 `532d5599…`：该提交中的 manifest 为 `f71a9f60…`，而 receipt 记录修复后 `3910199d…`。新增 Git-tree regression contract 先以该差异产生 RED，随后 schema 2 receipt 改为绑定实际包含 runner/manifest/受审产品的 `7d1409a1…`，focused `2 passed`。旧 baseline 的全部 verdict 已作废；三专家只评审 `17f4970f…`。
+
+### 3. 专家截图确定性与完整性
+
+`expert-review-1366x768.png` 在 `1366×768`、`#review-design`、Design Contract Tab 选中且聚焦的状态下生成。runner 在截图前固定：
+
+- hash 与选中 Tab；
+- focus；
+- `tablist.scrollLeft=0`；
+- `scrollX=0`、`scrollY=0`；
+- fonts ready、双 `requestAnimationFrame`；
+- animation、transition 与 caret 停止。
+
+连续两次捕获均为 `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7`。receipt 保存 header/Tab 的元素矩形、文字矩形、`scrollWidth/clientWidth`、重叠和裁切数组；两次均为 `unclipped=true`、`clipped=[]`、`overlaps=[]`。fresh clone 再次得到同一 SHA。
 
 ## 代表截图
 
 | 文件 | SHA-256 |
 | --- | --- |
-| `home-1440x900.png` | `147852fd02e52e026085d41da50d65161f5869fade71884bcc1643debe978c44` |
-| `home-1366x768.png` | `13f4248831a0d9a0a853351eee1eaf7b49fa25a8d9dcb84a37c961893415fc8c` |
-| `home-1280x800.png` | `9195f963783c0e2ea39157ffe9c396b80cc09f3fd3337208eca548eea04dc3c9` |
-| `home-1024x768.png` | `4af1240cfa8823a45dd5e43fff786e2e93c28bbfeb525b6b5b0b3fe3beac1f65` |
-| `home-390x844.png` | `f37f65ce23c209127f3d1fe8ef7a40673a84d5ead8d40a1d3b2dddcdf2f71e75` |
-| `loop-1366x768.png` | `452b18e9f2593c6e5701e5f205af1853af771a419579f0585bbfec2c0e9857b1` |
-| `expert-review-1366x768.png` | `4ed3b00f1f83fef29d625906bb5f6b21ccc811272c88e6b9a6bde4fbf13207ef` |
-| `platform-1366x768.png` | `d30c8a61c121cced95ce5d74cbef63d84c4048a340cbd4492300d0859bca135b` |
+| `home-1440x900.png` | `367ce22dc32c130dd060fa54148face9cac90b85d881dd7646c19a7b58b16ee4` |
+| `home-1366x768.png` | `368ad3dfa48b033335a839154d1bda72c86f8b4c424cd0f5b7bcab3f9ba9cc90` |
+| `home-1280x800.png` | `d433e372b6de4008002dc7668c830a619e625756bd1d2de89d78e6db7586408b` |
+| `home-1024x768.png` | `4f8a222c154a6de713db606b32d7e9c6b9043b1db70544b55f1f3813ce3f3ab0` |
+| `home-390x844.png` | `88f5e5e7cc29eddd55bf370d44cbb2fb8f4f7174c23303659c3a578e55975c86` |
+| `loop-1366x768.png` | `95dafb8bd7913c94b3730251d1fe59009f7c5aa8ca0a6f4f1caa8419aa946d27` |
+| `expert-review-1366x768.png` | `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7` |
+| `platform-1366x768.png` | `be9fe1cbb1e332aed0b6fc5db3f9a8aee4c6e5b8a7b5d41a74265011605080de` |
 | `downloads-1366x768.png` | `d28f6296bbfc366fa83387944fec9e14bff3034c44c60a6d2a520737e856dbd6` |
-| `guide-1366x768.png` | `345bdd5aa3f5c34f5f887218a885c7c2b38a1012de8e4a5e6eb26e0d825bd744` |
-| `guide-390x844.png` | `3e863b2bb83daa618211c9a6e1facc2072dddd4d78e607334dd70636025f8db0` |
+| `guide-1366x768.png` | `0e4938b90f3c728c4585bd181276d12ee9ff7f1b335396ac391887884fa40125` |
+| `guide-390x844.png` | `20de5d6b62d4c40a40dfcab7db506f476719ea6f93952afb04f081fef9b45f1e` |
 
-## 对抗评审
+## Fresh 门禁与可重算 receipt
 
-三位 reviewer 均以 reviewed baseline commit、manifest hash、validator/test hash、批准源 hash、QA 文档 hash 与上述截图 hash 为同一输入；reviewer 不编辑 baseline。
+- 站点 contracts：`100 passed`。
+- Ruff：`All checks passed!`。
+- 完整 validator 与冻结指南 parity：`OFFLINE_PRODUCT_SITE_VALID`。
+- Node syntax：4 个交付/浏览器文件，failure `0`。
+- manifest：13 entries，rebuild exact match，relative/sorted/no-self。
+- 五个视口 × 27 个状态：`135 / 135`，failure `0`。
+- 指南 48 条命令 × 5 个视口：`240 / 240`，failure `0`。
+- no-JS：6 页 × 2 视口，`12 / 12`，failure `0`。
+- configured local MP4/VTT：native controls、caption、fullscreen 与本地 `file:` source/track，failure `0`。
+- accessibility 与 runtime：failure `0`。
+- 请求归属：33 requests、13 unique URLs；remote、site-root escape、repository back-reference 均为 `0`。receipt 保存全部 33 条 URL 与归属字段，不只保存摘要。
+- 交付目录安装包数量 `0`；公开官网赛事/评委话术扫描 `0`。
+
+## 三专家 exact-hash 复审
+
+三位 reviewer 均以 `17f4970fb1b8aaaff39d95d98eb1d0a56ce4420d`、manifest `3910199d…`、receipt `6f1c75f8…`、runner `53d7831d…`、11 张截图与上述批准源 hash 为同一只读输入。旧 `4582210f…` 及更早 baseline 的 verdict 全部作废。
 
 1. AI-SDLC 实践专家：`PASS`
 2. AI Coding 行业专家：`PASS`
@@ -43,58 +93,12 @@ Final result: PASS / PASS / PASS
 
 不存在 conditional PASS 或 stale PASS。
 
-## 接受的修正与驳回项
-
-首轮 AI-SDLC 实践评审提出一个 P1：Local PR Review 将 final report 条件绝对化为“无未解决 Finding 才生成”，与 v2.0.0 的实际策略不一致。仓库 tag 源码证明：未解决 `BLOCKER` 阻断；未解决 `REQUIRED` 默认阻断，但显式接受风险时可按 `risk_accepted` 关闭并披露；`ADVISORY` 与 waiver 按策略记录并披露。
-
-该 finding 被接受并形成唯一 consolidated correction：只修正 `loop-engineering.html` 的 Local PR Review 边界，并增加一个基于结构化属性的 v2.0.0 回归合同。测试先以 `1 failed` 证明旧页面缺少该合同，修正后 focused `2 passed`、完整站点 `94 passed`。批准文案、指南源与视觉源均未修改。实践专家随后 fresh 复审为 `PASS`；另两位专家也对 corrected baseline fresh 返回 `PASS`。
-
-驳回 finding：无。
-
-## Fresh 门禁
-
-```powershell
-uv run --no-sync pytest -q tests/unit/test_offline_product_site.py
-# 94 passed
-
-uv run --no-sync ruff check scripts/validate_offline_product_site.py tests/unit/test_offline_product_site.py
-# All checks passed!
-
-uv run --no-sync python scripts/validate_offline_product_site.py `
-  --root deliverables/ai-sdlc-2.0-offline-product-site `
-  --guide-source docs/product-site/content/USER_GUIDE.zh-CN.md
-# OFFLINE_PRODUCT_SITE_VALID
-
-node --check deliverables/ai-sdlc-2.0-offline-product-site/assets/js/site.js
-node --check deliverables/ai-sdlc-2.0-offline-product-site/assets/js/video-config.js
-git diff --check
-# 均 exit 0
-```
-
-身份核验结果：origin 为 `https://github.com/SinclairPan/Ai_AutoSDLC.git`；远端 annotated tag `v2.0.0` peel 到 `737bda39e05c53450e180a20581b7b7a70db9cf0`，本地 tag tree 为 `3db58121e228a7a1c4c6b760c535d6df1ffdbe84`。GitHub Release 为非 draft、非 prerelease，并公开 Windows AMD64、macOS ARM64、Linux AMD64 三个安装包及各自 SHA 文件，共六个资产。
-
-交付目录安装包数量为 `0`；远程运行依赖与公开赛事词扫描均为 `0`。
-
-## 仓库外 evaluator path
-
-将交付目录复制到 fresh `/private/tmp` 根后，以 Chromium `file://` 且 browser offline 执行：
-
-- 五个验收视口、27 个状态，共 `135 / 135`；failure `0`。
-- Back / Forward / Reload 历史序列 4 组；键盘、focus、skip link、移动菜单、reduced-motion、44px 目标均通过。
-- 指南 48 条命令 × 5 视口，共 `240 / 240` 次精确复制；failure `0`。
-- 6 页 × 2 视口 no-JS 共 12 组；正文、导航、全部面板与 12 条指南路径可读。
-- 默认视频保持诚实空态；临时本地 MP4/VTT 配置显示 native controls、caption track 与 fullscreen 入口，page error `0`。
-- console error、page error、remote failed request 均为 `0`。
-- 六个入口产生 33 个请求、13 个唯一运行时 URL；remote、site-root escape、repository back-reference 均为 `0`。
-- 仓库外副本重新构造的 manifest 与 committed manifest 完全一致。
-
-临时浏览器 receipt SHA256：`bbd197d649c5568152aefc4023fe2fc5480f3670e434e7d76a7e5e5224c0d8ab`。临时路径不属于最终包；可复验的权威输入是 reviewed commit、清单、测试、validator 与本记录。
-
 ## 诚实边界
 
-- 首页视频仍按要求保持未配置；未来配置只证明本地 MP4/VTT 接线、native controls、caption 与 fullscreen 合同，不声称已有真实产品录屏。
+- 首页视频仍按要求保持未配置空态；未来配置 smoke 只证明本地 MP4/VTT、native controls、caption 与 fullscreen 合同，不声称已有真实产品录屏。
 - GitHub、Release、README、在线指南与安装包链接需要联网；站点自身阅读、导航与本地指南不依赖网络。
-- `local-first` 指项目治理与证据留在项目内，不表示远程 AI Provider 可离线推理。
-- PNG 是 exact-hash receipt；重复截图前必须冻结 hash、focus 与 scenario `aria-current`。本轮通用 capture 曾暴露两个非产品性的截图状态时序差异；强化状态断言后指南重新得到 tracked SHA，且唯一受修正页面的 Loop 截图 fresh SHA 与 tracked SHA 完全一致。tracked 11 图未被替换。
+- runner 不下载浏览器或 Node 依赖；执行者必须显式提供已存在的本地 Playwright module 与 Chromium executable 路径。
+- receipt 的 `copiedSiteRoot` 是一次 fresh external copy 的来源记录；长期可复验输入是可达 commit、manifest、runner、receipt、截图和本记录。
+- `local-first` 指项目治理与证据留在项目内，不表示远程 AI Provider 可以离线推理。
 
 最终产品官网表面未出现赛事叙述、评委脚本、虚构指标、客户 Logo 或 unsupported claim。
