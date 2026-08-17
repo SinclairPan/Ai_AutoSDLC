@@ -59,7 +59,7 @@ _READ_ONLY_SUBCOMMANDS = (
     "program",
     "self-update",
 )
-_UPDATE_NOTICE_BYPASS_SUBCOMMANDS = ("loop", "self-update")
+_UPDATE_NOTICE_BYPASS_SUBCOMMANDS = ("self-update",)
 
 
 def _version_callback(value: bool) -> None:
