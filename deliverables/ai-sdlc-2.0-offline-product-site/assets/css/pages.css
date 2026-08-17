@@ -37,6 +37,410 @@ body:not([data-page="home"]) .page-intro h1 {
   font-size: clamp(2.25rem, 5vw, 4.5rem);
 }
 
+.loop-main {
+  display: grid;
+  gap: clamp(var(--space-7), 7vw, var(--space-8));
+}
+
+.loop-hero {
+  max-width: 68rem;
+}
+
+.loop-hero-summary {
+  max-width: 48rem;
+  margin: var(--space-5) 0 var(--space-6);
+  color: var(--ink-700);
+  font-size: clamp(1rem, 1.5vw, 1.125rem);
+}
+
+.loop-section-heading h2,
+.loop-workspace h2,
+.local-review-rail h2,
+.loop-closing h2 {
+  margin: 0;
+  font-size: clamp(1.5rem, 2.5vw, 2.125rem);
+  line-height: 1.25;
+  letter-spacing: -0.03em;
+}
+
+.loop-lifecycle {
+  display: grid;
+  grid-template-columns: minmax(12rem, 0.48fr) minmax(20rem, 1fr);
+  gap: var(--space-5) clamp(var(--space-6), 5vw, var(--space-8));
+  padding-block: var(--space-6);
+  border-block: 1px solid var(--line-200);
+}
+
+.loop-lifecycle > p {
+  margin: 0;
+  color: var(--ink-700);
+}
+
+.loop-lifecycle-path {
+  grid-column: 1 / -1;
+  padding: var(--space-4) var(--space-5);
+  color: var(--brand-900) !important;
+  background: var(--brand-050);
+  border-left: 0.25rem solid var(--brand-600);
+  font-weight: 650;
+  line-height: 1.8;
+}
+
+.loop-operating-model {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(19rem, 0.9fr);
+  gap: clamp(var(--space-7), 6vw, var(--space-8));
+  align-items: start;
+}
+
+.loop-protocol {
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: loop-step;
+}
+
+.loop-protocol li {
+  position: relative;
+  min-height: 3rem;
+  padding: var(--space-4) 0 var(--space-4) 3.5rem;
+  border-top: 1px solid var(--line-200);
+  counter-increment: loop-step;
+}
+
+.loop-protocol li:last-child {
+  border-bottom: 1px solid var(--line-200);
+}
+
+.loop-protocol li::before {
+  position: absolute;
+  top: var(--space-4);
+  left: 0;
+  display: inline-flex;
+  width: 2.25rem;
+  height: 2.25rem;
+  align-items: center;
+  justify-content: center;
+  color: var(--surface);
+  background: var(--brand-900);
+  border-radius: 50%;
+  content: counter(loop-step, decimal-leading-zero);
+  font-size: 0.75rem;
+  font-weight: 750;
+}
+
+.loop-protocol code,
+.loop-state-reference code,
+.loop-panel code {
+  color: var(--brand-900);
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  font-weight: 650;
+}
+
+.loop-state-reference table {
+  width: 100%;
+  margin-top: var(--space-6);
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.loop-state-reference th,
+.loop-state-reference td {
+  padding: var(--space-4) var(--space-3);
+  border-bottom: 1px solid var(--line-200);
+  text-align: left;
+  vertical-align: top;
+}
+
+.loop-state-reference thead th {
+  color: var(--ink-700);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.loop-state-reference th:first-child {
+  width: 9rem;
+}
+
+.loop-recovery {
+  padding: clamp(var(--space-6), 4vw, var(--space-7));
+  background: var(--brand-900);
+  border-radius: var(--radius-media);
+  color: var(--surface);
+}
+
+.loop-recovery .page-eyebrow {
+  color: var(--warm-light);
+}
+
+.loop-recovery-strip {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: var(--space-5);
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: recovery-step;
+}
+
+.loop-recovery-strip li {
+  position: relative;
+  padding-top: var(--space-5);
+  border-top: 1px solid rgba(255, 255, 255, 0.3);
+  counter-increment: recovery-step;
+}
+
+.loop-recovery-strip li::before {
+  position: absolute;
+  top: -0.8rem;
+  left: 0;
+  padding-right: var(--space-2);
+  color: var(--warm-light);
+  background: var(--brand-900);
+  content: counter(recovery-step, decimal-leading-zero);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+}
+
+.loop-drift-rule {
+  max-width: 62rem;
+  margin: var(--space-6) 0 0;
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.loop-workspace-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: var(--space-6);
+}
+
+.loop-workspace-heading > p {
+  max-width: 24rem;
+  margin: 0;
+  color: var(--ink-700);
+}
+
+.loop-workspace [role="tablist"] {
+  margin-block: var(--space-6) 0;
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--line-200);
+}
+
+.loop-panel {
+  padding-top: var(--space-6);
+}
+
+.loop-panel-intro {
+  display: flex;
+  max-width: 56rem;
+  gap: var(--space-5);
+  align-items: flex-start;
+}
+
+.loop-panel-index {
+  flex: none;
+  margin: 0;
+  color: var(--brand-600);
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+}
+
+.loop-panel h3 {
+  margin: 0;
+  font-size: clamp(1.375rem, 2.2vw, 1.75rem);
+  letter-spacing: -0.025em;
+}
+
+.loop-panel-intro p:last-child {
+  margin: var(--space-2) 0 0;
+  color: var(--ink-700);
+}
+
+.loop-panel-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: var(--space-6);
+  border-block: 1px solid var(--line-200);
+}
+
+.loop-panel-grid > div {
+  min-width: 0;
+  padding: var(--space-5);
+}
+
+.loop-panel-grid > div + div {
+  border-left: 1px solid var(--line-200);
+}
+
+.loop-panel-grid h4 {
+  margin: 0;
+  color: var(--brand-600);
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.loop-panel-grid p {
+  margin: var(--space-3) 0 0;
+}
+
+.loop-evidence-band {
+  display: flex;
+  align-items: center;
+  gap: var(--space-5);
+  padding: var(--space-4) var(--space-5);
+  background: var(--brand-050);
+}
+
+.loop-evidence-band > span {
+  flex: none;
+  color: var(--brand-900);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.loop-evidence-band ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-5);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: var(--ink-700);
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+}
+
+.local-review-rail {
+  padding-top: var(--space-7);
+  border-top: 1px solid var(--line-200);
+}
+
+.local-review-rail > p {
+  max-width: 58rem;
+  margin: var(--space-4) 0 0;
+  color: var(--ink-700);
+}
+
+.local-review-steps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: var(--space-6) 0 0;
+  padding: 0;
+  list-style: none;
+  border-block: 1px solid var(--line-200);
+}
+
+.local-review-steps li {
+  display: grid;
+  gap: var(--space-2);
+  padding: var(--space-5);
+}
+
+.local-review-steps li + li {
+  border-left: 1px solid var(--line-200);
+}
+
+.local-review-steps strong {
+  color: var(--brand-900);
+}
+
+.local-review-steps span {
+  color: var(--ink-700);
+}
+
+.loop-closing {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-7);
+  padding-block: var(--space-7);
+  border-top: 1px solid var(--line-200);
+}
+
+.loop-closing h2 {
+  max-width: 33ch;
+}
+
+.loop-closing a {
+  flex: none;
+}
+
+@media (max-width: 64rem) {
+  .loop-operating-model,
+  .loop-lifecycle {
+    grid-template-columns: 1fr;
+  }
+
+  .loop-lifecycle-path {
+    grid-column: auto;
+  }
+
+  .loop-panel-grid,
+  .local-review-steps,
+  .loop-recovery-strip {
+    grid-template-columns: 1fr;
+  }
+
+  .loop-panel-grid > div + div,
+  .local-review-steps li + li {
+    border-top: 1px solid var(--line-200);
+    border-left: 0;
+  }
+
+  .loop-recovery-strip li {
+    padding: var(--space-2) 0 var(--space-2) 3rem;
+    border-top: 0;
+  }
+
+  .loop-recovery-strip li::before {
+    top: var(--space-2);
+    background: transparent;
+  }
+}
+
+@media (max-width: 40rem) {
+  .loop-main {
+    gap: var(--space-7);
+  }
+
+  .loop-workspace-heading,
+  .loop-closing,
+  .loop-evidence-band {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .loop-workspace [role="tablist"] {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .loop-panel-grid > div,
+  .local-review-steps li {
+    padding-inline: 0;
+  }
+
+  .loop-evidence-band {
+    gap: var(--space-3);
+  }
+
+  .loop-state-reference th:first-child {
+    width: 7rem;
+  }
+
+  .loop-closing a {
+    width: 100%;
+  }
+}
+
 @media (max-width: 40rem) {
   .page-main {
     padding-block: var(--space-7);

@@ -72,8 +72,109 @@ class _HomeValueParser(HTMLParser):
             break
 
 
+class _HtmlNode:
+    def __init__(
+        self,
+        tag: str,
+        attributes: dict[str, str] | None = None,
+        parent: "_HtmlNode | None" = None,
+    ) -> None:
+        self.tag = tag
+        self.attributes = attributes or {}
+        self.parent = parent
+        self.children: list[_HtmlNode] = []
+        self.content: list[str | _HtmlNode] = []
+
+
+class _DocumentParser(HTMLParser):
+    _VOID_TAGS = {
+        "area",
+        "base",
+        "br",
+        "col",
+        "embed",
+        "hr",
+        "img",
+        "input",
+        "link",
+        "meta",
+        "param",
+        "source",
+        "track",
+        "wbr",
+    }
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.root = _HtmlNode("document")
+        self._stack = [self.root]
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        node = _HtmlNode(
+            tag,
+            {key: value or "" for key, value in attrs},
+            self._stack[-1],
+        )
+        self._stack[-1].children.append(node)
+        self._stack[-1].content.append(node)
+        if tag not in self._VOID_TAGS:
+            self._stack.append(node)
+
+    def handle_endtag(self, tag: str) -> None:
+        for index in range(len(self._stack) - 1, 0, -1):
+            if self._stack[index].tag == tag:
+                del self._stack[index:]
+                return
+
+    def handle_data(self, data: str) -> None:
+        self._stack[-1].content.append(data)
+
+
 def _normalize_html_text(parts: list[str]) -> str:
     return " ".join("".join(parts).split())
+
+
+def _parse_document(markup: str) -> _HtmlNode:
+    parser = _DocumentParser()
+    parser.feed(markup)
+    parser.close()
+    return parser.root
+
+
+def _find_nodes(
+    root: _HtmlNode,
+    *,
+    tag: str | None = None,
+    attribute: str | None = None,
+    value: str | None = None,
+) -> list[_HtmlNode]:
+    found: list[_HtmlNode] = []
+    pending = [root]
+    while pending:
+        node = pending.pop()
+        matches_tag = tag is None or node.tag == tag
+        matches_attribute = attribute is None or attribute in node.attributes
+        matches_value = value is None or node.attributes.get(attribute or "") == value
+        if matches_tag and matches_attribute and matches_value:
+            found.append(node)
+        pending.extend(reversed(node.children))
+    return found
+
+
+def _node_text(node: _HtmlNode) -> str:
+    parts = [
+        item if isinstance(item, str) else _node_text(item) for item in node.content
+    ]
+    return _normalize_html_text(parts)
+
+
+def _is_descendant(node: _HtmlNode, ancestor: _HtmlNode) -> bool:
+    current = node.parent
+    while current is not None:
+        if current is ancestor:
+            return True
+        current = current.parent
+    return False
 
 
 def _parse_home_values(markup: str) -> list[dict[str, object]]:
@@ -141,6 +242,136 @@ def _write(root: Path, relative: str, text: str) -> None:
 def test_top_level_page_shells_exist() -> None:
     root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
     assert [name for name in TOP_LEVEL_PAGES if not (root / name).is_file()] == []
+
+
+def test_loop_page_covers_formal_workitem_lifecycle() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    headings = _find_nodes(document, tag="h1")
+    assert [_node_text(heading) for heading in headings] == [
+        "让 AI 开发任务，从明确需求走到可验证完成"
+    ]
+    lifecycle_regions = _find_nodes(document, attribute="data-workitem-lifecycle")
+    assert len(lifecycle_regions) == 1
+    lifecycle_text = _node_text(lifecycle_regions[0])
+    assert "正式 WorkItem 路径" in lifecycle_text
+    assert "任意聊天输入不会自动成为完整 WorkItem" in lifecycle_text
+    assert (
+        "Init / Adopt → WorkItem → Requirement → Design Contract → Implementation → "
+        "Frontend Evidence（按需） → Local PR Review（按需） → Close" in lifecycle_text
+    )
+    expert_ctas = [
+        node
+        for node in _find_nodes(document, tag="a")
+        if node.attributes.get("href") == "dynamic-expert-review.html"
+        and "让专家挑战结果" in _node_text(node)
+    ]
+    assert len(expert_ctas) == 1
+
+
+def test_loop_page_covers_minimum_protocol() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    protocols = _find_nodes(document, tag="ol", attribute="data-loop-protocol")
+    assert len(protocols) == 1
+    steps = [child for child in protocols[0].children if child.tag == "li"]
+    assert [_node_text(step) for step in steps] == [
+        "接收明确目标与输入，建立 Loop 身份。",
+        "不依赖聊天记忆，从项目工件重算当前状态。",
+        "输出缺失信息、停止原因与唯一下一步动作。",
+        "执行或复核前冻结 input_digest 与只读复核快照。",
+        "将 Findings 回流原 Writer；Reviewer 不修改候选。",
+        "定向修复后，只允许基于重新绑定输入进行最多一次复审。",
+        "Freeze / Close 前重建输入；任何绑定输入漂移都拒绝关闭。",
+    ]
+
+
+def test_loop_page_keeps_pr_review_cross_stage() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    tab_groups = _find_nodes(document, attribute="data-tabs", value="loop-workspace")
+    assert len(tab_groups) == 1
+    tabs = [
+        node
+        for node in _find_nodes(tab_groups[0], attribute="data-tab")
+        if node.attributes.get("role") == "tab"
+    ]
+    assert [tab.attributes["data-tab"] for tab in tabs] == [
+        "requirement",
+        "design-contract",
+        "implementation",
+        "frontend-evidence",
+    ]
+
+    required_panel_regions = {
+        "data-loop-input",
+        "data-loop-state",
+        "data-loop-feedback",
+        "data-loop-close",
+        "data-loop-evidence",
+    }
+    for tab in tabs:
+        panels = _find_nodes(
+            tab_groups[0],
+            tag="section",
+            attribute="id",
+            value=tab.attributes["aria-controls"],
+        )
+        assert len(panels) == 1
+        present = {
+            attribute
+            for node in _find_nodes(panels[0])
+            for attribute in required_panel_regions
+            if attribute in node.attributes
+        }
+        assert present == required_panel_regions
+
+    review_rails = _find_nodes(document, attribute="id", value="local-pr-review")
+    assert len(review_rails) == 1
+    assert "提交前跨阶段复核（按需）" in _node_text(review_rails[0])
+    assert not _is_descendant(review_rails[0], tab_groups[0])
+
+
+def test_loop_page_covers_state_and_recovery() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+
+    state_tables = _find_nodes(document, tag="table", attribute="data-loop-state-table")
+    assert len(state_tables) == 1
+    state_text = _node_text(state_tables[0])
+    for state, meaning in (
+        ("needs_user", "缺少决定或输入"),
+        ("needs_fix", "候选必须修改"),
+        ("needs_review", "独立验证待完成或结论不确定"),
+        ("closed", "新鲜绑定证据满足 Close 合同"),
+    ):
+        assert state in state_text
+        assert meaning in state_text
+
+    recovery_regions = _find_nodes(document, attribute="data-loop-recovery")
+    assert len(recovery_regions) == 1
+    recovery_text = _node_text(recovery_regions[0])
+    cursor = -1
+    for step in (
+        "发现缺口",
+        "明确状态",
+        "用户 / Writer / Reviewer 行动",
+        "重新计算工件与状态",
+        "Close 或保持未关闭",
+    ):
+        cursor = recovery_text.index(step, cursor + 1)
+    assert "输入发生漂移后，旧证据立即失效；重新绑定前拒绝复用" in recovery_text
 
 
 def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:
