@@ -2,6 +2,16 @@
   "use strict";
   document.documentElement.classList.add("js");
 
+  const setupSkipLink = (root = document) => {
+    const skipLink = root.querySelector('a[href="#main"]');
+    const main = root.querySelector("#main");
+    if (!skipLink || !main) return;
+    skipLink.addEventListener("click", () => {
+      main.tabIndex = -1;
+      main.focus();
+    });
+  };
+
   const setupMobileNavigation = (root = document) => {
     const toggle = root.querySelector("[data-nav-toggle]");
     const menu = root.querySelector("[data-nav-menu]");
@@ -37,6 +47,9 @@
     root.querySelectorAll("[data-tabs]").forEach((group) => {
       const tabs = [...group.querySelectorAll("[data-tab]")];
       const panels = [...group.querySelectorAll("[data-tab-panel]")];
+      const scenarioLinks = [
+        ...group.querySelectorAll("[data-guide-scenario-selector]"),
+      ];
       const activate = (id, push) => {
         const selected = tabs.find((tab) => tab.dataset.tab === id) || tabs[0];
         if (!selected) return;
@@ -50,15 +63,13 @@
           tabs.forEach((tab) => {
             tab.hidden = tab.dataset.guideTabScenario !== selectedScenario;
           });
-          group
-            .querySelectorAll("[data-guide-scenario-selector]")
-            .forEach((link) => {
-              if (link.dataset.guideScenarioSelector === selectedScenario) {
-                link.setAttribute("aria-current", "true");
-              } else {
-                link.removeAttribute("aria-current");
-              }
-            });
+          scenarioLinks.forEach((link) => {
+            if (link.dataset.guideScenarioSelector === selectedScenario) {
+              link.setAttribute("aria-current", "true");
+            } else {
+              link.removeAttribute("aria-current");
+            }
+          });
         }
         panels.forEach((panel) => {
           panel.hidden = panel.id !== selected.getAttribute("aria-controls");
@@ -66,8 +77,18 @@
         if (push && location.hash !== `#${selected.dataset.tab}`) {
           history.pushState(null, "", `#${selected.dataset.tab}`);
         }
+        return selected;
       };
-      const restore = () => activate(location.hash.slice(1), false);
+      const restore = (moveTabFocus = false) => {
+        const hadTabFocus = tabs.includes(root.activeElement);
+        const selected = activate(location.hash.slice(1), false);
+        if (location.hash) {
+          selected
+            ?.closest?.('[role="tablist"]')
+            ?.scrollIntoView?.({ block: "start" });
+        }
+        if (moveTabFocus && hadTabFocus) selected?.focus();
+      };
       tabs.forEach((tab) => {
         tab.addEventListener("click", () => activate(tab.dataset.tab, true));
         tab.addEventListener("keydown", (event) => {
@@ -86,8 +107,15 @@
           visibleTabs[keyMoves[event.key]].focus();
         });
       });
-      window.addEventListener("popstate", restore);
-      window.addEventListener("hashchange", restore);
+      scenarioLinks.forEach((link) => {
+        link.addEventListener("click", (event) => {
+          event.preventDefault();
+          const selected = activate(link.getAttribute("href")?.slice(1), true);
+          selected?.focus();
+        });
+      });
+      window.addEventListener("popstate", () => restore(true));
+      window.addEventListener("hashchange", () => restore(true));
       restore();
     });
   };
@@ -187,6 +215,7 @@
   };
 
   document.addEventListener("DOMContentLoaded", () => {
+    setupSkipLink();
     setupMobileNavigation();
     setupTabs();
     setupExternalLinks();

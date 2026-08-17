@@ -1578,6 +1578,12 @@ html:not(.js) .platform-panel + .platform-panel {
   overflow-wrap: anywhere;
 }
 
+.release-identity a {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+}
+
 .official-resource-links {
   display: grid;
   margin-top: var(--space-5);
@@ -1630,6 +1636,12 @@ html:not(.js) .platform-panel + .platform-panel {
 
 .downloads-guide-action {
   margin-top: var(--space-4);
+}
+
+.downloads-guide-panel > a {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
 }
 
 .downloads-local-note {
@@ -1756,6 +1768,12 @@ html:not(.js) .platform-panel + .platform-panel {
   word-break: break-word;
 }
 
+.guide-main a:not(.guide-scenario-link) {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+}
+
 .guide-source-intro .guide-table-wrap {
   margin-block: var(--space-5);
 }
@@ -1765,6 +1783,12 @@ html:not(.js) .platform-panel + .platform-panel {
   padding-top: var(--space-7);
   border-top: 1px solid var(--line-200);
   scroll-margin-top: 6rem;
+}
+
+.guide-main [role="tablist"],
+.guide-main [data-tab],
+.guide-main [data-tab-panel] {
+  scroll-margin-top: 9rem;
 }
 
 .guide-selector-heading {

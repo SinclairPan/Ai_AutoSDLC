@@ -772,6 +772,10 @@ function boot(initialHash = "") {
     (id) => new FakeElement(id, `${id}-panel`),
   );
   const panels = tabIds.map((id) => new FakeElement(`${id}-panel`));
+  const skip = new FakeElement("skip");
+  skip.attributes.href = "#main";
+  const main = new FakeElement("main");
+  main.tabIndex = null;
   const group = {
     querySelectorAll(selector) {
       if (selector === "[data-tab]") return tabs;
@@ -787,7 +791,9 @@ function boot(initialHash = "") {
     addEventListener(type, listener) {
       if (type === "DOMContentLoaded") readyListeners.push(listener);
     },
-    querySelector() {
+    querySelector(selector) {
+      if (selector === 'a[href="#main"]') return skip;
+      if (selector === "#main") return main;
       return null;
     },
     querySelectorAll(selector) {
@@ -836,7 +842,7 @@ function boot(initialHash = "") {
     visiblePanels: panels.filter((panel) => !panel.hidden).map((panel) => panel.id),
     focused: document.activeElement?.id || null,
   });
-  return { tabs, panels, history, snapshot };
+  return { tabs, panels, skip, main, history, snapshot };
 }
 
 const session = boot();
@@ -862,6 +868,11 @@ session.tabs[0].click();
 session.tabs[1].click();
 session.history.back();
 const back = session.snapshot();
+session.skip.click();
+const skip = {
+  focused: session.snapshot().focused,
+  mainTabIndex: session.main.tabIndex,
+};
 const reload = boot("#review-pr").snapshot();
 
 process.stdout.write(JSON.stringify({
@@ -869,6 +880,7 @@ process.stdout.write(JSON.stringify({
   clicks,
   keys: { arrowRight, home, end, arrowLeft },
   history: { back, reload },
+  skip,
 }));
 """
     result = subprocess.run(
@@ -1233,7 +1245,9 @@ def test_site_javascript_executes_complete_expert_tab_browser_contract() -> None
         "arrowLeft": ("review-frontend", "review-frontend"),
     }
     assert observed["history"]["back"]["selected"] == "review-requirement"
+    assert observed["history"]["back"]["focused"] == "review-requirement"
     assert observed["history"]["reload"]["selected"] == "review-pr"
+    assert observed["skip"] == {"focused": "main", "mainTabIndex": -1}
 
 
 def test_expert_page_does_not_restore_removed_review_mechanisms() -> None:
@@ -1439,6 +1453,62 @@ def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:
     issues = validate_site(tmp_path)
 
     assert "missing_required_page" in {issue.code for issue in issues}
+
+
+@pytest.mark.parametrize(
+    ("old", "new", "expected_issue"),
+    (
+        ('<main id="main">', '<div id="main">', "invalid_main_count"),
+        ("<h1>Home</h1>", "<h2>Home</h2>", "invalid_h1_count"),
+        ('<a href="#main">Skip</a>', '<a href="#content">Skip</a>', "missing_skip_link"),
+        (
+            '<meta name="viewport" content="width=device-width, initial-scale=1">',
+            "",
+            "invalid_viewport_meta",
+        ),
+        (
+            '<a href="index.html" aria-current="page">Home</a>',
+            '<a href="index.html">Home</a>',
+            "invalid_nav_current_page",
+        ),
+        (
+            'aria-controls="sample-panel"',
+            'aria-controls="missing-panel"',
+            "invalid_tab_controls",
+        ),
+        (' aria-selected="true"', "", "missing_tab_selection_state"),
+        (' alt="Diagram"', "", "missing_image_alt"),
+    ),
+)
+def test_accessibility_hook_mutations_are_rejected(
+    tmp_path: Path, old: str, new: str, expected_issue: str
+) -> None:
+    markup = """<!doctype html>
+<html><head><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<body><a href="#main">Skip</a><nav><a href="index.html" aria-current="page">Home</a></nav>
+<main id="main"><h1>Home</h1><button role="tab" aria-controls="sample-panel" aria-selected="true">Tab</button>
+<section id="sample-panel" role="tabpanel">Panel</section><img src="image.png" alt="Diagram"></main></body></html>"""
+    _write(tmp_path, "index.html", markup.replace(old, new, 1))
+    _write(tmp_path, "image.png", "image")
+
+    issues = validate_site(tmp_path)
+
+    assert expected_issue in {issue.code for issue in issues}
+
+
+def test_built_site_image_alternatives_are_intentional() -> None:
+    root = _offline_site_root()
+    images: list[_HtmlNode] = []
+    for relative_path in (*TOP_LEVEL_PAGES, "docs/USER_GUIDE.zh-CN.html"):
+        document = _parse_document((root / relative_path).read_text(encoding="utf-8"))
+        images.extend(_find_nodes(document, tag="img"))
+
+    assert images
+    for image in images:
+        if "data-video-empty-poster" in image.attributes:
+            assert image.attributes.get("alt") == ""
+        else:
+            assert image.attributes.get("alt", "").strip()
 
 
 def test_remote_runtime_asset_is_rejected(tmp_path: Path) -> None:

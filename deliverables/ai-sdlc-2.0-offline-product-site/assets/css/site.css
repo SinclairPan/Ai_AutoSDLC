@@ -210,6 +210,12 @@ a:hover {
   flex-wrap: wrap;
   gap: var(--space-2);
   margin-block: var(--space-5);
+  scroll-margin-top: 6rem;
+}
+
+[data-tab],
+[data-tab-panel] {
+  scroll-margin-top: 6rem;
 }
 
 [data-tab-panel] + [data-tab-panel] {
@@ -226,7 +232,7 @@ html:not(.js) [data-tab-panel][hidden] {
   display: none;
 }
 
-.home-main {
+.page-main.home-main {
   padding-block: 0;
 }
 
@@ -237,7 +243,7 @@ html:not(.js) [data-tab-panel][hidden] {
   grid-template-columns: minmax(0, 1.08fr) minmax(24rem, 0.92fr);
   align-items: center;
   gap: clamp(var(--space-6), 5vw, var(--space-8));
-  padding-block: clamp(var(--space-7), 7vw, var(--space-8));
+  padding-block: clamp(var(--space-6), 4vw, var(--space-7));
   isolation: isolate;
 }
 
@@ -261,9 +267,9 @@ html:not(.js) [data-tab-panel][hidden] {
 }
 
 .home-hero h1 {
-  max-width: 12ch;
+  max-width: 9.6em;
   margin: 0;
-  font-size: clamp(3rem, 5vw, 4rem);
+  font-size: clamp(3rem, 4vw, 3.5rem);
   line-height: 1.12;
   letter-spacing: -0.045em;
 }
