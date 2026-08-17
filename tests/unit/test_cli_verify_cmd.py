@@ -79,11 +79,15 @@ def test_verify_constraints_terminal_deduplicates_blockers_and_advisories(
     )
 
     monkeypatch.setattr(verify_cmd_module, "find_project_root", lambda: tmp_path)
-    monkeypatch.setattr(verify_cmd_module, "build_constraint_report", lambda root: report)
+    monkeypatch.setattr(
+        verify_cmd_module,
+        "build_constraint_report",
+        lambda root, *, profile: report,
+    )
     monkeypatch.setattr(
         verify_cmd_module,
         "build_verification_gate_context",
-        lambda root: {},
+        lambda root, *, profile: {},
     )
     monkeypatch.setattr(
         verify_cmd_module,
@@ -121,7 +125,10 @@ def test_verify_constraints_terminal_deduplicates_blockers_and_advisories(
         with verify_cmd_module.console.capture() as capture, pytest.raises(
             typer.Exit
         ) as exc_info:
-            verify_cmd_module.verify_constraints(as_json=False)
+            verify_cmd_module.verify_constraints(
+                as_json=False,
+                profile=verify_cmd_module.ConstraintProfile.PROJECT,
+            )
         output = capture.get()
     finally:
         verify_cmd_module.console = original_console
@@ -171,11 +178,15 @@ def test_verify_constraints_terminal_deduplicates_advisories(
     )
 
     monkeypatch.setattr(verify_cmd_module, "find_project_root", lambda: tmp_path)
-    monkeypatch.setattr(verify_cmd_module, "build_constraint_report", lambda root: report)
+    monkeypatch.setattr(
+        verify_cmd_module,
+        "build_constraint_report",
+        lambda root, *, profile: report,
+    )
     monkeypatch.setattr(
         verify_cmd_module,
         "build_verification_gate_context",
-        lambda root: {},
+        lambda root, *, profile: {},
     )
     monkeypatch.setattr(
         verify_cmd_module,
@@ -213,7 +224,10 @@ def test_verify_constraints_terminal_deduplicates_advisories(
         with verify_cmd_module.console.capture() as capture, pytest.raises(
             typer.Exit
         ) as exc_info:
-            verify_cmd_module.verify_constraints(as_json=False)
+            verify_cmd_module.verify_constraints(
+                as_json=False,
+                profile=verify_cmd_module.ConstraintProfile.PROJECT,
+            )
         output = capture.get()
     finally:
         verify_cmd_module.console = original_console
