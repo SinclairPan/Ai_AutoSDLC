@@ -1,33 +1,12 @@
 {
   "schema": "ai-sdlc-v2-benefit-protocol/v1",
   "arms": ["P", "S", "A00", "A10", "A11"],
-  "fixtures": [
-    "design-contract-recovery",
-    "frontend-recovery-delivery",
-    "security-boundary-repair"
-  ],
+  "fixtures": ["requirement-contract-ambiguity", "frontend-recovery-delivery", "multi-tenant-security-review"],
   "run_matrix": [
-    {"arm": "P", "fixture": "design-contract-recovery", "position": 1},
-    {"arm": "S", "fixture": "design-contract-recovery", "position": 2},
-    {"arm": "A00", "fixture": "design-contract-recovery", "position": 3},
-    {"arm": "A10", "fixture": "design-contract-recovery", "position": 4},
-    {"arm": "A11", "fixture": "design-contract-recovery", "position": 5},
-    {"arm": "A00", "fixture": "frontend-recovery-delivery", "position": 1},
-    {"arm": "A10", "fixture": "frontend-recovery-delivery", "position": 2},
-    {"arm": "A11", "fixture": "frontend-recovery-delivery", "position": 3},
-    {"arm": "P", "fixture": "frontend-recovery-delivery", "position": 4},
-    {"arm": "S", "fixture": "frontend-recovery-delivery", "position": 5},
-    {"arm": "A11", "fixture": "security-boundary-repair", "position": 1},
-    {"arm": "S", "fixture": "security-boundary-repair", "position": 2},
-    {"arm": "A10", "fixture": "security-boundary-repair", "position": 3},
-    {"arm": "P", "fixture": "security-boundary-repair", "position": 4},
-    {"arm": "A00", "fixture": "security-boundary-repair", "position": 5}
+    {"run_id":"P:requirement-contract-ambiguity","arm":"P","fixture":"requirement-contract-ambiguity","position":1}, {"run_id":"S:requirement-contract-ambiguity","arm":"S","fixture":"requirement-contract-ambiguity","position":2}, {"run_id":"A00:requirement-contract-ambiguity","arm":"A00","fixture":"requirement-contract-ambiguity","position":3}, {"run_id":"A10:requirement-contract-ambiguity","arm":"A10","fixture":"requirement-contract-ambiguity","position":4}, {"run_id":"A11:requirement-contract-ambiguity","arm":"A11","fixture":"requirement-contract-ambiguity","position":5},
+    {"run_id":"A00:frontend-recovery-delivery","arm":"A00","fixture":"frontend-recovery-delivery","position":1}, {"run_id":"A10:frontend-recovery-delivery","arm":"A10","fixture":"frontend-recovery-delivery","position":2}, {"run_id":"A11:frontend-recovery-delivery","arm":"A11","fixture":"frontend-recovery-delivery","position":3}, {"run_id":"P:frontend-recovery-delivery","arm":"P","fixture":"frontend-recovery-delivery","position":4}, {"run_id":"S:frontend-recovery-delivery","arm":"S","fixture":"frontend-recovery-delivery","position":5},
+    {"run_id":"A11:multi-tenant-security-review","arm":"A11","fixture":"multi-tenant-security-review","position":1}, {"run_id":"S:multi-tenant-security-review","arm":"S","fixture":"multi-tenant-security-review","position":2}, {"run_id":"A10:multi-tenant-security-review","arm":"A10","fixture":"multi-tenant-security-review","position":3}, {"run_id":"P:multi-tenant-security-review","arm":"P","fixture":"multi-tenant-security-review","position":4}, {"run_id":"A00:multi-tenant-security-review","arm":"A00","fixture":"multi-tenant-security-review","position":5}
   ],
-  "attempt_budget": {
-    "limit": 33,
-    "normal_sessions": 19,
-    "max_expert_rereviews": 4,
-    "max_pre_output_retries": 3,
-    "reserved_security_slots": 7
-  }
+  "attempt_budget":{"limit":33,"normal_sessions":19,"max_expert_rereviews":4,"max_pre_output_retries":3,"reserved_security_slots":7},
+  "execution_lock":{"benchmark_commit":"7fc2366b8530265d58b1874e781b0b7274615d94","fixture_tree_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","codex_version":"0.147.0","model":"gpt-5","reasoning_effort":"high","runner_script_sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","writer_timeout_seconds":1800,"expert_timeout_seconds":900}
 }

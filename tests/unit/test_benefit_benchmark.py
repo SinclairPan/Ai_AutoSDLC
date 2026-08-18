@@ -1,6 +1,7 @@
 """Tests for the frozen AI-SDLC v2 benefit benchmark contract."""
 
 import json
+import multiprocessing
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -10,6 +11,7 @@ import pytest
 from ai_sdlc.benefit_benchmark import (
     AttemptCompletion,
     AttemptRequest,
+    canonical_protocol_digest,
     load_protocol,
     record_provider_completion,
     reserve_provider_attempt,
@@ -23,15 +25,23 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL_PATH = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json"
 
 
+def _reserve_in_process(ledger: str, run_id: str, queue: multiprocessing.Queue) -> None:
+    try:
+        result = reserve_provider_attempt(Path(ledger), AttemptRequest(run_id, "writer"))
+        queue.put(result.attempt_id)
+    except ValueError as error:
+        queue.put(str(error))
+
+
 def test_protocol_freezes_arms_fixtures_matrix_and_balanced_schedule() -> None:
     """The preregistration only permits the exact 5-by-3 balanced matrix."""
     protocol = load_protocol(PROTOCOL_PATH)
 
     assert protocol.arms == ("P", "S", "A00", "A10", "A11")
     assert protocol.fixtures == (
-        "design-contract-recovery",
+        "requirement-contract-ambiguity",
         "frontend-recovery-delivery",
-        "security-boundary-repair",
+        "multi-tenant-security-review",
     )
     assert len(protocol.run_matrix) == 15
     assert len({(run.arm, run.fixture) for run in protocol.run_matrix}) == 15
@@ -77,7 +87,7 @@ def test_protocol_rejects_any_preregistration_drift(change, expected_code) -> No
 def test_reservation_fails_closed_at_thirty_three_attempts(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.json"
     ledger.write_text(
-        json.dumps({"schema": "ai-sdlc-v2-benefit-attempt-ledger/v1", "attempts_started": 33, "attempts": []}),
+        json.dumps({"schema": "ai-sdlc-v2-benefit-attempt-ledger/v1", "attempts_started": 33, "attempts": [{"attempt_id": f"attempt-{index:03d}"} for index in range(1, 34)]}),
         encoding="utf-8",
     )
 
@@ -88,8 +98,8 @@ def test_reservation_fails_closed_at_thirty_three_attempts(tmp_path: Path) -> No
 @pytest.mark.parametrize(
     "attempt_request",
     [
-        AttemptRequest(run_id="retry", kind="technical_retry", retry_reason="content"),
-        AttemptRequest(run_id="retry", kind="content_retry"),
+        AttemptRequest(run_id="P:requirement-contract-ambiguity", kind="technical_retry", retry_reason="content"),
+        AttemptRequest(run_id="P:requirement-contract-ambiguity", kind="content_retry"),
     ],
 )
 def test_reservation_rejects_content_retries(
@@ -101,18 +111,14 @@ def test_reservation_rejects_content_retries(
 
 def test_reservation_rejects_a_fourth_technical_retry(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.json"
-    for number in range(3):
-        reserve_provider_attempt(
-            ledger,
-            AttemptRequest(run_id=f"run-{number}", kind="technical_retry"),
-        )
+    ledger.write_text(json.dumps({"schema": "ai-sdlc-v2-benefit-attempt-ledger/v1", "attempts_started": 3, "attempts": [{"attempt_id": f"attempt-{index:03d}", "kind": "technical_retry"} for index in range(1, 4)]}), encoding="utf-8")
     with pytest.raises(ValueError, match="technical retry"):
-        reserve_provider_attempt(ledger, AttemptRequest(run_id="run-4", kind="technical_retry"))
+        reserve_provider_attempt(ledger, AttemptRequest(run_id="P:requirement-contract-ambiguity", kind="technical_retry", retry_reason="transport", retry_of_attempt_id="attempt-001"))
 
 
 def test_reservation_rejects_duplicate_writer_run_replacement(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.json"
-    request = AttemptRequest(run_id="A11-security", kind="writer", arm="A11")
+    request = AttemptRequest(run_id="A11:multi-tenant-security-review", kind="writer", arm="A11")
     reserve_provider_attempt(ledger, request)
     with pytest.raises(ValueError, match="replacement"):
         reserve_provider_attempt(ledger, request)
@@ -127,30 +133,25 @@ def test_completion_requires_a_prior_reservation(tmp_path: Path) -> None:
 
 def test_topology_rejects_extra_roles_rereviews_and_non_a11_experts(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.json"
-    reserve_provider_attempt(
-        ledger, AttemptRequest(run_id="A11-security", kind="writer", arm="A11")
+    expert = reserve_provider_attempt(
+        ledger, AttemptRequest(run_id="A11:multi-tenant-security-review", kind="writer", arm="A11")
     )
     reserve_provider_attempt(
         ledger,
-        AttemptRequest(run_id="A11-security", kind="primary_expert", arm="A11"),
+        AttemptRequest(run_id="A11:multi-tenant-security-review", kind="primary_expert", arm="A11", role="primary", parent_digest=_digest(), candidate_digest=_digest("b")),
     )
-    for _number in range(4):
+    with pytest.raises(ValueError, match="expert"):
         reserve_provider_attempt(
             ledger,
-            AttemptRequest(run_id="A11-security", kind="expert_rereview", arm="A11"),
-        )
-    with pytest.raises(ValueError, match="rereview"):
-        reserve_provider_attempt(
-            ledger,
-            AttemptRequest(run_id="A11-security", kind="expert_rereview", arm="A11"),
+            AttemptRequest(run_id="A11:multi-tenant-security-review", kind="expert_rereview", arm="A11", parent_attempt_id=expert.attempt_id, role="primary", parent_digest=_digest(), candidate_digest=_digest("b")),
         )
     with pytest.raises(ValueError, match="role"):
         reserve_provider_attempt(
-            ledger, AttemptRequest(run_id="A11-security", kind="replacement_writer", arm="A11")
+            ledger, AttemptRequest(run_id="A11:multi-tenant-security-review", kind="replacement_writer", arm="A11")
         )
     with pytest.raises(ValueError, match="A11"):
         reserve_provider_attempt(
-            ledger, AttemptRequest(run_id="P-security", kind="primary_expert", arm="P")
+            ledger, AttemptRequest(run_id="P:multi-tenant-security-review", kind="primary_expert", arm="P")
         )
 
 
@@ -194,9 +195,9 @@ def _digest(char: str = "a") -> str:
 def _receipt() -> dict[str, object]:
     return {
         "schema": "ai-sdlc-v2-benefit-run-receipt/v1",
-        "run_id": "P-design-contract-recovery",
+        "run_id": "P:requirement-contract-ambiguity",
         "arm": "P",
-        "fixture": "design-contract-recovery",
+        "fixture": "requirement-contract-ambiguity",
         "order": 1,
         "status": "completed",
         "failure_classification": "none",
@@ -253,7 +254,7 @@ def test_receipt_verification_rejects_incomplete_or_misclassified_evidence(mutat
 
 def test_a11_receipt_requires_complete_expert_callback_evidence_before_close() -> None:
     receipt = _receipt()
-    receipt.update({"run_id": "A11-security-boundary-repair", "arm": "A11"})
+    receipt.update({"run_id": "A11:multi-tenant-security-review", "arm": "A11", "fixture": "multi-tenant-security-review"})
     receipt["loop"] = {"close": {"state": "closed"}, "expert_callbacks": []}
     assert any(issue.code == "receipt.a11.close" for issue in verify_receipt(receipt))
 
@@ -268,10 +269,10 @@ def test_summary_verification_keeps_summary_and_receipt_boundaries_closed() -> N
     protocol = load_protocol(PROTOCOL_PATH)
     summary = {
         "schema": "ai-sdlc-v2-benefit-summary/v1",
-        "protocol_sha256": _digest(),
+        "protocol_sha256": canonical_protocol_digest(protocol),
         "runs": [
-            {"run_id": f"{run.arm}-{run.fixture}", "arm": run.arm, "fixture": run.fixture, "receipt_sha256": _digest()}
-            for run in protocol.run_matrix
+            {"run_id": run.run_id, "arm": run.arm, "fixture": run.fixture, "receipt_sha256": _digest(f"{index:x}"[-1])}
+            for index, run in enumerate(protocol.run_matrix)
         ],
         "metrics": {"external_verified_delivery_count": {"P": 0, "S": 0, "A11": 0}},
     }
@@ -304,3 +305,65 @@ def test_static_schemas_and_offline_cli_validation_are_available() -> None:
     )
     assert result.returncode == 0, result.stderr
     assert '"issues": []' in result.stdout
+
+
+def test_fix_round_protocol_freezes_exact_rows_and_execution_locks() -> None:
+    protocol = load_protocol(PROTOCOL_PATH)
+    assert protocol.fixtures == (
+        "requirement-contract-ambiguity",
+        "frontend-recovery-delivery",
+        "multi-tenant-security-review",
+    )
+    assert protocol.run_matrix[0].run_id == "P:requirement-contract-ambiguity"
+    assert protocol.run_matrix[-1].run_id == "A00:multi-tenant-security-review"
+    assert protocol.execution_lock.codex_version == "0.147.0"
+    assert protocol.execution_lock.writer_timeout_seconds == 1800
+    assert len(canonical_protocol_digest(protocol)) == 64
+
+
+def test_fix_round_cross_process_reservations_are_unique_and_not_lost(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.json"
+    queue: multiprocessing.Queue = multiprocessing.Queue()
+    processes = [
+        multiprocessing.Process(target=_reserve_in_process, args=(str(ledger), "P:requirement-contract-ambiguity", queue)),
+        multiprocessing.Process(target=_reserve_in_process, args=(str(ledger), "S:requirement-contract-ambiguity", queue)),
+    ]
+    for process in processes:
+        process.start()
+    for process in processes:
+        process.join(10)
+        assert process.exitcode == 0
+    assert {queue.get(timeout=1), queue.get(timeout=1)} == {"attempt-001", "attempt-002"}
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert persisted["attempts_started"] == 2
+    assert len(persisted["attempts"]) == 2
+
+
+def test_fix_round_retry_and_rereview_require_canonical_parent_state(tmp_path: Path) -> None:
+    ledger = tmp_path / "ledger.json"
+    writer = reserve_provider_attempt(ledger, AttemptRequest("A11:multi-tenant-security-review", "writer"))
+    with pytest.raises(ValueError, match="terminated"):
+        reserve_provider_attempt(
+            ledger,
+            AttemptRequest("A11:multi-tenant-security-review", "technical_retry", retry_of_attempt_id=writer.attempt_id, retry_reason="transport"),
+        )
+    record_provider_completion(ledger, AttemptCompletion(writer.attempt_id, "technical_failure", False))
+    retry = reserve_provider_attempt(
+        ledger,
+        AttemptRequest("A11:multi-tenant-security-review", "technical_retry", retry_of_attempt_id=writer.attempt_id, retry_reason="transport"),
+    )
+    assert retry.attempt_id == "attempt-002"
+    expert = reserve_provider_attempt(
+        ledger,
+        AttemptRequest("A11:multi-tenant-security-review", "primary_expert", role="primary", parent_digest=_digest(), candidate_digest=_digest("b")),
+    )
+    record_provider_completion(ledger, AttemptCompletion(expert.attempt_id, "completed"))
+    reserve_provider_attempt(
+        ledger,
+        AttemptRequest("A11:multi-tenant-security-review", "expert_rereview", role="primary", parent_attempt_id=expert.attempt_id, parent_digest=_digest(), candidate_digest=_digest("b")),
+    )
+    with pytest.raises(ValueError, match="rereview"):
+        reserve_provider_attempt(
+            ledger,
+            AttemptRequest("A11:multi-tenant-security-review", "expert_rereview", role="primary", parent_attempt_id=expert.attempt_id, parent_digest=_digest(), candidate_digest=_digest("b")),
+        )

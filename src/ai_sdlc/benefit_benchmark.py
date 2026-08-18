@@ -7,8 +7,9 @@ import os
 import re
 import tempfile
 from collections.abc import Mapping
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 
 
@@ -20,6 +21,7 @@ class BenchmarkIssue:
 
 @dataclass(frozen=True)
 class BenchmarkRun:
+    run_id: str
     arm: str
     fixture: str
     position: int
@@ -41,6 +43,20 @@ class BenchmarkProtocol:
     fixtures: tuple[str, ...]
     run_matrix: tuple[BenchmarkRun, ...]
     attempt_budget: AttemptBudget
+    execution_lock: ExecutionLock
+    canonical_bytes: bytes
+
+
+@dataclass(frozen=True)
+class ExecutionLock:
+    benchmark_commit: str
+    fixture_tree_sha256: str
+    codex_version: str
+    model: str
+    reasoning_effort: str
+    runner_script_sha256: str
+    writer_timeout_seconds: int
+    expert_timeout_seconds: int
 
 
 @dataclass(frozen=True)
@@ -51,6 +67,11 @@ class AttemptRequest:
     kind: str
     arm: str | None = None
     retry_reason: str | None = None
+    retry_of_attempt_id: str | None = None
+    parent_attempt_id: str | None = None
+    role: str | None = None
+    parent_digest: str | None = None
+    candidate_digest: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,8 +88,9 @@ class AttemptCompletion:
     content_produced: bool = False
 
 
-_PROTOCOL_KEYS = {"schema", "arms", "fixtures", "run_matrix", "attempt_budget"}
-_RUN_KEYS = {"arm", "fixture", "position"}
+_PROTOCOL_KEYS = {"schema", "arms", "fixtures", "run_matrix", "attempt_budget", "execution_lock"}
+_RUN_KEYS = {"run_id", "arm", "fixture", "position"}
+_LOCK_KEYS = {"benchmark_commit", "fixture_tree_sha256", "codex_version", "model", "reasoning_effort", "runner_script_sha256", "writer_timeout_seconds", "expert_timeout_seconds"}
 _BUDGET_KEYS = {
     "limit",
     "normal_sessions",
@@ -78,9 +100,14 @@ _BUDGET_KEYS = {
 }
 _ARMS = ("P", "S", "A00", "A10", "A11")
 _FIXTURES = (
-    "design-contract-recovery",
+    "requirement-contract-ambiguity",
     "frontend-recovery-delivery",
-    "security-boundary-repair",
+    "multi-tenant-security-review",
+)
+_SCHEDULE = (
+    ("P", _FIXTURES[0], 1), ("S", _FIXTURES[0], 2), ("A00", _FIXTURES[0], 3), ("A10", _FIXTURES[0], 4), ("A11", _FIXTURES[0], 5),
+    ("A00", _FIXTURES[1], 1), ("A10", _FIXTURES[1], 2), ("A11", _FIXTURES[1], 3), ("P", _FIXTURES[1], 4), ("S", _FIXTURES[1], 5),
+    ("A11", _FIXTURES[2], 1), ("S", _FIXTURES[2], 2), ("A10", _FIXTURES[2], 3), ("P", _FIXTURES[2], 4), ("A00", _FIXTURES[2], 5),
 )
 _LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v1"
 _LEDGER_KEYS = {"schema", "attempts_started", "attempts"}
@@ -96,45 +123,44 @@ _SECRET_KEY = re.compile(
     r"(?:api[_-]?key|secret|password|authorization|access[_-]?token|auth[_-]?token)",
     re.I,
 )
-_SECRET_VALUE = re.compile(r"(?:sk-[A-Za-z0-9_-]{8,}|Bearer\s+\S+|AKIA[0-9A-Z]{16})")
+_SECRET_VALUE = re.compile(r"(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|Bearer\s+\S+|AKIA[0-9A-Z]{16}|(?:API_KEY|TOKEN|SECRET)\s*=\s*(?!REDACTED)[^\s]+)", re.I)
 _BENCHMARK_ROOT = Path(__file__).resolve().parents[2] / "benchmarks" / "ai-sdlc-v2-benefits"
+
+
+def canonical_protocol_digest(protocol: BenchmarkProtocol) -> str:
+    return sha256(protocol.canonical_bytes).hexdigest()
 
 
 def reserve_provider_attempt(ledger_path: Path, request: AttemptRequest) -> AttemptReservation:
     """Atomically reserve an allowed logical Provider attempt before it starts."""
-    ledger = _load_ledger(ledger_path)
-    if ledger["attempts_started"] >= 33:
-        raise ValueError("Provider attempt budget of 33 is exhausted")
-    _validate_reservation_request(ledger["attempts"], request)
-    attempts_started = ledger["attempts_started"] + 1
-    attempt_id = f"attempt-{attempts_started:03d}"
-    ledger["attempts_started"] = attempts_started
-    ledger["attempts"].append(
-        {
-            "attempt_id": attempt_id,
-            "run_id": request.run_id,
-            "kind": request.kind,
-            "arm": request.arm,
-            "retry_reason": request.retry_reason,
-            "status": "reserved",
-        }
-    )
-    _atomic_write_json(ledger_path, ledger)
-    return AttemptReservation(attempt_id, attempts_started, request)
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(ledger_path)
+        if ledger["attempts_started"] >= 33:
+            raise ValueError("Provider attempt budget of 33 is exhausted")
+        _validate_reservation_request(ledger["attempts"], request)
+        attempts_started = ledger["attempts_started"] + 1
+        attempt_id = f"attempt-{attempts_started:03d}"
+        ledger["attempts_started"] = attempts_started
+        ledger["attempts"].append({"attempt_id": attempt_id, "run_id": request.run_id, "kind": request.kind, "arm": request.arm, "retry_reason": request.retry_reason, "retry_of_attempt_id": request.retry_of_attempt_id, "parent_attempt_id": request.parent_attempt_id, "role": request.role, "parent_digest": request.parent_digest, "candidate_digest": request.candidate_digest, "status": "reserved"})
+        _atomic_write_json(ledger_path, ledger)
+        return AttemptReservation(attempt_id, attempts_started, request)
 
 
 def record_provider_completion(ledger_path: Path, completion: AttemptCompletion) -> None:
     """Record a terminal result only for an already-reserved attempt."""
-    ledger = _load_ledger(ledger_path)
-    for attempt in ledger["attempts"]:
-        if attempt["attempt_id"] == completion.attempt_id:
-            if attempt["status"] != "reserved":
-                raise ValueError("Provider attempt completion was already recorded")
-            attempt["status"] = completion.status
-            attempt["content_produced"] = completion.content_produced
-            _atomic_write_json(ledger_path, ledger)
-            return
-    raise ValueError("Provider completion requires a prior reservation")
+    if completion.status not in {"completed", "technical_failure", "failed", "timeout", "needs_operator", "budget_exhausted"}:
+        raise ValueError("Provider completion status is not allowed")
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(ledger_path)
+        for attempt in ledger["attempts"]:
+            if attempt["attempt_id"] == completion.attempt_id:
+                if attempt["status"] != "reserved":
+                    raise ValueError("Provider attempt completion was already recorded")
+                attempt["status"] = completion.status
+                attempt["content_produced"] = completion.content_produced
+                _atomic_write_json(ledger_path, ledger)
+                return
+        raise ValueError("Provider completion requires a prior reservation")
 
 
 def validate_provider_output_schema(schema: Mapping[str, object]) -> list[BenchmarkIssue]:
@@ -144,12 +170,13 @@ def validate_provider_output_schema(schema: Mapping[str, object]) -> list[Benchm
     return issues
 
 
-def verify_receipt(receipt: Mapping[str, object]) -> list[BenchmarkIssue]:
+def verify_receipt(
+    receipt: Mapping[str, object], protocol: BenchmarkProtocol | None = None
+) -> list[BenchmarkIssue]:
     """Verify public receipt semantics after JSON Schema validation has passed."""
     issues: list[BenchmarkIssue] = []
-    _validate_json_schema(
-        receipt, _load_frozen_schema("run-receipt.schema.json"), "$", "receipt", issues
-    )
+    if protocol is None:
+        _validate_json_schema(receipt, _load_frozen_schema("run-receipt.schema.json"), "$", "receipt", issues)
     required = {
         "schema",
         "run_id",
@@ -188,6 +215,8 @@ def verify_receipt(receipt: Mapping[str, object]) -> list[BenchmarkIssue]:
     _validate_human_events(receipt.get("human_events"), issues)
     if receipt.get("arm") == "A11":
         _validate_a11_close(receipt.get("loop"), issues)
+    if protocol is not None:
+        _validate_receipt_protocol_binding(receipt, protocol, issues)
     return issues
 
 
@@ -196,7 +225,6 @@ def verify_summary(
 ) -> list[BenchmarkIssue]:
     """Validate that the public summary only indexes every frozen receipt once."""
     issues: list[BenchmarkIssue] = []
-    _validate_json_schema(summary, _load_frozen_schema("summary.schema.json"), "$", "summary", issues)
     required = {"schema", "protocol_sha256", "runs", "metrics"}
     _missing_issues(summary, required, "summary", issues)
     unknown = set(summary) - required
@@ -226,22 +254,67 @@ def verify_summary(
     if len(runs) != 15 or pairs != expected:
         issues.append(BenchmarkIssue("summary.matrix", "summary must index the frozen 15-run matrix"))
     _scan_public_value(summary, "$", issues)
+    if digest != canonical_protocol_digest(protocol):
+        issues.append(BenchmarkIssue("summary.protocol-digest", "summary must digest canonical protocol bytes"))
+    run_ids = [run.get("run_id") for run in runs if isinstance(run, Mapping)]
+    if run_ids != [run.run_id for run in protocol.run_matrix] or len(set(run_ids)) != 15:
+        issues.append(BenchmarkIssue("summary.run-id", "summary run IDs must match canonical rows once"))
+    receipt_digests = [run.get("receipt_sha256") for run in runs if isinstance(run, Mapping)]
+    if len(set(receipt_digests)) != len(receipt_digests):
+        issues.append(BenchmarkIssue("summary.receipt-digest", "receipt digests must be unique"))
     return issues
+
+
+def _validate_receipt_protocol_binding(
+    receipt: Mapping[str, object], protocol: BenchmarkProtocol, issues: list[BenchmarkIssue]
+) -> None:
+    matching = next((run for run in protocol.run_matrix if run.run_id == receipt.get("run_id")), None)
+    if matching is None or (receipt.get("arm"), receipt.get("fixture"), receipt.get("order")) != (matching.arm, matching.fixture, matching.position):
+        issues.append(BenchmarkIssue("receipt.protocol", "receipt must match one canonical run row"))
+        return
+    required = {"attempt_id", "provider_cwd", "instruction_chain_sha256", "timestamps", "identity"}
+    _missing_issues(receipt, required, "receipt", issues)
+    if receipt.get("provider_cwd") != "benchmark-task/":
+        issues.append(BenchmarkIssue("receipt.provider-cwd", "provider cwd must be relative benchmark-task/"))
+    identity = _mapping(receipt.get("identity"))
+    expected_identity = protocol.execution_lock
+    for key in _LOCK_KEYS:
+        if identity.get(key) != getattr(expected_identity, key):
+            issues.append(BenchmarkIssue("receipt.identity", f"identity lock mismatch: {key}"))
+            break
+    timestamps = _mapping(receipt.get("timestamps"))
+    if not isinstance(timestamps.get("started_at"), str) or not isinstance(timestamps.get("ended_at"), str):
+        issues.append(BenchmarkIssue("receipt.timestamps", "receipt requires start and end timestamps"))
+    if receipt.get("arm") == "A11" and receipt.get("status") == "completed":
+        loop = _mapping(receipt.get("loop"))
+        if _mapping(loop.get("close")).get("state") != "closed":
+            issues.append(BenchmarkIssue("receipt.a11.close", "completed A11 receipt must be closed"))
+            return
+        required_roles = {"primary"}
+        if receipt.get("fixture") == "multi-tenant-security-review":
+            required_roles.add("cross-risk")
+        callbacks = loop.get("expert_callbacks")
+        if not isinstance(callbacks, list) or {callback.get("role") for callback in callbacks if isinstance(callback, Mapping)} != required_roles:
+            issues.append(BenchmarkIssue("receipt.a11.roles", "A11 callback roles do not match fixture"))
 
 
 def load_protocol(path: Path) -> BenchmarkProtocol:
     """Load the protocol with a closed JSON object surface."""
-    raw = json.loads(path.read_text(encoding="utf-8"))
+    canonical_bytes = path.read_bytes()
+    raw = json.loads(canonical_bytes)
     if not isinstance(raw, dict):
         raise ValueError("protocol must be a JSON object")
     _reject_unknown(raw, _PROTOCOL_KEYS, "protocol")
     _require_keys(raw, _PROTOCOL_KEYS, "protocol")
     runs = raw["run_matrix"]
     budget = raw["attempt_budget"]
-    if not isinstance(runs, list) or not isinstance(budget, dict):
+    lock = raw["execution_lock"]
+    if not isinstance(runs, list) or not isinstance(budget, dict) or not isinstance(lock, dict):
         raise ValueError("protocol has invalid run_matrix or attempt_budget")
     _reject_unknown(budget, _BUDGET_KEYS, "attempt_budget")
     _require_keys(budget, _BUDGET_KEYS, "attempt_budget")
+    _reject_unknown(lock, _LOCK_KEYS, "execution_lock")
+    _require_keys(lock, _LOCK_KEYS, "execution_lock")
     parsed_runs = tuple(_parse_run(item) for item in runs)
     return BenchmarkProtocol(
         schema=_string(raw["schema"], "schema"),
@@ -249,6 +322,8 @@ def load_protocol(path: Path) -> BenchmarkProtocol:
         fixtures=_string_tuple(raw["fixtures"], "fixtures"),
         run_matrix=parsed_runs,
         attempt_budget=AttemptBudget(**{key: _integer(budget[key], key) for key in _BUDGET_KEYS}),
+        execution_lock=ExecutionLock(**{key: _lock_value(lock[key], key) for key in _LOCK_KEYS}),
+        canonical_bytes=canonical_bytes,
     )
 
 
@@ -268,6 +343,9 @@ def validate_protocol(protocol: BenchmarkProtocol, repo_root: Path) -> list[Benc
     expected_pairs = {(arm, fixture) for arm in _ARMS for fixture in _FIXTURES}
     if pairs != expected_pairs:
         issues.append(BenchmarkIssue("protocol.matrix", "run matrix must cover every arm and fixture"))
+    actual_schedule = tuple((run.arm, run.fixture, run.position) for run in protocol.run_matrix)
+    if actual_schedule != _SCHEDULE or any(run.run_id != f"{run.arm}:{run.fixture}" for run in protocol.run_matrix):
+        issues.append(BenchmarkIssue("protocol.schedule", "run schedule must match each frozen row"))
     for arm in _ARMS:
         positions = [run.position for run in protocol.run_matrix if run.arm == arm]
         if len(positions) != 3 or sum(positions) != 9:
@@ -291,7 +369,28 @@ def _load_ledger(path: Path) -> dict[str, object]:
         raise ValueError("attempt ledger has invalid attempts_started")
     if not isinstance(raw["attempts"], list):
         raise ValueError("attempt ledger has invalid attempts")
+    attempts = raw["attempts"]
+    if raw["attempts_started"] != len(attempts):
+        raise ValueError("attempt ledger count does not match attempts")
+    expected_ids = [f"attempt-{index:03d}" for index in range(1, len(attempts) + 1)]
+    if any(not isinstance(item, Mapping) or item.get("attempt_id") != expected for item, expected in zip(attempts, expected_ids, strict=True)):
+        raise ValueError("attempt ledger attempt IDs are corrupt")
     return raw
+
+
+@contextmanager
+def _ledger_lock(path: Path):
+    """Hold an advisory cross-process lock for the whole read/validate/write transaction."""
+    import fcntl
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = path.with_name(f".{path.name}.lock")
+    with lock_path.open("a+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 
 def _load_frozen_schema(name: str) -> Mapping[str, object]:
@@ -378,15 +477,26 @@ def _matches_json_type(value: object, expected_type: str) -> bool:
 def _validate_reservation_request(attempts: object, request: AttemptRequest) -> None:
     if not isinstance(attempts, list):
         raise ValueError("attempt ledger has invalid attempts")
+    registry = {f"{arm}:{fixture}": arm for arm, fixture, _position in _SCHEDULE}
+    if request.run_id not in registry:
+        raise ValueError("run is not in the canonical registry")
+    arm = registry[request.run_id]
+    if request.arm is not None and request.arm != arm:
+        raise ValueError("attempt arm does not match canonical run")
     if request.kind == "content_retry" or request.retry_reason == "content":
         raise ValueError("content retries are forbidden")
     if request.kind not in _ATTEMPT_KINDS:
         raise ValueError("attempt role is not preregistered")
     if request.kind == "technical_retry":
-        if request.retry_reason not in {None, "transport", "schema", "provider_pre_output"}:
+        if request.retry_reason not in {"transport", "schema", "provider_pre_output"}:
             raise ValueError("technical retry must be pre-output")
         if _count_kind(attempts, "technical_retry") >= 3:
             raise ValueError("technical retry budget is exhausted")
+        prior = _attempt_by_id(attempts, request.retry_of_attempt_id)
+        if prior is None or prior.get("run_id") != request.run_id:
+            raise ValueError("technical retry requires a prior attempt")
+        if prior.get("status") != "technical_failure" or prior.get("content_produced") is not False:
+            raise ValueError("technical retry requires terminated pre-output failure")
         return
     if request.kind == "writer":
         if _count_kind(attempts, "writer") >= 15:
@@ -394,30 +504,47 @@ def _validate_reservation_request(attempts: object, request: AttemptRequest) -> 
         if any(item.get("kind") == "writer" and item.get("run_id") == request.run_id for item in attempts):
             raise ValueError("duplicate run replacement is forbidden")
         return
-    if request.arm != "A11":
+    if arm != "A11":
         raise ValueError("expert roles are only permitted for A11")
     if request.kind == "primary_expert":
         if _count_kind(attempts, "primary_expert") >= 3:
             raise ValueError("primary expert topology is exhausted")
         if any(item.get("kind") == "primary_expert" and item.get("run_id") == request.run_id for item in attempts):
             raise ValueError("duplicate primary expert is forbidden")
+        if request.role != "primary" or not _is_digest_or_none(request.parent_digest) or not _is_digest_or_none(request.candidate_digest):
+            raise ValueError("expert requires role and parent/candidate digests")
         return
     if request.kind == "cross_risk_expert":
-        if request.run_id != "A11-security-boundary-repair" or _count_kind(attempts, "cross_risk_expert") >= 1:
+        if request.run_id != "A11:multi-tenant-security-review" or _count_kind(attempts, "cross_risk_expert") >= 1:
             raise ValueError("cross-risk expert topology is exhausted")
+        if request.role != "cross-risk" or not _is_digest_or_none(request.parent_digest) or not _is_digest_or_none(request.candidate_digest):
+            raise ValueError("expert requires role and parent/candidate digests")
         return
     if _count_kind(attempts, "expert_rereview") >= 4:
         raise ValueError("expert rereview topology is exhausted")
-    if not any(
-        item.get("run_id") == request.run_id
-        and item.get("kind") in {"primary_expert", "cross_risk_expert"}
-        for item in attempts
-    ):
+    parent = _attempt_by_id(attempts, request.parent_attempt_id)
+    if parent is None or parent.get("run_id") != request.run_id or parent.get("kind") not in {"primary_expert", "cross_risk_expert"}:
         raise ValueError("expert rereview requires an existing expert reservation")
+    if parent.get("status") != "completed" or parent.get("role") != request.role:
+        raise ValueError("expert rereview requires completed matching expert")
+    if any(item.get("kind") == "expert_rereview" and item.get("parent_attempt_id") == request.parent_attempt_id for item in attempts):
+        raise ValueError("expert can have at most one rereview")
+    if request.parent_digest != parent.get("parent_digest") or request.candidate_digest != parent.get("candidate_digest"):
+        raise ValueError("expert rereview digests must match parent")
 
 
 def _count_kind(attempts: list[object], kind: str) -> int:
     return sum(isinstance(item, Mapping) and item.get("kind") == kind for item in attempts)
+
+
+def _attempt_by_id(attempts: list[object], attempt_id: str | None) -> Mapping[str, object] | None:
+    if not attempt_id:
+        return None
+    return next((item for item in attempts if isinstance(item, Mapping) and item.get("attempt_id") == attempt_id), None)
+
+
+def _is_digest_or_none(value: str | None) -> bool:
+    return isinstance(value, str) and _is_digest(value)
 
 
 def _atomic_write_json(path: Path, data: Mapping[str, object]) -> None:
@@ -472,8 +599,15 @@ def _validate_schema_node(
                     issues.append(BenchmarkIssue("provider-schema.node", f"{path}: invalid property"))
                 else:
                     _validate_schema_node(child, f"{path}.properties.{name}", issues)
+    if "required" in node:
+        required = node["required"]
+        properties = node.get("properties")
+        if declared_type != "object" or not isinstance(required, list) or not all(isinstance(name, str) for name in required) or not isinstance(properties, Mapping) or not set(required) <= set(properties):
+            issues.append(BenchmarkIssue("provider-schema.required", f"{path}: required must name declared properties"))
     if declared_type == "object" and node.get("additionalProperties") is not False:
         issues.append(BenchmarkIssue("provider-schema.additional-properties", f"{path}: object must be closed"))
+    if declared_type == "array" and "items" not in node:
+        issues.append(BenchmarkIssue("provider-schema.items", f"{path}: array requires typed items"))
     if "items" in node:
         if declared_type != "array" or not isinstance(node["items"], Mapping):
             issues.append(BenchmarkIssue("provider-schema.type", f"{path}: items require array type"))
@@ -485,6 +619,24 @@ def _validate_schema_node(
         issues.append(BenchmarkIssue("provider-schema.type", f"{path}: numeric constraint needs number type"))
     if any(key in node for key in {"minItems", "maxItems"}) and declared_type != "array":
         issues.append(BenchmarkIssue("provider-schema.type", f"{path}: array constraint needs array type"))
+    for minimum, maximum in (("minLength", "maxLength"), ("minItems", "maxItems")):
+        if minimum in node and (not isinstance(node[minimum], int) or node[minimum] < 0):
+            issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: {minimum} must be non-negative integer"))
+        if maximum in node and (not isinstance(node[maximum], int) or node[maximum] < 0):
+            issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: {maximum} must be non-negative integer"))
+        if isinstance(node.get(minimum), int) and isinstance(node.get(maximum), int) and node[minimum] > node[maximum]:
+            issues.append(BenchmarkIssue("provider-schema.range", f"{path}: invalid {minimum}/{maximum}"))
+    if "minimum" in node and not isinstance(node["minimum"], (int, float)):
+        issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: minimum must be numeric"))
+    if "maximum" in node and not isinstance(node["maximum"], (int, float)):
+        issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: maximum must be numeric"))
+    if isinstance(node.get("minimum"), (int, float)) and isinstance(node.get("maximum"), (int, float)) and node["minimum"] > node["maximum"]:
+        issues.append(BenchmarkIssue("provider-schema.range", f"{path}: invalid minimum/maximum"))
+    if "pattern" in node and isinstance(node["pattern"], str):
+        try:
+            re.compile(node["pattern"])
+        except re.error:
+            issues.append(BenchmarkIssue("provider-schema.pattern", f"{path}: invalid regex"))
 
 
 def _value_matches_type(value: object, declared_type: object) -> bool:
@@ -528,10 +680,14 @@ def _scan_public_value(value: object, path: str, issues: list[BenchmarkIssue]) -
         for index, child in enumerate(value):
             _scan_public_value(child, f"{path}[{index}]", issues)
     elif isinstance(value, str):
-        if value.startswith("/"):
+        if _is_private_path(value):
             issues.append(BenchmarkIssue("receipt.absolute-path", f"{path} contains an absolute path"))
         if _SECRET_VALUE.search(value):
             issues.append(BenchmarkIssue("receipt.secret", f"{path} contains a secret-like value"))
+
+
+def _is_private_path(value: str) -> bool:
+    return value.startswith(("/", "\\\\", "//", "file:")) or bool(re.match(r"^[A-Za-z]:[\\/]", value))
 
 
 def _validate_receipt_timing(value: object, issues: list[BenchmarkIssue]) -> None:
@@ -590,10 +746,17 @@ def _parse_run(value: object) -> BenchmarkRun:
     _reject_unknown(value, _RUN_KEYS, "run_matrix item")
     _require_keys(value, _RUN_KEYS, "run_matrix item")
     return BenchmarkRun(
+        run_id=_string(value["run_id"], "run id"),
         arm=_string(value["arm"], "run arm"),
         fixture=_string(value["fixture"], "run fixture"),
         position=_integer(value["position"], "run position"),
     )
+
+
+def _lock_value(value: object, key: str) -> str | int:
+    if key.endswith("seconds"):
+        return _integer(value, key)
+    return _string(value, key)
 
 
 def _require_keys(value: dict[str, object], keys: set[str], label: str) -> None:
