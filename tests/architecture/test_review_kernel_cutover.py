@@ -28,6 +28,21 @@ _CLOSE_MODULES = (
     "frontend_evidence_loop.py",
     "pr_review_service.py",
 )
+_SLIMMING_NON_AUTHORITY_FUNCTIONS = {
+    "core/implementation_loop.py": (
+        "_close_blockers",
+        "close_implementation_loop",
+        "_close_implementation_loop_locked",
+    ),
+    "core/pr_review_service.py": (
+        "close_pr_review",
+        "commit_pr_review",
+    ),
+    "cli/pr_review_cmd.py": (
+        "pr_review_close",
+        "pr_review_commit",
+    ),
+}
 
 
 def _retained_python_paths() -> list[Path]:
@@ -183,3 +198,21 @@ def test_review_values_cannot_become_a_persisted_authority() -> None:
     assert field_names.isdisjoint(
         {"verdict", "passed", "closed", "certificate", "session", "quorum", "score"}
     )
+
+
+def test_slimming_never_participates_in_status_close_or_commit_decisions() -> None:
+    assert (
+        "slimming"
+        not in (_SRC / "core" / "loop_status.py").read_text(encoding="utf-8").lower()
+    )
+
+    for module_name, function_names in _SLIMMING_NON_AUTHORITY_FUNCTIONS.items():
+        tree = ast.parse((_SRC / module_name).read_text(encoding="utf-8"))
+        functions = {
+            node.name: ast.unparse(node).lower()
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for function_name in function_names:
+            assert function_name in functions
+            assert "slimming" not in functions[function_name]

@@ -8,7 +8,7 @@
 - 初始化入口（普通用户先执行）：`ai-sdlc init .` 或 `python -m ai_sdlc init .`
 - `init` 会在用户选择 AI 代理入口和 shell 后自动执行必要检查与安全预演；正常输出会给出“当前结果 / Result”和“下一步 / Next”。
 - 排查入口（仅当 CLI 明确要求时执行）：`ai-sdlc adapter status`、`ai-sdlc run --dry-run` 或对应 `python -m ai_sdlc ...` 写法。
-- 全流程：`ai-sdlc run`
+- 当前五 Loop 路由（只读）：`ai-sdlc run`
 
 当前 Claude Code adapter 以 `.claude/CLAUDE.md` 作为 canonical path。规则安装后，写代码前以当前可执行任务为准；内部诊断详情只在排查命令的 `--details` / `--json` 输出中查看。
 
@@ -19,15 +19,15 @@
 
 Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review 产出实质结果后，由当前 AI 代理自动执行以下边界内复核，不要求用户选择专家、管理复核文件或裁决普通分歧：
 
-1. 对当前 Loop 执行 `ai-sdlc loop review --type <类型> --loop-id <ID> --json`，读取实质结果、风险信号和 `input_digest`。专家检查每个相关工件时，必须执行同一命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只审查返回的 `review_snapshot`；`artifact_paths` 仅用于选择工件，不得重新读取 `artifact_paths` 指向的可变文件。Local PR Review 在此之前先用 `ai-sdlc pr-review record-evidence --evidence "<命令和结果>"` 记录本次验证证据，使其进入同一次复核输入。
-2. 按结果内容临时选择一个主专家；仅在存在明确交叉风险时，最多增加一个交叉风险专家。每位专家必须使用独立于结果编写者的全新且只读的独立上下文，不继承编写过程的推理历史。
-3. 专家只返回有证据位置的问题和建议，不修改代码或工件。存在问题时交回原结果编写者修复并重跑该 Loop 的正常检查；同一结果最多进行一次修复后复审。
-4. 执行现有 close / freeze 命令时，必须把已审的 `--loop-id <ID>` 和 `--expect-review-digest <input_digest>` 直接传入；Local PR Review 还必须传 `--review-id <ID>`。命令会在同一进程重建输入，若输入或当前身份变化则废弃旧结论并按上述上限复审。
-5. 专家不可用、超时或输出无效时，不得解释为无问题，也不得调用 close；原 Loop 保持 `needs_review`，由当前代理报告失败原因。
-6. 只有没有可操作问题且摘要未漂移时，当前代理才调用该 Loop 已有的 close 命令。复核本身不写状态，也不拥有关闭权。
+1. 对当前 Loop 执行 `ai-sdlc loop review --type <类型> --loop-id <ID> --json`，读取 `expert_roles`、`expert_reasons`、`round_number`、`input_digest` 和实质结果。专家检查每个相关工件时，必须执行同一命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只审查返回的 `review_snapshot`；`artifact_paths` 仅用于选择工件，不得重新读取 `artifact_paths` 指向的可变文件。Local PR Review 在此之前先用 `ai-sdlc pr-review record-evidence --evidence "<命令和结果>"` 记录本次验证证据。
+2. 宿主 Agent 必须严格消费 `expert_roles`，为每个角色启动一个全新且只读的独立上下文；角色数量由 CLI 限定为最多两名。不得要求用户手动触发专家、选择角色或搬运结果。
+3. 每个上下文只输出该角色的 `ReviewExecution` JSON：执行状态、角色、选择原因和带证据位置的 findings；不得修改代码或工件。宿主 Agent 随后自动调用 `ai-sdlc loop review-record --type <类型> --loop-id <ID> --expect-digest <input_digest> --result <专家结果.json> --json`，每名角色各传一次 `--result`。
+4. 若记录结果为 `needs_fix`，交回原结果编写者修复并重跑正常检查，再次执行 `loop review`；只有输入确实变化时才进入 `round_number=2`。同一结果最多进行一次修复后复审，第二轮后禁止继续生成第三轮。
+5. 专家不可用、超时或输出无效时，也必须把该角色的失败执行记录给 `review-record`；不得解释为无问题或调用 close。原 Loop 保持 `needs_review`，未改输入时只允许重试同一轮。
+6. 只有 `review-record` 返回 `passed` 且摘要未漂移时，当前代理才调用既有 close / freeze，并传入 `--loop-id <ID>` 与 `--expect-review-digest <input_digest>`；Local PR Review 还必须传 `--review-id <ID>`。
 7. Local PR Review 在 close 前读取 Review Pack、Findings、resolution、验证证据和当前 HEAD/index/staged diff；完成这次跨阶段复核后即停止，禁止继续评审该复核结果或最终报告。
 
-动态专家身份和复核结果只存在于当前对话；不建立长期身份、历史评分或第二套状态流。
+专家上下文和身份不持久化；框架只在原 Loop 目录保留 `review-outcome-round-1.json` 和至多一个 `review-outcome-round-2.json`，不建立长期身份、历史评分或第二套状态流。
 
 ## 非阻断代码精简
 

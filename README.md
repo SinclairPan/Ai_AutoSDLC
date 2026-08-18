@@ -113,22 +113,22 @@ ai-sdlc loop review --type frontend-evidence --loop-id <loop-id> --json
 ai-sdlc loop frontend-evidence close --loop-id <loop-id> --expect-review-digest <input_digest> --yes
 ```
 
-每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。专家读取待审工件时使用同一 `loop review` 命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只检查返回的 `review_snapshot`，不重新打开可变路径。`loop review` 返回的 `input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc program browser-gate-probe --execute`。
+每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。`loop review` 会按内容返回最多两个 `expert_roles`；Codex、Claude Code、Cursor 或 VS Code 中的宿主 Agent 自动为每个角色启动独立只读上下文，并用 `loop review-record` 记录本轮结果，不要求用户手动触发专家。专家读取待审工件时使用同一 `loop review` 命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只检查返回的 `review_snapshot`，不重新打开可变路径。`review-record` 返回 `passed` 后，`input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc program browser-gate-probe --execute`。
 
 ### 非阻断精简建议
 
 Implementation Loop 可以根据变更内容生成代码体积、重复、复杂度或拆分建议。该报告只用于帮助实现者保持代码精简；它不产生 BLOCKER/REQUIRED，不改变 Loop 状态，不要求 receipt、例外、No-Go 或额外治理工件，也不阻止现有 close 命令。实现者可以基于行为正确性、维护成本和交付价值选择采纳或说明不采纳。
 
-五个 Loop 的实质结果都采用同一个最小复核边界：当前代理按结果风险自动选择最多两名只读专家；有发现时由原实现代理修复，并只允许一次复审；无发现时由当前代理调用既有 close。专家不可用时结果停留在 `needs_review`，不会把失败解释为通过，也不会创建 session、ledger、certificate、attestation、authority/store 或优化历史。
+五个 Loop 的实质结果都采用同一个最小复核边界：CLI 按结果风险选择最多两种专家角色，宿主 Agent 自动执行并记录结果；有发现时由原实现代理修复，并只允许一次复审；通过后由当前代理调用既有 close。专家不可用时结果停留在 `needs_review`，不会把失败解释为通过。框架只在原 Loop 目录保留第一轮以及至多一个第二轮 outcome，不创建第三轮、session、ledger、certificate、attestation、authority/store 或优化历史。
 
-### 3. 预演与执行
+### 3. 查看当前交付路由
 
 ```powershell
 ai-sdlc run --dry-run
-ai-sdlc run --mode confirm
+ai-sdlc run
 ```
 
-`--dry-run` 只运行门禁，不执行任务；`--mode confirm` 会在需要人工判断的位置停下确认。
+两个入口都只读取五个 Loop 的当前 Result、Next 和 Blockers，不执行任务、不写 checkpoint，也不自动提交。旧 `--mode confirm` 与 `--acknowledge-execute-batch` 仅返回迁移提示，不再启动七阶段执行器。
 
 ### 4. 恢复工作
 
