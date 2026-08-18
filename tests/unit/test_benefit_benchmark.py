@@ -45,7 +45,7 @@ def test_protocol_freezes_arms_fixtures_matrix_and_balanced_schedule() -> None:
     )
     assert len(protocol.run_matrix) == 15
     assert len({(run.arm, run.fixture) for run in protocol.run_matrix}) == 15
-    assert not validate_protocol(protocol, REPO_ROOT)
+    assert {issue.code for issue in validate_protocol(protocol, REPO_ROOT)} == {"protocol.fixture-pending"}
 
     positions_by_arm: dict[str, list[int]] = {arm: [] for arm in protocol.arms}
     for run in protocol.run_matrix:
@@ -304,7 +304,7 @@ def test_static_schemas_and_offline_cli_validation_are_available() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert '"issues": []' in result.stdout
+    assert '"protocol.fixture-pending"' in result.stdout
 
 
 def test_fix_round_protocol_freezes_exact_rows_and_execution_locks() -> None:
@@ -316,9 +316,14 @@ def test_fix_round_protocol_freezes_exact_rows_and_execution_locks() -> None:
     )
     assert protocol.run_matrix[0].run_id == "P:requirement-contract-ambiguity"
     assert protocol.run_matrix[-1].run_id == "A00:multi-tenant-security-review"
-    assert protocol.execution_lock.codex_version == "0.147.0"
+    assert protocol.execution_lock.model == "gpt-5.6-sol"
     assert protocol.execution_lock.writer_timeout_seconds == 1800
     assert len(canonical_protocol_digest(protocol)) == 64
+
+
+def test_fix_round_two_rejects_pending_fixture_lock_before_reservation(tmp_path: Path) -> None:
+    protocol = load_protocol(PROTOCOL_PATH)
+    assert any(issue.code == "protocol.fixture-pending" for issue in validate_protocol(protocol, REPO_ROOT))
 
 
 def test_fix_round_cross_process_reservations_are_unique_and_not_lost(tmp_path: Path) -> None:

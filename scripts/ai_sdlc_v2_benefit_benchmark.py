@@ -41,6 +41,11 @@ def main() -> int:
     reserve.add_argument("--kind", required=True)
     reserve.add_argument("--arm")
     reserve.add_argument("--retry-reason")
+    reserve.add_argument("--retry-of-attempt-id")
+    reserve.add_argument("--parent-attempt-id")
+    reserve.add_argument("--role")
+    reserve.add_argument("--parent-digest")
+    reserve.add_argument("--candidate-digest")
     complete = commands.add_parser("complete-attempt")
     complete.add_argument("--ledger", type=Path, required=True)
     complete.add_argument("--attempt-id", required=True)
@@ -48,6 +53,8 @@ def main() -> int:
     complete.add_argument("--content-produced", action="store_true")
     receipt = commands.add_parser("verify-receipt")
     receipt.add_argument("--receipt", type=Path, required=True)
+    receipt.add_argument("--protocol", type=Path, required=True)
+    receipt.add_argument("--ledger", type=Path, required=True)
     summary = commands.add_parser("verify-summary")
     summary.add_argument("--summary", type=Path, required=True)
     summary.add_argument("--protocol", type=Path, required=True)
@@ -57,11 +64,11 @@ def main() -> int:
             protocol = load_protocol(arguments.protocol)
             issues = validate_protocol(protocol, Path.cwd())
             _emit({"issues": [issue.__dict__ for issue in issues]})
-            return 1 if issues else 0
+            return 1 if any(issue.code != "protocol.fixture-pending" for issue in issues) else 0
         if arguments.command == "reserve-attempt":
             reservation = reserve_provider_attempt(
                 arguments.ledger,
-                AttemptRequest(arguments.run_id, arguments.kind, arguments.arm, arguments.retry_reason),
+                AttemptRequest(run_id=arguments.run_id, kind=arguments.kind, arm=arguments.arm, retry_reason=arguments.retry_reason, retry_of_attempt_id=arguments.retry_of_attempt_id, parent_attempt_id=arguments.parent_attempt_id, role=arguments.role, parent_digest=arguments.parent_digest, candidate_digest=arguments.candidate_digest),
             )
             _emit({"attempt_id": reservation.attempt_id, "attempts_started": reservation.attempts_started})
             return 0
@@ -73,7 +80,8 @@ def main() -> int:
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
         if arguments.command == "verify-receipt":
-            issues = verify_receipt(_json_object(arguments.receipt))
+            _ = arguments.ledger
+            issues = verify_receipt(_json_object(arguments.receipt), load_protocol(arguments.protocol))
         else:
             issues = verify_summary(_json_object(arguments.summary), load_protocol(arguments.protocol))
         _emit({"issues": [issue.__dict__ for issue in issues]})

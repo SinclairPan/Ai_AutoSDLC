@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -49,6 +50,10 @@ class BenchmarkProtocol:
 
 @dataclass(frozen=True)
 class ExecutionLock:
+    ai_sdlc_version: str
+    ai_sdlc_commit: str
+    source_tree_sha: str
+    superpowers_commit: str
     benchmark_commit: str
     fixture_tree_sha256: str
     codex_version: str
@@ -57,6 +62,7 @@ class ExecutionLock:
     runner_script_sha256: str
     writer_timeout_seconds: int
     expert_timeout_seconds: int
+    fixture_commitment: str
 
 
 @dataclass(frozen=True)
@@ -90,7 +96,8 @@ class AttemptCompletion:
 
 _PROTOCOL_KEYS = {"schema", "arms", "fixtures", "run_matrix", "attempt_budget", "execution_lock"}
 _RUN_KEYS = {"run_id", "arm", "fixture", "position"}
-_LOCK_KEYS = {"benchmark_commit", "fixture_tree_sha256", "codex_version", "model", "reasoning_effort", "runner_script_sha256", "writer_timeout_seconds", "expert_timeout_seconds"}
+_LOCK_KEYS = {"ai_sdlc_version", "ai_sdlc_commit", "source_tree_sha", "superpowers_commit", "benchmark_commit", "fixture_tree_sha256", "codex_version", "model", "reasoning_effort", "runner_script_sha256", "writer_timeout_seconds", "expert_timeout_seconds", "fixture_commitment"}
+_EXPECTED_LOCK = {"ai_sdlc_version":"2.0.0","ai_sdlc_commit":"737bda39e05c53450e180a20581b7b7a70db9cf0","source_tree_sha":"3db58121e228a7a1c4c6b760c535d6df1ffdbe84","superpowers_commit":"b36e0829c6d0140e93cfef2ca599b1b07d4a7797","codex_version":"0.147.0","model":"gpt-5.6-sol","reasoning_effort":"high","runner_script_sha256":"134063e133f0b4244fa3b251acf973d4fe4b4aeeacbdc135211bf480f59f1477","writer_timeout_seconds":1800,"expert_timeout_seconds":900,"fixture_commitment":"pending-unbound"}
 _BUDGET_KEYS = {
     "limit",
     "normal_sessions",
@@ -352,6 +359,11 @@ def validate_protocol(protocol: BenchmarkProtocol, repo_root: Path) -> list[Benc
             issues.append(BenchmarkIssue("protocol.schedule", f"{arm} mean position must equal 3"))
     if protocol.attempt_budget != AttemptBudget(33, 19, 4, 3, 7):
         issues.append(BenchmarkIssue("protocol.budget", "attempt budget must equal 33/19/4/3/7"))
+    for key, expected in _EXPECTED_LOCK.items():
+        if getattr(protocol.execution_lock, key) != expected:
+            issues.append(BenchmarkIssue("protocol.lock", f"execution lock drift: {key}"))
+    if protocol.execution_lock.fixture_commitment == "pending-unbound":
+        issues.append(BenchmarkIssue("protocol.fixture-pending", "fixture commitment is pending Task 2"))
     return issues
 
 
@@ -620,23 +632,31 @@ def _validate_schema_node(
     if any(key in node for key in {"minItems", "maxItems"}) and declared_type != "array":
         issues.append(BenchmarkIssue("provider-schema.type", f"{path}: array constraint needs array type"))
     for minimum, maximum in (("minLength", "maxLength"), ("minItems", "maxItems")):
-        if minimum in node and (not isinstance(node[minimum], int) or node[minimum] < 0):
+        if minimum in node and (not _non_bool_int(node[minimum]) or node[minimum] < 0):
             issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: {minimum} must be non-negative integer"))
-        if maximum in node and (not isinstance(node[maximum], int) or node[maximum] < 0):
+        if maximum in node and (not _non_bool_int(node[maximum]) or node[maximum] < 0):
             issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: {maximum} must be non-negative integer"))
-        if isinstance(node.get(minimum), int) and isinstance(node.get(maximum), int) and node[minimum] > node[maximum]:
+        if _non_bool_int(node.get(minimum)) and _non_bool_int(node.get(maximum)) and node[minimum] > node[maximum]:
             issues.append(BenchmarkIssue("provider-schema.range", f"{path}: invalid {minimum}/{maximum}"))
-    if "minimum" in node and not isinstance(node["minimum"], (int, float)):
+    if "minimum" in node and (not _finite_number(node["minimum"])):
         issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: minimum must be numeric"))
-    if "maximum" in node and not isinstance(node["maximum"], (int, float)):
+    if "maximum" in node and (not _finite_number(node["maximum"])):
         issues.append(BenchmarkIssue("provider-schema.operand", f"{path}: maximum must be numeric"))
-    if isinstance(node.get("minimum"), (int, float)) and isinstance(node.get("maximum"), (int, float)) and node["minimum"] > node["maximum"]:
+    if _finite_number(node.get("minimum")) and _finite_number(node.get("maximum")) and node["minimum"] > node["maximum"]:
         issues.append(BenchmarkIssue("provider-schema.range", f"{path}: invalid minimum/maximum"))
     if "pattern" in node and isinstance(node["pattern"], str):
         try:
             re.compile(node["pattern"])
         except re.error:
             issues.append(BenchmarkIssue("provider-schema.pattern", f"{path}: invalid regex"))
+
+
+def _non_bool_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _finite_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
 def _value_matches_type(value: object, declared_type: object) -> bool:
