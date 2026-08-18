@@ -924,12 +924,13 @@ def test_close_blocks_required_findings_then_allows_risk_accepted(
     assert blocked.status == PRReviewCommandStatus.BLOCKED
     assert blocked.verdict == "blocked"
     assert "REQUIRED" in blocked.blocker
-    assert evidence.status == PRReviewCommandStatus.READY
+    assert evidence.status == PRReviewCommandStatus.BLOCKED
+    assert "Legacy verification strings" in evidence.blocker
     assert accepted.status == PRReviewCommandStatus.CLOSED
     assert accepted.verdict == "risk_accepted"
     assert Path(accepted.final_report_path).is_file()
     report = Path(accepted.final_report_path).read_text(encoding="utf-8")
-    assert "uv run pytest" in report
+    assert "uv run pytest" not in report
     assert "MOCK-001" in report
     assert "risk_accepted" in report
 

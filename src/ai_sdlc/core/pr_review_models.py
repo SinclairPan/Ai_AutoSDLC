@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from enum import StrEnum
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -12,6 +13,7 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.quality_command import QualityCommandResult
 
 
 class ReviewVerdict(StrEnum):
@@ -107,6 +109,7 @@ class DiffSourceDescriptor(BaseModel):
     head_ref: str = ""
     base_commit: str = ""
     head_commit: str = ""
+    staged_tree_oid: str = ""
     patch_file: str = ""
     patch_hash: str = ""
     scm_host_type: str = ""
@@ -133,6 +136,7 @@ class SourceAdapterResolution(LoopArtifactModel):
     head_ref: str = ""
     base_commit: str = ""
     head_commit: str = ""
+    staged_tree_oid: str = ""
     patch_file: str = ""
     patch_hash: str = ""
     scm_host_type: str = ""
@@ -164,6 +168,12 @@ class SourceAdapterResolution(LoopArtifactModel):
                 raise ValueError(
                     "resolved local-git-range source requires refs and commits"
                 )
+            if self.source_kind == DiffSourceKind.LOCAL_STAGED and not re.fullmatch(
+                r"[0-9a-f]{40,64}", self.staged_tree_oid
+            ):
+                raise ValueError(
+                    "resolved local-staged source requires staged_tree_oid"
+                )
         elif not (self.blocker.strip() or self.unavailable_reason.strip()):
             raise ValueError("unresolved source requires blocker or unavailable_reason")
         return self
@@ -180,6 +190,7 @@ class SourceAdapterResolution(LoopArtifactModel):
             head_ref=self.head_ref,
             base_commit=self.base_commit,
             head_commit=self.head_commit,
+            staged_tree_oid=self.staged_tree_oid,
             patch_file=self.patch_file,
             patch_hash=self.patch_hash,
             scm_host_type=self.scm_host_type,
@@ -357,6 +368,7 @@ class ReviewPack(LoopArtifactModel):
     head_ref: str
     base_commit: str
     head_commit: str
+    staged_tree_oid: str = ""
     changed_files: list[str] = Field(default_factory=list)
     diff_summary: str = ""
     diff_path: str = ""
@@ -401,6 +413,11 @@ class ReviewPack(LoopArtifactModel):
             )
         if self.source_access_status != SourceAccessStatus.RESOLVED:
             raise ValueError("review pack requires a resolved diff source")
+        if (
+            self.diff_source.source_kind == DiffSourceKind.LOCAL_STAGED
+            and self.staged_tree_oid != self.diff_source.staged_tree_oid
+        ):
+            raise ValueError("review pack staged tree does not match diff source")
         return self
 
 
@@ -466,6 +483,9 @@ class ReviewRun(LoopArtifactModel):
     head_ref: str = ""
     base_commit: str = ""
     head_commit: str = ""
+    staged_tree_oid: str = ""
+    delivery_commit: str = ""
+    delivery_parent_commit: str = ""
     provider_command: list[str] = Field(default_factory=list)
     review_pack_path: str = ""
     review_pack_digest: str = ""
@@ -503,6 +523,25 @@ class ReviewRun(LoopArtifactModel):
         return self
 
 
+class PRReviewVerificationEvidence(LoopArtifactModel):
+    """Local PR 可执行验证结果及其 reviewed staged tree 绑定。"""
+
+    artifact_kind: str = "review-verification-evidence"
+    review_id: str
+    loop_id: str
+    staged_tree_oid: str = ""
+    entries: list[str] = Field(default_factory=list)
+    results: list[QualityCommandResult] = Field(default_factory=list)
+
+    @field_validator("review_id", "loop_id")
+    @classmethod
+    def _require_evidence_identity(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("review verification identity is required")
+        return normalized
+
+
 __all__ = [
     "FindingResolution",
     "FindingResolutionStatus",
@@ -518,6 +557,7 @@ __all__ = [
     "ReviewFinding",
     "ReviewFindings",
     "ReviewPack",
+    "PRReviewVerificationEvidence",
     "ReviewRun",
     "ReviewVerdict",
     "SourceAccessStatus",

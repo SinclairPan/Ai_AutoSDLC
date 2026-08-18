@@ -23,6 +23,7 @@ from ai_sdlc.core.loop_review_service import (
     record_loop_review,
     validate_prepared_outcome_for_close,
 )
+from ai_sdlc.core.pr_review_models import PRReviewVerificationEvidence
 from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review_input
 from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
 from ai_sdlc.core.stable_file_read import consume_stable_chunks, read_stable_text
@@ -456,18 +457,20 @@ def resolve_review_input(
     safe_loop_id = _safe_identifier(loop_id)
     if loop_type == "local-pr-review":
         loop_dir, pointer_path, run_path = _find_local_review_dir(root, safe_loop_id)
+        review_pack_path = loop_dir / "review-pack.json"
+        review_pack_payload = _read_json_object(root, review_pack_path)
+        _require_local_review_verification(root, loop_dir, review_pack_payload)
         artifacts = [
             *(loop_dir / name for name in _LOCAL_REQUIRED),
         ]
         artifacts.extend(
             loop_dir / name for name in _LOCAL_OPTIONAL if (loop_dir / name).is_file()
         )
-        diff_path = _local_review_diff(root, loop_dir / "review-pack.json")
+        diff_path = _local_review_diff(root, review_pack_path)
         artifacts.append(diff_path)
         risk_signals = [
             *_content_risk_signals(root, artifacts),
-            *_git_risk_signals(root),
-            *_local_review_source_risk_signals(root, loop_dir / "review-pack.json"),
+            *_local_review_source_risk_signals(root, review_pack_path),
         ]
         round_number = _read_round_number(root, run_path)
         capture_artifact_paths = (
@@ -546,6 +549,39 @@ def resolve_review_input(
         capture_only_paths=capture_only_paths,
         captured_artifacts=captured_artifacts,
     )
+
+
+def _require_local_review_verification(
+    root: Path,
+    loop_dir: Path,
+    review_pack: dict[str, object],
+) -> None:
+    diff_source = review_pack.get("diff_source", {})
+    if not isinstance(diff_source, dict):
+        raise ValueError("Review pack diff_source is invalid.")
+    if diff_source.get("source_kind") != "local-staged":
+        return
+    evidence_path = loop_dir / "verification-evidence.json"
+    if not evidence_path.is_file():
+        raise ValueError("Executable Local PR verification evidence is missing.")
+    try:
+        evidence = PRReviewVerificationEvidence.model_validate(
+            _read_json_object(root, evidence_path)
+        )
+    except ValueError as exc:
+        raise ValueError("Local PR verification evidence is invalid.") from exc
+    expected_tree = review_pack.get("staged_tree_oid", "")
+    if (
+        not isinstance(expected_tree, str)
+        or not expected_tree
+        or evidence.staged_tree_oid != expected_tree
+    ):
+        raise ValueError("Local PR verification evidence is bound to another tree.")
+    if evidence.entries or not any(
+        result.successful and result.source_digest_before == result.source_digest_after
+        for result in evidence.results
+    ):
+        raise ValueError("Local PR requires successful executable verification.")
 
 
 def _review_snapshot_payload(path: str, content: bytes) -> dict[str, str]:
@@ -984,19 +1020,6 @@ def _matching_risk_signals(
     return detected
 
 
-def _git_risk_signals(root: Path) -> list[str]:
-    head = _git_bytes(root, "rev-parse", "--verify", "HEAD").decode("ascii").strip()
-    index = _git_bytes(root, "ls-files", "--stage", "-z")
-    index_flags = _git_bytes(root, "ls-files", "-v", "-z")
-    staged = _git_bytes(root, "diff", "--cached", "--binary", "--no-ext-diff", "--")
-    return [
-        f"git-head:{head}",
-        f"git-index:{hashlib.sha256(index).hexdigest()}",
-        f"git-index-flags:{hashlib.sha256(index_flags).hexdigest()}",
-        f"git-staged-diff:{hashlib.sha256(staged).hexdigest()}",
-    ]
-
-
 def _local_review_source_risk_signals(root: Path, review_pack_path: Path) -> list[str]:
     payload = _read_json_object(root, review_pack_path)
     diff_source = payload.get("diff_source")
@@ -1077,7 +1100,24 @@ def _local_review_source_risk_signals(root: Path, review_pack_path: Path) -> lis
             f"git-selected-head-tip:{head_tip}",
             f"git-selected-diff:{snapshot.diff_hash}",
         ]
-    if source_kind not in {"local-staged", "local-unstaged"}:
+    if source_kind == "local-staged":
+        head_commit = payload.get("head_commit", "")
+        staged_tree_oid = payload.get("staged_tree_oid", "")
+        diff_hash = diff_source.get("patch_hash", "")
+        if not all(
+            isinstance(value, str) and value.strip()
+            for value in (head_commit, staged_tree_oid, diff_hash)
+        ):
+            raise ValueError(
+                f"Review pack staged source identity is invalid: {review_pack_path}"
+            )
+        return [
+            "git-selected-source:local-staged",
+            f"git-selected-head:{head_commit}",
+            f"git-selected-tree:{staged_tree_oid}",
+            f"git-selected-diff:{diff_hash}",
+        ]
+    if source_kind != "local-unstaged":
         return []
     snapshot = build_source_snapshot(
         SourceSnapshotOptions(root=root, source_kind=source_kind)

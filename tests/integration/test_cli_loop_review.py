@@ -397,10 +397,15 @@ def test_implementation_review_binds_generated_task_state(
     assert changed.input_digest != reviewed.input_digest
 
 
-def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
+def test_local_pr_review_binds_pre_close_artifacts_and_reviewed_source_identity(
     tmp_path: Path,
 ) -> None:
     _init_git_repo(tmp_path)
+    tracked = tmp_path / "tracked.txt"
+    tracked.write_text("changed\n", encoding="utf-8")
+    _git(tmp_path, "add", "tracked.txt")
+    reviewed_head = _git(tmp_path, "rev-parse", "HEAD")
+    reviewed_tree = _git(tmp_path, "write-tree")
     review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / "review-001"
     review_dir.mkdir(parents=True)
     (review_dir / "review-run.json").write_text(
@@ -421,22 +426,36 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
     ]
     diff = review_dir / "diff.patch"
     diff.write_text("diff --git a/tracked.txt b/tracked.txt\n", encoding="utf-8")
+    diff_hash = hashlib.sha256(diff.read_bytes()).hexdigest()
     (review_dir / "review-pack.json").write_text(
         json.dumps(
             {
                 "diff_path": diff.relative_to(tmp_path).as_posix(),
-                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+                "diff_digest": f"sha256:{diff_hash}",
+                "head_commit": reviewed_head,
+                "staged_tree_oid": reviewed_tree,
+                "diff_source": {
+                    "source_kind": "local-staged",
+                    "patch_hash": diff_hash,
+                },
             }
         ),
         encoding="utf-8",
     )
     for filename in included:
-        if filename not in {"review-pack.json", "diff.patch"}:
+        if filename not in {
+            "review-pack.json",
+            "diff.patch",
+            "verification-evidence.json",
+        }:
             (review_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
+    _write_successful_local_review_evidence(
+        review_dir,
+        review_id="review-001",
+        loop_id="loop-pr-001",
+        staged_tree_oid=reviewed_tree,
+    )
     (review_dir / "final-report.md").write_text("must be excluded\n", encoding="utf-8")
-    tracked = tmp_path / "tracked.txt"
-    tracked.write_text("changed\n", encoding="utf-8")
-    _git(tmp_path, "add", "tracked.txt")
 
     with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
         result = runner.invoke(
@@ -456,10 +475,10 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
     payload = json.loads(result.output)
     assert {Path(path).name for path in payload["artifact_paths"]} == set(included)
     assert "final-report.md" not in result.output
-    assert any(item.startswith("git-head:") for item in payload["risk_signals"])
-    assert any(item.startswith("git-index:") for item in payload["risk_signals"])
-    assert any(item.startswith("git-index-flags:") for item in payload["risk_signals"])
-    assert any(item.startswith("git-staged-diff:") for item in payload["risk_signals"])
+    assert "git-selected-source:local-staged" in payload["risk_signals"]
+    assert f"git-selected-head:{reviewed_head}" in payload["risk_signals"]
+    assert f"git-selected-tree:{reviewed_tree}" in payload["risk_signals"]
+    assert f"git-selected-diff:{diff_hash}" in payload["risk_signals"]
     reviewed = resolve_review_input(
         tmp_path,
         loop_type="local-pr-review",
@@ -568,8 +587,8 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
             ],
         )
 
-    assert drift.exit_code == 1
-    assert json.loads(drift.output)["reason"] == "review-input-drift"
+    assert drift.exit_code == 0
+    assert json.loads(drift.output)["input_digest"] == digest
 
 
 def test_common_local_pr_close_gate_rejects_digest_without_outcome(
@@ -708,7 +727,7 @@ def test_close_rebuilds_review_input_and_blocks_digest_drift(tmp_path: Path) -> 
 
 
 @pytest.mark.parametrize("index_flag", ["--assume-unchanged", "--skip-worktree"])
-def test_local_pr_review_binds_index_flags(
+def test_local_pr_review_uses_frozen_source_when_index_flags_change(
     tmp_path: Path,
     index_flag: str,
 ) -> None:
@@ -735,19 +754,31 @@ def test_local_pr_review_binds_index_flags(
     )
     diff = review_dir / "diff.patch"
     diff.write_text("reviewed staged diff\n", encoding="utf-8")
+    reviewed_head = _git(tmp_path, "rev-parse", "HEAD")
+    reviewed_tree = _git(tmp_path, "write-tree")
+    diff_hash = hashlib.sha256(diff.read_bytes()).hexdigest()
     (review_dir / "review-pack.json").write_text(
         json.dumps(
             {
                 "diff_path": diff.relative_to(tmp_path).as_posix(),
-                "diff_digest": (
-                    f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}"
-                ),
-                "diff_source": {"source_kind": "local-staged"},
+                "diff_digest": f"sha256:{diff_hash}",
+                "head_commit": reviewed_head,
+                "staged_tree_oid": reviewed_tree,
+                "diff_source": {
+                    "source_kind": "local-staged",
+                    "patch_hash": diff_hash,
+                },
             }
         ),
         encoding="utf-8",
     )
     (review_dir / "findings.json").write_text("{}", encoding="utf-8")
+    _write_successful_local_review_evidence(
+        review_dir,
+        review_id="review-flags",
+        loop_id="loop-pr-flags",
+        staged_tree_oid=reviewed_tree,
+    )
 
     reviewed = resolve_review_input(
         tmp_path,
@@ -761,7 +792,7 @@ def test_local_pr_review_binds_index_flags(
         loop_id="loop-pr-flags",
     )
 
-    assert changed.input_digest != reviewed.input_digest
+    assert changed.input_digest == reviewed.input_digest
 
 
 @pytest.mark.parametrize("malformed_bytes", [b"{", b"\xff"])
@@ -2280,6 +2311,44 @@ def _init_git_repo(root: Path) -> None:
     (root / "tracked.txt").write_text("initial\n", encoding="utf-8")
     _git(root, "add", "tracked.txt")
     _git(root, "commit", "-m", "initial")
+
+
+def _write_successful_local_review_evidence(
+    review_dir: Path,
+    *,
+    review_id: str,
+    loop_id: str,
+    staged_tree_oid: str,
+) -> None:
+    source_digest = f"sha256:{'a' * 64}"
+    empty_digest = f"sha256:{hashlib.sha256(b'').hexdigest()}"
+    (review_dir / "verification-evidence.json").write_text(
+        json.dumps(
+            {
+                "artifact_kind": "review-verification-evidence",
+                "review_id": review_id,
+                "loop_id": loop_id,
+                "staged_tree_oid": staged_tree_oid,
+                "entries": [],
+                "results": [
+                    {
+                        "argv": ["python", "-c", "print('verified')"],
+                        "cwd": ".",
+                        "exit_code": 0,
+                        "started_at": "2026-08-17T00:00:00Z",
+                        "completed_at": "2026-08-17T00:00:01Z",
+                        "source_digest_before": source_digest,
+                        "source_digest_after": source_digest,
+                        "stdout_sha256": empty_digest,
+                        "stderr_sha256": empty_digest,
+                        "status": "passed",
+                        "timed_out": False,
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def _write_current_review_pointer(

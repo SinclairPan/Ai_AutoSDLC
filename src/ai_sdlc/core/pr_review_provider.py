@@ -27,6 +27,7 @@ from ai_sdlc.core.pr_review_models import (
     ReviewVerdict,
 )
 from ai_sdlc.core.pr_review_schema import validate_artifact_file
+from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
 
 EXIT_SUCCESS = 0
 EXIT_CHANGES_REQUIRED = 10
@@ -90,8 +91,7 @@ def run_provider_command(options: ProviderCommandOptions) -> ProviderRunResult:
         return ProviderRunResult(
             status=ProviderRunStatus.NEEDS_USER,
             blocker=(
-                "local-agent provider is not configured with a local reviewer "
-                "command."
+                "local-agent provider is not configured with a local reviewer command."
             ),
             next_action=(
                 "Configure a local reviewer command or run mock-reviewer for an "
@@ -133,7 +133,9 @@ def run_provider_command(options: ProviderCommandOptions) -> ProviderRunResult:
     findings_path = review_dir / "findings.json"
     invocation_path = review_dir / "reviewer-invocation.json"
     schema_validation_path = review_dir / "schema-validation.json"
-    argv = _expand_command(options.command, review_pack, options.review_pack_path, findings_path)
+    argv = _expand_command(
+        options.command, review_pack, options.review_pack_path, findings_path
+    )
     _remove_previous_provider_outputs(findings_path, schema_validation_path)
     dirty_blocker = _preexisting_dirty_worktree_blocker(
         root,
@@ -439,8 +441,15 @@ def _reviewer_allowlist_launch_blocker(review_pack: ReviewPack) -> str:
     redacted_count = int(review_pack.diff_coverage.get("redacted_files", 0) or 0)
     omitted_count = int(review_pack.diff_coverage.get("omitted_files", 0) or 0)
     missing = sorted(changed_files - allowlist)
-    waiver_allowed = review_pack.policy_decisions.get("incomplete_review_waiver") is True
-    if waiver_allowed and redacted_count == 0 and omitted_count > 0 and len(missing) <= omitted_count:
+    waiver_allowed = (
+        review_pack.policy_decisions.get("incomplete_review_waiver") is True
+    )
+    if (
+        waiver_allowed
+        and redacted_count == 0
+        and omitted_count > 0
+        and len(missing) <= omitted_count
+    ):
         return ""
     if redacted_count > 0 or omitted_count > 0 or missing:
         detail = ", ".join(missing[:5])
@@ -491,7 +500,9 @@ def _reviewed_diff_source_launch_blocker(root: Path, review_pack: ReviewPack) ->
     patch_file = review_pack.diff_source.patch_file.strip()
     expected_hash = review_pack.diff_source.patch_hash.strip()
     if not patch_file:
-        return "Reviewed patch diff source is missing patch_file; regenerate review pack."
+        return (
+            "Reviewed patch diff source is missing patch_file; regenerate review pack."
+        )
     if not expected_hash:
         return "Reviewed patch diff source hash is missing; regenerate review pack."
     patch_path = _resolve_patch_source_path(root, patch_file)
@@ -514,11 +525,24 @@ def _reviewed_worktree_diff_launch_blocker(
     source_kind: DiffSourceKind,
     review_pack: ReviewPack,
 ) -> str:
+    if source_kind == DiffSourceKind.LOCAL_STAGED:
+        expected_tree = review_pack.staged_tree_oid.strip()
+        if not expected_tree:
+            return "Reviewed staged tree is missing; regenerate review pack."
+        try:
+            actual_tree = build_source_snapshot(
+                SourceSnapshotOptions(root=root, source_kind="local-staged")
+            ).staged_tree_oid
+        except ValueError as exc:
+            return f"Cannot resolve current staged tree: {exc}"
+        if actual_tree != expected_tree:
+            return (
+                "Current staged tree does not match reviewed staged tree: "
+                f"{actual_tree} != {expected_tree}."
+            )
     expected_hash = review_pack.diff_source.patch_hash.strip()
     if not expected_hash:
-        return (
-            "Reviewed worktree diff source hash is missing; regenerate review pack."
-        )
+        return "Reviewed worktree diff source hash is missing; regenerate review pack."
     diff_args = (
         ["git", "diff", "--cached"]
         if source_kind == DiffSourceKind.LOCAL_STAGED
@@ -541,7 +565,9 @@ def _reviewed_worktree_diff_launch_blocker(
         return "git diff timed out while verifying reviewed worktree diff source."
     if result.returncode != 0:
         detail = result.stderr.strip() or f"exit code {result.returncode}"
-        return f"git diff failed while verifying reviewed worktree diff source: {detail}"
+        return (
+            f"git diff failed while verifying reviewed worktree diff source: {detail}"
+        )
     actual_hash = hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
     if actual_hash != expected_hash:
         return (
@@ -574,9 +600,8 @@ def _preexisting_dirty_worktree_blocker(
     if not dirty_paths:
         return ""
     sample = ", ".join(dirty_paths[:5])
-    return (
-        "Local reviewer cannot run with pre-existing unreviewed worktree changes"
-        + (f": {sample}" if sample else ".")
+    return "Local reviewer cannot run with pre-existing unreviewed worktree changes" + (
+        f": {sample}" if sample else "."
     )
 
 
@@ -741,7 +766,11 @@ def _worktree_mutation_blocker(
     if after == before:
         return ""
     changed = sorted(set(before) ^ set(after))
-    changed.extend(sorted(path for path in before.keys() & after.keys() if before[path] != after[path]))
+    changed.extend(
+        sorted(
+            path for path in before.keys() & after.keys() if before[path] != after[path]
+        )
+    )
     sample = ", ".join(changed[:5])
     return (
         "Reviewer command modified files outside expected provider output artifacts"
@@ -749,7 +778,9 @@ def _worktree_mutation_blocker(
     )
 
 
-def _worktree_snapshot(root: Path, mutable_provider_outputs: frozenset[Path]) -> dict[str, str]:
+def _worktree_snapshot(
+    root: Path, mutable_provider_outputs: frozenset[Path]
+) -> dict[str, str]:
     try:
         result = subprocess.run(
             [
@@ -912,7 +943,9 @@ def _ignored_dir_digest(path: Path, *, max_entries: int = 4096) -> str:
             if is_dir:
                 digest.update(f"D:{relative}\0".encode())
             else:
-                digest.update(f"F:{relative}:{stat.st_size}:{stat.st_mtime_ns}\0".encode())
+                digest.update(
+                    f"F:{relative}:{stat.st_size}:{stat.st_mtime_ns}\0".encode()
+                )
             if is_dir:
                 pending.append(child)
             if entries_seen >= max_entries:
@@ -1056,7 +1089,9 @@ def _validate_findings_output(
         invocation_path=str(invocation_path),
         findings_path=str(findings_path),
         schema_validation_path=str(schema_validation_path),
-        blocker=findings.blocker if provider_status == ProviderRunStatus.BLOCKED else "",
+        blocker=findings.blocker
+        if provider_status == ProviderRunStatus.BLOCKED
+        else "",
         next_action=(
             "Fix the blocked review provider and rerun review."
             if provider_status == ProviderRunStatus.BLOCKED
