@@ -179,13 +179,15 @@ def build_review_input(
     upstream_context_paths: Sequence[str | Path],
     risk_signals: Sequence[str],
     capture_artifact_paths: Sequence[str | Path] = (),
+    capture_only_paths: Sequence[str | Path] = (),
     captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> ReviewInput:
     """Read stable regular files and bind their raw bytes to one review input."""
 
     resolved_root = root.resolve(strict=True)
     capture_paths = {
-        _review_relative_path(resolved_root, path) for path in capture_artifact_paths
+        _review_relative_path(resolved_root, path)
+        for path in (*capture_artifact_paths, *capture_only_paths)
     }
     if capture_paths and captured_artifacts is None:
         raise ValueError("captured_artifacts is required when capture paths are set")
@@ -198,6 +200,12 @@ def build_review_input(
     upstream = _read_paths(
         resolved_root,
         upstream_context_paths,
+        capture_paths=capture_paths,
+        captured_artifacts=captured_artifacts,
+    )
+    _read_paths(
+        resolved_root,
+        capture_only_paths,
         capture_paths=capture_paths,
         captured_artifacts=captured_artifacts,
     )

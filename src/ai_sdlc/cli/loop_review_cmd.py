@@ -15,6 +15,13 @@ from typing import cast
 
 import typer
 
+from ai_sdlc.core.loop_review_service import (
+    LoopReviewPreparation,
+    LoopReviewServiceError,
+    RecordLoopReviewOptions,
+    prepare_loop_review,
+    record_loop_review,
+)
 from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review_input
 from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
 from ai_sdlc.core.stable_file_read import consume_stable_chunks, read_stable_text
@@ -48,21 +55,18 @@ _STAGE_ARTIFACTS: dict[str, tuple[str, ...]] = {
     ),
 }
 _STAGE_CLOSE_ARTIFACTS: dict[str, tuple[str, ...]] = {
-    "requirement": ("loop-run.json", "requirement-intake.json"),
+    "requirement": ("requirement-intake.json",),
     "design-contract": (
-        "loop-run.json",
         "design-contract-input.json",
         "design-contract-report.json",
     ),
     "implementation": (
-        "loop-run.json",
         "implementation-input.json",
         "implementation-report.json",
         "implementation-tasks.json",
         "implementation-progress.json",
     ),
     "frontend-evidence": (
-        "loop-run.json",
         "frontend-evidence-snapshot.json",
         "frontend-evidence-report.json",
     ),
@@ -262,14 +266,20 @@ def loop_review(
         requested_path = read_path.strip()
         if requested_path and not expected:
             raise ValueError("--read-path requires --expect-digest.")
+        prepared, _ = prepare_current_loop_review(root, loop_type, loop_id)
         captured_artifacts: dict[str, bytes] | None = {} if requested_path else None
-        review_input = resolve_review_input(
-            root,
-            loop_type=loop_type,
-            loop_id=loop_id,
-            captured_artifacts=captured_artifacts,
-            capture_paths=[requested_path] if requested_path else None,
-        )
+        review_input = prepared.review_input
+        if captured_artifacts is not None:
+            review_input = resolve_review_input(
+                root,
+                loop_type=loop_type,
+                loop_id=loop_id,
+                review_round_number=prepared.review_input.round_number,
+                captured_artifacts=captured_artifacts,
+                capture_paths=[requested_path],
+            )
+            if review_input.input_digest != prepared.review_input.input_digest:
+                raise LoopReviewServiceError("review-input-drift")
         if expected and expected != review_input.input_digest:
             _emit(
                 {
@@ -283,6 +293,9 @@ def loop_review(
             raise typer.Exit(1)
     except typer.Exit:
         raise
+    except LoopReviewServiceError as exc:
+        _emit(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         _emit(
             {
@@ -295,6 +308,13 @@ def loop_review(
         raise typer.Exit(1) from exc
 
     payload = review_input.model_dump(mode="json")
+    payload.update(
+        {
+            "review_status": prepared.status,
+            "review_reason": prepared.reason,
+            "next_action": prepared.next_action,
+        }
+    )
     if captured_artifacts is not None:
         if len(captured_artifacts) != 1:
             raise typer.Exit(1)
@@ -303,11 +323,110 @@ def loop_review(
     _emit(payload, json_output=json_output)
 
 
+def loop_review_record(
+    loop_type: str = typer.Option(..., "--type", help="Loop result type."),
+    loop_id: str = typer.Option(..., "--loop-id", help="Existing Loop id."),
+    expect_digest: str = typer.Option(
+        ...,
+        "--expect-digest",
+        help="Digest returned by the current review input.",
+    ),
+    result_paths: list[Path] = typer.Option(
+        ...,
+        "--result",
+        help="One single-role ReviewExecution JSON file. Repeat per selected expert.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Record one bounded independent-expert review round."""
+
+    try:
+        root = find_project_root()
+        if root is None:
+            raise ValueError("Project is not initialized; .ai-sdlc is missing.")
+        prepared, loop_dir = prepare_current_loop_review(root, loop_type, loop_id)
+        overlay = record_loop_review(
+            RecordLoopReviewOptions(
+                root=root,
+                loop_type=cast(LoopReviewType, loop_type),
+                loop_id=loop_id,
+                expected_digest=expect_digest,
+                result_paths=tuple(result_paths),
+            ),
+            loop_dir=loop_dir,
+            input_resolver=lambda round_number: resolve_review_input(
+                root,
+                loop_type=loop_type,
+                loop_id=loop_id,
+                review_round_number=round_number,
+            ),
+        )
+    except LoopReviewServiceError as exc:
+        _emit(exc.payload(), json_output=json_output)
+        raise typer.Exit(1) from exc
+    except (OSError, subprocess.SubprocessError, ValueError) as exc:
+        _emit(
+            {
+                "status": "blocked",
+                "reason": "review-result-invalid",
+                "detail": str(exc),
+            },
+            json_output=json_output,
+        )
+        raise typer.Exit(1) from exc
+
+    payload = overlay.model_dump(mode="json")
+    payload.update(
+        {
+            "input_digest": prepared.review_input.input_digest,
+            "outcome_path": prepared.outcome_path.relative_to(root).as_posix(),
+        }
+    )
+    _emit(payload, json_output=json_output)
+
+
+def prepare_current_loop_review(
+    root: Path,
+    loop_type: str,
+    loop_id: str,
+) -> tuple[LoopReviewPreparation, Path]:
+    """Resolve current Loop identity and derive its bounded review state."""
+
+    safe_loop_id = _safe_identifier(loop_id)
+    loop_dir = resolve_review_directory(root, loop_type, safe_loop_id)
+    prepared = prepare_loop_review(
+        root,
+        loop_type=cast(LoopReviewType, loop_type),
+        loop_id=safe_loop_id,
+        loop_dir=loop_dir,
+        input_resolver=lambda round_number: resolve_review_input(
+            root,
+            loop_type=loop_type,
+            loop_id=safe_loop_id,
+            review_round_number=round_number,
+        ),
+    )
+    return prepared, loop_dir
+
+
+def resolve_review_directory(root: Path, loop_type: str, loop_id: str) -> Path:
+    """Return the canonical existing directory after validating its current pointer."""
+
+    if loop_type == "local-pr-review":
+        loop_dir, _, _ = _find_local_review_dir(root, loop_id)
+        return loop_dir
+    if loop_type not in _STAGE_ARTIFACTS:
+        raise ValueError(f"Unsupported review Loop type: {loop_type}")
+    _resolve_current_stage_state(root, loop_type, loop_id)
+    return root / ".ai-sdlc" / "loops" / loop_type / loop_id
+
+
 def resolve_review_input(
     root: Path,
     *,
     loop_type: str,
     loop_id: str,
+    review_round_number: int | None = None,
     captured_artifacts: MutableMapping[str, bytes] | None = None,
     capture_paths: Sequence[str | Path] | None = None,
 ) -> ReviewInput:
@@ -317,8 +436,6 @@ def resolve_review_input(
     if loop_type == "local-pr-review":
         loop_dir, pointer_path, run_path = _find_local_review_dir(root, safe_loop_id)
         artifacts = [
-            pointer_path,
-            run_path,
             *(loop_dir / name for name in _LOCAL_REQUIRED),
         ]
         artifacts.extend(
@@ -341,9 +458,14 @@ def resolve_review_input(
                 else []
             )
         )
+        capture_only_paths = (
+            [pointer_path, run_path]
+            if captured_artifacts is not None and capture_paths is None
+            else []
+        )
     elif loop_type in _STAGE_ARTIFACTS:
         loop_dir = root / ".ai-sdlc" / "loops" / loop_type / safe_loop_id
-        pointer_path, run_path = _resolve_current_stage_state(
+        _, run_path = _resolve_current_stage_state(
             root,
             loop_type,
             safe_loop_id,
@@ -351,8 +473,6 @@ def resolve_review_input(
         stage_source_material = _stage_source_material(root, loop_type, loop_dir)
         artifacts = _unique_paths(
             [
-                pointer_path,
-                run_path,
                 *(loop_dir / name for name in _STAGE_ARTIFACTS[loop_type]),
                 *stage_source_material,
             ]
@@ -378,8 +498,18 @@ def resolve_review_input(
                 else []
             )
         )
+        capture_only_paths = (
+            [run_path]
+            if captured_artifacts is not None and capture_paths is None
+            else []
+        )
     else:
         raise ValueError(f"Unsupported review Loop type: {loop_type}")
+
+    if review_round_number is not None:
+        if review_round_number not in {1, 2}:
+            raise ValueError("Review round number must be 1 or 2.")
+        round_number = review_round_number
 
     return build_review_input(
         root,
@@ -392,6 +522,7 @@ def resolve_review_input(
         else [],
         risk_signals=risk_signals,
         capture_artifact_paths=capture_artifact_paths,
+        capture_only_paths=capture_only_paths,
         captured_artifacts=captured_artifacts,
     )
 

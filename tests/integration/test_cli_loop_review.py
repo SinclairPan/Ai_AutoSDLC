@@ -17,6 +17,11 @@ from typer.testing import CliRunner
 
 from ai_sdlc.cli.loop_review_cmd import resolve_review_input
 from ai_sdlc.cli.main import app
+from ai_sdlc.core.requirement_loop import (
+    RequirementStartOptions,
+    start_requirement_loop,
+)
+from ai_sdlc.core.review_kernel import ReviewExecution, ReviewFinding
 
 runner = CliRunner()
 pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
@@ -117,12 +122,9 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
     payload = json.loads(result.output)
     assert payload["loop_id"] == loop_id
     assert payload["loop_type"] == loop_type
-    assert payload["round_number"] == 2
-    assert {Path(path).name for path in payload["artifact_paths"]} == {
-        *filenames,
-        "loop-run.json",
-        _STAGE_POINTER_NAMES[loop_type],
-    }
+    assert payload["round_number"] == 1
+    assert payload["review_status"] == "review_missing"
+    assert {Path(path).name for path in payload["artifact_paths"]} == set(filenames)
     assert {Path(path).name for path in payload["upstream_context_paths"]} == (
         expected_upstream
     )
@@ -132,6 +134,7 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
         tmp_path,
         loop_type=loop_type,
         loop_id=loop_id,
+        review_round_number=1,
     )
     (loop_dir / "loop-run.json").write_text(
         json.dumps(
@@ -148,8 +151,9 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
         tmp_path,
         loop_type=loop_type,
         loop_id=loop_id,
+        review_round_number=1,
     )
-    assert run_drift.input_digest != reviewed.input_digest
+    assert run_drift.input_digest == reviewed.input_digest
 
     pointer.write_text(
         json.dumps(
@@ -334,8 +338,6 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
         loop_id="loop-pr-001",
     )
     included = [
-        "current-review.json",
-        "review-run.json",
         "review-pack.json",
         "diff.patch",
         "findings.json",
@@ -354,12 +356,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
         encoding="utf-8",
     )
     for filename in included:
-        if filename not in {
-            "current-review.json",
-            "review-run.json",
-            "review-pack.json",
-            "diff.patch",
-        }:
+        if filename not in {"review-pack.json", "diff.patch"}:
             (review_dir / filename).write_text(f"{filename}\n", encoding="utf-8")
     (review_dir / "final-report.md").write_text("must be excluded\n", encoding="utf-8")
     tracked = tmp_path / "tracked.txt"
@@ -410,7 +407,7 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
         loop_type="local-pr-review",
         loop_id="loop-pr-001",
     )
-    assert run_drift.input_digest != reviewed.input_digest
+    assert run_drift.input_digest == reviewed.input_digest
     for field_name, redirected_name in (
         ("review_pack_path", "unreviewed-pack.json"),
         ("findings_path", "unreviewed-findings.json"),
@@ -1903,6 +1900,259 @@ def test_risk_signals_detect_standalone_short_terms(tmp_path: Path) -> None:
     )
 
     assert review_input.risk_signals == ["concurrency", "frontend"]
+
+
+def test_loop_review_record_persists_exact_selected_experts(tmp_path: Path) -> None:
+    loop_id = "requirement-record"
+    loop_dir = _write_requirement_review_fixture(tmp_path, loop_id)
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        prepared = runner.invoke(
+            app,
+            ["loop", "review", "--type", "requirement", "--loop-id", loop_id, "--json"],
+        )
+    assert prepared.exit_code == 0, prepared.output
+    payload = json.loads(prepared.output)
+    assert payload["review_status"] == "review_missing"
+    assert payload["round_number"] == 1
+    assert len(payload["expert_roles"]) == 2
+
+    result_paths = _write_cli_expert_results(tmp_path, payload)
+    arguments = [
+        "loop",
+        "review-record",
+        "--type",
+        "requirement",
+        "--loop-id",
+        loop_id,
+        "--expect-digest",
+        payload["input_digest"],
+    ]
+    for result_path in result_paths:
+        arguments.extend(["--result", str(result_path)])
+    arguments.append("--json")
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        recorded = runner.invoke(app, arguments)
+
+    assert recorded.exit_code == 0, recorded.output
+    recorded_payload = json.loads(recorded.output)
+    assert recorded_payload["status"] == "passed"
+    assert recorded_payload["round_number"] == 1
+    assert (loop_dir / "review-outcome-round-1.json").is_file()
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        repeated = runner.invoke(
+            app,
+            ["loop", "review", "--type", "requirement", "--loop-id", loop_id, "--json"],
+        )
+    repeated_payload = json.loads(repeated.output)
+    assert repeated_payload["review_status"] == "passed"
+    assert repeated_payload["input_digest"] == payload["input_digest"]
+
+
+def test_loop_review_record_rejects_missing_selected_expert(tmp_path: Path) -> None:
+    loop_id = "requirement-missing-expert"
+    _write_requirement_review_fixture(tmp_path, loop_id)
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        prepared = runner.invoke(
+            app,
+            ["loop", "review", "--type", "requirement", "--loop-id", loop_id, "--json"],
+        )
+    payload = json.loads(prepared.output)
+    result_paths = _write_cli_expert_results(tmp_path, payload)
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        recorded = runner.invoke(
+            app,
+            [
+                "loop",
+                "review-record",
+                "--type",
+                "requirement",
+                "--loop-id",
+                loop_id,
+                "--expect-digest",
+                payload["input_digest"],
+                "--result",
+                str(result_paths[0]),
+                "--json",
+            ],
+        )
+
+    assert recorded.exit_code == 1
+    assert json.loads(recorded.output)["reason"] == "expert-role-mismatch"
+
+
+def test_loop_review_prepares_round_two_only_after_substantive_fix(
+    tmp_path: Path,
+) -> None:
+    loop_id = "requirement-round-two"
+    loop_dir = _write_requirement_review_fixture(tmp_path, loop_id)
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        prepared = runner.invoke(
+            app,
+            ["loop", "review", "--type", "requirement", "--loop-id", loop_id, "--json"],
+        )
+    payload = json.loads(prepared.output)
+    result_paths = _write_cli_expert_results(tmp_path, payload, severity="important")
+    arguments = [
+        "loop",
+        "review-record",
+        "--type",
+        "requirement",
+        "--loop-id",
+        loop_id,
+        "--expect-digest",
+        payload["input_digest"],
+    ]
+    for result_path in result_paths:
+        arguments.extend(["--result", str(result_path)])
+    arguments.append("--json")
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        first = runner.invoke(app, arguments)
+    assert json.loads(first.output)["status"] == "needs_fix"
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        unchanged = runner.invoke(
+            app,
+            ["loop", "review", "--type", "requirement", "--loop-id", loop_id, "--json"],
+        )
+    assert json.loads(unchanged.output)["review_status"] == "needs_fix"
+    with (loop_dir / "requirement-brief.md").open("a", encoding="utf-8") as stream:
+        stream.write("Fixed after independent review.\n")
+
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        fixed = runner.invoke(
+            app,
+            ["loop", "review", "--type", "requirement", "--loop-id", loop_id, "--json"],
+        )
+    fixed_payload = json.loads(fixed.output)
+    assert fixed_payload["review_status"] == "review_missing"
+    assert fixed_payload["round_number"] == 2
+    assert fixed_payload["input_digest"] != payload["input_digest"]
+
+
+def test_loop_status_projects_current_review_outcome_without_mutating_loop_run(
+    tmp_path: Path,
+) -> None:
+    loop_id = "requirement-status-overlay"
+    started = start_requirement_loop(
+        RequirementStartOptions(
+            root=tmp_path,
+            loop_id=loop_id,
+            idea="Security permission requirement.",
+            acceptance=("Permission is verified.",),
+        )
+    )
+    assert started.status == "ready"
+    loop_run = (
+        tmp_path / ".ai-sdlc" / "loops" / "requirement" / loop_id / "loop-run.json"
+    )
+    original_loop_run = loop_run.read_bytes()
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        missing = runner.invoke(
+            app,
+            ["loop", "requirement", "status", "--json"],
+        )
+    assert missing.exit_code == 0, missing.output
+    missing_payload = json.loads(missing.output)
+    assert missing_payload["current_loop"]["status"] == "needs_review"
+    assert missing_payload["blocker"] == "review-result-missing"
+
+    prepared = resolve_review_input(
+        tmp_path,
+        loop_type="requirement",
+        loop_id=loop_id,
+        review_round_number=1,
+    )
+    result_paths = _write_cli_expert_results(
+        tmp_path,
+        prepared.model_dump(mode="json"),
+    )
+    arguments = [
+        "loop",
+        "review-record",
+        "--type",
+        "requirement",
+        "--loop-id",
+        loop_id,
+        "--expect-digest",
+        prepared.input_digest,
+    ]
+    for result_path in result_paths:
+        arguments.extend(["--result", str(result_path)])
+    arguments.append("--json")
+    with patch("ai_sdlc.cli.loop_review_cmd.find_project_root", return_value=tmp_path):
+        recorded = runner.invoke(app, arguments)
+    assert recorded.exit_code == 0, recorded.output
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        passed = runner.invoke(
+            app,
+            ["loop", "requirement", "status", "--json"],
+        )
+    assert passed.exit_code == 0, passed.output
+    assert json.loads(passed.output)["current_loop"]["status"] == "passed"
+    assert loop_run.read_bytes() == original_loop_run
+
+
+def _write_requirement_review_fixture(root: Path, loop_id: str) -> Path:
+    loop_dir = _write_stage_current_state(root, "requirement", loop_id)
+    (loop_dir / "requirement-intake.json").write_text("{}", encoding="utf-8")
+    (loop_dir / "requirement-brief.md").write_text(
+        "Security permission requirement.\n",
+        encoding="utf-8",
+    )
+    (loop_dir / "clarification-questions.md").write_text(
+        "No open questions.\n",
+        encoding="utf-8",
+    )
+    (loop_dir / "acceptance-checklist.md").write_text(
+        "- Permission is verified.\n",
+        encoding="utf-8",
+    )
+    return loop_dir
+
+
+def _write_cli_expert_results(
+    root: Path,
+    payload: dict[str, object],
+    *,
+    severity: str | None = None,
+) -> list[Path]:
+    roles = payload["expert_roles"]
+    reasons = payload["expert_reasons"]
+    assert isinstance(roles, list)
+    assert isinstance(reasons, dict)
+    result_paths: list[Path] = []
+    for index, role in enumerate(roles):
+        assert isinstance(role, str)
+        reason = reasons[role]
+        assert isinstance(reason, str)
+        findings = []
+        if severity is not None:
+            findings.append(
+                ReviewFinding(
+                    severity=severity,
+                    role=role,
+                    location="requirement-brief.md:1",
+                    summary="The requirement has an actionable gap.",
+                    recommendation="Revise the requirement before Close.",
+                )
+            )
+        result_path = root / f"cli-expert-{payload['round_number']}-{index}.json"
+        result_path.write_text(
+            ReviewExecution(
+                status="completed",
+                roles=[role],
+                role_reasons={role: reason},
+                findings=findings,
+            ).model_dump_json(),
+            encoding="utf-8",
+        )
+        result_paths.append(result_path)
+    return result_paths
 
 
 def _init_git_repo(root: Path) -> None:

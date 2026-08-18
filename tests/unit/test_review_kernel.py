@@ -258,6 +258,42 @@ def test_build_review_input_streams_large_artifacts(tmp_path: Path) -> None:
     assert peak < artifact_size
 
 
+def test_build_review_input_captures_identity_without_digesting_mutable_state(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "result.md"
+    mutable_state = tmp_path / "loop-run.json"
+    artifact.write_text("reviewed result\n", encoding="utf-8")
+    mutable_state.write_text('{"status":"running"}\n', encoding="utf-8")
+    captured: dict[str, bytes] = {}
+
+    first = build_review_input(
+        tmp_path,
+        loop_id="loop-identity-capture",
+        loop_type="requirement",
+        round_number=1,
+        artifact_paths=[artifact],
+        upstream_context_paths=[],
+        risk_signals=[],
+        capture_only_paths=[mutable_state],
+        captured_artifacts=captured,
+    )
+    mutable_state.write_text('{"status":"passed"}\n', encoding="utf-8")
+    second = build_review_input(
+        tmp_path,
+        loop_id="loop-identity-capture",
+        loop_type="requirement",
+        round_number=1,
+        artifact_paths=[artifact],
+        upstream_context_paths=[],
+        risk_signals=[],
+    )
+
+    assert captured["loop-run.json"] == b'{"status":"running"}\n'
+    assert "loop-run.json" not in first.artifact_paths
+    assert first.input_digest == second.input_digest
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX executable modes are not available")
 def test_build_review_input_digest_binds_posix_file_mode(tmp_path: Path) -> None:
     artifact = tmp_path / "hook.sh"
