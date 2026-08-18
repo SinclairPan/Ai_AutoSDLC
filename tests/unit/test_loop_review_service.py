@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import threading
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from pydantic import ValidationError
@@ -121,12 +123,13 @@ def _result_paths(
     severity: str | None = None,
     failed: bool = False,
     roles: list[str] | None = None,
+    name_prefix: str = "expert",
 ) -> tuple[Path, ...]:
     selected = roles or prepared.review_input.expert_roles
     paths: list[Path] = []
     for index, role in enumerate(selected):
-        result_path = (
-            fixture.root / f"expert-{prepared.review_input.round_number}-{index}.json"
+        result_path = fixture.root / (
+            f"{name_prefix}-{prepared.review_input.round_number}-{index}.json"
         )
         if failed:
             execution = ReviewExecution(
@@ -390,6 +393,78 @@ def test_completed_clean_round_one_cannot_be_recorded_again(
     assert first.status == "passed"
     with pytest.raises(LoopReviewServiceError, match="review-already-completed"):
         _record(loop_fixture, prepared, paths)
+
+
+def test_concurrent_completed_round_one_has_exactly_one_winner(
+    loop_fixture: LoopFixture,
+) -> None:
+    prepared = loop_fixture.prepare()
+    clean_paths = _result_paths(
+        loop_fixture,
+        prepared,
+        name_prefix="clean-expert",
+    )
+    actionable_paths = _result_paths(
+        loop_fixture,
+        prepared,
+        severity="important",
+        name_prefix="actionable-expert",
+    )
+    start = threading.Barrier(2)
+    replace_guard = threading.Lock()
+    first_replace = threading.Event()
+    second_replace = threading.Event()
+    replacement_count = 0
+    successes: list[tuple[str, bytes]] = []
+    errors: list[str] = []
+    result_guard = threading.Lock()
+    outcome = loop_fixture.loop_dir / "review-outcome-round-1.json"
+    real_replace = __import__("os").replace
+
+    def synchronized_replace(source: Path, destination: Path) -> None:
+        nonlocal replacement_count
+        with replace_guard:
+            replacement_count += 1
+            ordinal = replacement_count
+        if ordinal == 1:
+            first_replace.set()
+            second_replace.wait(timeout=0.5)
+        elif ordinal == 2:
+            second_replace.set()
+        real_replace(source, destination)
+
+    def record(name: str, paths: tuple[Path, ...]) -> None:
+        start.wait()
+        try:
+            _record(loop_fixture, prepared, paths)
+        except LoopReviewServiceError as exc:
+            with result_guard:
+                errors.append(exc.reason)
+            return
+        with result_guard:
+            successes.append((name, outcome.read_bytes()))
+
+    with patch(
+        "ai_sdlc.core.loop_review_service.os.replace",
+        side_effect=synchronized_replace,
+    ):
+        clean = threading.Thread(target=record, args=("clean", clean_paths))
+        actionable = threading.Thread(
+            target=record,
+            args=("actionable", actionable_paths),
+        )
+        clean.start()
+        actionable.start()
+        clean.join(timeout=5)
+        actionable.join(timeout=5)
+
+    assert not clean.is_alive()
+    assert not actionable.is_alive()
+    assert first_replace.is_set()
+    assert replacement_count == 1
+    assert len(successes) == 1
+    assert errors == ["review-already-completed"]
+    assert outcome.read_bytes() == successes[0][1]
 
 
 @pytest.mark.parametrize("severity", [None, "advisory", "important"])

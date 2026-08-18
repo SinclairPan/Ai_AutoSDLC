@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
 import tempfile
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -341,23 +343,6 @@ def _read_outcome(
 
 
 def _write_outcome(root: Path, path: Path, outcome: LoopReviewOutcome) -> None:
-    existing = _read_outcome(
-        root,
-        path,
-        outcome.loop_type,
-        outcome.loop_id,
-        outcome.round_number,
-    )
-    if existing is not None:
-        if existing.status == "completed":
-            raise LoopReviewServiceError(
-                "review-round-limit"
-                if outcome.round_number == 2
-                else "review-already-completed"
-            )
-        if existing.input_digest != outcome.input_digest:
-            raise LoopReviewServiceError("review-input-drift")
-
     encoded = (
         json.dumps(
             outcome.model_dump(mode="json"),
@@ -367,36 +352,147 @@ def _write_outcome(root: Path, path: Path, outcome: LoopReviewOutcome) -> None:
         )
         + "\n"
     ).encode("utf-8")
-    descriptor, temporary_name = tempfile.mkstemp(
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        dir=path.parent,
-    )
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(encoded)
-            stream.flush()
-            os.fsync(stream.fileno())
-        latest = _read_outcome(
+    with _outcome_write_guard(root, path):
+        existing = _read_outcome(
             root,
             path,
             outcome.loop_type,
             outcome.loop_id,
             outcome.round_number,
         )
-        if latest is not None:
-            if latest.status == "completed":
+        if existing is not None:
+            if existing.status == "completed":
                 raise LoopReviewServiceError(
                     "review-round-limit"
                     if outcome.round_number == 2
                     else "review-already-completed"
                 )
-            if latest.input_digest != outcome.input_digest:
+            if existing.input_digest != outcome.input_digest:
                 raise LoopReviewServiceError("review-input-drift")
-        os.replace(temporary, path)
+
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=path.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(encoded)
+                stream.flush()
+                os.fsync(stream.fileno())
+            latest = _read_outcome(
+                root,
+                path,
+                outcome.loop_type,
+                outcome.loop_id,
+                outcome.round_number,
+            )
+            if latest is not None:
+                if latest.status == "completed":
+                    raise LoopReviewServiceError(
+                        "review-round-limit"
+                        if outcome.round_number == 2
+                        else "review-already-completed"
+                    )
+                if latest.input_digest != outcome.input_digest:
+                    raise LoopReviewServiceError("review-input-drift")
+            os.replace(temporary, path)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+@contextmanager
+def _outcome_write_guard(root: Path, path: Path) -> Iterator[None]:
+    """Serialize one outcome path without creating Loop-visible state."""
+
+    try:
+        lock_dir = _review_lock_dir(root)
+        lock_dir.mkdir(parents=True, mode=0o700, exist_ok=True)
+        lock_key = f"{root.resolve()}\0{path.resolve(strict=False)}".encode()
+        lock_name = hashlib.sha256(lock_key).hexdigest()
+        lock_path = lock_dir / f"review-outcome-{lock_name}.lock"
+        flags = os.O_CREAT | os.O_RDWR
+        if hasattr(os, "O_CLOEXEC"):
+            flags |= os.O_CLOEXEC
+        file_descriptor = os.open(lock_path, flags, 0o600)
+    except OSError as exc:
+        raise LoopReviewServiceError(
+            "review-outcome-lock-unavailable",
+            detail=str(exc),
+        ) from exc
+
+    try:
+        _acquire_review_file_lock(file_descriptor)
+    except OSError as exc:
+        os.close(file_descriptor)
+        raise LoopReviewServiceError(
+            "review-outcome-lock-unavailable",
+            detail=str(exc),
+        ) from exc
+    try:
+        yield
     finally:
-        temporary.unlink(missing_ok=True)
+        _release_review_file_lock(file_descriptor)
+        os.close(file_descriptor)
+
+
+def _review_lock_dir(root: Path) -> Path:
+    git_marker = root / ".git"
+    if git_marker.is_dir():
+        return git_marker / "ai-sdlc-locks"
+    if git_marker.is_file():
+        try:
+            marker = git_marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            marker = ""
+        if marker.lower().startswith("gitdir:"):
+            value = marker.split(":", 1)[1].strip()
+            git_dir = Path(value)
+            if not git_dir.is_absolute():
+                git_dir = root / git_dir
+            return git_dir.resolve() / "ai-sdlc-locks"
+    if hasattr(os, "getuid"):
+        user_key = str(os.getuid())
+    else:  # pragma: no cover - Windows temp directories are already user-scoped
+        user_key = hashlib.sha256(str(Path.home()).encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"ai-sdlc-loop-locks-{user_key}"
+
+
+def _acquire_review_file_lock(file_descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - Windows CI exercises this branch
+        import msvcrt
+
+        if os.fstat(file_descriptor).st_size == 0:
+            os.write(file_descriptor, b"\0")
+        os.lseek(file_descriptor, 0, os.SEEK_SET)
+        msvcrt.__dict__["locking"](
+            file_descriptor,
+            msvcrt.__dict__["LK_LOCK"],
+            1,
+        )
+        return
+
+    import fcntl
+
+    fcntl.flock(file_descriptor, fcntl.LOCK_EX)
+
+
+def _release_review_file_lock(file_descriptor: int) -> None:
+    if os.name == "nt":  # pragma: no cover - Windows CI exercises this branch
+        import msvcrt
+
+        os.lseek(file_descriptor, 0, os.SEEK_SET)
+        msvcrt.__dict__["locking"](
+            file_descriptor,
+            msvcrt.__dict__["LK_UNLCK"],
+            1,
+        )
+        return
+
+    import fcntl
+
+    fcntl.flock(file_descriptor, fcntl.LOCK_UN)
 
 
 def _validate_identity(
