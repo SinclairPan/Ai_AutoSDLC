@@ -15,6 +15,7 @@ from ai_sdlc.core.review_kernel import (
     ReviewInput,
     build_review_input,
     merge_expert_findings,
+    select_expert_roles,
 )
 
 
@@ -37,6 +38,14 @@ def test_review_models_expose_only_ephemeral_review_values() -> None:
         artifact_paths=[".ai-sdlc/loops/requirement/loop-1/requirement-brief.md"],
         upstream_context_paths=[],
         risk_signals=["public-api"],
+        expert_roles=[
+            "product-value-and-acceptance",
+            "api-compatibility",
+        ],
+        expert_reasons={
+            "product-value-and-acceptance": "Primary expert for requirement.",
+            "api-compatibility": "Cross-risk expert for public-api.",
+        },
         role_brief="Choose one primary expert and at most one cross-risk expert.",
     )
     execution = ReviewExecution(
@@ -53,6 +62,68 @@ def test_review_models_expose_only_ephemeral_review_values() -> None:
     assert "verdict" not in execution.model_dump()
     assert "passed" not in execution.model_dump()
     assert "closed" not in execution.model_dump()
+
+
+@pytest.mark.parametrize(
+    ("loop_type", "expected"),
+    [
+        ("requirement", "product-value-and-acceptance"),
+        ("design-contract", "architecture-and-maintainability"),
+        ("implementation", "correctness-and-regression"),
+        ("frontend-evidence", "ux-accessibility-and-evidence"),
+        ("local-pr-review", "cross-stage-delivery"),
+    ],
+)
+def test_select_expert_roles_uses_exact_primary_for_each_loop(
+    loop_type: str,
+    expected: str,
+) -> None:
+    roles, reasons = select_expert_roles(loop_type, [])
+
+    assert roles == [expected]
+    assert set(reasons) == {expected}
+    assert reasons[expected]
+
+
+def test_select_expert_roles_adds_only_highest_priority_cross_risk() -> None:
+    roles, reasons = select_expert_roles(
+        "implementation",
+        ["frontend", "public-api", "security", "data-integrity"],
+    )
+
+    assert roles == ["correctness-and-regression", "security-and-permissions"]
+    assert set(reasons) == set(roles)
+
+
+def test_select_expert_roles_never_duplicates_primary_or_adds_general_role() -> None:
+    roles, reasons = select_expert_roles(
+        "implementation",
+        ["general-correctness", "correctness"],
+    )
+
+    assert roles == ["correctness-and-regression"]
+    assert set(reasons) == set(roles)
+
+
+def test_build_review_input_binds_selected_experts(tmp_path: Path) -> None:
+    artifact = tmp_path / "implementation-report.md"
+    artifact.write_text("Security-sensitive implementation.\n", encoding="utf-8")
+
+    review_input = build_review_input(
+        tmp_path,
+        loop_id="implementation-1",
+        loop_type="implementation",
+        round_number=1,
+        artifact_paths=[artifact],
+        upstream_context_paths=[],
+        risk_signals=["security"],
+    )
+
+    assert review_input.expert_roles == [
+        "correctness-and-regression",
+        "security-and-permissions",
+    ]
+    assert set(review_input.expert_reasons) == set(review_input.expert_roles)
 
 
 @pytest.mark.parametrize(
