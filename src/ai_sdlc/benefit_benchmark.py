@@ -1118,6 +1118,9 @@ def _validate_attempt_ledger_invariants(
                 raise ValueError(
                     "attempt ledger technical retry effective lineage is invalid"
                 )
+            _validate_retry_effective_role_active_parent(
+                prior, retried, reserved["sequence"]
+            )
         elif kind in {"primary_expert", "cross_risk_expert"}:
             if raw_attempt["arm"] != "A11":
                 raise ValueError("attempt ledger expert must belong to A11")
@@ -1260,6 +1263,72 @@ def _state_before_sequence(
         and event["sequence"] < sequence
     ]
     return max(states, key=lambda event: event["sequence"], default=None)
+
+
+def _validate_retry_effective_role_active_parent(
+    attempts: list[object], retried: Mapping[str, object], sequence: object
+) -> None:
+    effective_kind = retried.get("effective_kind")
+    if effective_kind == "writer":
+        return
+    reserved = retried["history"][0]
+    if effective_kind in {"primary_expert", "cross_risk_expert"}:
+        writer = _attempt_by_id(attempts, retried.get("parent_attempt_id"))
+        writer_state = (
+            _state_before_sequence(writer, sequence) if writer is not None else None
+        )
+        if (
+            writer is None
+            or writer_state is None
+            or writer.get("effective_kind") != "writer"
+            or writer.get("run_id") != retried.get("run_id")
+            or writer.get("parent_digest") != retried.get("parent_digest")
+            or writer_state.get("status") != "review_pending"
+            or writer_state.get("candidate_digest")
+            != reserved["candidate_digest"]
+        ):
+            raise ValueError("technical retry effective role requires an active parent")
+        return
+    expert = _attempt_by_id(attempts, retried.get("parent_attempt_id"))
+    writer = (
+        _attempt_by_id(attempts, expert.get("parent_attempt_id"))
+        if expert is not None
+        else None
+    )
+    writer_state = (
+        _state_before_sequence(writer, sequence) if writer is not None else None
+    )
+    repair = (
+        _find_repair_event(
+            writer,
+            reserved["finding_digest"],
+            reserved["repair_digest"],
+            reserved["candidate_digest"],
+        )
+        if writer is not None
+        else None
+    )
+    if (
+        effective_kind != "expert_rereview"
+        or expert is None
+        or writer is None
+        or writer_state is None
+        or repair is None
+        or expert.get("effective_kind")
+        not in {"primary_expert", "cross_risk_expert"}
+        or expert.get("status") != "completed"
+        or expert.get("sequence") >= sequence
+        or expert.get("run_id") != retried.get("run_id")
+        or writer.get("run_id") != retried.get("run_id")
+        or expert.get("role") != retried.get("role")
+        or expert.get("parent_digest") != retried.get("parent_digest")
+        or expert.get("finding_digest") != reserved["finding_digest"]
+        or expert.get("candidate_digest") == reserved["candidate_digest"]
+        or writer_state.get("status") != "review_pending"
+        or writer_state.get("candidate_digest") != reserved["candidate_digest"]
+        or repair.get("sequence") >= sequence
+    ):
+        raise ValueError("technical retry effective role requires an active parent")
 
 
 def _required_first_review_roles(writer: Mapping[str, object]) -> set[str]:
@@ -1456,6 +1525,9 @@ def _validate_reservation_request(attempts: object, request: AttemptRequest) -> 
             or prior.get("content_produced") is not False
         ):
             raise ValueError("technical retry requires terminated pre-output failure")
+        _validate_retry_effective_role_active_parent(
+            attempts, prior, _next_event_sequence(attempts)
+        )
         return
     if request.kind == "writer":
         if any(

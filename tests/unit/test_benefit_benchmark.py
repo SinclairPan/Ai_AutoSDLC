@@ -451,6 +451,64 @@ def test_rereview_technical_retry_inherits_repair_lineage_through_close(
     assert persisted["attempts"][3]["repair_digest"] == _digest("e")
 
 
+@pytest.mark.parametrize("effective_role", ["expert", "rereview"])
+@pytest.mark.parametrize("path", ["online", "reload"])
+def test_technical_retry_replays_effective_role_active_parent_requirement(
+    tmp_path: Path, effective_role: str, path: str
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    writer, retried = _failed_effective_role_attempt(
+        ledger, protocol, effective_role
+    )
+
+    if path == "online":
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(writer.attempt_id, "failed", True),
+        )
+    else:
+        retry = _reserve_technical_retry(ledger, protocol, retried.attempt_id)
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(writer.attempt_id, "failed", True),
+        )
+        raw = json.loads(ledger.read_text(encoding="utf-8"))
+        writer_attempt = next(
+            attempt
+            for attempt in raw["attempts"]
+            if attempt["attempt_id"] == writer.attempt_id
+        )
+        retry_attempt = next(
+            attempt
+            for attempt in raw["attempts"]
+            if attempt["attempt_id"] == retry.attempt_id
+        )
+        writer_failure = writer_attempt["history"][-1]
+        retry_reservation = retry_attempt["history"][0]
+        writer_failure["sequence"], retry_reservation["sequence"] = (
+            retry_reservation["sequence"],
+            writer_failure["sequence"],
+        )
+        writer_attempt["sequence"] = writer_failure["sequence"]
+        retry_attempt["sequence"] = retry_reservation["sequence"]
+        ledger.write_text(json.dumps(raw), encoding="utf-8")
+
+    unchanged = ledger.read_bytes()
+    with pytest.raises(ValueError, match="active parent"):
+        if path == "online":
+            _reserve_technical_retry(ledger, protocol, retried.attempt_id)
+        else:
+            reserve_provider_attempt(
+                ledger,
+                protocol,
+                AttemptRequest("S:requirement-contract-ambiguity", "writer"),
+            )
+    assert ledger.read_bytes() == unchanged
+
+
 def test_duplicate_writer_and_unreserved_completion_stay_rejected(
     tmp_path: Path,
 ) -> None:
@@ -1348,6 +1406,60 @@ def _writer_at_review(ledger: Path, protocol):
             ),
         )
     return writer
+
+
+def _failed_effective_role_attempt(ledger: Path, protocol, effective_role: str):
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    if effective_role == "expert":
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(expert.attempt_id, "technical_failure", False),
+        )
+        return writer, expert
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            expert.attempt_id,
+            "completed",
+            True,
+            finding_digest=_digest("d"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "review_pending",
+            True,
+            candidate_digest=_digest("c"),
+        ),
+    )
+    rereview = reserve_provider_attempt(
+        ledger,
+        protocol,
+        _rereview_request(expert.attempt_id, _digest("c")),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(rereview.attempt_id, "technical_failure", False),
+    )
+    return writer, rereview
 
 
 def _security_writer_with_expert(ledger: Path, protocol, kind: str, role: str):
