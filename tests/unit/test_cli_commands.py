@@ -2,12 +2,81 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+from pathlib import Path
 from types import SimpleNamespace
 
 from rich.table import Table
 
 import ai_sdlc.cli.commands as commands_module
 from ai_sdlc.models.state import Checkpoint, CompletedStage, FeatureInfo
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
+    tmp_path: Path,
+) -> None:
+    source_protocol = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json"
+    raw = json.loads(source_protocol.read_text(encoding="utf-8"))
+    raw["execution_lock"]["fixture_tree_sha256"] = "f" * 64
+    raw["execution_lock"]["fixture_commitment"] = "f" * 64
+    protocol = tmp_path / "protocol.json"
+    protocol.write_text(json.dumps(raw), encoding="utf-8")
+    ledger = tmp_path / "ledger.json"
+    script = REPO_ROOT / "scripts" / "ai_sdlc_v2_benefit_benchmark.py"
+
+    reserved = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(script),
+            "reserve-attempt",
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol),
+            "--run-id",
+            "P:requirement-contract-ambiguity",
+            "--kind",
+            "writer",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert reserved.returncode == 0, reserved.stderr
+    assert json.loads(reserved.stdout)["attempt_id"] == "attempt-001"
+
+    completed = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(script),
+            "complete-attempt",
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol),
+            "--attempt-id",
+            "attempt-001",
+            "--status",
+            "failed",
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert completed.returncode == 0, completed.stderr
+    assert (
+        json.loads(ledger.read_text(encoding="utf-8"))["attempts"][0]["status"]
+        == "failed"
+    )
 
 
 def test_add_truth_ledger_rows_deduplicates_release_targets() -> None:

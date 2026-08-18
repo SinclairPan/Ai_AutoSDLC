@@ -37,6 +37,7 @@ def main() -> int:
     validate.add_argument("--protocol", type=Path, required=True)
     reserve = commands.add_parser("reserve-attempt")
     reserve.add_argument("--ledger", type=Path, required=True)
+    reserve.add_argument("--protocol", type=Path, required=True)
     reserve.add_argument("--run-id", required=True)
     reserve.add_argument("--kind", required=True)
     reserve.add_argument("--arm")
@@ -46,11 +47,18 @@ def main() -> int:
     reserve.add_argument("--role")
     reserve.add_argument("--parent-digest")
     reserve.add_argument("--candidate-digest")
+    reserve.add_argument("--finding-digest")
+    reserve.add_argument("--repair-digest")
     complete = commands.add_parser("complete-attempt")
     complete.add_argument("--ledger", type=Path, required=True)
+    complete.add_argument("--protocol", type=Path, required=True)
     complete.add_argument("--attempt-id", required=True)
     complete.add_argument("--status", required=True)
     complete.add_argument("--content-produced", action="store_true")
+    complete.add_argument("--candidate-digest")
+    complete.add_argument("--finding-digest")
+    complete.add_argument("--repair-digest")
+    complete.add_argument("--close-digest")
     receipt = commands.add_parser("verify-receipt")
     receipt.add_argument("--receipt", type=Path, required=True)
     receipt.add_argument("--protocol", type=Path, required=True)
@@ -68,14 +76,41 @@ def main() -> int:
         if arguments.command == "reserve-attempt":
             reservation = reserve_provider_attempt(
                 arguments.ledger,
-                AttemptRequest(run_id=arguments.run_id, kind=arguments.kind, arm=arguments.arm, retry_reason=arguments.retry_reason, retry_of_attempt_id=arguments.retry_of_attempt_id, parent_attempt_id=arguments.parent_attempt_id, role=arguments.role, parent_digest=arguments.parent_digest, candidate_digest=arguments.candidate_digest),
+                load_protocol(arguments.protocol),
+                AttemptRequest(
+                    run_id=arguments.run_id,
+                    kind=arguments.kind,
+                    arm=arguments.arm,
+                    retry_reason=arguments.retry_reason,
+                    retry_of_attempt_id=arguments.retry_of_attempt_id,
+                    parent_attempt_id=arguments.parent_attempt_id,
+                    role=arguments.role,
+                    parent_digest=arguments.parent_digest,
+                    candidate_digest=arguments.candidate_digest,
+                    finding_digest=arguments.finding_digest,
+                    repair_digest=arguments.repair_digest,
+                ),
             )
-            _emit({"attempt_id": reservation.attempt_id, "attempts_started": reservation.attempts_started})
+            _emit(
+                {
+                    "attempt_id": reservation.attempt_id,
+                    "attempts_started": reservation.attempts_started,
+                }
+            )
             return 0
         if arguments.command == "complete-attempt":
             record_provider_completion(
                 arguments.ledger,
-                AttemptCompletion(arguments.attempt_id, arguments.status, arguments.content_produced),
+                load_protocol(arguments.protocol),
+                AttemptCompletion(
+                    arguments.attempt_id,
+                    arguments.status,
+                    arguments.content_produced,
+                    candidate_digest=arguments.candidate_digest,
+                    finding_digest=arguments.finding_digest,
+                    repair_digest=arguments.repair_digest,
+                    close_digest=arguments.close_digest,
+                ),
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
