@@ -282,6 +282,8 @@ def validate_prepared_outcome_for_close(
         raise LoopReviewServiceError("review-result-missing")
     if prepared.current_outcome.input_digest != prepared.review_input.input_digest:
         raise LoopReviewServiceError("review-input-drift")
+    if prepared.current_outcome.expert_roles != prepared.review_input.expert_roles:
+        raise LoopReviewServiceError("expert-role-mismatch")
     if prepared.status != "passed":
         raise LoopReviewServiceError(prepared.reason)
     return prepared.review_input

@@ -21,6 +21,7 @@ from ai_sdlc.core.loop_review_service import (
     RecordLoopReviewOptions,
     prepare_loop_review,
     record_loop_review,
+    validate_prepared_outcome_for_close,
 )
 from ai_sdlc.core.review_kernel import LoopReviewType, ReviewInput, build_review_input
 from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
@@ -211,7 +212,7 @@ def validate_review_input_for_close(
     expected_digest: str,
     captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> ReviewInput:
-    """Rebuild the reviewed input inside the close process and fail on drift."""
+    """Require a current clean expert outcome and capture its reviewed input."""
 
     expected = expected_digest.strip().lower()
     if re.fullmatch(r"[0-9a-f]{64}", expected) is None:
@@ -220,24 +221,44 @@ def validate_review_input_for_close(
             detail="Expected review input digest must be 64 lowercase hexadecimal characters.",
         )
     try:
+        prepared, _ = prepare_current_loop_review(root, loop_type, loop_id)
         review_input = resolve_review_input(
             root,
             loop_type=loop_type,
             loop_id=loop_id,
+            review_round_number=prepared.review_input.round_number,
             captured_artifacts=captured_artifacts,
         )
+        if review_input.input_digest != prepared.review_input.input_digest:
+            raise LoopReviewServiceError(
+                "review-input-drift",
+                expected_digest=prepared.review_input.input_digest,
+                actual_digest=review_input.input_digest,
+            )
+        fresh, _ = prepare_current_loop_review(root, loop_type, loop_id)
+        if (
+            fresh.review_input.round_number != prepared.review_input.round_number
+            or fresh.review_input.input_digest != review_input.input_digest
+        ):
+            raise LoopReviewServiceError(
+                "review-input-drift",
+                expected_digest=prepared.review_input.input_digest,
+                actual_digest=fresh.review_input.input_digest,
+            )
+        validate_prepared_outcome_for_close(fresh, expected_digest=expected)
+    except LoopReviewServiceError as exc:
+        raise ReviewInputGuardError(
+            exc.reason,
+            detail=exc.detail,
+            expected_digest=exc.expected_digest or expected,
+            actual_digest=exc.actual_digest,
+        ) from exc
     except (OSError, subprocess.SubprocessError, ValueError) as exc:
         raise ReviewInputGuardError(
             "review-input-unavailable",
             detail=str(exc),
             expected_digest=expected,
         ) from exc
-    if review_input.input_digest != expected:
-        raise ReviewInputGuardError(
-            "review-input-drift",
-            expected_digest=expected,
-            actual_digest=review_input.input_digest,
-        )
     return review_input
 
 

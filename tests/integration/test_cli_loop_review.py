@@ -15,7 +15,11 @@ from click import Command, Group, Option
 from typer.main import get_command
 from typer.testing import CliRunner
 
-from ai_sdlc.cli.loop_review_cmd import resolve_review_input
+from ai_sdlc.cli.loop_review_cmd import (
+    ReviewInputGuardError,
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.cli.main import app
 from ai_sdlc.core.requirement_loop import (
     RequirementStartOptions,
@@ -172,6 +176,77 @@ def test_loop_review_maps_only_substantive_stage_artifacts(
             loop_type=loop_type,
             loop_id=loop_id,
         )
+
+
+@pytest.mark.parametrize(
+    ("loop_type", "filenames"),
+    [
+        (
+            "requirement",
+            [
+                "requirement-intake.json",
+                "requirement-brief.md",
+                "clarification-questions.md",
+                "acceptance-checklist.md",
+            ],
+        ),
+        (
+            "design-contract",
+            [
+                "design-contract-input.json",
+                "design-contract-report.json",
+                "design-contract-report.md",
+            ],
+        ),
+        (
+            "implementation",
+            [
+                "implementation-input.json",
+                "implementation-report.json",
+                "implementation-report.md",
+                "verification-evidence.json",
+                "implementation-tasks.json",
+                "implementation-progress.json",
+            ],
+        ),
+        (
+            "frontend-evidence",
+            [
+                "frontend-evidence-input.json",
+                "frontend-evidence-snapshot.json",
+                "frontend-evidence-report.json",
+                "frontend-evidence-report.md",
+            ],
+        ),
+    ],
+)
+def test_common_stage_close_gate_rejects_digest_without_outcome(
+    tmp_path: Path,
+    loop_type: str,
+    filenames: list[str],
+) -> None:
+    loop_id = f"{loop_type}-missing-outcome"
+    loop_dir = _write_stage_current_state(tmp_path, loop_type, loop_id)
+    for filename in filenames:
+        content = "{}" if filename.endswith(".json") else f"{filename}\n"
+        (loop_dir / filename).write_text(content, encoding="utf-8")
+    _write_predecessor_fixture(tmp_path, loop_type, loop_dir)
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type=loop_type,
+        loop_id=loop_id,
+        review_round_number=1,
+    )
+
+    with pytest.raises(ReviewInputGuardError) as error:
+        validate_review_input_for_close(
+            tmp_path,
+            loop_type=loop_type,
+            loop_id=loop_id,
+            expected_digest=reviewed.input_digest,
+        )
+
+    assert error.value.reason == "review-result-missing"
 
 
 def test_loop_review_reads_expert_bytes_from_digest_bound_snapshot(
@@ -495,6 +570,49 @@ def test_local_pr_review_binds_pre_close_artifacts_and_git_state(
 
     assert drift.exit_code == 1
     assert json.loads(drift.output)["reason"] == "review-input-drift"
+
+
+def test_common_local_pr_close_gate_rejects_digest_without_outcome(
+    tmp_path: Path,
+) -> None:
+    _init_git_repo(tmp_path)
+    review_id = "review-missing-outcome"
+    loop_id = "loop-pr-missing-outcome"
+    review_dir = tmp_path / ".ai-sdlc" / "reviews" / "pr" / review_id
+    review_dir.mkdir(parents=True)
+    (review_dir / "review-run.json").write_text(
+        json.dumps({"review_id": review_id, "loop_id": loop_id}),
+        encoding="utf-8",
+    )
+    _write_current_review_pointer(tmp_path, review_id=review_id, loop_id=loop_id)
+    diff = review_dir / "diff.patch"
+    diff.write_text("diff --git a/tracked.txt b/tracked.txt\n", encoding="utf-8")
+    (review_dir / "review-pack.json").write_text(
+        json.dumps(
+            {
+                "diff_path": diff.relative_to(tmp_path).as_posix(),
+                "diff_digest": f"sha256:{hashlib.sha256(diff.read_bytes()).hexdigest()}",
+            }
+        ),
+        encoding="utf-8",
+    )
+    (review_dir / "findings.json").write_text("{}\n", encoding="utf-8")
+    reviewed = resolve_review_input(
+        tmp_path,
+        loop_type="local-pr-review",
+        loop_id=loop_id,
+        review_round_number=1,
+    )
+
+    with pytest.raises(ReviewInputGuardError) as error:
+        validate_review_input_for_close(
+            tmp_path,
+            loop_type="local-pr-review",
+            loop_id=loop_id,
+            expected_digest=reviewed.input_digest,
+        )
+
+    assert error.value.reason == "review-result-missing"
     assert not (
         tmp_path / ".ai-sdlc" / "loops" / "local-pr-review" / "loop-pr-001"
     ).exists()

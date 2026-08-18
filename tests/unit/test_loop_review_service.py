@@ -294,6 +294,79 @@ def test_matching_digest_without_outcome_cannot_close(
         )
 
 
+def test_failed_outcome_cannot_close(loop_fixture: LoopFixture) -> None:
+    prepared = loop_fixture.prepare()
+    _record(
+        loop_fixture,
+        prepared,
+        _result_paths(loop_fixture, prepared, failed=True),
+    )
+    current = loop_fixture.prepare()
+
+    with pytest.raises(LoopReviewServiceError, match="review-execution-failed"):
+        validate_prepared_outcome_for_close(
+            current,
+            expected_digest=current.review_input.input_digest,
+        )
+
+
+def test_actionable_outcome_cannot_close(loop_fixture: LoopFixture) -> None:
+    prepared = loop_fixture.prepare()
+    _record(
+        loop_fixture,
+        prepared,
+        _result_paths(loop_fixture, prepared, severity="important"),
+    )
+    current = loop_fixture.prepare()
+
+    with pytest.raises(LoopReviewServiceError, match="review-findings-actionable"):
+        validate_prepared_outcome_for_close(
+            current,
+            expected_digest=current.review_input.input_digest,
+        )
+
+
+def test_stale_completed_outcome_cannot_close(loop_fixture: LoopFixture) -> None:
+    prepared = loop_fixture.prepare()
+    _record(loop_fixture, prepared, _result_paths(loop_fixture, prepared))
+    with (loop_fixture.loop_dir / "requirement-brief.md").open(
+        "a", encoding="utf-8"
+    ) as stream:
+        stream.write("Unreviewed change.\n")
+    current = loop_fixture.prepare()
+
+    with pytest.raises(LoopReviewServiceError, match="review-input-drift"):
+        validate_prepared_outcome_for_close(
+            current,
+            expected_digest=prepared.review_input.input_digest,
+        )
+
+
+def test_wrong_role_outcome_cannot_close(loop_fixture: LoopFixture) -> None:
+    prepared = loop_fixture.prepare()
+    outcome = LoopReviewOutcome(
+        loop_id=loop_fixture.loop_id,
+        loop_type="requirement",
+        round_number=1,
+        input_digest=prepared.review_input.input_digest,
+        status="completed",
+        expert_roles=[prepared.review_input.expert_roles[0]],
+        findings=[],
+        recorded_at="2026-08-17T00:00:00Z",
+    )
+    (loop_fixture.loop_dir / "review-outcome-round-1.json").write_text(
+        outcome.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    current = loop_fixture.prepare()
+
+    with pytest.raises(LoopReviewServiceError, match="expert-role-mismatch"):
+        validate_prepared_outcome_for_close(
+            current,
+            expected_digest=current.review_input.input_digest,
+        )
+
+
 def test_record_rejects_missing_selected_expert(loop_fixture: LoopFixture) -> None:
     prepared = loop_fixture.prepare()
     assert len(prepared.review_input.expert_roles) == 2

@@ -19,8 +19,39 @@ from ai_sdlc.cli.loop_review_cmd import (
 )
 from ai_sdlc.cli.main import app
 from ai_sdlc.core import pr_review_service
+from ai_sdlc.core.loop_review_models import LoopReviewOutcome
 
 runner = CliRunner()
+
+
+def _record_clean_local_review(root: Path, loop_id: str):
+    review_input = resolve_review_input(
+        root,
+        loop_type="local-pr-review",
+        loop_id=loop_id,
+        review_round_number=1,
+    )
+    pointer = json.loads(
+        (root / ".ai-sdlc" / "reviews" / "pr" / "current-review.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    review_dir = root / ".ai-sdlc" / "reviews" / "pr" / pointer["review_id"]
+    outcome = LoopReviewOutcome(
+        loop_id=loop_id,
+        loop_type="local-pr-review",
+        round_number=1,
+        input_digest=review_input.input_digest,
+        status="completed",
+        expert_roles=review_input.expert_roles,
+        findings=[],
+        recorded_at="2026-08-17T00:00:00Z",
+    )
+    (review_dir / "review-outcome-round-1.json").write_text(
+        outcome.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return review_input
 
 
 def test_pr_review_help_omits_removed_authority_commands() -> None:
@@ -274,11 +305,7 @@ def test_pr_review_fix_and_close_require_no_blockers_json(tmp_path: Path) -> Non
         )
         fix = runner.invoke(app, ["pr-review", "fix", "--json"])
         started = json.loads(start.output)
-        reviewed = resolve_review_input(
-            tmp_path,
-            loop_type="local-pr-review",
-            loop_id=started["loop_id"],
-        )
+        reviewed = _record_clean_local_review(tmp_path, started["loop_id"])
         close = runner.invoke(
             app,
             [
@@ -333,11 +360,7 @@ def test_pr_review_close_revalidates_resolution_at_transition(tmp_path: Path) ->
         fix = runner.invoke(app, ["pr-review", "fix", "--json"])
         started = json.loads(start.output)
         fixed = json.loads(fix.output)
-        reviewed = resolve_review_input(
-            tmp_path,
-            loop_type="local-pr-review",
-            loop_id=started["loop_id"],
-        )
+        reviewed = _record_clean_local_review(tmp_path, started["loop_id"])
         resolution_path = Path(fixed["resolution_path"])
         validation_count = 0
 
@@ -427,11 +450,7 @@ def test_pr_review_close_uses_validated_resolution_across_aba(
         reviewed_bytes = resolution_path.read_bytes()
         if not reviewed_resolution_exists:
             resolution_path.unlink()
-        reviewed = resolve_review_input(
-            tmp_path,
-            loop_type="local-pr-review",
-            loop_id=started["loop_id"],
-        )
+        reviewed = _record_clean_local_review(tmp_path, started["loop_id"])
         validation_count = 0
 
         def validate_then_replace_resolution(*args, **kwargs):
@@ -525,11 +544,7 @@ def test_pr_review_close_uses_all_validated_artifacts_across_aba(
         findings_path = Path(started["findings_path"])
         reviewed_run = review_run_path.read_bytes()
         reviewed_findings = findings_path.read_bytes()
-        reviewed = resolve_review_input(
-            tmp_path,
-            loop_type="local-pr-review",
-            loop_id=started["loop_id"],
-        )
+        reviewed = _record_clean_local_review(tmp_path, started["loop_id"])
         validation_count = 0
 
         def validate_then_replace_outputs(*args, **kwargs):
