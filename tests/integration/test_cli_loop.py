@@ -1416,6 +1416,26 @@ def test_loop_implementation_start_record_status_and_close_json(
                 "--json",
             ],
         )
+        _ensure_git_repository(tmp_path)
+        verify = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "verify",
+                "--loop-id",
+                "impl-cli",
+                "--task-id",
+                "T11",
+                "--cwd",
+                ".",
+                "--json",
+                "--",
+                sys.executable,
+                "-c",
+                "print('verified')",
+            ],
+        )
         close = runner.invoke(
             app,
             [
@@ -1446,9 +1466,14 @@ def test_loop_implementation_start_record_status_and_close_json(
 
     assert record.exit_code == 0
     record_payload = json.loads(record.output)
-    assert record_payload["loop_status"] == "needs_review"
-    assert record_payload["done_count"] == 1
-    assert record_payload["next_guidance"]["command"] == (
+    assert record_payload["loop_status"] == "running"
+    assert record_payload["done_count"] == 0
+
+    assert verify.exit_code == 0
+    verify_payload = json.loads(verify.output)
+    assert verify_payload["loop_status"] == "needs_review"
+    assert verify_payload["done_count"] == 1
+    assert verify_payload["next_guidance"]["command"] == (
         "ai-sdlc loop review --type implementation --loop-id impl-cli"
     )
 
@@ -2233,6 +2258,24 @@ def _write_frontend_work_item(root: Path) -> Path:
     work_item.joinpath("plan.md").write_text("# Plan\n", encoding="utf-8")
     work_item.joinpath("tasks.md").write_text("# Tasks\n", encoding="utf-8")
     return work_item
+
+
+def _ensure_git_repository(root: Path) -> None:
+    if (root / ".git").exists():
+        return
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Tests"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(["git", "add", "specs"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "test baseline"], cwd=root, check=True)
 
 
 def _write_closed_frontend_implementation(root: Path, work_item: Path) -> None:

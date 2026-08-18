@@ -1,4 +1,4 @@
-"""Execute one quality command and bind its result to local source truth."""
+"""执行单个质量命令，并将结果绑定到本地源码真值。"""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ _GIT_TIMEOUT_SECONDS = 30
 
 
 class QualityCommandResult(BaseModel):
-    """One executable quality result tied to source before and after execution."""
+    """绑定命令执行前后源码状态的可执行质量结果。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -71,7 +71,7 @@ class QualityCommandResult(BaseModel):
 
 @dataclass(frozen=True)
 class QualityCommandOptions:
-    """Inputs for one direct quality command execution."""
+    """直接执行一次质量命令所需的输入。"""
 
     root: Path
     cwd: Path
@@ -81,7 +81,7 @@ class QualityCommandOptions:
 
 
 def run_quality_command(options: QualityCommandOptions) -> QualityCommandResult:
-    """Run argv without a shell and reject results produced on changing source."""
+    """不经 shell 执行 argv，并拒绝源码发生变化时产生的结果。"""
 
     root = options.root.resolve(strict=True)
     cwd = options.cwd.resolve(strict=True)
@@ -163,7 +163,7 @@ def build_source_digest(
     *,
     env: Mapping[str, str] | None = None,
 ) -> str:
-    """Return a stable digest for HEAD, index, tracked diff, and untracked bytes."""
+    """返回覆盖 HEAD、index、已跟踪差异和未跟踪字节的稳定摘要。"""
 
     resolved = root.resolve(strict=True)
     environment = quality_command_environment(os.environ if env is None else env)
@@ -181,7 +181,7 @@ def build_source_digest(
 
 
 def quality_command_environment(source: Mapping[str, str]) -> dict[str, str]:
-    """Keep caller settings except variables that redirect repository identity."""
+    """保留调用方环境，仅移除会重定向仓库身份的变量。"""
 
     environment = dict(source)
     for name in _REPOSITORY_REDIRECTION_ENV:

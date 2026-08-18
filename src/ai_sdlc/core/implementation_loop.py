@@ -60,6 +60,7 @@ from ai_sdlc.core.implementation_models import (
     ImplementationTasks,
     ImplementationTaskStatus,
     ImplementationVerificationEvidence,
+    ImplementationVerifyOptions,
 )
 from ai_sdlc.core.implementation_store import (
     ImplementationArtifacts,
@@ -86,6 +87,11 @@ from ai_sdlc.core.loop_models import (
     LoopStatus,
     LoopType,
     utc_now_iso,
+)
+from ai_sdlc.core.quality_command import (
+    QualityCommandOptions,
+    build_source_digest,
+    run_quality_command,
 )
 from ai_sdlc.core.review_kernel import (
     ReviewInputValidator,
@@ -399,7 +405,12 @@ def _record_implementation_progress_locked(
     )
     evidence = _clean_items((*current.evidence, *options.evidence))
     verification = _clean_items((*current.verification_commands, *options.verification))
-    if status == ImplementationTaskStatus.DONE and not evidence and not verification:
+    if (
+        status == ImplementationTaskStatus.DONE
+        and not evidence
+        and not verification
+        and not current.quality_results
+    ):
         return _blocked_result(
             "Done implementation tasks must include --evidence or --verification.",
             loop_id=loop_run.loop_id,
@@ -442,6 +453,115 @@ def _record_implementation_progress_locked(
         report,
         artifacts=artifacts.refs(root),
         result=f"Implementation progress recorded for {task_id}.",
+    )
+
+
+def verify_implementation_task(
+    options: ImplementationVerifyOptions,
+) -> ImplementationCommandResult:
+    """执行并持久化一次绑定当前源码的任务验证结果。"""
+
+    root = options.root.resolve()
+    try:
+        loop_id = _implementation_write_loop_id(root, options.loop_id)
+        with _implementation_write_guard(root, loop_id):
+            return _verify_implementation_task_locked(replace(options, loop_id=loop_id))
+    except (ValueError, _ImplementationWriteLockError) as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id.strip())
+
+
+def _verify_implementation_task_locked(
+    options: ImplementationVerifyOptions,
+) -> ImplementationCommandResult:
+    root = options.root.resolve()
+    loop_run_path, pointer_blocker = resolve_implementation_loop_run_path(
+        root,
+        options.loop_id,
+    )
+    if pointer_blocker:
+        return _blocked_result(pointer_blocker, loop_id=options.loop_id)
+    try:
+        loop_run = read_loop_run(loop_run_path)
+    except ValueError as exc:
+        return _blocked_result(str(exc), loop_id=options.loop_id)
+    if loop_run.status == LoopStatus.CLOSED:
+        return _blocked_result(
+            "Closed implementation loops cannot record verification.",
+            loop_id=loop_run.loop_id,
+        )
+    artifacts = implementation_artifacts(root, loop_run.loop_id)
+    loaded = _read_current_state(
+        root,
+        artifacts,
+        loop_id=loop_run.loop_id,
+        input_digest=loop_run.input_digest,
+    )
+    if isinstance(loaded, ImplementationCommandResult):
+        return loaded
+    impl_input, tasks, progress = loaded
+    task_id = options.task_id.strip()
+    if task_id not in {item.task_id for item in tasks.items}:
+        return _blocked_result(
+            f"Unknown implementation task id: {task_id}.",
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root),
+        )
+    try:
+        quality_result = run_quality_command(
+            QualityCommandOptions(
+                root=root,
+                cwd=root / (options.cwd.strip() or "."),
+                argv=options.argv,
+                timeout_seconds=options.timeout_seconds,
+            )
+        )
+    except ValueError as exc:
+        return _blocked_result(
+            str(exc),
+            loop_id=loop_run.loop_id,
+            artifacts=artifacts.refs(root),
+        )
+    progress_by_task = {item.task_id: item for item in progress.tasks}
+    current = progress_by_task.get(task_id) or ImplementationTaskProgress(
+        task_id=task_id
+    )
+    updated = current.model_copy(
+        update={
+            "quality_results": [*current.quality_results, quality_result],
+            "updated_at": utc_now_iso(),
+        }
+    )
+    progress.tasks = [
+        updated if item.task_id == task_id else item for item in progress.tasks
+    ]
+    if task_id not in progress_by_task:
+        progress.tasks.append(updated)
+    report = _build_report(root, impl_input, tasks, progress)
+    loop_run.status = report.status
+    loop_run.updated_at = utc_now_iso()
+    loop_run.next_action = report.next_action
+    _write_artifacts(
+        root,
+        impl_input,
+        tasks,
+        progress,
+        _evidence_from_progress(progress),
+        report,
+        loop_run,
+        artifacts,
+    )
+    if not quality_result.successful:
+        return _result_from_report(
+            report,
+            artifacts=artifacts.refs(root),
+            result=f"Implementation verification failed for {task_id}.",
+            status=ImplementationCommandStatus.NEEDS_FIX,
+            blocker=f"Verification status is {quality_result.status}.",
+        )
+    return _result_from_report(
+        report,
+        artifacts=artifacts.refs(root),
+        result=f"Implementation verification passed for {task_id}.",
     )
 
 
@@ -566,7 +686,7 @@ def _close_implementation_loop_locked(
             next_action=loop_run.next_action or _next_loop_action(report),
         )
         return result
-    close_blockers = _close_blockers(tasks, progress)
+    close_blockers = _close_blockers(root, tasks, progress)
     if close_blockers:
         report = report.model_copy(
             update={
@@ -1160,12 +1280,16 @@ def _build_report(
 ) -> ImplementationReport:
     progress_by_task = {item.task_id: item for item in progress.tasks}
     required = [item for item in tasks.items if item.required]
+    current_source_digest = _current_source_digest(root, progress)
     done_required = [
         item
         for item in required
         if progress_by_task.get(item.task_id) is not None
         and progress_by_task[item.task_id].status == ImplementationTaskStatus.DONE
-        and _has_evidence(progress_by_task[item.task_id])
+        and _has_current_quality_evidence(
+            progress_by_task[item.task_id],
+            current_source_digest,
+        )
     ]
     blocked = [
         progress_by_task[item.task_id]
@@ -1180,7 +1304,8 @@ def _build_report(
     elif len(done_required) == len(required):
         status = LoopStatus.NEEDS_REVIEW
     evidence_count = sum(
-        len(item.evidence) + len(item.verification_commands) for item in progress.tasks
+        len(item.evidence) + len(item.verification_commands) + len(item.quality_results)
+        for item in progress.tasks
     )
     return ImplementationReport(
         loop_id=impl_input.loop_id,
@@ -1312,10 +1437,12 @@ def _slimming_path_kind(root: Path, path: Path) -> str | None:
 
 
 def _close_blockers(
+    root: Path,
     tasks: ImplementationTasks,
     progress: ImplementationProgress,
 ) -> list[str]:
     progress_by_task = {item.task_id: item for item in progress.tasks}
+    current_source_digest = _current_source_digest(root, progress)
     blockers: list[str] = []
     for item in tasks.items:
         if not item.required:
@@ -1327,13 +1454,43 @@ def _close_blockers(
         ):
             blockers.append(f"{item.task_id} is not done.")
             continue
-        if not _has_evidence(progress_item):
-            blockers.append(f"{item.task_id} has no evidence or verification command.")
+        if not _has_current_quality_evidence(progress_item, current_source_digest):
+            blockers.append(
+                f"{item.task_id} has no successful verification for current source."
+            )
     return blockers
 
 
 def _has_evidence(progress: ImplementationTaskProgress) -> bool:
-    return bool(progress.evidence or progress.verification_commands)
+    return bool(
+        progress.evidence or progress.verification_commands or progress.quality_results
+    )
+
+
+def _current_source_digest(
+    root: Path,
+    progress: ImplementationProgress,
+) -> str:
+    if not any(item.quality_results for item in progress.tasks):
+        return ""
+    try:
+        return build_source_digest(root)
+    except ValueError:
+        return ""
+
+
+def _has_current_quality_evidence(
+    progress: ImplementationTaskProgress,
+    current_source_digest: str,
+) -> bool:
+    if not current_source_digest:
+        return False
+    return any(
+        result.successful
+        and result.source_digest_before == current_source_digest
+        and result.source_digest_after == current_source_digest
+        for result in progress.quality_results
+    )
 
 
 def _execution_round(loop_run: LoopRun) -> LoopRound | None:
@@ -1352,7 +1509,7 @@ def _evidence_from_progress(
         tasks=[
             item
             for item in progress.tasks
-            if item.evidence or item.verification_commands
+            if item.evidence or item.verification_commands or item.quality_results
         ],
     )
 

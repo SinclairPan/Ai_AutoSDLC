@@ -43,9 +43,11 @@ from ai_sdlc.core.implementation_loop import (
     ImplementationCommandResult,
     ImplementationRecordOptions,
     ImplementationStartOptions,
+    ImplementationVerifyOptions,
     close_implementation_loop,
     record_implementation_progress,
     start_implementation_loop,
+    verify_implementation_task,
 )
 from ai_sdlc.core.loop_review_service import LoopReviewServiceError
 from ai_sdlc.core.loop_status import (
@@ -412,6 +414,40 @@ def implementation_record(
     )
     _emit_implementation_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != "blocked" else 1)
+
+
+@implementation_app.command(
+    name="verify",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def implementation_verify(
+    ctx: typer.Context,
+    task_id: str = typer.Option(..., "--task-id", help="Task id such as T11."),
+    cwd: str = typer.Option(".", "--cwd", help="Project-relative command cwd."),
+    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
+    timeout_seconds: float = typer.Option(
+        300.0,
+        "--timeout-seconds",
+        help="Maximum command runtime in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """不经 shell 执行任务验证命令。"""
+
+    _run_project_writer_adapter(json_output=json_output)
+    root = _project_root_or_exit(json_output=json_output)
+    result = verify_implementation_task(
+        ImplementationVerifyOptions(
+            root=root,
+            task_id=task_id,
+            cwd=cwd,
+            argv=tuple(ctx.args),
+            loop_id=loop_id,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    _emit_implementation_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status == "ready" else 1)
 
 
 @implementation_app.command(name="status")

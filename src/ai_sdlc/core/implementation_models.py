@@ -14,6 +14,7 @@ from ai_sdlc.core.loop_models import (
     LoopType,
     utc_now_iso,
 )
+from ai_sdlc.core.quality_command import QualityCommandResult
 from ai_sdlc.models.work import WorkType
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
 
@@ -113,6 +114,7 @@ class ImplementationTaskProgress(BaseModel):
     status: ImplementationTaskStatus = ImplementationTaskStatus.PENDING
     evidence: list[str] = Field(default_factory=list)
     verification_commands: list[str] = Field(default_factory=list)
+    quality_results: list[QualityCommandResult] = Field(default_factory=list)
     note: str = ""
     updated_at: str = Field(default_factory=utc_now_iso)
 
@@ -268,6 +270,18 @@ class ImplementationRecordOptions:
 
 
 @dataclass(frozen=True, slots=True)
+class ImplementationVerifyOptions:
+    """执行任务验证所需的输入。"""
+
+    root: Path
+    task_id: str
+    cwd: str
+    argv: tuple[str, ...]
+    loop_id: str = ""
+    timeout_seconds: float = 300.0
+
+
+@dataclass(frozen=True, slots=True)
 class ImplementationCloseOptions:
     """Inputs for closing an implementation loop."""
 
@@ -298,4 +312,5 @@ __all__ = [
     "ImplementationTaskStatus",
     "ImplementationTasks",
     "ImplementationVerificationEvidence",
+    "ImplementationVerifyOptions",
 ]
