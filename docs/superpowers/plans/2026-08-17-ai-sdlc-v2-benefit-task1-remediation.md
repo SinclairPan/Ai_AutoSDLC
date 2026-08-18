@@ -6,7 +6,7 @@
 
 **Invariant:** Provider calls remain `0`. Fixture commitment remains explicitly pending until Task 2, and every reservation/completion path must reject that state.
 
-## Task 1A — Rebuild protocol lock and Provider ledger as one state machine
+## Task 11 — Rebuild protocol lock and Provider ledger as one state machine
 
 **Files:**
 
@@ -36,7 +36,7 @@
 
 **Gate:** focused tests, Ruff, diff check, one focused commit, independent review PASS.
 
-## Task 1B — Rebuild receipt, summary and Provider-output validation
+## Task 12 — Rebuild receipt, summary and Provider-output validation
 
 **Files:**
 
@@ -64,7 +64,7 @@
 
 **Gate:** focused tests, both schemas parse, Ruff, diff check, one focused commit, independent review PASS.
 
-## Task 1C — Harden full CLI round trips after the minimal adapters stay green
+## Task 13 — Harden full CLI round trips after the minimal adapters stay green
 
 **Files:**
 
