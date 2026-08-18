@@ -115,8 +115,11 @@ def main() -> int:
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
         if arguments.command == "verify-receipt":
-            _ = arguments.ledger
-            issues = verify_receipt(_json_object(arguments.receipt), load_protocol(arguments.protocol))
+            issues = verify_receipt(
+                _json_object(arguments.receipt),
+                load_protocol(arguments.protocol),
+                arguments.ledger,
+            )
         else:
             issues = verify_summary(_json_object(arguments.summary), load_protocol(arguments.protocol))
         _emit({"issues": [issue.__dict__ for issue in issues]})

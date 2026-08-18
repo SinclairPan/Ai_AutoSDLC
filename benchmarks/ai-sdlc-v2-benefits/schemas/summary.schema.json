@@ -1,13 +1,67 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ai-sdlc-v2-benefit-summary/v1",
+  "$id": "ai-sdlc-v2-benefit-summary/v2",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema", "protocol_sha256", "runs", "metrics"],
   "properties": {
-    "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-summary/v1"},
+    "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-summary/v2"},
     "protocol_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-    "runs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["run_id", "arm", "fixture", "receipt_sha256"], "properties": {"run_id": {"type": "string", "minLength": 1}, "arm": {"type": "string", "enum": ["P", "S", "A00", "A10", "A11"]}, "fixture": {"type": "string", "minLength": 1}, "receipt_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
-    "metrics": {"type": "object", "additionalProperties": false, "required": ["external_verified_delivery_count"], "properties": {"external_verified_delivery_count": {"type": "object", "additionalProperties": false, "required": ["P", "S", "A11"], "properties": {"P": {"type": "integer", "minimum": 0, "maximum": 3}, "S": {"type": "integer", "minimum": 0, "maximum": 3}, "A11": {"type": "integer", "minimum": 0, "maximum": 3}}}}}
+    "runs": {
+      "type": "array",
+      "minItems": 15,
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["run_id", "arm", "fixture", "receipt_sha256"],
+        "properties": {
+          "run_id": {"type": "string", "minLength": 1},
+          "arm": {"type": "string", "enum": ["P", "S", "A00", "A10", "A11"]},
+          "fixture": {"type": "string", "minLength": 1},
+          "receipt_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        }
+      }
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["external_verified_delivery_count", "median_weighted_ac_coverage", "sum_severe_defect_escape_count"],
+      "properties": {
+        "external_verified_delivery_count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["arms", "n_per_arm", "direction", "signed_deltas"],
+          "properties": {
+            "arms": {"type": "object", "additionalProperties": false, "required": ["P", "S", "A11"], "properties": {"P": {"type": "integer", "minimum": 0, "maximum": 3}, "S": {"type": "integer", "minimum": 0, "maximum": 3}, "A11": {"type": "integer", "minimum": 0, "maximum": 3}}},
+            "n_per_arm": {"type": "integer", "const": 3},
+            "direction": {"type": "string", "const": "higher_is_better"},
+            "signed_deltas": {"type": "object", "additionalProperties": false, "required": ["S_minus_P", "A11_minus_P"], "properties": {"S_minus_P": {"type": "integer", "minimum": -3, "maximum": 3}, "A11_minus_P": {"type": "integer", "minimum": -3, "maximum": 3}}}
+          }
+        },
+        "median_weighted_ac_coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["arms", "n_per_arm", "direction", "signed_delta"],
+          "properties": {
+            "arms": {"type": "object", "additionalProperties": false, "required": ["A00", "A10"], "properties": {"A00": {"type": "number", "minimum": 0, "maximum": 1}, "A10": {"type": "number", "minimum": 0, "maximum": 1}}},
+            "n_per_arm": {"type": "integer", "const": 3},
+            "direction": {"type": "string", "const": "higher_is_better"},
+            "signed_delta": {"type": "object", "additionalProperties": false, "required": ["comparison", "percentage_points"], "properties": {"comparison": {"type": "string", "const": "A10_minus_A00"}, "percentage_points": {"type": "number", "minimum": -100, "maximum": 100}}}
+          }
+        },
+        "sum_severe_defect_escape_count": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["arms", "n_per_arm", "direction", "signed_delta"],
+          "properties": {
+            "arms": {"type": "object", "additionalProperties": false, "required": ["A10", "A11"], "properties": {"A10": {"type": "integer", "minimum": 0}, "A11": {"type": "integer", "minimum": 0}}},
+            "n_per_arm": {"type": "integer", "const": 3},
+            "direction": {"type": "string", "const": "lower_is_better"},
+            "signed_delta": {"type": "object", "additionalProperties": false, "required": ["comparison", "value"], "properties": {"comparison": {"type": "string", "const": "A11_minus_A10"}, "value": {"type": "integer"}}}
+          }
+        }
+      }
+    }
   }
 }
