@@ -167,12 +167,14 @@ _SCHEDULE = (
     ("P", _FIXTURES[2], 4),
     ("A00", _FIXTURES[2], 5),
 )
-_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v2"
+_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v3"
 _LEDGER_KEYS = {"schema", "protocol_sha256", "attempts_started", "attempts"}
 _ATTEMPT_KEYS = {
     "attempt_id",
     "run_id",
     "kind",
+    "effective_kind",
+    "sequence",
     "arm",
     "retry_reason",
     "retry_of_attempt_id",
@@ -189,6 +191,7 @@ _ATTEMPT_KEYS = {
     "history",
 }
 _EVENT_KEYS = {
+    "sequence",
     "status",
     "content_produced",
     "candidate_digest",
@@ -254,7 +257,7 @@ def reserve_provider_attempt(
     """Atomically reserve an allowed logical Provider attempt before it starts."""
     protocol_digest = _require_executable_protocol(protocol)
     with _ledger_lock(ledger_path):
-        ledger = _load_ledger(ledger_path, protocol_digest)
+        ledger = _load_ledger(ledger_path, protocol_digest, protocol.attempt_budget)
         if ledger["attempts_started"] >= protocol.attempt_budget.limit:
             raise ValueError(
                 f"Provider attempt budget of {protocol.attempt_budget.limit} is exhausted"
@@ -263,7 +266,10 @@ def reserve_provider_attempt(
         attempts_started = ledger["attempts_started"] + 1
         attempt_id = f"attempt-{attempts_started:03d}"
         ledger["attempts_started"] = attempts_started
-        ledger["attempts"].append(_new_attempt(attempt_id, request))
+        ledger["attempts"].append(_new_attempt(attempt_id, request, ledger["attempts"]))
+        _validate_attempt_ledger_invariants(
+            ledger["attempts"], protocol.attempt_budget
+        )
         _atomic_write_json(ledger_path, ledger)
         return AttemptReservation(attempt_id, attempts_started, request)
 
@@ -276,10 +282,13 @@ def record_provider_completion(
     """Atomically record one allowed Provider attempt state transition."""
     protocol_digest = _require_executable_protocol(protocol)
     with _ledger_lock(ledger_path):
-        ledger = _load_ledger(ledger_path, protocol_digest)
+        ledger = _load_ledger(ledger_path, protocol_digest, protocol.attempt_budget)
         for attempt in ledger["attempts"]:
             if attempt["attempt_id"] == completion.attempt_id:
                 _apply_attempt_transition(ledger["attempts"], attempt, completion)
+                _validate_attempt_ledger_invariants(
+                    ledger["attempts"], protocol.attempt_budget
+                )
                 _atomic_write_json(ledger_path, ledger)
                 return
         raise ValueError("Provider completion requires a prior reservation")
@@ -652,7 +661,9 @@ def _require_executable_protocol(protocol: BenchmarkProtocol) -> str:
     return canonical_protocol_digest(protocol)
 
 
-def _load_ledger(path: Path, protocol_digest: str) -> dict[str, object]:
+def _load_ledger(
+    path: Path, protocol_digest: str, attempt_budget: AttemptBudget
+) -> dict[str, object]:
     if not path.exists():
         return {
             "schema": _LEDGER_SCHEMA,
@@ -685,18 +696,53 @@ def _load_ledger(path: Path, protocol_digest: str) -> dict[str, object]:
         if not isinstance(item, dict):
             raise ValueError("attempt ledger attempt must be an object")
         _validate_persisted_attempt(item, expected)
-    _validate_persisted_topology(attempts)
+    _validate_attempt_ledger_invariants(attempts, attempt_budget)
     return raw
 
 
-def _new_attempt(attempt_id: str, request: AttemptRequest) -> dict[str, object]:
+def _new_attempt(
+    attempt_id: str, request: AttemptRequest, attempts: list[object]
+) -> dict[str, object]:
     arm = request.run_id.split(":", 1)[0]
+    retried = (
+        _attempt_by_id(attempts, request.retry_of_attempt_id)
+        if request.kind == "technical_retry"
+        else None
+    )
+    effective_kind = (
+        retried["effective_kind"] if retried is not None else request.kind
+    )
+    retried_reserved = retried["history"][0] if retried is not None else None
+    parent_attempt_id = (
+        retried["parent_attempt_id"] if retried is not None else request.parent_attempt_id
+    )
+    role = retried["role"] if retried is not None else request.role
+    parent_digest = (
+        retried["parent_digest"] if retried is not None else request.parent_digest
+    )
+    candidate_digest = (
+        retried_reserved["candidate_digest"]
+        if retried_reserved is not None
+        else request.candidate_digest
+    )
+    finding_digest = (
+        retried_reserved["finding_digest"]
+        if retried_reserved is not None
+        else request.finding_digest
+    )
+    repair_digest = (
+        retried_reserved["repair_digest"]
+        if retried_reserved is not None
+        else request.repair_digest
+    )
+    sequence = _next_event_sequence(attempts)
     reserved = {
+        "sequence": sequence,
         "status": "reserved",
         "content_produced": False,
-        "candidate_digest": request.candidate_digest,
-        "finding_digest": request.finding_digest,
-        "repair_digest": request.repair_digest,
+        "candidate_digest": candidate_digest,
+        "finding_digest": finding_digest,
+        "repair_digest": repair_digest,
         "close_digest": None,
         "terminal": False,
     }
@@ -704,15 +750,17 @@ def _new_attempt(attempt_id: str, request: AttemptRequest) -> dict[str, object]:
         "attempt_id": attempt_id,
         "run_id": request.run_id,
         "kind": request.kind,
+        "effective_kind": effective_kind,
+        "sequence": sequence,
         "arm": arm,
         "retry_reason": request.retry_reason,
         "retry_of_attempt_id": request.retry_of_attempt_id,
-        "parent_attempt_id": request.parent_attempt_id,
-        "role": request.role,
-        "parent_digest": request.parent_digest,
-        "candidate_digest": request.candidate_digest,
-        "finding_digest": request.finding_digest,
-        "repair_digest": request.repair_digest,
+        "parent_attempt_id": parent_attempt_id,
+        "role": role,
+        "parent_digest": parent_digest,
+        "candidate_digest": candidate_digest,
+        "finding_digest": finding_digest,
+        "repair_digest": repair_digest,
         "close_digest": None,
         "status": "reserved",
         "content_produced": False,
@@ -735,6 +783,18 @@ def _validate_persisted_attempt(attempt: dict[str, object], expected_id: str) ->
     kind = attempt["kind"]
     if not isinstance(kind, str) or kind not in _ATTEMPT_KINDS:
         raise ValueError("attempt ledger attempt has an invalid kind")
+    effective_kind = attempt["effective_kind"]
+    if (
+        not isinstance(effective_kind, str)
+        or effective_kind not in _ATTEMPT_KINDS - {"technical_retry"}
+    ):
+        raise ValueError("attempt ledger attempt has an invalid effective kind")
+    if (
+        not isinstance(attempt["sequence"], int)
+        or isinstance(attempt["sequence"], bool)
+        or attempt["sequence"] < 1
+    ):
+        raise ValueError("attempt ledger attempt has an invalid sequence")
     if not isinstance(attempt["content_produced"], bool) or not isinstance(
         attempt["terminal"], bool
     ):
@@ -767,7 +827,7 @@ def _validate_persisted_attempt(attempt: dict[str, object], expected_id: str) ->
             raise ValueError("attempt ledger attempt event must be an object")
         _reject_unknown(event, _EVENT_KEYS, "attempt ledger attempt event")
         _require_keys(event, _EVENT_KEYS, "attempt ledger attempt event")
-        _validate_event(kind, run_id, previous, event)
+        _validate_event(effective_kind, run_id, previous, event)
         previous = event
     if any(attempt[key] != history[-1][key] for key in _EVENT_KEYS):
         raise ValueError("attempt ledger attempt state does not match its history")
@@ -781,6 +841,13 @@ def _validate_event(
     event: Mapping[str, object],
 ) -> None:
     status = event["status"]
+    sequence = event["sequence"]
+    if (
+        not isinstance(sequence, int)
+        or isinstance(sequence, bool)
+        or sequence < 1
+    ):
+        raise ValueError("attempt ledger attempt event has invalid sequence")
     if not isinstance(status, str):
         raise ValueError("attempt ledger attempt event has invalid status")
     if not isinstance(event["content_produced"], bool) or not isinstance(
@@ -807,6 +874,8 @@ def _validate_event(
             raise ValueError("attempt ledger attempt must begin reserved")
         return
     previous_status = previous["status"]
+    if sequence <= previous["sequence"]:
+        raise ValueError("attempt ledger attempt event sequence is invalid")
     allowed = _TRANSITIONS.get(kind, {}).get(previous_status, set())
     if status not in allowed:
         raise ValueError(
@@ -889,6 +958,8 @@ def _validate_event(
     if kind == "writer" and status == "completed":
         if not _is_digest(event["candidate_digest"]):
             raise ValueError("completed writer requires a Candidate digest")
+        if run_id.startswith("A11:") and previous_status != "review_pending":
+            raise ValueError("A11 writer can Close only from review_pending")
         if run_id.startswith(("A10:", "A11:")) and not _is_digest(
             event["close_digest"]
         ):
@@ -910,12 +981,22 @@ def _validate_kind_shape(
     attempt: Mapping[str, object], reserved: Mapping[str, object]
 ) -> None:
     kind = attempt["kind"]
-    if kind == "writer":
+    effective_kind = attempt["effective_kind"]
+    if kind == "technical_retry":
+        if attempt["retry_reason"] not in {
+            "transport",
+            "schema",
+            "provider_pre_output",
+        } or not isinstance(attempt["retry_of_attempt_id"], str):
+            raise ValueError("attempt ledger technical retry is invalid")
+    elif effective_kind != kind:
+        raise ValueError("attempt ledger effective kind does not match kind")
+    elif attempt["retry_reason"] is not None or attempt["retry_of_attempt_id"] is not None:
+        raise ValueError("attempt ledger non-retry has retry fields")
+    if effective_kind == "writer":
         if any(
             attempt[key] is not None
             for key in (
-                "retry_reason",
-                "retry_of_attempt_id",
                 "parent_attempt_id",
                 "role",
             )
@@ -929,35 +1010,22 @@ def _validate_kind_shape(
         ):
             raise ValueError("attempt ledger writer cannot reserve result bindings")
         return
-    if kind == "technical_retry":
-        if attempt["retry_reason"] not in {
-            "transport",
-            "schema",
-            "provider_pre_output",
-        } or not isinstance(attempt["retry_of_attempt_id"], str):
-            raise ValueError("attempt ledger technical retry is invalid")
-        if any(
-            reserved[key] is not None
-            for key in ("candidate_digest", "finding_digest", "repair_digest")
-        ):
-            raise ValueError("attempt ledger technical retry has result bindings")
-        return
     if not isinstance(attempt["parent_attempt_id"], str):
         raise ValueError("attempt ledger expert requires a parent attempt")
     if not _is_digest(attempt["parent_digest"]) or not _is_digest(
         reserved["candidate_digest"]
     ):
         raise ValueError("attempt ledger expert requires parent and Candidate digests")
-    if kind == "primary_expert" and attempt["role"] != "primary":
+    if effective_kind == "primary_expert" and attempt["role"] != "primary":
         raise ValueError("attempt ledger primary expert role is invalid")
-    if kind == "cross_risk_expert" and attempt["role"] != "cross-risk":
+    if effective_kind == "cross_risk_expert" and attempt["role"] != "cross-risk":
         raise ValueError("attempt ledger cross-risk expert role is invalid")
-    if kind in {"primary_expert", "cross_risk_expert"} and (
+    if effective_kind in {"primary_expert", "cross_risk_expert"} and (
         reserved["finding_digest"] is not None
         or reserved["repair_digest"] is not None
     ):
         raise ValueError("attempt ledger primary expert has repair bindings")
-    if kind == "expert_rereview" and (
+    if effective_kind == "expert_rereview" and (
         attempt["role"] not in {"primary", "cross-risk"}
         or not _is_digest(reserved["finding_digest"])
         or not _is_digest(reserved["repair_digest"])
@@ -965,7 +1033,57 @@ def _validate_kind_shape(
         raise ValueError("attempt ledger rereview binding is invalid")
 
 
-def _validate_persisted_topology(attempts: list[object]) -> None:
+def _validate_attempt_ledger_invariants(
+    attempts: list[object], attempt_budget: AttemptBudget
+) -> None:
+    if len(attempts) > attempt_budget.limit:
+        raise ValueError("attempt ledger invariant: Provider attempt budget exceeded")
+    kind_limits = {
+        "writer": 15,
+        "primary_expert": 3,
+        "cross_risk_expert": 1,
+        "expert_rereview": attempt_budget.max_expert_rereviews,
+        "technical_retry": attempt_budget.max_pre_output_retries,
+    }
+    for kind, limit in kind_limits.items():
+        if _count_kind(attempts, kind) > limit:
+            raise ValueError(
+                f"attempt ledger invariant: {kind} topology budget exceeded"
+            )
+    unique_keys = {
+        "writer": "run_id",
+        "primary_expert": "run_id",
+        "cross_risk_expert": "run_id",
+        "expert_rereview": "parent_attempt_id",
+        "technical_retry": "retry_of_attempt_id",
+    }
+    for kind, key in unique_keys.items():
+        values = [
+            attempt.get(key)
+            for attempt in attempts
+            if isinstance(attempt, Mapping) and attempt.get("kind") == kind
+        ]
+        if len(values) != len(set(values)):
+            raise ValueError(
+                f"attempt ledger invariant: duplicate {kind} topology is forbidden"
+            )
+    sequences = [
+        event.get("sequence")
+        for attempt in attempts
+        if isinstance(attempt, Mapping)
+        for event in attempt.get("history", [])
+        if isinstance(event, Mapping)
+    ]
+    if sorted(sequences) != list(range(1, len(sequences) + 1)):
+        raise ValueError("attempt ledger invariant: event sequence is corrupt")
+    reservation_sequences = [
+        attempt["history"][0]["sequence"]
+        for attempt in attempts
+        if isinstance(attempt, Mapping)
+    ]
+    if reservation_sequences != sorted(reservation_sequences):
+        raise ValueError("attempt ledger invariant: reservation sequence is corrupt")
+    _validate_security_first_review_baselines(attempts)
     prior: list[Mapping[str, object]] = []
     for raw_attempt in attempts:
         if not isinstance(raw_attempt, Mapping):
@@ -973,13 +1091,33 @@ def _validate_persisted_topology(attempts: list[object]) -> None:
         kind = raw_attempt["kind"]
         if kind == "technical_retry":
             retried = _attempt_by_id(prior, raw_attempt["retry_of_attempt_id"])
+            retried_reserved = (
+                retried["history"][0] if retried is not None else None
+            )
+            reserved = raw_attempt["history"][0]
             if (
                 retried is None
                 or retried["run_id"] != raw_attempt["run_id"]
                 or retried["status"] != "technical_failure"
                 or retried["content_produced"] is not False
+                or retried["sequence"] >= reserved["sequence"]
+                or raw_attempt["effective_kind"] != retried["effective_kind"]
+                or raw_attempt["parent_attempt_id"]
+                != retried["parent_attempt_id"]
+                or raw_attempt["role"] != retried["role"]
+                or raw_attempt["parent_digest"] != retried["parent_digest"]
+                or any(
+                    reserved[key] != retried_reserved[key]
+                    for key in (
+                        "candidate_digest",
+                        "finding_digest",
+                        "repair_digest",
+                    )
+                )
             ):
-                raise ValueError("attempt ledger technical retry parent is invalid")
+                raise ValueError(
+                    "attempt ledger technical retry effective lineage is invalid"
+                )
         elif kind in {"primary_expert", "cross_risk_expert"}:
             if raw_attempt["arm"] != "A11":
                 raise ValueError("attempt ledger expert must belong to A11")
@@ -991,16 +1129,20 @@ def _validate_persisted_topology(attempts: list[object]) -> None:
                     "attempt ledger cross-risk expert must use the security run"
                 )
             writer = _attempt_by_id(prior, raw_attempt["parent_attempt_id"])
+            reserved = raw_attempt["history"][0]
+            writer_state = (
+                _state_before_sequence(writer, reserved["sequence"])
+                if writer is not None
+                else None
+            )
             if (
                 writer is None
-                or writer["kind"] != "writer"
+                or writer_state is None
+                or writer["effective_kind"] != "writer"
                 or writer["run_id"] != raw_attempt["run_id"]
                 or writer["parent_digest"] != raw_attempt["parent_digest"]
-                or not _history_has_checkpoint(
-                    writer,
-                    "review_pending",
-                    raw_attempt["history"][0]["candidate_digest"],
-                )
+                or writer_state["status"] != "review_pending"
+                or writer_state["candidate_digest"] != reserved["candidate_digest"]
             ):
                 raise ValueError("attempt ledger expert parent chain is invalid")
         elif kind == "expert_rereview":
@@ -1011,36 +1153,151 @@ def _validate_persisted_topology(attempts: list[object]) -> None:
                 else None
             )
             reserved = raw_attempt["history"][0]
+            writer_state = (
+                _state_before_sequence(writer, reserved["sequence"])
+                if writer is not None
+                else None
+            )
             if (
                 expert is None
                 or writer is None
-                or expert["kind"] not in {"primary_expert", "cross_risk_expert"}
+                or writer_state is None
+                or raw_attempt["arm"] != "A11"
+                or expert["run_id"] != raw_attempt["run_id"]
+                or writer["run_id"] != raw_attempt["run_id"]
+                or expert["effective_kind"]
+                not in {"primary_expert", "cross_risk_expert"}
                 or expert["status"] != "completed"
+                or expert["sequence"] >= reserved["sequence"]
                 or expert["role"] != raw_attempt["role"]
                 or expert["parent_digest"] != raw_attempt["parent_digest"]
                 or expert["finding_digest"] != reserved["finding_digest"]
                 or expert["candidate_digest"] == reserved["candidate_digest"]
-                or _find_repair_event(
-                    writer,
-                    reserved["finding_digest"],
-                    reserved["repair_digest"],
-                    reserved["candidate_digest"],
+                or writer_state["status"] != "review_pending"
+                or writer_state["candidate_digest"]
+                != reserved["candidate_digest"]
+                or (
+                    repair := _find_repair_event(
+                        writer,
+                        reserved["finding_digest"],
+                        reserved["repair_digest"],
+                        reserved["candidate_digest"],
+                    )
                 )
                 is None
+                or repair["sequence"] >= reserved["sequence"]
             ):
                 raise ValueError("attempt ledger rereview parent chain is invalid")
         prior.append(raw_attempt)
+    for raw_attempt in attempts:
+        if (
+            not isinstance(raw_attempt, Mapping)
+            or raw_attempt.get("effective_kind") != "writer"
+        ):
+            continue
+        required_roles = _required_first_review_roles(raw_attempt)
+        history = raw_attempt.get("history")
+        if not isinstance(history, list):
+            raise ValueError("attempt ledger invariant: writer history is invalid")
+        previous: Mapping[str, object] | None = None
+        for event in history:
+            if not isinstance(event, Mapping):
+                raise ValueError("attempt ledger invariant: writer event is invalid")
+            if (
+                previous is not None
+                and event.get("status") == "candidate_ready"
+                and previous.get("status") != "reserved"
+            ):
+                completed_first_reviews = [
+                    attempt
+                    for attempt in attempts
+                    if isinstance(attempt, Mapping)
+                    and attempt.get("parent_attempt_id")
+                    == raw_attempt.get("attempt_id")
+                    and attempt.get("effective_kind")
+                    in {"primary_expert", "cross_risk_expert"}
+                    and attempt.get("status") == "completed"
+                    and attempt.get("sequence") < event.get("sequence")
+                ]
+                completed_first_review_roles = {
+                    attempt.get("role") for attempt in completed_first_reviews
+                }
+                if not required_roles.issubset(completed_first_review_roles):
+                    raise ValueError(
+                        "attempt ledger invariant: writer repair requires every required first-review completion"
+                    )
+                expert = next(
+                    (
+                        attempt
+                        for attempt in completed_first_reviews
+                        if attempt.get("finding_digest")
+                        == event.get("finding_digest")
+                    ),
+                    None,
+                )
+                if expert is None:
+                    raise ValueError(
+                        "attempt ledger invariant: writer repair has no owning expert Finding"
+                    )
+            previous = event
+        if raw_attempt.get("status") == "completed" and raw_attempt.get("arm") == "A11":
+            try:
+                _validate_writer_close(attempts, raw_attempt, history[-1])
+            except ValueError as error:
+                raise ValueError(f"attempt ledger invariant: {error}") from error
 
 
-def _history_has_checkpoint(
-    attempt: Mapping[str, object], status: str, candidate_digest: object
-) -> bool:
-    return any(
-        isinstance(event, Mapping)
-        and event.get("status") == status
-        and event.get("candidate_digest") == candidate_digest
+def _state_before_sequence(
+    attempt: Mapping[str, object], sequence: object
+) -> Mapping[str, object] | None:
+    if not isinstance(sequence, int):
+        return None
+    states = [
+        event
         for event in attempt["history"]
-    )
+        if isinstance(event, Mapping)
+        and isinstance(event.get("sequence"), int)
+        and event["sequence"] < sequence
+    ]
+    return max(states, key=lambda event: event["sequence"], default=None)
+
+
+def _required_first_review_roles(writer: Mapping[str, object]) -> set[str]:
+    if writer.get("arm") != "A11":
+        return set()
+    roles = {"primary"}
+    if writer.get("run_id") == "A11:multi-tenant-security-review":
+        roles.add("cross-risk")
+    return roles
+
+
+def _validate_security_first_review_baselines(attempts: list[object]) -> None:
+    for writer in attempts:
+        if (
+            not isinstance(writer, Mapping)
+            or writer.get("effective_kind") != "writer"
+            or writer.get("run_id") != "A11:multi-tenant-security-review"
+        ):
+            continue
+        first_reviews = [
+            attempt
+            for attempt in attempts
+            if isinstance(attempt, Mapping)
+            and attempt.get("parent_attempt_id") == writer.get("attempt_id")
+            and attempt.get("kind")
+            in {"primary_expert", "cross_risk_expert"}
+        ]
+        if not first_reviews:
+            continue
+        first_reviews.sort(key=lambda attempt: attempt["history"][0]["sequence"])
+        baseline = first_reviews[0]["history"][0]["candidate_digest"]
+        if any(
+            attempt["history"][0]["candidate_digest"] != baseline
+            for attempt in first_reviews
+        ):
+            raise ValueError(
+                "attempt ledger invariant: security first-review Candidate baseline changed"
+            )
 
 
 @contextmanager
@@ -1185,6 +1442,12 @@ def _validate_reservation_request(attempts: object, request: AttemptRequest) -> 
             raise ValueError("technical retry must be pre-output")
         if _count_kind(attempts, "technical_retry") >= 3:
             raise ValueError("technical retry budget is exhausted")
+        if any(
+            item.get("kind") == "technical_retry"
+            and item.get("retry_of_attempt_id") == request.retry_of_attempt_id
+            for item in attempts
+        ):
+            raise ValueError("failed attempt already has a technical retry")
         prior = _attempt_by_id(attempts, request.retry_of_attempt_id)
         if prior is None or prior.get("run_id") != request.run_id:
             raise ValueError("technical retry requires a prior attempt")
@@ -1251,7 +1514,7 @@ def _validate_reservation_request(attempts: object, request: AttemptRequest) -> 
     writer = _attempt_by_id(attempts, request.parent_attempt_id)
     if (
         writer is None
-        or writer.get("kind") != "writer"
+        or writer.get("effective_kind") != "writer"
         or writer.get("run_id") != request.run_id
         or writer.get("status") != "review_pending"
     ):
@@ -1274,7 +1537,8 @@ def _validate_rereview_reservation(
     if (
         expert is None
         or expert.get("run_id") != request.run_id
-        or expert.get("kind") not in {"primary_expert", "cross_risk_expert"}
+        or expert.get("effective_kind")
+        not in {"primary_expert", "cross_risk_expert"}
     ):
         raise ValueError("expert rereview requires an existing expert reservation")
     if expert.get("status") != "completed" or expert.get("role") != request.role:
@@ -1320,6 +1584,7 @@ def _apply_attempt_transition(
     if current_status in _TERMINAL_STATUSES:
         raise ValueError("Provider attempt completion was already recorded")
     event = {
+        "sequence": _next_event_sequence(attempts),
         "status": completion.status,
         "content_produced": completion.content_produced,
         "candidate_digest": completion.candidate_digest
@@ -1339,33 +1604,7 @@ def _apply_attempt_transition(
     history = attempt["history"]
     if not isinstance(history, list) or not history:
         raise ValueError("attempt ledger attempt has invalid history")
-    _validate_event(attempt["kind"], attempt["run_id"], history[-1], event)
-    if (
-        attempt["kind"] == "writer"
-        and current_status in {"review_pending", "candidate_ready"}
-        and completion.status == "candidate_ready"
-    ):
-        expert = next(
-            (
-                item
-                for item in attempts
-                if isinstance(item, Mapping)
-                and item.get("parent_attempt_id") == attempt["attempt_id"]
-                and item.get("status") == "completed"
-                and item.get("finding_digest") == event["finding_digest"]
-            ),
-            None,
-        )
-        if expert is None:
-            raise ValueError("writer repair must bind a Finding from its own expert")
-    if (
-        attempt["kind"] == "writer"
-        and attempt["arm"] == "A11"
-        and completion.status == "completed"
-    ):
-        if current_status != "review_pending":
-            raise ValueError("A11 writer can Close only from review_pending")
-        _validate_writer_close(attempts, attempt, event)
+    _validate_event(attempt["effective_kind"], attempt["run_id"], history[-1], event)
     history.append(event)
     for key in _EVENT_KEYS:
         attempt[key] = event[key]
@@ -1385,8 +1624,10 @@ def _validate_writer_close(
         for item in attempts
         if isinstance(item, Mapping)
         and item.get("parent_attempt_id") == writer["attempt_id"]
-        and item.get("kind") in {"primary_expert", "cross_risk_expert"}
+        and item.get("effective_kind")
+        in {"primary_expert", "cross_risk_expert"}
         and item.get("status") == "completed"
+        and item.get("sequence") < event.get("sequence")
     }
     if not required.issubset(experts):
         raise ValueError("writer Close requires every required expert completion")
@@ -1408,9 +1649,10 @@ def _validate_writer_close(
                 item
                 for item in attempts
                 if isinstance(item, Mapping)
-                and item.get("kind") == "expert_rereview"
+                and item.get("effective_kind") == "expert_rereview"
                 and item.get("parent_attempt_id") == expert["attempt_id"]
                 and item.get("status") == "completed"
+                and item.get("sequence") < event.get("sequence")
                 and item.get("finding_digest") == finding_digest
                 and item.get("repair_digest") == repair["repair_digest"]
                 and item.get("candidate_digest") == event["candidate_digest"]
@@ -1447,6 +1689,18 @@ def _find_repair_event(
 def _count_kind(attempts: list[object], kind: str) -> int:
     return sum(
         isinstance(item, Mapping) and item.get("kind") == kind for item in attempts
+    )
+
+
+def _next_event_sequence(attempts: list[object]) -> int:
+    return (
+        sum(
+            len(history)
+            for attempt in attempts
+            if isinstance(attempt, Mapping)
+            and isinstance((history := attempt.get("history")), list)
+        )
+        + 1
     )
 
 

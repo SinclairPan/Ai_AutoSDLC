@@ -1,5 +1,6 @@
 """Tests for the frozen AI-SDLC v2 benefit benchmark contract."""
 
+import copy
 import json
 import multiprocessing
 import subprocess
@@ -274,6 +275,182 @@ def test_technical_retry_requires_pre_output_failure_and_stops_after_three(
         reserve_provider_attempt(ledger, protocol, retry_request(previous.attempt_id))
 
 
+def test_writer_technical_retry_inherits_writer_state_machine_through_close(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    parent_digest = _digest("a")
+    candidate_digest = _digest("b")
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:requirement-contract-ambiguity",
+            "writer",
+            parent_digest=parent_digest,
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(writer.attempt_id, "technical_failure", False),
+    )
+
+    retry = _reserve_technical_retry(ledger, protocol, writer.attempt_id)
+    for status in ("candidate_ready", "review_pending"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(
+                retry.attempt_id,
+                status,
+                True,
+                candidate_digest=candidate_digest,
+            ),
+        )
+    expert = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:requirement-contract-ambiguity",
+            "primary_expert",
+            parent_attempt_id=retry.attempt_id,
+            role="primary",
+            parent_digest=parent_digest,
+            candidate_digest=candidate_digest,
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(expert.attempt_id, "completed", True),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            retry.attempt_id,
+            "completed",
+            True,
+            candidate_digest=candidate_digest,
+            close_digest=_digest("c"),
+        ),
+    )
+
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert persisted["attempts"][1]["effective_kind"] == "writer"
+    assert persisted["attempts"][1]["status"] == "completed"
+
+
+def test_expert_technical_retry_inherits_role_and_lineage_through_close(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(expert.attempt_id, "technical_failure", False),
+    )
+
+    retry = _reserve_technical_retry(ledger, protocol, expert.attempt_id)
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(retry.attempt_id, "completed", True),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "completed",
+            True,
+            candidate_digest=_digest("b"),
+            close_digest=_digest("c"),
+        ),
+    )
+
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert persisted["attempts"][2]["effective_kind"] == "primary_expert"
+    assert persisted["attempts"][2]["role"] == "primary"
+
+
+def test_rereview_technical_retry_inherits_repair_lineage_through_close(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            expert.attempt_id,
+            "completed",
+            True,
+            finding_digest=_digest("d"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "review_pending",
+            True,
+            candidate_digest=_digest("c"),
+        ),
+    )
+    rereview = reserve_provider_attempt(
+        ledger,
+        protocol,
+        _rereview_request(expert.attempt_id, _digest("c")),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(rereview.attempt_id, "technical_failure", False),
+    )
+
+    retry = _reserve_technical_retry(ledger, protocol, rereview.attempt_id)
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(retry.attempt_id, "completed", True),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "completed",
+            True,
+            candidate_digest=_digest("c"),
+            close_digest=_digest("8"),
+        ),
+    )
+
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert persisted["attempts"][3]["effective_kind"] == "expert_rereview"
+    assert persisted["attempts"][3]["finding_digest"] == _digest("d")
+    assert persisted["attempts"][3]["repair_digest"] == _digest("e")
+
+
 def test_duplicate_writer_and_unreserved_completion_stay_rejected(
     tmp_path: Path,
 ) -> None:
@@ -340,6 +517,31 @@ def test_ledger_load_rejects_any_corrupt_attempt_shape(
         )
 
 
+def test_event_sequence_schema_bump_rejects_legacy_v2_without_rewriting(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest("P:requirement-contract-ambiguity", "writer"),
+    )
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    raw["schema"] = "ai-sdlc-v2-benefit-attempt-ledger/v2"
+    legacy_bytes = json.dumps(raw).encode()
+    ledger.write_bytes(legacy_bytes)
+
+    with pytest.raises(ValueError, match="unexpected schema"):
+        reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest("S:requirement-contract-ambiguity", "writer"),
+        )
+
+    assert ledger.read_bytes() == legacy_bytes
+
+
 def test_ledger_load_rejects_kind_specific_topology_corruption(
     tmp_path: Path,
 ) -> None:
@@ -348,6 +550,7 @@ def test_ledger_load_rejects_kind_specific_topology_corruption(
     _writer_at_review_with_expert(ledger, protocol)
     raw = json.loads(ledger.read_text(encoding="utf-8"))
     raw["attempts"][1]["kind"] = "cross_risk_expert"
+    raw["attempts"][1]["effective_kind"] = "cross_risk_expert"
     raw["attempts"][1]["role"] = "cross-risk"
     ledger.write_text(json.dumps(raw), encoding="utf-8")
 
@@ -356,6 +559,81 @@ def test_ledger_load_rejects_kind_specific_topology_corruption(
             ledger,
             protocol,
             AttemptRequest("S:requirement-contract-ambiguity", "writer"),
+        )
+
+
+def test_ledger_reload_requires_parent_current_state_at_expert_reservation(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    writer, _expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(writer.attempt_id, "failed", True),
+    )
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    writer_failure = raw["attempts"][0]["history"][-1]
+    expert_reservation = raw["attempts"][1]["history"][0]
+    writer_failure["sequence"], expert_reservation["sequence"] = (
+        expert_reservation["sequence"],
+        writer_failure["sequence"],
+    )
+    raw["attempts"][0]["sequence"] = writer_failure["sequence"]
+    raw["attempts"][1]["sequence"] = expert_reservation["sequence"]
+    ledger.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="expert parent chain"):
+        reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest("S:requirement-contract-ambiguity", "writer"),
+        )
+
+
+@pytest.mark.parametrize("corruption", ["close", "repair", "duplicate", "budget"])
+def test_ledger_reload_replays_all_online_invariants(
+    tmp_path: Path, corruption: str
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    writer = _writer_at_review(ledger, protocol)
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    attempt = raw["attempts"][0]
+    if corruption == "close":
+        _append_raw_event(
+            attempt,
+            status="completed",
+            candidate_digest=_digest("b"),
+            close_digest=_digest("c"),
+            terminal=True,
+        )
+    elif corruption == "repair":
+        _append_raw_event(
+            attempt,
+            status="candidate_ready",
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+            terminal=False,
+        )
+    else:
+        copies = 2 if corruption == "duplicate" else 34
+        raw["attempts"] = []
+        for index in range(1, copies + 1):
+            cloned = copy.deepcopy(attempt)
+            cloned["attempt_id"] = f"attempt-{index:03d}"
+            raw["attempts"].append(cloned)
+        raw["attempts_started"] = copies
+    ledger.write_text(json.dumps(raw), encoding="utf-8")
+
+    expected = "budget" if corruption == "budget" else "ledger invariant"
+    with pytest.raises(ValueError, match=expected):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(writer.attempt_id, "failed", True),
         )
 
 
@@ -745,6 +1023,248 @@ def test_security_writer_binds_both_expert_findings_to_one_repaired_candidate(
     )
 
 
+def test_security_repair_waits_for_all_required_first_review_roles(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    writer, primary = _security_writer_with_expert(
+        ledger, protocol, "primary_expert", "primary"
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            primary.attempt_id,
+            "completed",
+            True,
+            finding_digest=_digest("d"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="first-review"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(
+                writer.attempt_id,
+                "candidate_ready",
+                True,
+                candidate_digest=_digest("c"),
+                finding_digest=_digest("d"),
+                repair_digest=_digest("e"),
+            ),
+        )
+
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert persisted["attempts"][0]["status"] == "review_pending"
+    assert persisted["attempts"][0]["candidate_digest"] == _digest("b")
+
+
+def test_security_reload_rejects_first_review_candidate_baseline_drift(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    parent_digest = _digest("a")
+    old_candidate = _digest("b")
+    new_candidate = _digest("c")
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:multi-tenant-security-review",
+            "writer",
+            parent_digest=parent_digest,
+        ),
+    )
+    for status in ("candidate_ready", "review_pending"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(
+                writer.attempt_id,
+                status,
+                True,
+                candidate_digest=old_candidate,
+            ),
+        )
+    experts = [
+        reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest(
+                "A11:multi-tenant-security-review",
+                kind,
+                parent_attempt_id=writer.attempt_id,
+                role=role,
+                parent_digest=parent_digest,
+                candidate_digest=old_candidate,
+            ),
+        )
+        for kind, role in (
+            ("primary_expert", "primary"),
+            ("cross_risk_expert", "cross-risk"),
+        )
+    ]
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            experts[0].attempt_id,
+            "completed",
+            True,
+            finding_digest=_digest("d"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(experts[1].attempt_id, "completed", True),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=new_candidate,
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "review_pending",
+            True,
+            candidate_digest=new_candidate,
+        ),
+    )
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    cross = raw["attempts"][2]
+    cross["candidate_digest"] = new_candidate
+    cross["history"][0]["candidate_digest"] = new_candidate
+    cross["history"][1]["candidate_digest"] = new_candidate
+    ledger.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="first-review Candidate baseline"):
+        reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest("S:requirement-contract-ambiguity", "writer"),
+        )
+
+
+def test_security_reload_replays_first_review_completion_before_repair(
+    tmp_path: Path,
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    protocol = _bound_protocol(tmp_path)
+    parent_digest = _digest("a")
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:multi-tenant-security-review",
+            "writer",
+            parent_digest=parent_digest,
+        ),
+    )
+    for status in ("candidate_ready", "review_pending"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(
+                writer.attempt_id,
+                status,
+                True,
+                candidate_digest=_digest("b"),
+            ),
+        )
+    experts = [
+        reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest(
+                "A11:multi-tenant-security-review",
+                kind,
+                parent_attempt_id=writer.attempt_id,
+                role=role,
+                parent_digest=parent_digest,
+                candidate_digest=_digest("b"),
+            ),
+        )
+        for kind, role in (
+            ("primary_expert", "primary"),
+            ("cross_risk_expert", "cross-risk"),
+        )
+    ]
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            experts[0].attempt_id,
+            "completed",
+            True,
+            finding_digest=_digest("d"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(experts[1].attempt_id, "completed", True),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        AttemptCompletion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    call_order = (
+        (0, 0),
+        (0, 1),
+        (0, 2),
+        (1, 0),
+        (2, 0),
+        (1, 1),
+        (2, 1),
+        (0, 3),
+    )
+    for sequence, (attempt_index, event_index) in enumerate(call_order, start=1):
+        raw["attempts"][attempt_index]["history"][event_index].setdefault(
+            "sequence", sequence
+        )
+    for attempt in raw["attempts"]:
+        attempt.setdefault("sequence", attempt["history"][-1]["sequence"])
+    cross_completion = raw["attempts"][2]["history"][1]
+    writer_repair = raw["attempts"][0]["history"][3]
+    cross_completion["sequence"], writer_repair["sequence"] = (
+        writer_repair["sequence"],
+        cross_completion["sequence"],
+    )
+    raw["attempts"][2]["sequence"] = cross_completion["sequence"]
+    raw["attempts"][0]["sequence"] = writer_repair["sequence"]
+    ledger.write_text(json.dumps(raw), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="first-review completion"):
+        reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest("S:requirement-contract-ambiguity", "writer"),
+        )
+
+
 def test_terminal_failure_ends_writer_without_close(tmp_path: Path) -> None:
     ledger = tmp_path / "ledger.json"
     protocol = _bound_protocol(tmp_path)
@@ -806,6 +1326,90 @@ def _writer_at_review_with_expert(ledger: Path, protocol):
     return writer, expert
 
 
+def _writer_at_review(ledger: Path, protocol):
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:requirement-contract-ambiguity",
+            "writer",
+            parent_digest=_digest("a"),
+        ),
+    )
+    for status in ("candidate_ready", "review_pending"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(
+                writer.attempt_id,
+                status,
+                True,
+                candidate_digest=_digest("b"),
+            ),
+        )
+    return writer
+
+
+def _security_writer_with_expert(ledger: Path, protocol, kind: str, role: str):
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:multi-tenant-security-review",
+            "writer",
+            parent_digest=_digest("a"),
+        ),
+    )
+    for status in ("candidate_ready", "review_pending"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            AttemptCompletion(
+                writer.attempt_id,
+                status,
+                True,
+                candidate_digest=_digest("b"),
+            ),
+        )
+    expert = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:multi-tenant-security-review",
+            kind,
+            parent_attempt_id=writer.attempt_id,
+            role=role,
+            parent_digest=_digest("a"),
+            candidate_digest=_digest("b"),
+        ),
+    )
+    return writer, expert
+
+
+def _append_raw_event(
+    attempt: dict[str, object],
+    *,
+    status: str,
+    candidate_digest: str,
+    finding_digest: str | None = None,
+    repair_digest: str | None = None,
+    close_digest: str | None = None,
+    terminal: bool,
+) -> None:
+    event = {
+        "sequence": attempt["sequence"] + 1,
+        "status": status,
+        "content_produced": True,
+        "candidate_digest": candidate_digest,
+        "finding_digest": finding_digest,
+        "repair_digest": repair_digest,
+        "close_digest": close_digest,
+        "terminal": terminal,
+    }
+    attempt["history"].append(event)
+    attempt.update(event)
+
+
 def _rereview_request(parent_attempt_id: str, candidate_digest: str) -> AttemptRequest:
     return AttemptRequest(
         "A11:requirement-contract-ambiguity",
@@ -816,6 +1420,19 @@ def _rereview_request(parent_attempt_id: str, candidate_digest: str) -> AttemptR
         candidate_digest=candidate_digest,
         finding_digest=_digest("d"),
         repair_digest=_digest("e"),
+    )
+
+
+def _reserve_technical_retry(ledger: Path, protocol, attempt_id: str):
+    return reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            "A11:requirement-contract-ambiguity",
+            "technical_retry",
+            retry_reason="transport",
+            retry_of_attempt_id=attempt_id,
+        ),
     )
 
 
