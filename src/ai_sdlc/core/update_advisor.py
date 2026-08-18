@@ -17,11 +17,12 @@ from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 PROTOCOL_VERSION = "1"
 PACKAGE_NAME = "ai-sdlc"
 GITHUB_RELEASES_LATEST_URL = (
-    "https://api.github.com/repos/SinclairPan/Ai_AutoSDLC/releases/latest"
+    "https://github.com/SinclairPan/Ai_AutoSDLC/releases/latest"
 )
 
 NOTICE_LIGHT = "light_upstream_release_notice"
@@ -500,16 +501,35 @@ def fetch_latest_github_release(timeout_seconds: float) -> dict[str, Any]:
     request = urllib.request.Request(
         GITHUB_RELEASES_LATEST_URL,
         headers={
-            "Accept": "application/vnd.github+json",
             "User-Agent": "ai-sdlc-update-advisor",
         },
+        method="HEAD",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
-            payload = response.read().decode("utf-8")
-    except TimeoutError:
-        raise
-    return json.loads(payload)
+    with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+        final_url = response.geturl()
+
+    parsed = urlsplit(final_url)
+    match = re.fullmatch(
+        r"/SinclairPan/Ai_AutoSDLC/releases/tag/(v\d+\.\d+\.\d+)",
+        parsed.path,
+    )
+    if (
+        parsed.scheme != "https"
+        or parsed.netloc != "github.com"
+        or parsed.query
+        or parsed.fragment
+        or match is None
+    ):
+        raise ValueError(
+            "latest release did not resolve to the canonical GitHub release tag URL"
+        )
+    tag = match.group(1)
+    return {
+        "tag_name": tag,
+        "html_url": final_url,
+        "draft": False,
+        "prerelease": False,
+    }
 
 
 def _eligible_notice_classes(

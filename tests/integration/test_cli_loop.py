@@ -177,7 +177,7 @@ def test_loop_list_human_includes_each_loop_next_action(tmp_path: Path) -> None:
     assert "non-current review run" in result.output
 
 
-def test_loop_status_human_skips_update_notice(
+def test_loop_status_human_runs_update_notice(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -192,7 +192,28 @@ def test_loop_status_human_skips_update_notice(
         result = runner.invoke(app, ["loop", "status"])
 
     assert result.exit_code == 0
-    assert calls == []
+    assert calls == [True]
+
+
+def test_loop_status_json_remains_notice_free(tmp_path: Path, monkeypatch) -> None:
+    (tmp_path / ".ai-sdlc").mkdir()
+    monkeypatch.setattr(sys, "argv", ["ai-sdlc", "loop", "status", "--json"])
+
+    def unexpected_notice() -> None:
+        raise AssertionError("JSON Loop output must not render an update notice")
+
+    monkeypatch.setattr(
+        "ai_sdlc.cli.main.maybe_render_update_notice",
+        unexpected_notice,
+    )
+
+    with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
+        result = runner.invoke(app, ["loop", "status", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.output)
+    assert payload["status"] == "no_current"
+    assert payload["result"] == "No current loop."
 
 
 def test_loop_status_does_not_trigger_ide_adapter_hook(tmp_path: Path) -> None:
