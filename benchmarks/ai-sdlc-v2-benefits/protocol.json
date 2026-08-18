@@ -1,0 +1,33 @@
+{
+  "schema": "ai-sdlc-v2-benefit-protocol/v1",
+  "arms": ["P", "S", "A00", "A10", "A11"],
+  "fixtures": [
+    "design-contract-recovery",
+    "frontend-recovery-delivery",
+    "security-boundary-repair"
+  ],
+  "run_matrix": [
+    {"arm": "P", "fixture": "design-contract-recovery", "position": 1},
+    {"arm": "S", "fixture": "design-contract-recovery", "position": 2},
+    {"arm": "A00", "fixture": "design-contract-recovery", "position": 3},
+    {"arm": "A10", "fixture": "design-contract-recovery", "position": 4},
+    {"arm": "A11", "fixture": "design-contract-recovery", "position": 5},
+    {"arm": "A00", "fixture": "frontend-recovery-delivery", "position": 1},
+    {"arm": "A10", "fixture": "frontend-recovery-delivery", "position": 2},
+    {"arm": "A11", "fixture": "frontend-recovery-delivery", "position": 3},
+    {"arm": "P", "fixture": "frontend-recovery-delivery", "position": 4},
+    {"arm": "S", "fixture": "frontend-recovery-delivery", "position": 5},
+    {"arm": "A11", "fixture": "security-boundary-repair", "position": 1},
+    {"arm": "S", "fixture": "security-boundary-repair", "position": 2},
+    {"arm": "A10", "fixture": "security-boundary-repair", "position": 3},
+    {"arm": "P", "fixture": "security-boundary-repair", "position": 4},
+    {"arm": "A00", "fixture": "security-boundary-repair", "position": 5}
+  ],
+  "attempt_budget": {
+    "limit": 33,
+    "normal_sessions": 19,
+    "max_expert_rereviews": 4,
+    "max_pre_output_retries": 3,
+    "reserved_security_slots": 7
+  }
+}

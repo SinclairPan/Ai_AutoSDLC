@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc-v2-benefit-summary/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "protocol_sha256", "runs", "metrics"],
+  "properties": {
+    "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-summary/v1"},
+    "protocol_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "runs": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["run_id", "arm", "fixture", "receipt_sha256"], "properties": {"run_id": {"type": "string", "minLength": 1}, "arm": {"type": "string", "enum": ["P", "S", "A00", "A10", "A11"]}, "fixture": {"type": "string", "minLength": 1}, "receipt_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
+    "metrics": {"type": "object", "additionalProperties": false, "required": ["external_verified_delivery_count"], "properties": {"external_verified_delivery_count": {"type": "object", "additionalProperties": false, "required": ["P", "S", "A11"], "properties": {"P": {"type": "integer", "minimum": 0, "maximum": 3}, "S": {"type": "integer", "minimum": 0, "maximum": 3}, "A11": {"type": "integer", "minimum": 0, "maximum": 3}}}}}
+  }
+}

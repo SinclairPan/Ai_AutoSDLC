@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc-v2-benefit-run-receipt/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "run_id", "arm", "fixture", "order", "status", "failure_classification", "digests", "timings", "token_usage", "human_events", "command_evidence", "changed_files", "final_candidate_tree_sha256", "loop", "external_evaluator"],
+  "properties": {
+    "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-run-receipt/v1"},
+    "run_id": {"type": "string", "minLength": 1},
+    "arm": {"type": "string", "enum": ["P", "S", "A00", "A10", "A11"]},
+    "fixture": {"type": "string", "minLength": 1},
+    "order": {"type": "integer", "minimum": 1, "maximum": 5},
+    "status": {"type": "string", "enum": ["completed", "failed", "timeout", "needs_operator", "budget_exhausted"]},
+    "failure_classification": {"type": "string", "minLength": 1},
+    "digests": {"type": "object", "additionalProperties": false, "required": ["fixture_sha256", "candidate_tree_sha256"], "properties": {"fixture_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "candidate_tree_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+    "timings": {"type": "object", "additionalProperties": false, "required": ["end_to_end_wall_seconds", "verified_delivery_wall_seconds", "setup_wall_seconds", "framework_init_wall_seconds", "provider_wall_seconds", "governance_wall_seconds", "review_wall_seconds", "evaluation_wall_seconds"], "properties": {"end_to_end_wall_seconds": {"type": "number", "minimum": 0}, "verified_delivery_wall_seconds": {"type": "number", "minimum": 0}, "setup_wall_seconds": {"type": "number", "minimum": 0}, "framework_init_wall_seconds": {"type": "number", "minimum": 0}, "provider_wall_seconds": {"type": "number", "minimum": 0}, "governance_wall_seconds": {"type": "number", "minimum": 0}, "review_wall_seconds": {"type": "number", "minimum": 0}, "evaluation_wall_seconds": {"type": "number", "minimum": 0}}},
+    "token_usage": {"type": "object", "additionalProperties": false, "required": ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"], "properties": {"input_tokens": {"type": "integer", "minimum": 0}, "cached_input_tokens": {"type": "integer", "minimum": 0}, "output_tokens": {"type": "integer", "minimum": 0}, "reasoning_output_tokens": {"type": "integer", "minimum": 0}}},
+    "human_events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type", "seconds"], "properties": {"type": {"type": "string", "enum": ["operator_authorization", "operator_confirmation", "operator_adjudication"]}, "seconds": {"type": "number", "minimum": 0}}}},
+    "command_evidence": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["command", "exit_code", "stdout_sha256", "stderr_sha256"], "properties": {"command": {"type": "string", "minLength": 1}, "exit_code": {"type": "integer"}, "stdout_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "stderr_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
+    "changed_files": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "final_candidate_tree_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "loop": {"type": "object", "additionalProperties": false, "required": ["close"], "properties": {"close": {"type": "object", "additionalProperties": false, "required": ["state"], "properties": {"state": {"type": "string", "enum": ["closed", "not_applicable", "open"]}}}, "expert_callbacks": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["role", "status", "parent_digest", "child_session", "finding_digest", "repair_digest", "rereview_digest"], "properties": {"role": {"type": "string"}, "status": {"type": "string", "enum": ["pass", "fail", "conflict"]}, "parent_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "child_session": {"type": "string", "minLength": 1}, "finding_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "repair_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "rereview_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}}}},
+    "external_evaluator": {"type": "object", "additionalProperties": false, "required": ["candidate_tree_sha256", "result_sha256"], "properties": {"candidate_tree_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "result_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}
+  }
+}
