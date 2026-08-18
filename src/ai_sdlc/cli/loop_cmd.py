@@ -118,7 +118,7 @@ def loop_status(
     """Show the current Loop Engine status from local artifacts."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = _get_review_aware_loop_status(root, loop_type)
+    result = get_review_aware_loop_status(root, loop_type)
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -194,7 +194,7 @@ def requirement_status(
     """Show the current requirement loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = _get_review_aware_loop_status(root, "requirement")
+    result = get_review_aware_loop_status(root, "requirement")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -287,7 +287,7 @@ def design_contract_status(
     """Show the current design-contract loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = _get_review_aware_loop_status(root, "design-contract")
+    result = get_review_aware_loop_status(root, "design-contract")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -457,7 +457,7 @@ def implementation_status(
     """Show the current implementation loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = _get_review_aware_loop_status(root, "implementation")
+    result = get_review_aware_loop_status(root, "implementation")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -640,7 +640,7 @@ def frontend_evidence_status(
     """Show the current frontend-evidence loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = _get_review_aware_loop_status(root, "frontend-evidence")
+    result = get_review_aware_loop_status(root, "frontend-evidence")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -761,7 +761,7 @@ def _project_root_or_exit(*, json_output: bool = False) -> Path:
     return root
 
 
-def _get_review_aware_loop_status(root: Path, loop_type: str) -> LoopStatusResult:
+def get_review_aware_loop_status(root: Path, loop_type: str) -> LoopStatusResult:
     """Overlay bounded expert-review truth onto the existing Loop status."""
 
     result = get_loop_status(root, loop_type=loop_type)

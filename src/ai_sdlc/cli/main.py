@@ -50,6 +50,7 @@ _READ_ONLY_SUBCOMMANDS = (
     "agentops",
     "handoff",
     "host-runtime",
+    "run",
     "status",
     "scan",
     "verify",

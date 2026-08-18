@@ -1,126 +1,62 @@
+"""Unit tests for the minimal read-only run surface."""
+
 from __future__ import annotations
 
-from types import SimpleNamespace
-
-import ai_sdlc.cli.run_cmd as run_cmd_module
-from ai_sdlc.cli.run_cmd import _failed_gate_messages
-
-
-def test_failed_gate_messages_prioritizes_program_truth_audit_reason() -> None:
-    result = SimpleNamespace(
-        checks=[
-            SimpleNamespace(
-                name="final_tests_passed",
-                passed=False,
-                message="Final tests did not pass",
-            ),
-            SimpleNamespace(
-                name="program_truth_audit_ready",
-                passed=False,
-                message="state=blocked; truth audit failed",
-            ),
-            SimpleNamespace(
-                name="all_tasks_complete",
-                passed=False,
-                message="Not all tasks are completed",
-            ),
-        ]
-    )
-
-    assert _failed_gate_messages(result) == [
-        "state=blocked; truth audit failed",
-        "Final tests did not pass",
-        "Not all tasks are completed",
-    ]
+from ai_sdlc.cli import run_cmd
+from ai_sdlc.core.loop_models import LoopStatus, LoopType
+from ai_sdlc.core.loop_router import (
+    LoopRouteItem,
+    LoopRouteResult,
+    LoopRouteStatus,
+)
 
 
-def test_failed_gate_messages_deduplicates_same_message_across_checks() -> None:
-    result = SimpleNamespace(
-        checks=[
-            SimpleNamespace(
-                name="final_tests_passed",
-                passed=False,
-                message="same reason",
-            ),
-            SimpleNamespace(
-                name="program_truth_audit_ready",
-                passed=False,
-                message="same reason",
-            ),
-            SimpleNamespace(
-                name="all_tasks_complete",
-                passed=False,
-                message="another reason",
-            ),
-        ]
-    )
-
-    assert _failed_gate_messages(result) == [
-        "same reason",
-        "another reason",
-    ]
-
-
-def test_runtime_attachment_summary_deduplicates_gap_and_blocker_text() -> None:
-    checkpoint = SimpleNamespace()
-
-    original_contract_check = run_cmd_module.is_frontend_contract_runtime_attachment_work_item
-    original_builder = run_cmd_module.build_frontend_contract_runtime_attachment
-    try:
-        run_cmd_module.is_frontend_contract_runtime_attachment_work_item = lambda _checkpoint: True
-        run_cmd_module.build_frontend_contract_runtime_attachment = lambda root, checkpoint: SimpleNamespace(
-            status="missing",
-            coverage_gaps=(
-                "frontend_contract_observations",
-                "frontend_contract_observations",
-                "frontend_gate_policy_artifacts",
-            ),
-            blockers=(
-                "BLOCKER: frontend contract observations unavailable",
-                "BLOCKER: frontend contract observations unavailable",
-            ),
+def test_auto_mode_has_no_legacy_blocker() -> None:
+    assert (
+        run_cmd._legacy_option_blocker(
+            mode="auto",
+            acknowledge_execute_batch=False,
         )
-
-        with run_cmd_module.console.capture() as capture:
-            run_cmd_module._render_frontend_contract_runtime_attachment_summary(
-                object(),
-                checkpoint,
-            )
-
-        output = capture.get()
-        assert output.count("frontend_contract_observations") == 1
-        assert output.count("frontend_gate_policy_artifacts") == 1
-        assert output.count("frontend contract observations unavailable") == 0
-    finally:
-        run_cmd_module.is_frontend_contract_runtime_attachment_work_item = original_contract_check
-        run_cmd_module.build_frontend_contract_runtime_attachment = original_builder
+        == ""
+    )
 
 
-def test_agentops_verification_metrics_count_only_test_stage_checks() -> None:
-    stage_results = [
-        (
-            "refine",
-            SimpleNamespace(
-                checks=[
-                    SimpleNamespace(name="prd", passed=False),
-                    SimpleNamespace(name="scope", passed=True),
-                ]
-            ),
+def test_confirm_mode_and_batch_ack_are_migration_blockers() -> None:
+    confirm = run_cmd._legacy_option_blocker(
+        mode="confirm",
+        acknowledge_execute_batch=False,
+    )
+    acknowledge = run_cmd._legacy_option_blocker(
+        mode="auto",
+        acknowledge_execute_batch=True,
+    )
+
+    assert "retired seven-stage runner" in confirm
+    assert "read-only" in confirm
+    assert "retired seven-stage runner" in acknowledge
+    assert "Implementation Loop" in acknowledge
+
+
+def test_render_shows_only_result_next_and_blockers() -> None:
+    result = LoopRouteResult(
+        status=LoopRouteStatus.ROUTED,
+        result="Current delivery Loop.",
+        current_loop=LoopRouteItem(
+            loop_type=LoopType.REQUIREMENT,
+            loop_id="req-1",
+            status=LoopStatus.NEEDS_REVIEW,
         ),
-        (
-            "verify",
-            SimpleNamespace(
-                checks=[
-                    SimpleNamespace(name="unit", passed=True),
-                    SimpleNamespace(name="lint", passed=False),
-                ]
-            ),
-        ),
-        (
-            "close",
-            SimpleNamespace(checks=[SimpleNamespace(name="summary", passed=False)]),
-        ),
-    ]
+        next_action="Run bounded experts.",
+        blockers=["review-result-missing"],
+    )
 
-    assert run_cmd_module._agentops_total_check_count(stage_results) == 2
-    assert run_cmd_module._agentops_total_failed_check_count(stage_results) == 1
+    with run_cmd.console.capture() as capture:
+        run_cmd._render(result)
+
+    output = capture.get()
+    assert "Result: Current delivery Loop." in output
+    assert "Next: Run bounded experts." in output
+    assert "Blockers:" in output
+    assert "review-result-missing" in output
+    assert "AgentOps" not in output
+    assert "checkpoint" not in output

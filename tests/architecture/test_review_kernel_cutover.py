@@ -109,11 +109,39 @@ def test_retired_public_commands_and_workflows_are_absent() -> None:
 
 
 def test_constraint_gate_does_not_turn_comment_deletion_into_authority() -> None:
-    constraints = (_SRC / "core" / "verify_constraints.py").read_text(
-        encoding="utf-8"
-    )
+    constraints = (_SRC / "core" / "verify_constraints.py").read_text(encoding="utf-8")
 
     assert "collect_comment_deletion_blockers" not in constraints
+
+
+def test_run_routes_only_to_five_loop_truth() -> None:
+    run_command = (_SRC / "cli" / "run_cmd.py").read_text(encoding="utf-8")
+    tree = ast.parse(run_command)
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    imported.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+
+    assert "SDLCRunner" not in run_command
+    assert not any(
+        module.startswith(
+            (
+                "ai_sdlc.core.runner",
+                "ai_sdlc.core.executor",
+                "ai_sdlc.core.agentops_bridge",
+                "ai_sdlc.telemetry",
+            )
+        )
+        for module in imported
+    )
+    assert "route_five_loops" in run_command
 
 
 def test_review_values_cannot_become_a_persisted_authority() -> None:
@@ -133,7 +161,14 @@ def test_review_values_cannot_become_a_persisted_authority() -> None:
     assert not any(
         token in module
         for module in imported
-        for token in ("store", "pointer", "workflow", "subprocess", "urllib", "requests")
+        for token in (
+            "store",
+            "pointer",
+            "workflow",
+            "subprocess",
+            "urllib",
+            "requests",
+        )
     )
 
     field_names = {
