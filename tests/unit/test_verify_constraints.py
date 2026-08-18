@@ -2749,6 +2749,20 @@ def test_reconcile_smoke_contract_blocks_when_workflow_is_not_synced(
     assert any("windows-offline-smoke.yml" in x for x in blockers)
 
 
+def test_reconcile_smoke_contract_does_not_require_retired_run_message(
+    tmp_path: Path,
+) -> None:
+    _write_reconcile_smoke_contract_surfaces(tmp_path)
+    (tmp_path / "src" / "ai_sdlc" / "cli" / "run_cmd.py").write_text(
+        "from ai_sdlc.core.loop_router import route_five_loops\n",
+        encoding="utf-8",
+    )
+
+    blockers = collect_constraint_blockers(tmp_path)
+
+    assert not [item for item in blockers if "reconcile smoke contract" in item]
+
+
 def test_verification_profile_docs_block_when_rules_surface_missing_profile(
     tmp_path: Path,
 ) -> None:

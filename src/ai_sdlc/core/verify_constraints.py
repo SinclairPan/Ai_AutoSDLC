@@ -242,9 +242,6 @@ RECONCILE_SMOKE_CONTRACT_SURFACES: dict[Path, tuple[str, ...]] = {
         "Existing Artifact Probe",
         "ai-sdlc recover --reconcile",
     ),
-    CLI_RUN_CMD_REL: (
-        "已停止当前运行，避免基于过时 checkpoint 继续执行。",
-    ),
     WINDOWS_OFFLINE_SMOKE_WORKFLOW_REL: (
         "Existing Artifact Probe",
         "recover --reconcile",
@@ -4474,7 +4471,6 @@ def _reconcile_smoke_contract_blockers(root: Path) -> list[str]:
     """Validate repo-state reconcile diagnostic contract across CLI and workflow."""
     activation_surfaces = (
         CLI_COMMANDS_REL,
-        CLI_RUN_CMD_REL,
         WINDOWS_OFFLINE_SMOKE_WORKFLOW_REL,
     )
     if not any((root / rel).is_file() for rel in activation_surfaces):
