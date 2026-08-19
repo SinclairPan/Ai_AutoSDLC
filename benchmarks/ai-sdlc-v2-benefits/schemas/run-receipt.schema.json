@@ -1,18 +1,18 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "ai-sdlc-v2-benefit-run-receipt/v3",
+  "$id": "ai-sdlc-v2-benefit-run-receipt/v4",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "protocol_sha256", "run_id", "arm", "fixture", "order", "status", "failure_classification", "identity", "digests", "timestamps", "provider_cwd", "provider_attempts", "timings", "token_usage", "measurements", "human_events", "automated_events", "command_evidence", "changed_files", "final_candidate_tree_sha256", "loop", "external_evaluator"],
+  "required": ["schema", "protocol_sha256", "run_id", "arm", "fixture", "order", "status", "failure_classification", "identity", "digests", "timestamps", "provider_cwd", "provider_attempts", "timings", "phase_evidence", "token_usage", "measurements", "artifact_inventory", "human_events", "automated_events", "command_evidence", "changed_files", "final_candidate_tree_sha256", "loop", "external_evaluator"],
   "properties": {
-    "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-run-receipt/v3"},
+    "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-run-receipt/v4"},
     "protocol_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "run_id": {"type": "string", "minLength": 1},
     "arm": {"type": "string", "enum": ["P", "S", "A00", "A10", "A11"]},
     "fixture": {"type": "string", "minLength": 1},
     "order": {"type": "integer", "minimum": 1, "maximum": 5},
     "status": {"type": "string", "enum": ["completed", "failed", "timeout", "needs_operator", "budget_exhausted"]},
-    "failure_classification": {"type": "string", "minLength": 1},
+    "failure_classification": {"type": "string", "enum": ["none", "provider_pre_output_failure", "writer_failure", "expert_failure", "evaluation_failure", "evidence_failure", "timeout", "expert_conflict", "provider_budget_exhausted"]},
     "identity": {
       "type": "object",
       "additionalProperties": false,
@@ -71,10 +71,24 @@
       }
     },
     "timings": {"type": "object", "additionalProperties": false, "required": ["end_to_end_wall_seconds", "verified_delivery_wall_seconds", "setup_wall_seconds", "framework_init_wall_seconds", "provider_wall_seconds", "governance_wall_seconds", "review_wall_seconds", "evaluation_wall_seconds"], "properties": {"end_to_end_wall_seconds": {"type": "number", "minimum": 0}, "verified_delivery_wall_seconds": {"type": "number", "minimum": 0}, "setup_wall_seconds": {"type": "number", "minimum": 0}, "framework_init_wall_seconds": {"type": "number", "minimum": 0}, "provider_wall_seconds": {"type": "number", "minimum": 0}, "governance_wall_seconds": {"type": "number", "minimum": 0}, "review_wall_seconds": {"type": "number", "minimum": 0}, "evaluation_wall_seconds": {"type": "number", "minimum": 0}}},
+    "phase_evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["setup", "framework_init", "provider", "governance", "review", "evaluation"],
+      "properties": {
+        "setup": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+        "framework_init": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+        "provider": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+        "governance": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+        "review": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+        "evaluation": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}
+      }
+    },
     "token_usage": {"type": "object", "additionalProperties": false, "required": ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"], "properties": {"input_tokens": {"type": "integer", "minimum": 0}, "cached_input_tokens": {"type": "integer", "minimum": 0}, "output_tokens": {"type": "integer", "minimum": 0}, "reasoning_output_tokens": {"type": "integer", "minimum": 0}}},
     "measurements": {"type": "object", "additionalProperties": false, "required": ["provider_attempt_count", "clarification_request_count", "intent_service_event_count", "approval_service_event_count", "intent_approval_service_latency_ms", "human_event_count", "human_active_seconds", "human_efficiency_not_measured", "needs_operator", "evidence_completeness", "setup_artifact_bytes", "governance_artifact_bytes", "total_artifact_bytes"], "properties": {"provider_attempt_count": {"type": "integer", "minimum": 1}, "clarification_request_count": {"type": "integer", "minimum": 0}, "intent_service_event_count": {"type": "integer", "minimum": 0}, "approval_service_event_count": {"type": "integer", "minimum": 0}, "intent_approval_service_latency_ms": {"type": "number", "minimum": 0}, "human_event_count": {"type": "integer", "minimum": 0}, "human_active_seconds": {"type": "number", "minimum": 0}, "human_efficiency_not_measured": {"type": "boolean", "const": true}, "needs_operator": {"type": "boolean"}, "evidence_completeness": {"type": "number", "minimum": 0, "maximum": 1}, "setup_artifact_bytes": {"type": "integer", "minimum": 0}, "governance_artifact_bytes": {"type": "integer", "minimum": 0}, "total_artifact_bytes": {"type": "integer", "minimum": 0}}},
+    "artifact_inventory": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["path", "sha256", "size_bytes", "category", "required", "observed"], "properties": {"path": {"type": "string", "minLength": 1}, "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "size_bytes": {"type": "integer", "minimum": 1}, "category": {"type": "string", "enum": ["setup", "governance", "delivery"]}, "required": {"type": "boolean"}, "observed": {"type": "boolean"}}}},
     "human_events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type", "seconds"], "properties": {"type": {"type": "string", "enum": ["operator_authorization", "operator_confirmation", "operator_adjudication"]}, "seconds": {"type": "number", "minimum": 0}}}},
-    "automated_events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type", "latency_ms"], "properties": {"type": {"type": "string", "enum": ["intent_service_event", "approval_service_event"]}, "latency_ms": {"type": "number", "minimum": 0}}}},
+    "automated_events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type", "started_at", "ended_at", "latency_ms", "evidence_sha256"], "properties": {"type": {"type": "string", "enum": ["intent_service_event", "clarification_request_event", "approval_service_event"]}, "started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "latency_ms": {"type": "number", "minimum": 0}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
     "command_evidence": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "attempt_id", "argv", "exit_code", "stdout_sha256", "stderr_sha256", "raw_provider_output_sha256"], "properties": {"evidence_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "attempt_id": {"type": "string", "pattern": "^attempt-[0-9]{3}$"}, "argv": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}}, "exit_code": {"type": "integer"}, "stdout_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "stderr_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "raw_provider_output_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
     "changed_files": {"type": "array", "items": {"type": "string", "minLength": 1}},
     "final_candidate_tree_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
@@ -89,32 +103,30 @@
           "items": {
             "type": "object",
             "additionalProperties": false,
-            "required": ["role", "reason", "status", "expert_attempt_id", "rereview_attempt_id", "parent_digest", "candidate_digest", "child_session", "finding_count", "severe_finding_count", "finding_digest", "repair_digest", "repaired_candidate_digest", "rereview_digest", "review_argv", "review_exit_code", "rereview_argv", "rereview_exit_code", "rereview_raw_output_sha256", "snapshot_sha256", "input_sha256", "raw_output_sha256", "parent_tree_before_sha256", "parent_tree_after_sha256"],
+            "required": ["role", "reason", "status", "expert_attempt_id", "expert_attempt_status", "parent_digest", "candidate_digest", "child_session", "token_usage", "finding_count", "severe_finding_count", "finding_digest", "repair_digest", "repaired_candidate_digest", "review_argv", "review_exit_code", "snapshot_sha256", "input_sha256", "raw_output_sha256", "parent_tree_before_sha256", "parent_tree_after_sha256", "rereviews"],
             "properties": {
               "role": {"type": "string", "enum": ["primary", "cross-risk"]},
               "reason": {"type": "string", "minLength": 1},
               "status": {"type": "string", "enum": ["pass", "fail", "conflict"]},
               "expert_attempt_id": {"type": "string", "pattern": "^attempt-[0-9]{3}$"},
-              "rereview_attempt_id": {"type": ["string", "null"], "pattern": "^attempt-[0-9]{3}$"},
+              "expert_attempt_status": {"type": "string", "enum": ["completed", "technical_failure", "failed", "timeout", "needs_operator", "budget_exhausted"]},
               "parent_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "candidate_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "child_session": {"type": "string", "minLength": 1},
+              "token_usage": {"type": "object", "additionalProperties": false, "required": ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"], "properties": {"input_tokens": {"type": "integer", "minimum": 0}, "cached_input_tokens": {"type": "integer", "minimum": 0}, "output_tokens": {"type": "integer", "minimum": 0}, "reasoning_output_tokens": {"type": "integer", "minimum": 0}}},
               "finding_count": {"type": "integer", "minimum": 0},
               "severe_finding_count": {"type": "integer", "minimum": 0},
               "finding_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
               "repair_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
               "repaired_candidate_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
-              "rereview_digest": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
               "review_argv": {"type": "array", "minItems": 3, "items": {"type": "string", "minLength": 1}},
               "review_exit_code": {"type": "integer"},
-              "rereview_argv": {"type": ["array", "null"], "minItems": 3, "items": {"type": "string", "minLength": 1}},
-              "rereview_exit_code": {"type": ["integer", "null"]},
-              "rereview_raw_output_sha256": {"type": ["string", "null"], "pattern": "^[a-f0-9]{64}$"},
               "snapshot_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "raw_output_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
               "parent_tree_before_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
-              "parent_tree_after_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+              "parent_tree_after_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+              "rereviews": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["attempt_id", "status", "child_session", "token_usage", "raw_output_sha256", "finding_digest", "repair_digest", "candidate_digest", "argv", "exit_code", "snapshot_sha256", "input_sha256", "parent_tree_before_sha256", "parent_tree_after_sha256"], "properties": {"attempt_id": {"type": "string", "pattern": "^attempt-[0-9]{3}$"}, "status": {"type": "string", "enum": ["completed", "technical_failure", "failed", "timeout", "needs_operator", "budget_exhausted"]}, "child_session": {"type": "string", "minLength": 1}, "token_usage": {"type": "object", "additionalProperties": false, "required": ["input_tokens", "cached_input_tokens", "output_tokens", "reasoning_output_tokens"], "properties": {"input_tokens": {"type": "integer", "minimum": 0}, "cached_input_tokens": {"type": "integer", "minimum": 0}, "output_tokens": {"type": "integer", "minimum": 0}, "reasoning_output_tokens": {"type": "integer", "minimum": 0}}}, "raw_output_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "finding_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "repair_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "candidate_digest": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "argv": {"type": "array", "minItems": 3, "items": {"type": "string", "minLength": 1}}, "exit_code": {"type": "integer"}, "snapshot_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "input_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "parent_tree_before_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "parent_tree_after_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}}
             }
           }
         }

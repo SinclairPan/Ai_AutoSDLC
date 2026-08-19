@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 
 @dataclass(frozen=True)
@@ -268,6 +269,28 @@ _PRIVATE_PATH = re.compile(
     re.I,
 )
 _HTTP_URI = re.compile(r"https?://[^\s'\"]+", re.I)
+_JSON_TYPES = {
+    "object",
+    "array",
+    "string",
+    "number",
+    "integer",
+    "boolean",
+    "null",
+}
+_FAILURE_CLASSIFICATIONS = {
+    "completed": {"none"},
+    "failed": {
+        "provider_pre_output_failure",
+        "writer_failure",
+        "expert_failure",
+        "evaluation_failure",
+        "evidence_failure",
+    },
+    "timeout": {"timeout"},
+    "needs_operator": {"expert_conflict"},
+    "budget_exhausted": {"provider_budget_exhausted"},
+}
 _BENCHMARK_ROOT = (
     Path(__file__).resolve().parents[2] / "benchmarks" / "ai-sdlc-v2-benefits"
 )
@@ -345,6 +368,9 @@ def verify_receipt(
     )
     if issues:
         return issues
+    _scan_non_placeholder_digests(receipt, "$", "receipt", issues)
+    if issues:
+        return issues
     _validate_receipt_protocol_binding(receipt, protocol, issues)
     if issues:
         return issues
@@ -362,9 +388,7 @@ def verify_receipt(
             )
         )
     for name, value in digests.items():
-        if name.endswith("sha256") and (
-            not isinstance(value, str) or not _is_digest(value)
-        ):
+        if name.endswith("sha256") and not _is_non_placeholder_digest(value):
             issues.append(
                 BenchmarkIssue("receipt.digest", f"{name} is not a SHA-256 digest")
             )
@@ -388,6 +412,14 @@ def verify_receipt(
     _validate_token_usage(receipt.get("token_usage"), issues)
     _validate_human_events(receipt.get("human_events"), issues)
     _validate_receipt_measurements(receipt, issues)
+    allowed_classifications = _FAILURE_CLASSIFICATIONS.get(receipt.get("status"), set())
+    if receipt.get("failure_classification") not in allowed_classifications:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.failure-classification",
+                "failure classification is not allowed for the run status",
+            )
+        )
     return issues
 
 
@@ -403,6 +435,9 @@ def verify_summary(
         "summary",
         issues,
     )
+    if issues:
+        return issues
+    _scan_non_placeholder_digests(summary, "$", "summary", issues)
     if issues:
         return issues
     try:
@@ -445,7 +480,7 @@ def verify_summary(
                     f"summary row {index} must match the canonical protocol row",
                 )
             )
-        if not isinstance(receipt_digest, str) or not _is_digest(receipt_digest):
+        if not _is_non_placeholder_digest(receipt_digest):
             issues.append(
                 BenchmarkIssue("summary.digest", "receipt digest must be SHA-256")
             )
@@ -549,7 +584,7 @@ def _validate_receipt_ledger_binding(
     ledger_path: Path,
     issues: list[BenchmarkIssue],
 ) -> None:
-    """Bind receipt attempts and A11 evidence to the validated persisted v3 ledger."""
+    """Bind receipt attempts and A11 evidence to the validated persisted v4 ledger."""
     if not ledger_path.is_file():
         issues.append(BenchmarkIssue("receipt.ledger", "attempt ledger is missing"))
         return
@@ -732,282 +767,262 @@ def _validate_receipt_ledger_binding(
         issues.append(
             BenchmarkIssue("receipt.close", "an unclosed Loop cannot carry Close evidence")
         )
-    if arm == "A11" and status == "completed":
-        _validate_a11_receipt_evidence(receipt, expected, writer, issues)
-    elif arm == "A11" and status == "needs_operator":
-        _validate_a11_conflict_evidence(receipt, expected, issues)
-    elif arm == "A11" and status in {"failed", "timeout", "budget_exhausted"}:
-        _validate_a11_terminal_failure_evidence(receipt, expected, issues)
+    if arm == "A11":
+        _validate_a11_attempt_closure(receipt, expected, writer, issues)
 
 
-def _validate_a11_receipt_evidence(
+def _validate_a11_attempt_closure(
     receipt: Mapping[str, object],
     attempts: list[Mapping[str, object]],
     writer: Mapping[str, object],
     issues: list[BenchmarkIssue],
 ) -> None:
-    loop = _mapping(receipt.get("loop"))
-    callbacks = loop.get("expert_callbacks")
+    callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
     if not isinstance(callbacks, list):
         issues.append(BenchmarkIssue("receipt.a11.evidence", "callbacks are missing"))
         return
-    provider_attempts = {
+    providers = {
         item.get("attempt_id"): item
         for item in receipt.get("provider_attempts", [])
         if isinstance(item, Mapping)
     }
-    completed_experts = {
-        attempt.get("role"): attempt
-        for attempt in attempts
-        if attempt.get("effective_kind")
-        in {"primary_expert", "cross_risk_expert"}
-        and attempt.get("status") == "completed"
+    first_reviews = {
+        item.get("attempt_id"): item
+        for item in attempts
+        if item.get("effective_kind") in {"primary_expert", "cross_risk_expert"}
     }
-    if len(callbacks) != len(completed_experts):
+    callback_ids = [
+        item.get("expert_attempt_id")
+        for item in callbacks
+        if isinstance(item, Mapping)
+    ]
+    issue_code = (
+        "receipt.a11.conflict"
+        if receipt.get("status") == "needs_operator"
+        else "receipt.a11.evidence"
+    )
+    if (
+        len(callback_ids) != len(callbacks)
+        or len(callback_ids) != len(set(callback_ids))
+        or set(callback_ids) != set(first_reviews)
+    ):
         issues.append(
             BenchmarkIssue(
-                "receipt.a11.evidence",
-                "callbacks must bind every completed first-review role exactly once",
+                issue_code,
+                "expert callbacks must close over every started first-review attempt exactly once",
             )
         )
         return
-    close = _mapping(loop.get("close"))
+    rereviews_by_parent: dict[object, list[Mapping[str, object]]] = {}
+    for attempt in attempts:
+        if attempt.get("effective_kind") == "expert_rereview":
+            rereviews_by_parent.setdefault(attempt.get("parent_attempt_id"), []).append(
+                attempt
+            )
     loop_type, loop_id = _expected_loop_identity(receipt)
-    if not _is_loop_close_command(
-        close.get("argv"),
-        loop_type=loop_type,
-        loop_id=loop_id,
-        review_digest=writer.get("candidate_digest"),
-    ):
-        issues.append(
-            BenchmarkIssue(
-                "receipt.a11.evidence", "writer Close command is incomplete"
-            )
-        )
     writer_history = writer.get("history")
-    writer_final_sequence = writer.get("sequence")
-    if not isinstance(writer_history, list) or not _non_bool_int(
-        writer_final_sequence
-    ):
-        issues.append(
-            BenchmarkIssue("receipt.a11.evidence", "writer history is unavailable")
-        )
-        return
-    seen_roles: set[object] = set()
+    repairs = (
+        [
+            event
+            for event in writer_history
+            if isinstance(event, Mapping) and event.get("repair_digest") is not None
+        ]
+        if isinstance(writer_history, list)
+        else []
+    )
+    conflict_roles: list[object] = []
+    completed_roles: set[object] = set()
     for callback in callbacks:
         if not isinstance(callback, Mapping):
-            issues.append(
-                BenchmarkIssue("receipt.a11.evidence", "callback must be an object")
-            )
             continue
-        role = callback.get("role")
-        if role in seen_roles or role not in completed_experts:
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", "callback role is duplicate or unbound"
-                )
-            )
-            continue
-        seen_roles.add(role)
-        expert = completed_experts[role]
-        expert_receipt = provider_attempts.get(expert.get("attempt_id"))
+        expert = first_reviews[callback.get("expert_attempt_id")]
+        provider = providers.get(expert.get("attempt_id"))
         reason = callback.get("reason")
-        if not isinstance(reason, str) or reason.strip().lower() in {
-            "tbd",
-            "todo",
-            "placeholder",
-            "unknown",
-            "not_applicable",
-        }:
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} selection reason is a placeholder"
-                )
-            )
-        if (
-            callback.get("status") != "pass"
-            or callback.get("expert_attempt_id") != expert.get("attempt_id")
-            or callback.get("parent_digest") != expert.get("parent_digest")
-            or callback.get("candidate_digest") != expert.get("candidate_digest")
-            or not isinstance(expert_receipt, Mapping)
-            or callback.get("child_session") != expert_receipt.get("child_session")
-            or callback.get("raw_output_sha256")
-            != expert_receipt.get("raw_provider_output_sha256")
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence",
-                    f"{role} callback does not bind the completed expert",
-                )
-            )
-        review_argv = callback.get("review_argv")
-        if not _is_loop_review_command(
-            review_argv,
-            loop_type=loop_type,
-            loop_id=loop_id,
-            expected_digest=callback.get("parent_digest"),
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} review command is incomplete"
-                )
-            )
-        if callback.get("review_exit_code") != 0:
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} review command did not pass"
-                )
-            )
-        if callback.get("parent_tree_before_sha256") != callback.get(
-            "parent_tree_after_sha256"
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.tree",
-                    f"{role} expert changed the frozen parent tree",
-                )
-            )
-        proof_digests = (
+        review_exit = callback.get("review_exit_code")
+        expected_exit_success = expert.get("status") == "completed"
+        proof_keys = (
             "snapshot_sha256",
             "input_sha256",
             "raw_output_sha256",
             "parent_tree_before_sha256",
             "parent_tree_after_sha256",
         )
-        if any(
-            not _is_non_placeholder_digest(callback.get(key))
-            for key in proof_digests
+        if (
+            not isinstance(reason, str)
+            or reason.strip().lower()
+            in {"", "tbd", "todo", "placeholder", "unknown", "not_applicable"}
+            or not isinstance(provider, Mapping)
+            or callback.get("role") != expert.get("role")
+            or callback.get("expert_attempt_status") != expert.get("status")
+            or callback.get("parent_digest") != expert.get("parent_digest")
+            or callback.get("candidate_digest") != expert.get("candidate_digest")
+            or callback.get("child_session") != provider.get("child_session")
+            or callback.get("token_usage") != provider.get("token_usage")
+            or callback.get("raw_output_sha256")
+            != provider.get("raw_provider_output_sha256")
+            or not _is_loop_review_command(
+                callback.get("review_argv"),
+                loop_type=loop_type,
+                loop_id=loop_id,
+                expected_digest=callback.get("parent_digest"),
+            )
+            or not _non_bool_int(review_exit)
+            or (expected_exit_success and review_exit != 0)
+            or (not expected_exit_success and review_exit == 0)
+            or any(
+                not _is_non_placeholder_digest(callback.get(key))
+                for key in proof_keys
+            )
+            or callback.get("parent_tree_before_sha256")
+            != callback.get("parent_tree_after_sha256")
         ):
             issues.append(
                 BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} proof digest is a placeholder"
+                    issue_code,
+                    "callback does not bind its started expert attempt and immutable evidence",
                 )
             )
+            continue
+        if expert.get("status") == "completed":
+            completed_roles.add(expert.get("role"))
+        finding = expert.get("finding_digest")
         finding_count = callback.get("finding_count")
         severe_count = callback.get("severe_finding_count")
         if (
             not _non_bool_int(finding_count)
             or not _non_bool_int(severe_count)
             or severe_count > finding_count
+            or (finding is None and (finding_count != 0 or severe_count != 0))
+            or (finding is not None and finding_count < 1)
+            or callback.get("finding_digest") != finding
+        ):
+            issues.append(
+                BenchmarkIssue(issue_code, "callback Finding evidence is not reproducible")
+            )
+        matching_repairs = [
+            event for event in repairs if event.get("finding_digest") == finding
+        ]
+        repair = matching_repairs[-1] if matching_repairs else None
+        expected_repair = repair.get("repair_digest") if repair else None
+        expected_candidate = repair.get("candidate_digest") if repair else None
+        if (
+            callback.get("repair_digest") != expected_repair
+            or callback.get("repaired_candidate_digest") != expected_candidate
         ):
             issues.append(
                 BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} finding counts are invalid"
+                    issue_code,
+                    "callback must disclose the writer repair and new Candidate exactly",
+                )
+            )
+        published_rereviews = callback.get("rereviews")
+        expected_rereviews = rereviews_by_parent.get(expert.get("attempt_id"), [])
+        if not isinstance(published_rereviews, list):
+            issues.append(BenchmarkIssue(issue_code, "rereviews must be an array"))
+            continue
+        published_ids = [
+            item.get("attempt_id")
+            for item in published_rereviews
+            if isinstance(item, Mapping)
+        ]
+        expected_ids = [item.get("attempt_id") for item in expected_rereviews]
+        if (
+            len(published_ids) != len(published_rereviews)
+            or len(published_ids) != len(set(published_ids))
+            or published_ids != expected_ids
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    issue_code,
+                    "callback must disclose every started rereview attempt exactly once",
                 )
             )
             continue
-        ledger_finding = expert.get("finding_digest")
-        if finding_count == 0:
-            if ledger_finding is not None or any(
-                callback.get(key) is not None
-                for key in (
-                    "finding_digest",
-                    "repair_digest",
-                    "repaired_candidate_digest",
-                    "rereview_attempt_id",
-                    "rereview_digest",
-                    "rereview_argv",
-                    "rereview_exit_code",
-                    "rereview_raw_output_sha256",
+        completed_rereview = False
+        for published, rereview in zip(
+            published_rereviews, expected_rereviews, strict=True
+        ):
+            rereview_provider = providers.get(rereview.get("attempt_id"))
+            rereview_exit = published.get("exit_code")
+            rereview_completed = rereview.get("status") == "completed"
+            completed_rereview = completed_rereview or rereview_completed
+            rereview_proofs = (
+                "snapshot_sha256",
+                "input_sha256",
+                "raw_output_sha256",
+                "parent_tree_before_sha256",
+                "parent_tree_after_sha256",
+            )
+            if (
+                not isinstance(rereview_provider, Mapping)
+                or published.get("status") != rereview.get("status")
+                or published.get("child_session") != rereview_provider.get("child_session")
+                or published.get("token_usage") != rereview_provider.get("token_usage")
+                or published.get("raw_output_sha256")
+                != rereview_provider.get("raw_provider_output_sha256")
+                or published.get("finding_digest") != rereview.get("finding_digest")
+                or published.get("repair_digest") != rereview.get("repair_digest")
+                or published.get("candidate_digest") != rereview.get("candidate_digest")
+                or not _is_loop_review_command(
+                    published.get("argv"),
+                    loop_type=loop_type,
+                    loop_id=loop_id,
+                    expected_digest=published.get("candidate_digest"),
                 )
+                or not _non_bool_int(rereview_exit)
+                or (rereview_completed and rereview_exit != 0)
+                or (not rereview_completed and rereview_exit == 0)
+                or any(
+                    not _is_non_placeholder_digest(published.get(key))
+                    for key in rereview_proofs
+                )
+                or published.get("parent_tree_before_sha256")
+                != published.get("parent_tree_after_sha256")
             ):
                 issues.append(
                     BenchmarkIssue(
-                        "receipt.a11.evidence",
-                        f"{role} no-finding callback carries repair evidence",
+                        issue_code,
+                        "rereview disclosure does not bind its Provider attempt, lineage, command, and evidence",
                     )
                 )
-            continue
-        required_repair = {
-            "finding_digest",
-            "repair_digest",
-            "repaired_candidate_digest",
-            "rereview_attempt_id",
-            "rereview_digest",
-            "rereview_argv",
-            "rereview_exit_code",
-            "rereview_raw_output_sha256",
-        }
-        if required_repair - set(callback):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} repair/rereview evidence is missing"
-                )
-            )
-            continue
-        if callback.get("finding_digest") != ledger_finding:
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} Finding digest is unbound"
-                )
-            )
-        repair = _find_repair_event(
-            writer,
-            callback.get("finding_digest"),
-            callback.get("repair_digest"),
-            callback.get("repaired_candidate_digest"),
-        )
-        rereview = next(
-            (
-                attempt
-                for attempt in attempts
-                if attempt.get("attempt_id") == callback.get("rereview_attempt_id")
-                and attempt.get("effective_kind") == "expert_rereview"
-            ),
-            None,
-        )
-        rereview_receipt = (
-            provider_attempts.get(rereview.get("attempt_id"))
-            if isinstance(rereview, Mapping)
-            else None
-        )
-        rereview_argv = callback.get("rereview_argv")
-        if not _is_loop_review_command(
-            rereview_argv,
-            loop_type=loop_type,
-            loop_id=loop_id,
-            expected_digest=callback.get("rereview_digest"),
+        expected_callback_status = "fail"
+        if receipt.get("status") == "needs_operator" and finding is not None:
+            expected_callback_status = "conflict"
+            conflict_roles.append(expert.get("role"))
+        elif expert.get("status") == "completed" and (
+            finding is None or completed_rereview
         ):
+            expected_callback_status = "pass"
+        if callback.get("status") != expected_callback_status:
             issues.append(
                 BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} rereview command is incomplete"
+                    issue_code,
+                    "callback status does not follow the actual attempt and repair closure",
                 )
             )
-        if callback.get("rereview_exit_code") != 0 or not _is_non_placeholder_digest(
-            callback.get("rereview_raw_output_sha256")
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.evidence", f"{role} rereview output is incomplete"
-                )
+    required_roles = {"primary"}
+    if receipt.get("fixture") == "multi-tenant-security-review":
+        required_roles.add("cross-risk")
+    if receipt.get("status") == "completed" and completed_roles != required_roles:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.roles",
+                "completed A11 run lacks the required completed expert roles",
             )
-        if (
-            repair is None
-            or rereview is None
-            or rereview.get("status") != "completed"
-            or rereview.get("role") != role
-            or rereview.get("parent_attempt_id") != expert.get("attempt_id")
-            or rereview.get("finding_digest") != callback.get("finding_digest")
-            or rereview.get("repair_digest") != callback.get("repair_digest")
-            or rereview.get("candidate_digest")
-            != callback.get("repaired_candidate_digest")
-            or callback.get("rereview_digest") != rereview.get("candidate_digest")
-            or not isinstance(rereview_receipt, Mapping)
-            or callback.get("rereview_raw_output_sha256")
-            != rereview_receipt.get("raw_provider_output_sha256")
-            or not (
-                expert.get("sequence")
-                < repair.get("sequence")
-                < rereview.get("sequence")
-                < writer_final_sequence
+        )
+    if receipt.get("status") == "needs_operator" and (
+        len(conflict_roles) < 2
+        or len(conflict_roles) != len(set(conflict_roles))
+        or set(conflict_roles) != required_roles
+        or repairs
+        or any(rereviews_by_parent.values())
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.conflict",
+                "needs_operator requires a unique immutable conflict multiset without repair",
             )
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.order",
-                    f"{role} writer/Finding/repair/rereview/Close order is invalid",
-                )
-            )
+        )
 
 
 def _validate_command_evidence(
@@ -1273,337 +1288,6 @@ def _is_empty_loop_evidence(close: Mapping[str, object], state: str) -> bool:
         close.get(key) is None
         for key in ("argv", "exit_code", "review_digest", "close_digest")
     )
-
-
-def _validate_a11_conflict_evidence(
-    receipt: Mapping[str, object],
-    attempts: list[Mapping[str, object]],
-    issues: list[BenchmarkIssue],
-) -> None:
-    loop_type, loop_id = _expected_loop_identity(receipt)
-    callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
-    if not isinstance(callbacks, list) or len(callbacks) < 2:
-        issues.append(
-            BenchmarkIssue(
-                "receipt.a11.conflict",
-                "needs_operator requires at least two conflicting expert callbacks",
-            )
-        )
-        return
-    providers = {
-        item.get("attempt_id"): item
-        for item in receipt.get("provider_attempts", [])
-        if isinstance(item, Mapping)
-    }
-    experts = {
-        item.get("attempt_id"): item
-        for item in attempts
-        if item.get("effective_kind") in {"primary_expert", "cross_risk_expert"}
-        and item.get("status") == "completed"
-    }
-    callback_ids = {
-        item.get("expert_attempt_id")
-        for item in callbacks
-        if isinstance(item, Mapping)
-    }
-    if callback_ids != set(experts):
-        issues.append(
-            BenchmarkIssue(
-                "receipt.a11.conflict",
-                "conflict callbacks must bind every completed first-review expert",
-            )
-        )
-    for callback in callbacks:
-        if not isinstance(callback, Mapping):
-            issues.append(
-                BenchmarkIssue("receipt.a11.conflict", "conflict callback is malformed")
-            )
-            continue
-        expert = experts.get(callback.get("expert_attempt_id"))
-        provider = providers.get(callback.get("expert_attempt_id"))
-        reason = callback.get("reason")
-        proof_keys = (
-            "finding_digest",
-            "snapshot_sha256",
-            "input_sha256",
-            "raw_output_sha256",
-            "parent_tree_before_sha256",
-            "parent_tree_after_sha256",
-        )
-        if (
-            callback.get("status") != "conflict"
-            or not isinstance(reason, str)
-            or reason.strip().lower()
-            in {"", "tbd", "todo", "placeholder", "unknown", "not_applicable"}
-            or not isinstance(expert, Mapping)
-            or not isinstance(provider, Mapping)
-            or callback.get("role") != expert.get("role")
-            or callback.get("child_session") != provider.get("child_session")
-            or callback.get("parent_digest") != expert.get("parent_digest")
-            or callback.get("candidate_digest") != expert.get("candidate_digest")
-            or callback.get("finding_digest") != expert.get("finding_digest")
-            or callback.get("raw_output_sha256")
-            != provider.get("raw_provider_output_sha256")
-            or not _is_loop_review_command(
-                callback.get("review_argv"),
-                loop_type=loop_type,
-                loop_id=loop_id,
-                expected_digest=callback.get("parent_digest"),
-            )
-            or callback.get("review_exit_code") != 0
-            or any(
-                not _is_non_placeholder_digest(callback.get(key))
-                for key in proof_keys
-            )
-            or callback.get("parent_tree_before_sha256")
-            != callback.get("parent_tree_after_sha256")
-            or not _non_bool_int(callback.get("finding_count"))
-            or callback.get("finding_count", 0) < 1
-            or not _non_bool_int(callback.get("severe_finding_count"))
-            or callback.get("severe_finding_count", 0)
-            > callback.get("finding_count", 0)
-            or any(
-                callback.get(key) is not None
-                for key in (
-                    "repair_digest",
-                    "repaired_candidate_digest",
-                    "rereview_attempt_id",
-                    "rereview_digest",
-                    "rereview_argv",
-                    "rereview_exit_code",
-                    "rereview_raw_output_sha256",
-                )
-            )
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.conflict",
-                    "needs_operator callback lacks real immutable conflict evidence",
-                )
-            )
-
-
-def _validate_a11_terminal_failure_evidence(
-    receipt: Mapping[str, object],
-    attempts: list[Mapping[str, object]],
-    issues: list[BenchmarkIssue],
-) -> None:
-    callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
-    if not isinstance(callbacks, list):
-        issues.append(
-            BenchmarkIssue(
-                "receipt.a11.failure", "terminal A11 callbacks must be an array"
-            )
-        )
-        return
-    experts = {
-        attempt.get("attempt_id"): attempt
-        for attempt in attempts
-        if attempt.get("effective_kind")
-        in {"primary_expert", "cross_risk_expert"}
-        and attempt.get("status") == "completed"
-    }
-    callback_ids = [
-        callback.get("expert_attempt_id")
-        for callback in callbacks
-        if isinstance(callback, Mapping)
-    ]
-    if (
-        len(callback_ids) != len(callbacks)
-        or len(callback_ids) != len(set(callback_ids))
-        or set(callback_ids) != set(experts)
-    ):
-        issues.append(
-            BenchmarkIssue(
-                "receipt.a11.failure",
-                "terminal A11 callbacks must close over current-run completed experts exactly",
-            )
-        )
-        return
-    providers = {
-        attempt.get("attempt_id"): attempt
-        for attempt in receipt.get("provider_attempts", [])
-        if isinstance(attempt, Mapping)
-    }
-    completed_rereviews = {
-        attempt.get("attempt_id"): attempt
-        for attempt in attempts
-        if attempt.get("effective_kind") == "expert_rereview"
-        and attempt.get("status") == "completed"
-    }
-    published_rereview_ids = [
-        callback.get("rereview_attempt_id")
-        for callback in callbacks
-        if isinstance(callback, Mapping)
-        and callback.get("rereview_attempt_id") is not None
-    ]
-    if (
-        len(published_rereview_ids) != len(set(published_rereview_ids))
-        or set(published_rereview_ids) != set(completed_rereviews)
-    ):
-        issues.append(
-            BenchmarkIssue(
-                "receipt.a11.failure",
-                "terminal A11 callbacks must disclose every completed rereview exactly once",
-            )
-        )
-    rereviews_by_parent = {
-        attempt.get("parent_attempt_id"): attempt
-        for attempt in completed_rereviews.values()
-    }
-    writers = [
-        attempt
-        for attempt in attempts
-        if attempt.get("effective_kind") == "writer"
-        and attempt.get("status") != "technical_failure"
-    ]
-    writer = writers[0] if len(writers) == 1 else None
-    loop_type, loop_id = _expected_loop_identity(receipt)
-    nullable_repair = (
-        "repair_digest",
-        "repaired_candidate_digest",
-        "rereview_attempt_id",
-        "rereview_digest",
-        "rereview_argv",
-        "rereview_exit_code",
-        "rereview_raw_output_sha256",
-    )
-    for callback in callbacks:
-        if not isinstance(callback, Mapping):
-            continue
-        expert = experts[callback.get("expert_attempt_id")]
-        provider = providers.get(expert.get("attempt_id"))
-        reason = callback.get("reason")
-        finding_count = callback.get("finding_count")
-        severe_count = callback.get("severe_finding_count")
-        proof_digests = (
-            "snapshot_sha256",
-            "input_sha256",
-            "raw_output_sha256",
-            "parent_tree_before_sha256",
-            "parent_tree_after_sha256",
-        )
-        if (
-            callback.get("status") not in {"pass", "fail"}
-            or not isinstance(reason, str)
-            or reason.strip().lower()
-            in {"", "tbd", "todo", "placeholder", "unknown", "not_applicable"}
-            or not isinstance(provider, Mapping)
-            or callback.get("role") != expert.get("role")
-            or callback.get("parent_digest") != expert.get("parent_digest")
-            or callback.get("candidate_digest") != expert.get("candidate_digest")
-            or callback.get("child_session") != provider.get("child_session")
-            or callback.get("raw_output_sha256")
-            != provider.get("raw_provider_output_sha256")
-            or callback.get("review_exit_code") != 0
-            or not _is_loop_review_command(
-                callback.get("review_argv"),
-                loop_type=loop_type,
-                loop_id=loop_id,
-                expected_digest=callback.get("parent_digest"),
-            )
-            or any(
-                not _is_non_placeholder_digest(callback.get(key))
-                for key in proof_digests
-            )
-            or callback.get("parent_tree_before_sha256")
-            != callback.get("parent_tree_after_sha256")
-            or not _non_bool_int(finding_count)
-            or not _non_bool_int(severe_count)
-            or severe_count > finding_count
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.failure",
-                    "terminal A11 callback does not bind its completed expert",
-                )
-            )
-            continue
-        ledger_finding = expert.get("finding_digest")
-        if ledger_finding is None:
-            if (
-                finding_count != 0
-                or severe_count != 0
-                or callback.get("finding_digest") is not None
-                or any(callback.get(key) is not None for key in nullable_repair)
-            ):
-                issues.append(
-                    BenchmarkIssue(
-                        "receipt.a11.failure",
-                        "no-finding terminal callback carries unbound repair evidence",
-                    )
-                )
-            continue
-        if finding_count < 1 or callback.get("finding_digest") != ledger_finding:
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.failure",
-                    "terminal callback Finding does not bind the expert ledger event",
-                )
-            )
-        rereview = rereviews_by_parent.get(expert.get("attempt_id"))
-        if rereview is None:
-            if any(callback.get(key) is not None for key in nullable_repair):
-                issues.append(
-                    BenchmarkIssue(
-                        "receipt.a11.failure",
-                        "terminal callback publishes repair evidence without a completed rereview",
-                    )
-                )
-            continue
-        if any(callback.get(key) is None for key in nullable_repair):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.failure",
-                    "terminal callback omits its completed repair/rereview evidence",
-                )
-            )
-            continue
-        repair = (
-            _find_repair_event(
-                writer,
-                ledger_finding,
-                callback.get("repair_digest"),
-                callback.get("repaired_candidate_digest"),
-            )
-            if isinstance(writer, Mapping)
-            else None
-        )
-        rereview_provider = providers.get(rereview.get("attempt_id"))
-        writer_sequence = writer.get("sequence") if isinstance(writer, Mapping) else None
-        if (
-            callback.get("rereview_attempt_id") != rereview.get("attempt_id")
-            or rereview.get("parent_attempt_id") != expert.get("attempt_id")
-            or rereview.get("finding_digest") != ledger_finding
-            or rereview.get("repair_digest") != callback.get("repair_digest")
-            or rereview.get("candidate_digest")
-            != callback.get("repaired_candidate_digest")
-            or callback.get("rereview_digest") != rereview.get("candidate_digest")
-            or not isinstance(rereview_provider, Mapping)
-            or callback.get("rereview_raw_output_sha256")
-            != rereview_provider.get("raw_provider_output_sha256")
-            or callback.get("rereview_exit_code") != 0
-            or not _is_loop_review_command(
-                callback.get("rereview_argv"),
-                loop_type=loop_type,
-                loop_id=loop_id,
-                expected_digest=callback.get("rereview_digest"),
-            )
-            or not isinstance(repair, Mapping)
-            or not _non_bool_int(writer_sequence)
-            or not (
-                expert.get("sequence")
-                < repair.get("sequence")
-                < rereview.get("sequence")
-                < writer_sequence
-            )
-        ):
-            issues.append(
-                BenchmarkIssue(
-                    "receipt.a11.failure",
-                    "terminal callback rereview evidence is unbound or out of order",
-                )
-            )
 
 
 def _validate_receipt_verified_delivery_timing(
@@ -2621,9 +2305,20 @@ def _validate_json_schema(
 ) -> None:
     """Validate the frozen, deliberately small JSON Schema subset deterministically."""
     expected_type = schema.get("type")
-    if isinstance(expected_type, str) and not _matches_json_type(value, expected_type):
+    expected_types = (
+        [expected_type]
+        if isinstance(expected_type, str)
+        else expected_type
+        if isinstance(expected_type, list)
+        else []
+    )
+    if expected_types and not any(
+        isinstance(item, str) and _matches_json_type(value, item)
+        for item in expected_types
+    ):
+        label = " or ".join(str(item) for item in expected_types)
         issues.append(
-            BenchmarkIssue(f"{scope}.schema", f"{path} must be {expected_type}")
+            BenchmarkIssue(f"{scope}.schema", f"{path} must be {label}")
         )
         return
     if "const" in schema and value != schema["const"]:
@@ -3078,22 +2773,27 @@ def _validate_schema_node(
                 BenchmarkIssue("provider-schema.keyword", f"{path}: unsupported {key}")
             )
     declared_type = node.get("type")
-    if declared_type not in {
-        "object",
-        "array",
-        "string",
-        "number",
-        "integer",
-        "boolean",
-        "null",
-    }:
+    if isinstance(declared_type, str):
+        declared_types = [declared_type]
+    elif isinstance(declared_type, list):
+        declared_types = declared_type
+    else:
+        declared_types = []
+    type_set = {
+        item for item in declared_types if isinstance(item, str) and item in _JSON_TYPES
+    }
+    if (
+        not declared_types
+        or len(type_set) != len(declared_types)
+        or len(set(declared_types)) != len(declared_types)
+    ):
         issues.append(
             BenchmarkIssue(
                 "provider-schema.type", f"{path}: explicit supported type is required"
             )
         )
     if "const" in node and (
-        not _value_matches_type(node["const"], declared_type)
+        not any(_value_matches_type(node["const"], item) for item in type_set)
         or not _is_finite_json_value(node["const"])
     ):
         issues.append(
@@ -3104,8 +2804,9 @@ def _validate_schema_node(
         if (
             not isinstance(enum, list)
             or not enum
+            or len({_canonical_json_value(value) for value in enum}) != len(enum)
             or any(
-                not _value_matches_type(value, declared_type)
+                not any(_value_matches_type(value, item) for item in type_set)
                 or not _is_finite_json_value(value)
                 for value in enum
             )
@@ -3114,7 +2815,7 @@ def _validate_schema_node(
                 BenchmarkIssue("provider-schema.type", f"{path}: enum must match type")
             )
     if "properties" in node:
-        if declared_type != "object" or not isinstance(node["properties"], Mapping):
+        if "object" not in type_set or not isinstance(node["properties"], Mapping):
             issues.append(
                 BenchmarkIssue(
                     "provider-schema.type", f"{path}: properties require object type"
@@ -3134,9 +2835,10 @@ def _validate_schema_node(
         required = node["required"]
         properties = node.get("properties")
         if (
-            declared_type != "object"
+            "object" not in type_set
             or not isinstance(required, list)
             or not all(isinstance(name, str) for name in required)
+            or len(set(required)) != len(required)
             or not isinstance(properties, Mapping)
             or not set(required) <= set(properties)
         ):
@@ -3146,21 +2848,21 @@ def _validate_schema_node(
                     f"{path}: required must name declared properties",
                 )
             )
-    if declared_type == "object" and node.get("additionalProperties") is not False:
+    if "object" in type_set and node.get("additionalProperties") is not False:
         issues.append(
             BenchmarkIssue(
                 "provider-schema.additional-properties",
                 f"{path}: object must be closed",
             )
         )
-    if declared_type == "array" and "items" not in node:
+    if "array" in type_set and "items" not in node:
         issues.append(
             BenchmarkIssue(
                 "provider-schema.items", f"{path}: array requires typed items"
             )
         )
     if "items" in node:
-        if declared_type != "array" or not isinstance(node["items"], Mapping):
+        if "array" not in type_set or not isinstance(node["items"], Mapping):
             issues.append(
                 BenchmarkIssue(
                     "provider-schema.type", f"{path}: items require array type"
@@ -3170,17 +2872,17 @@ def _validate_schema_node(
             _validate_schema_node(node["items"], f"{path}.items", issues)
     if (
         any(key in node for key in {"minLength", "maxLength", "pattern"})
-        and declared_type != "string"
+        and ("string" not in type_set or not type_set <= {"string", "null"})
     ):
         issues.append(
             BenchmarkIssue(
                 "provider-schema.type", f"{path}: string constraint needs string type"
             )
         )
-    if any(key in node for key in {"minimum", "maximum"}) and declared_type not in {
-        "number",
-        "integer",
-    }:
+    if any(key in node for key in {"minimum", "maximum"}) and (
+        not type_set & {"number", "integer"}
+        or not type_set <= {"number", "integer", "null"}
+    ):
         issues.append(
             BenchmarkIssue(
                 "provider-schema.type", f"{path}: numeric constraint needs number type"
@@ -3188,7 +2890,7 @@ def _validate_schema_node(
         )
     if (
         any(key in node for key in {"minItems", "maxItems"})
-        and declared_type != "array"
+        and ("array" not in type_set or not type_set <= {"array", "null"})
     ):
         issues.append(
             BenchmarkIssue(
@@ -3355,6 +3057,10 @@ def _is_finite_json_value(value: object) -> bool:
     return True
 
 
+def _canonical_json_value(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _missing_issues(
     value: Mapping[str, object],
     required: set[str],
@@ -3410,8 +3116,58 @@ def _scan_public_value(value: object, path: str, issues: list[BenchmarkIssue]) -
             )
 
 
+def _scan_non_placeholder_digests(
+    value: object, path: str, scope: str, issues: list[BenchmarkIssue]
+) -> None:
+    if isinstance(value, Mapping):
+        for key, child in value.items():
+            child_path = f"{path}.{key}"
+            is_digest_field = (
+                str(key).endswith(("_sha256", "_digest"))
+                or key
+                in {"evidence_id", "receipt_sha256", "sha256", "fixture_commitment"}
+            )
+            if is_digest_field and child is not None and not _is_non_placeholder_digest(
+                child
+            ):
+                issues.append(
+                    BenchmarkIssue(
+                        f"{scope}.digest",
+                        f"{child_path} must be a non-placeholder SHA-256 digest",
+                    )
+                )
+            _scan_non_placeholder_digests(child, child_path, scope, issues)
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            _scan_non_placeholder_digests(
+                child, f"{path}[{index}]", scope, issues
+            )
+
+
 def _is_private_path(value: str) -> bool:
-    return bool(_PRIVATE_PATH.search(_HTTP_URI.sub("", value)))
+    scrubbed = value
+    for match in reversed(list(_HTTP_URI.finditer(value))):
+        candidate = match.group(0)
+        try:
+            parsed = urlsplit(candidate)
+            _ = parsed.port
+        except ValueError:
+            continue
+        if (
+            parsed.scheme.lower() not in {"http", "https"}
+            or not parsed.hostname
+            or parsed.username is not None
+            or parsed.password is not None
+            or "\\" in parsed.netloc
+        ):
+            continue
+        retained = ""
+        if parsed.query:
+            retained += f"?{unquote(parsed.query)}"
+        if parsed.fragment:
+            retained += f"#{unquote(parsed.fragment)}"
+        scrubbed = scrubbed[: match.start()] + f"http-uri{retained}" + scrubbed[match.end() :]
+    return bool(_PRIVATE_PATH.search(scrubbed))
 
 
 def _validate_receipt_timing(value: object, issues: list[BenchmarkIssue]) -> None:
@@ -3477,7 +3233,7 @@ def _validate_token_usage(value: object, issues: list[BenchmarkIssue]) -> None:
         "reasoning_output_tokens",
     )
     if any(
-        not isinstance(tokens.get(name), int) or tokens[name] < 0 for name in required
+        not _non_bool_int(tokens.get(name)) or tokens[name] < 0 for name in required
     ):
         issues.append(
             BenchmarkIssue(
@@ -3513,6 +3269,7 @@ def _validate_receipt_measurements(
     provider_attempts = receipt.get("provider_attempts")
     human_events = receipt.get("human_events")
     automated_events = receipt.get("automated_events")
+    _validate_phase_measurement_evidence(receipt, issues)
     if (
         isinstance(provider_attempts, list)
         and measurements.get("provider_attempt_count") != len(provider_attempts)
@@ -3552,13 +3309,20 @@ def _validate_receipt_measurements(
             if isinstance(event, Mapping)
             and event.get("type") == "approval_service_event"
         )
+        clarification_count = sum(
+            1
+            for event in automated_events
+            if isinstance(event, Mapping)
+            and event.get("type") == "clarification_request_event"
+        )
         latency = sum(
             event.get("latency_ms", 0)
             for event in automated_events
             if isinstance(event, Mapping)
         )
         if (
-            measurements.get("intent_service_event_count") != intent_count
+            measurements.get("clarification_request_count") != clarification_count
+            or measurements.get("intent_service_event_count") != intent_count
             or measurements.get("approval_service_event_count") != approval_count
             or not math.isclose(
                 measurements.get("intent_approval_service_latency_ms"),
@@ -3573,6 +3337,45 @@ def _validate_receipt_measurements(
                     "automated service totals are not reproducible",
                 )
             )
+        for event in automated_events:
+            if not isinstance(event, Mapping):
+                continue
+            started_at = _parse_rfc3339(event.get("started_at"))
+            ended_at = _parse_rfc3339(event.get("ended_at"))
+            latency_ms = event.get("latency_ms")
+            payload = {
+                "type": event.get("type"),
+                "started_at": event.get("started_at"),
+                "ended_at": event.get("ended_at"),
+                "latency_ms": latency_ms,
+            }
+            expected_digest = sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest()
+            if (
+                started_at is None
+                or ended_at is None
+                or ended_at < started_at
+                or not _finite_number(latency_ms)
+                or not math.isclose(
+                    latency_ms,
+                    (ended_at - started_at).total_seconds() * 1000,
+                    rel_tol=0,
+                    abs_tol=1e-6,
+                )
+                or event.get("evidence_sha256") != expected_digest
+            ):
+                issues.append(
+                    BenchmarkIssue(
+                        "receipt.measurements",
+                        "automated event timing and digest are not reproducible",
+                    )
+                )
     if measurements.get("needs_operator") is not (
         receipt.get("status") == "needs_operator"
     ):
@@ -3581,15 +3384,7 @@ def _validate_receipt_measurements(
                 "receipt.measurements", "needs_operator does not match run status"
             )
         )
-    if measurements.get("total_artifact_bytes", 0) < (
-        measurements.get("setup_artifact_bytes", 0)
-        + measurements.get("governance_artifact_bytes", 0)
-    ):
-        issues.append(
-            BenchmarkIssue(
-                "receipt.measurements", "artifact byte totals are inconsistent"
-            )
-        )
+    _validate_artifact_inventory(receipt, issues)
     evaluator = _mapping(receipt.get("external_evaluator"))
     expected_invalid = receipt.get("status") == "completed" and not evaluator.get(
         "external_verified_delivery"
@@ -3598,6 +3393,166 @@ def _validate_receipt_measurements(
         issues.append(
             BenchmarkIssue(
                 "receipt.measurements", "invalid completion is not reproducible"
+            )
+        )
+
+
+def _validate_phase_measurement_evidence(
+    receipt: Mapping[str, object], issues: list[BenchmarkIssue]
+) -> None:
+    phase_names = (
+        "setup",
+        "framework_init",
+        "provider",
+        "governance",
+        "review",
+        "evaluation",
+    )
+    timing_names = tuple(f"{name}_wall_seconds" for name in phase_names)
+    phases = _mapping(receipt.get("phase_evidence"))
+    timings = _mapping(receipt.get("timings"))
+    timestamps = _mapping(receipt.get("timestamps"))
+    cursor = _parse_rfc3339(timestamps.get("started_at"))
+    final_end = _parse_rfc3339(timestamps.get("ended_at"))
+    if set(phases) != set(phase_names) or cursor is None or final_end is None:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.measurements", "phase evidence surface is incomplete"
+            )
+        )
+        return
+    for phase_name, timing_name in zip(phase_names, timing_names, strict=True):
+        phase = _mapping(phases.get(phase_name))
+        started_at = _parse_rfc3339(phase.get("started_at"))
+        ended_at = _parse_rfc3339(phase.get("ended_at"))
+        payload = {
+            "phase": phase_name,
+            "started_at": phase.get("started_at"),
+            "ended_at": phase.get("ended_at"),
+        }
+        expected_digest = sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        if (
+            started_at is None
+            or ended_at is None
+            or started_at != cursor
+            or ended_at < started_at
+            or not _finite_number(timings.get(timing_name))
+            or not math.isclose(
+                timings[timing_name],
+                (ended_at - started_at).total_seconds(),
+                rel_tol=0,
+                abs_tol=1e-6,
+            )
+            or phase.get("evidence_sha256") != expected_digest
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.measurements",
+                    f"{phase_name} phase timing is not independently reproducible",
+                )
+            )
+        if ended_at is not None:
+            cursor = ended_at
+    if cursor != final_end:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.measurements",
+                "phase evidence must form one adjacent start-to-end partition",
+            )
+        )
+
+
+def _validate_artifact_inventory(
+    receipt: Mapping[str, object], issues: list[BenchmarkIssue]
+) -> None:
+    inventory = receipt.get("artifact_inventory")
+    measurements = _mapping(receipt.get("measurements"))
+    if not isinstance(inventory, list) or not inventory:
+        issues.append(
+            BenchmarkIssue("receipt.measurements", "artifact inventory is missing")
+        )
+        return
+    paths: list[str] = []
+    totals = {"setup": 0, "governance": 0, "delivery": 0}
+    required_count = 0
+    observed_required = 0
+    observed_delivery: set[str] = set()
+    for artifact in inventory:
+        if not isinstance(artifact, Mapping):
+            continue
+        path = artifact.get("path")
+        digest = artifact.get("sha256")
+        size = artifact.get("size_bytes")
+        category = artifact.get("category")
+        required = artifact.get("required")
+        observed = artifact.get("observed")
+        path_is_relative = (
+            isinstance(path, str)
+            and bool(path)
+            and not path.startswith(("/", "\\"))
+            and not re.match(r"^[A-Za-z]:[\\/]", path)
+            and "\\" not in path
+            and all(part not in {"", ".", ".."} for part in path.split("/"))
+        )
+        if (
+            not path_is_relative
+            or not _is_non_placeholder_digest(digest)
+            or not _non_bool_int(size)
+            or size < 1
+            or category not in totals
+            or not isinstance(required, bool)
+            or not isinstance(observed, bool)
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.measurements", "artifact inventory item is invalid"
+                )
+            )
+            continue
+        paths.append(path)
+        if observed:
+            totals[category] += size
+            if category == "delivery":
+                observed_delivery.add(path)
+        if required:
+            required_count += 1
+            observed_required += int(observed)
+    if len(paths) != len(set(paths)):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.measurements", "artifact inventory paths must be unique"
+            )
+        )
+    expected_completeness = (
+        observed_required / required_count if required_count else 1.0
+    )
+    changed_files = receipt.get("changed_files")
+    if (
+        required_count == 0
+        or measurements.get("setup_artifact_bytes") != totals["setup"]
+        or measurements.get("governance_artifact_bytes") != totals["governance"]
+        or measurements.get("total_artifact_bytes") != sum(totals.values())
+        or not _finite_number(measurements.get("evidence_completeness"))
+        or not math.isclose(
+            measurements["evidence_completeness"],
+            expected_completeness,
+            rel_tol=0,
+            abs_tol=1e-9,
+        )
+        or not isinstance(changed_files, list)
+        or set(changed_files) - observed_delivery
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.measurements",
+                "artifact totals, completeness, or changed-file bindings are not reproducible",
             )
         )
 

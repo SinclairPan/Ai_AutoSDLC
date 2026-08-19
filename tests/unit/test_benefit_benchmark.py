@@ -1782,6 +1782,40 @@ def _task12_timestamp(value: datetime) -> str:
     return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
+def _task12_phase_evidence(started_at: datetime) -> dict[str, object]:
+    durations = {
+        "setup": 1,
+        "framework_init": 2,
+        "provider": 3,
+        "governance": 4,
+        "review": 5,
+        "evaluation": 6,
+    }
+    cursor = started_at
+    result = {}
+    for phase, seconds in durations.items():
+        ended_at = cursor + timedelta(seconds=seconds)
+        payload = {
+            "phase": phase,
+            "started_at": _task12_timestamp(cursor),
+            "ended_at": _task12_timestamp(ended_at),
+        }
+        result[phase] = {
+            "started_at": payload["started_at"],
+            "ended_at": payload["ended_at"],
+            "evidence_sha256": sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+        cursor = ended_at
+    return result
+
+
 def _task12_receipt(
     protocol,
     ledger: Path,
@@ -1838,16 +1872,20 @@ def _task12_receipt(
     evaluator_completed_at = first_reserved_at + timedelta(seconds=20)
     started_at = evaluator_completed_at - timedelta(seconds=21)
     return {
-        "schema": "ai-sdlc-v2-benefit-run-receipt/v3",
+        "schema": "ai-sdlc-v2-benefit-run-receipt/v4",
         "protocol_sha256": canonical_protocol_digest(protocol),
         "run_id": run.run_id,
         "arm": run.arm,
         "fixture": run.fixture,
         "order": run.position,
         "status": receipt_status,
-        "failure_classification": "none"
-        if receipt_status == "completed"
-        else receipt_status,
+        "failure_classification": {
+            "completed": "none",
+            "failed": "writer_failure",
+            "timeout": "timeout",
+            "needs_operator": "expert_conflict",
+            "budget_exhausted": "provider_budget_exhausted",
+        }[receipt_status],
         "identity": {
             field.name: getattr(protocol.execution_lock, field.name)
             for field in fields(ExecutionLock)
@@ -1878,6 +1916,7 @@ def _task12_receipt(
             "review_wall_seconds": 5,
             "evaluation_wall_seconds": 6,
         },
+        "phase_evidence": _task12_phase_evidence(started_at),
         "token_usage": token_usage,
         "measurements": {
             "provider_attempt_count": len(attempts),
@@ -1892,8 +1931,34 @@ def _task12_receipt(
             "evidence_completeness": 1.0,
             "setup_artifact_bytes": 1,
             "governance_artifact_bytes": 2,
-            "total_artifact_bytes": 3,
+            "total_artifact_bytes": 6,
         },
+        "artifact_inventory": [
+            {
+                "path": "benchmark-task/.evidence/setup.json",
+                "sha256": _digest("a"),
+                "size_bytes": 1,
+                "category": "setup",
+                "required": True,
+                "observed": True,
+            },
+            {
+                "path": "benchmark-task/.evidence/governance.json",
+                "sha256": _digest("b"),
+                "size_bytes": 2,
+                "category": "governance",
+                "required": True,
+                "observed": True,
+            },
+            {
+                "path": "benchmark-task/result.txt",
+                "sha256": _digest("c"),
+                "size_bytes": 3,
+                "category": "delivery",
+                "required": True,
+                "observed": True,
+            },
+        ],
         "human_events": [],
         "automated_events": [],
         "command_evidence": [
@@ -2097,23 +2162,20 @@ def _task12_completed_a11_run(tmp_path: Path):
                 "reason": "design-contract risk",
                 "status": "pass",
                 "expert_attempt_id": expert.attempt_id,
-                "rereview_attempt_id": rereview.attempt_id,
+                "expert_attempt_status": "completed",
                 "parent_digest": _digest("a"),
                 "candidate_digest": _digest("b"),
                 "child_session": attempts_by_id[expert.attempt_id]["child_session"],
+                "token_usage": copy.deepcopy(
+                    attempts_by_id[expert.attempt_id]["token_usage"]
+                ),
                 "finding_count": 1,
                 "severe_finding_count": 1,
                 "finding_digest": _digest("d"),
                 "repair_digest": _digest("e"),
                 "repaired_candidate_digest": _digest("c"),
-                "rereview_digest": _digest("c"),
                 "review_argv": _task12_review_argv(run_id, _digest("a")),
                 "review_exit_code": 0,
-                "rereview_argv": _task12_review_argv(run_id, _digest("c")),
-                "rereview_exit_code": 0,
-                "rereview_raw_output_sha256": attempts_by_id[rereview.attempt_id][
-                    "raw_provider_output_sha256"
-                ],
                 "snapshot_sha256": _digest("1"),
                 "input_sha256": _digest("2"),
                 "raw_output_sha256": attempts_by_id[expert.attempt_id][
@@ -2121,6 +2183,30 @@ def _task12_completed_a11_run(tmp_path: Path):
                 ],
                 "parent_tree_before_sha256": _digest("4"),
                 "parent_tree_after_sha256": _digest("4"),
+                "rereviews": [
+                    {
+                        "attempt_id": rereview.attempt_id,
+                        "status": "completed",
+                        "child_session": attempts_by_id[rereview.attempt_id][
+                            "child_session"
+                        ],
+                        "token_usage": copy.deepcopy(
+                            attempts_by_id[rereview.attempt_id]["token_usage"]
+                        ),
+                        "raw_output_sha256": attempts_by_id[rereview.attempt_id][
+                            "raw_provider_output_sha256"
+                        ],
+                        "finding_digest": _digest("d"),
+                        "repair_digest": _digest("e"),
+                        "candidate_digest": _digest("c"),
+                        "argv": _task12_review_argv(run_id, _digest("c")),
+                        "exit_code": 0,
+                        "snapshot_sha256": _digest("1"),
+                        "input_sha256": _digest("2"),
+                        "parent_tree_before_sha256": _digest("4"),
+                        "parent_tree_after_sha256": _digest("4"),
+                    }
+                ],
             }
         ],
     }
@@ -2289,12 +2375,12 @@ def test_task12_receipt_rejects_a_cross_run_attempt(tmp_path: Path) -> None:
         lambda receipt: receipt["loop"]["expert_callbacks"][0].update(
             {"parent_tree_after_sha256": _digest("5")}
         ),
-        lambda receipt: receipt["loop"]["expert_callbacks"][0].update(
-            {"rereview_attempt_id": "attempt-999"}
-        ),
-        lambda receipt: receipt["loop"]["expert_callbacks"][0].pop(
-            "rereview_raw_output_sha256"
-        ),
+        lambda receipt: receipt["loop"]["expert_callbacks"][0]["rereviews"][
+            0
+        ].update({"attempt_id": "attempt-999"}),
+        lambda receipt: receipt["loop"]["expert_callbacks"][0]["rereviews"][
+            0
+        ].pop("raw_output_sha256"),
         lambda receipt: receipt["loop"]["close"].update({"exit_code": 1}),
         lambda receipt: receipt["loop"]["close"].update(
             {"close_digest": _digest("8")}
@@ -2347,34 +2433,16 @@ def test_task12_a11_no_finding_pass_closes_without_fake_repair(
             "close_digest": _digest("9"),
         },
         "expert_callbacks": [
-            {
-                "role": "primary",
-                "reason": "design-contract risk",
-                "status": "pass",
-                "expert_attempt_id": expert.attempt_id,
-                "parent_digest": _digest("a"),
-                "candidate_digest": _digest("b"),
-                "child_session": attempts_by_id[expert.attempt_id]["child_session"],
-                "finding_count": 0,
-                "severe_finding_count": 0,
-                "finding_digest": None,
-                "repair_digest": None,
-                "repaired_candidate_digest": None,
-                "rereview_attempt_id": None,
-                "rereview_digest": None,
-                "review_argv": _task12_review_argv(run_id, _digest("a")),
-                "review_exit_code": 0,
-                "rereview_argv": None,
-                "rereview_exit_code": None,
-                "rereview_raw_output_sha256": None,
-                "snapshot_sha256": _digest("1"),
-                "input_sha256": _digest("2"),
-                "raw_output_sha256": attempts_by_id[expert.attempt_id][
-                    "raw_provider_output_sha256"
-                ],
-                "parent_tree_before_sha256": _digest("4"),
-                "parent_tree_after_sha256": _digest("4"),
-            }
+            _task12_partial_callback(
+                {
+                    **attempts_by_id[expert.attempt_id],
+                    "role": "primary",
+                    "parent_digest": _digest("a"),
+                    "candidate_digest": _digest("b"),
+                },
+                loop_id="benefit-a11-requirement-contract-ambiguity",
+                loop_type="design-contract",
+            )
         ],
     }
     assert not verify_receipt(receipt, protocol, ledger)
@@ -2506,8 +2574,8 @@ def test_task12_public_evidence_rejects_paths_and_secrets(
 def test_task12_public_evidence_allows_explicit_redaction(
     tmp_path: Path, value: str
 ) -> None:
-    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
-    receipt["changed_files"] = [value]
+    protocol, ledger, receipt = _task12_completed_a11_run(tmp_path)
+    receipt["loop"]["expert_callbacks"][0]["reason"] = value
     assert not verify_receipt(receipt, protocol, ledger)
 
 
@@ -2649,37 +2717,29 @@ def test_fix_round_one_accepts_a11_real_conflict_open_without_close(
     attempts_by_id = {
         attempt["attempt_id"]: attempt for attempt in receipt["provider_attempts"]
     }
-    receipt["loop"]["expert_callbacks"] = [
-        {
-            "role": role,
-            "reason": f"{role} produced an incompatible repair boundary",
-            "status": "conflict",
-            "expert_attempt_id": expert.attempt_id,
-            "rereview_attempt_id": None,
-            "parent_digest": _digest("a"),
-            "candidate_digest": _digest("b"),
-            "child_session": attempts_by_id[expert.attempt_id]["child_session"],
-            "finding_count": 1,
-            "severe_finding_count": 1,
-            "finding_digest": finding,
-            "repair_digest": None,
-            "repaired_candidate_digest": None,
-            "rereview_digest": None,
-            "review_argv": _task12_review_argv(run_id, _digest("a")),
-            "review_exit_code": 0,
-            "rereview_argv": None,
-            "rereview_exit_code": None,
-            "rereview_raw_output_sha256": None,
-            "snapshot_sha256": _digest("1"),
-            "input_sha256": _digest("2"),
-            "raw_output_sha256": attempts_by_id[expert.attempt_id][
-                "raw_provider_output_sha256"
-            ],
-            "parent_tree_before_sha256": _digest("4"),
-            "parent_tree_after_sha256": _digest("4"),
-        }
-        for expert, role, finding in experts
-    ]
+    receipt["loop"]["expert_callbacks"] = []
+    for expert, role, finding in experts:
+        callback = _task12_partial_callback(
+            {
+                **attempts_by_id[expert.attempt_id],
+                "role": role,
+                "parent_digest": _digest("a"),
+                "candidate_digest": _digest("b"),
+                "finding_digest": finding,
+            },
+            loop_id="benefit-a11-multi-tenant-security-review",
+            loop_type="implementation",
+        )
+        callback.update(
+            {
+                "reason": f"{role} produced an incompatible repair boundary",
+                "status": "conflict",
+                "finding_count": 1,
+                "severe_finding_count": 1,
+                "finding_digest": finding,
+            }
+        )
+        receipt["loop"]["expert_callbacks"].append(callback)
 
     assert not verify_receipt(receipt, protocol, ledger)
 
@@ -2926,16 +2986,16 @@ def _task12_partial_callback(
         "reason": "bounded review completed before writer terminal failure",
         "status": "pass",
         "expert_attempt_id": expert["attempt_id"],
-        "rereview_attempt_id": None,
+        "expert_attempt_status": expert["status"],
         "parent_digest": expert["parent_digest"],
         "candidate_digest": expert["candidate_digest"],
         "child_session": expert["child_session"],
+        "token_usage": copy.deepcopy(expert["token_usage"]),
         "finding_count": 0,
         "severe_finding_count": 0,
         "finding_digest": None,
         "repair_digest": None,
         "repaired_candidate_digest": None,
-        "rereview_digest": None,
         "review_argv": [
             "ai-sdlc",
             "loop",
@@ -2951,14 +3011,12 @@ def _task12_partial_callback(
             "--json",
         ],
         "review_exit_code": 0,
-        "rereview_argv": None,
-        "rereview_exit_code": None,
-        "rereview_raw_output_sha256": None,
         "snapshot_sha256": _digest("1"),
         "input_sha256": _digest("2"),
         "raw_output_sha256": expert["raw_provider_output_sha256"],
         "parent_tree_before_sha256": _digest("4"),
         "parent_tree_after_sha256": _digest("4"),
+        "rereviews": [],
     }
 
 
@@ -3086,12 +3144,27 @@ def _task12_a11_terminal_after_completed_rereview(tmp_path: Path, status: str):
             "finding_digest": _digest("d"),
             "repair_digest": _digest("e"),
             "repaired_candidate_digest": _digest("c"),
-            "rereview_attempt_id": rereview.attempt_id,
-            "rereview_digest": _digest("c"),
-            "rereview_argv": _task12_review_argv(run_id, _digest("c")),
-            "rereview_exit_code": 0,
-            "rereview_raw_output_sha256": attempts[rereview.attempt_id][
-                "raw_provider_output_sha256"
+            "rereviews": [
+                {
+                    "attempt_id": rereview.attempt_id,
+                    "status": "completed",
+                    "child_session": attempts[rereview.attempt_id]["child_session"],
+                    "token_usage": copy.deepcopy(
+                        attempts[rereview.attempt_id]["token_usage"]
+                    ),
+                    "raw_output_sha256": attempts[rereview.attempt_id][
+                        "raw_provider_output_sha256"
+                    ],
+                    "finding_digest": _digest("d"),
+                    "repair_digest": _digest("e"),
+                    "candidate_digest": _digest("c"),
+                    "argv": _task12_review_argv(run_id, _digest("c")),
+                    "exit_code": 0,
+                    "snapshot_sha256": _digest("1"),
+                    "input_sha256": _digest("2"),
+                    "parent_tree_before_sha256": _digest("4"),
+                    "parent_tree_after_sha256": _digest("4"),
+                }
             ],
         }
     )
@@ -3109,16 +3182,9 @@ def test_fix_round_three_completed_rereview_cannot_be_omitted_from_terminal_rece
     assert not verify_receipt(receipt, protocol, ledger)
 
     callback = receipt["loop"]["expert_callbacks"][0]
-    for key in (
-        "repair_digest",
-        "repaired_candidate_digest",
-        "rereview_attempt_id",
-        "rereview_digest",
-        "rereview_argv",
-        "rereview_exit_code",
-        "rereview_raw_output_sha256",
-    ):
+    for key in ("repair_digest", "repaired_candidate_digest"):
         callback[key] = None
+    callback["rereviews"] = []
     assert verify_receipt(receipt, protocol, ledger)
 
 
@@ -3228,8 +3294,8 @@ def test_fix_round_one_timestamps_and_elapsed_are_reproducible(
 def test_fix_round_one_path_secret_boundaries(
     tmp_path: Path, value: str, expected_issue: bool
 ) -> None:
-    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
-    receipt["changed_files"] = [value]
+    protocol, ledger, receipt = _task12_completed_a11_run(tmp_path)
+    receipt["loop"]["expert_callbacks"][0]["reason"] = value
     assert bool(verify_receipt(receipt, protocol, ledger)) is expected_issue
 
 
@@ -3785,7 +3851,7 @@ def test_task13_verify_summary_rejects_empty_metrics_and_false_digest(
     assert result.returncode == 1
     assert result.stderr == ""
     issues = json.loads(result.stdout)["issues"]
-    expected = "summary.schema" if case == "empty_metrics" else "summary.protocol-digest"
+    expected = "summary.schema" if case == "empty_metrics" else "summary.digest"
     assert any(issue["code"] == expected for issue in issues)
 
 
@@ -3902,6 +3968,546 @@ def test_task13_cli_redacts_private_paths_from_all_issue_messages(
     assert "private-owner" not in messages
     assert "private-server" not in messages
     assert "<redacted-path>" in messages
+
+
+# Final core/evidence audit: every test below was introduced against BASE 7277ef0.
+
+
+def test_final_core_union_schema_rejects_bool_as_nullable_integer(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_a11_run(tmp_path)
+    receipt["loop"]["close"]["exit_code"] = False
+    assert any(
+        issue.code == "receipt.schema"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_receipt_v3_fails_closed_without_implicit_migration(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["schema"] = "ai-sdlc-v2-benefit-run-receipt/v3"
+    assert any(
+        issue.code == "receipt.schema"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+@pytest.mark.parametrize(
+    "schema",
+    [
+        {
+            "type": "object",
+            "properties": {"answer": {"type": "string"}},
+            "required": ["answer", "answer"],
+            "additionalProperties": False,
+        },
+        {"type": "string", "enum": ["yes", "yes"]},
+        {"type": ["string", "string"]},
+        {"type": ["string", "null"], "minimum": 0},
+        {"type": ["integer", "null"], "const": False},
+    ],
+)
+def test_final_core_provider_schema_rejects_duplicate_or_open_union_operands(
+    schema,
+) -> None:
+    assert validate_provider_output_schema(schema)
+
+
+def test_final_core_provider_schema_accepts_closed_nullable_union() -> None:
+    schema = {
+        "type": "object",
+        "properties": {
+            "count": {"type": ["integer", "null"], "minimum": 0},
+            "label": {"type": ["string", "null"], "minLength": 1},
+        },
+        "required": ["count", "label"],
+        "additionalProperties": False,
+    }
+    assert not validate_provider_output_schema(schema)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.test/public?next=/Users/private/result.json",
+        "https://example.test/public?next=C:\\Users\\private\\result.json",
+        "https://example.test/public?next=\\\\server\\share\\result.json",
+        "https://example.test/public#next=file:///Users/private/result.json",
+    ],
+)
+def test_final_core_http_query_and_fragment_do_not_hide_private_paths(
+    tmp_path: Path, value: str
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["changed_files"] = [value]
+    assert any(
+        issue.code == "receipt.absolute-path"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_allows_independent_public_http_uri(tmp_path: Path) -> None:
+    protocol, ledger, receipt = _task12_completed_a11_run(tmp_path)
+    receipt["loop"]["expert_callbacks"][0]["reason"] = (
+        "https://example.test/public/result.json?q=ok#section"
+    )
+    assert not verify_receipt(receipt, protocol, ledger)
+
+
+@pytest.mark.parametrize(
+    ("status", "classification"),
+    [
+        ("completed", "timeout"),
+        ("timeout", "none"),
+        ("needs_operator", "writer_failure"),
+        ("budget_exhausted", "timeout"),
+    ],
+)
+def test_final_core_failure_classification_is_frozen_by_status(
+    tmp_path: Path, status: str, classification: str
+) -> None:
+    if status == "completed":
+        protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    else:
+        protocol = _bound_protocol(tmp_path)
+        ledger = tmp_path / "ledger.json"
+        writer = reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest("P:requirement-contract-ambiguity", "writer"),
+        )
+        record_provider_completion(
+            ledger, protocol, _completion(writer.attempt_id, status, False)
+        )
+        receipt = _task12_receipt(protocol, ledger)
+    receipt["failure_classification"] = classification
+    assert any(
+        issue.code == "receipt.failure-classification"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    [
+        "timing_reallocation",
+        "artifact_999999",
+        "completeness_point_zero_one",
+        "clarification_999",
+    ],
+)
+def test_final_core_measurements_are_recomputed_from_closed_evidence(
+    tmp_path: Path, attack: str
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    if attack == "timing_reallocation":
+        receipt["timings"]["provider_wall_seconds"] += 1
+        receipt["timings"]["governance_wall_seconds"] -= 1
+    elif attack == "artifact_999999":
+        receipt["measurements"]["total_artifact_bytes"] = 999999
+    elif attack == "completeness_point_zero_one":
+        receipt["measurements"]["evidence_completeness"] = 0.01
+    else:
+        receipt["measurements"]["clarification_request_count"] = 999
+    assert any(
+        issue.code == "receipt.measurements"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_rejects_zero_applicable_receipt_and_summary_digests(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["digests"]["evaluator_result_sha256"] = _digest("0")
+    receipt["external_evaluator"]["result_sha256"] = _digest("0")
+    assert any(
+        issue.code == "receipt.digest"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+    summary = _task12_summary(protocol)
+    summary["runs"][0]["receipt_sha256"] = _digest("0")
+    assert any(
+        issue.code == "summary.digest"
+        for issue in verify_summary(summary, protocol)
+    )
+
+
+def _final_core_callback_v4(expert: dict[str, object]) -> dict[str, object]:
+    callback = _task12_partial_callback(
+        expert,
+        loop_id="benefit-a11-requirement-contract-ambiguity",
+        loop_type="design-contract",
+    )
+    return callback
+
+
+def test_final_core_failed_expert_is_disclosed_and_accepted(tmp_path: Path) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger, protocol, _completion(expert.attempt_id, "failed", True)
+    )
+    record_provider_completion(
+        ledger, protocol, _completion(writer.attempt_id, "failed", True)
+    )
+    receipt = _task12_receipt(
+        protocol, ledger, run_id="A11:requirement-contract-ambiguity"
+    )
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    expert_state = next(
+        item for item in persisted["attempts"] if item["attempt_id"] == expert.attempt_id
+    )
+    callback = _final_core_callback_v4(expert_state)
+    callback["status"] = "fail"
+    callback["review_exit_code"] = 1
+    receipt["loop"]["expert_callbacks"] = [callback]
+    assert not verify_receipt(receipt, protocol, ledger)
+
+
+@pytest.mark.parametrize("with_failed_rereview", [False, True])
+def test_final_core_writer_repair_and_failed_rereview_are_never_hidden(
+    tmp_path: Path, with_failed_rereview: bool
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    run_id = "A11:requirement-contract-ambiguity"
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(expert.attempt_id, "completed", True, finding_digest=_digest("d")),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "review_pending",
+            True,
+            candidate_digest=_digest("c"),
+        ),
+    )
+    rereview = None
+    if with_failed_rereview:
+        rereview = reserve_provider_attempt(
+            ledger, protocol, _rereview_request(expert.attempt_id, _digest("c"))
+        )
+        record_provider_completion(
+            ledger, protocol, _completion(rereview.attempt_id, "failed", True)
+        )
+    record_provider_completion(
+        ledger, protocol, _completion(writer.attempt_id, "failed", True)
+    )
+    receipt = _task12_receipt(protocol, ledger, run_id=run_id)
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    attempts = {item["attempt_id"]: item for item in persisted["attempts"]}
+    callback = _final_core_callback_v4(attempts[expert.attempt_id])
+    callback.update(
+        {
+            "status": "fail",
+            "finding_count": 1,
+            "severe_finding_count": 1,
+            "finding_digest": _digest("d"),
+            "repair_digest": _digest("e"),
+            "repaired_candidate_digest": _digest("c"),
+        }
+    )
+    if rereview is not None:
+        state = attempts[rereview.attempt_id]
+        callback["rereviews"] = [
+            {
+                "attempt_id": state["attempt_id"],
+                "status": state["status"],
+                "child_session": state["child_session"],
+                "token_usage": copy.deepcopy(state["token_usage"]),
+                "raw_output_sha256": state["raw_provider_output_sha256"],
+                "finding_digest": state["finding_digest"],
+                "repair_digest": state["repair_digest"],
+                "candidate_digest": state["candidate_digest"],
+                "argv": _task12_review_argv(run_id, _digest("c")),
+                "exit_code": 1,
+                "snapshot_sha256": _digest("1"),
+                "input_sha256": _digest("2"),
+                "parent_tree_before_sha256": _digest("4"),
+                "parent_tree_after_sha256": _digest("4"),
+            }
+        ]
+    receipt["loop"]["expert_callbacks"] = [callback]
+    assert not verify_receipt(receipt, protocol, ledger)
+
+
+def test_final_core_needs_operator_rejects_duplicate_callback_attempt(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    run_id = "A11:multi-tenant-security-review"
+    writer = reserve_provider_attempt(
+        ledger, protocol, AttemptRequest(run_id, "writer", parent_digest=_digest("a"))
+    )
+    for status in ("candidate_ready", "review_pending"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            _completion(writer.attempt_id, status, True, candidate_digest=_digest("b")),
+        )
+    experts = []
+    for kind, role, finding in (
+        ("primary_expert", "primary", _digest("d")),
+        ("cross_risk_expert", "cross-risk", _digest("e")),
+    ):
+        expert = reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest(
+                run_id,
+                kind,
+                parent_attempt_id=writer.attempt_id,
+                role=role,
+                parent_digest=_digest("a"),
+                candidate_digest=_digest("b"),
+            ),
+        )
+        record_provider_completion(
+            ledger,
+            protocol,
+            _completion(expert.attempt_id, "completed", True, finding_digest=finding),
+        )
+        experts.append(expert)
+    record_provider_completion(
+        ledger, protocol, _completion(writer.attempt_id, "needs_operator", True)
+    )
+    receipt = _task12_receipt(protocol, ledger, run_id=run_id)
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    states = {item["attempt_id"]: item for item in persisted["attempts"]}
+    callbacks = []
+    for expert in experts:
+        callback = _final_core_callback_v4(states[expert.attempt_id])
+        callback.update(
+            {
+                "status": "conflict",
+                "finding_count": 1,
+                "severe_finding_count": 1,
+                "finding_digest": states[expert.attempt_id]["finding_digest"],
+                "reason": "incompatible security repair boundaries",
+            }
+        )
+        callback["review_argv"] = _task12_review_argv(run_id, _digest("a"))
+        callbacks.append(callback)
+    receipt["loop"]["expert_callbacks"] = callbacks
+    assert not verify_receipt(receipt, protocol, ledger)
+    receipt["loop"]["expert_callbacks"].append(copy.deepcopy(callbacks[0]))
+    assert any(
+        issue.code == "receipt.a11.conflict"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_clarification_events_recompute_count_latency_and_digest(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    event = {
+        "type": "clarification_request_event",
+        "started_at": "2026-08-19T00:00:00.000000Z",
+        "ended_at": "2026-08-19T00:00:00.010000Z",
+        "latency_ms": 10,
+    }
+    event["evidence_sha256"] = sha256(
+        json.dumps(
+            event, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    receipt["automated_events"] = [event]
+    receipt["measurements"]["clarification_request_count"] = 1
+    receipt["measurements"]["intent_approval_service_latency_ms"] = 10
+    assert not verify_receipt(receipt, protocol, ledger)
+
+    receipt["automated_events"][0]["latency_ms"] = 11
+    assert any(
+        issue.code == "receipt.measurements"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_artifact_inventory_rejects_duplicate_or_unobserved_binding(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["artifact_inventory"][1]["path"] = receipt["artifact_inventory"][0][
+        "path"
+    ]
+    assert any(
+        issue.code == "receipt.measurements"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_started_expert_retry_has_exact_callback_closure(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    run_id = "A11:requirement-contract-ambiguity"
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger, protocol, _completion(expert.attempt_id, "technical_failure", False)
+    )
+    retry = _reserve_technical_retry(ledger, protocol, expert.attempt_id)
+    record_provider_completion(
+        ledger, protocol, _completion(retry.attempt_id, "completed", True)
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "completed",
+            True,
+            candidate_digest=_digest("b"),
+            close_digest=_digest("9"),
+        ),
+    )
+    receipt = _task12_receipt(protocol, ledger, run_id=run_id)
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    states = {item["attempt_id"]: item for item in persisted["attempts"]}
+    callbacks = []
+    for attempt_id, callback_status, exit_code in (
+        (expert.attempt_id, "fail", 1),
+        (retry.attempt_id, "pass", 0),
+    ):
+        callback = _final_core_callback_v4(states[attempt_id])
+        callback["status"] = callback_status
+        callback["review_exit_code"] = exit_code
+        callbacks.append(callback)
+    receipt["loop"]["expert_callbacks"] = callbacks
+    assert not verify_receipt(receipt, protocol, ledger)
+
+    receipt["loop"]["expert_callbacks"].pop(0)
+    assert any(
+        issue.code == "receipt.a11.evidence"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_final_core_started_rereview_retry_has_exact_nested_closure(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    run_id = "A11:requirement-contract-ambiguity"
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(expert.attempt_id, "completed", True, finding_digest=_digest("d")),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id, "review_pending", True, candidate_digest=_digest("c")
+        ),
+    )
+    rereview = reserve_provider_attempt(
+        ledger, protocol, _rereview_request(expert.attempt_id, _digest("c"))
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(rereview.attempt_id, "technical_failure", False),
+    )
+    retry = _reserve_technical_retry(ledger, protocol, rereview.attempt_id)
+    record_provider_completion(
+        ledger, protocol, _completion(retry.attempt_id, "completed", True)
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "completed",
+            True,
+            candidate_digest=_digest("c"),
+            close_digest=_digest("9"),
+        ),
+    )
+    receipt = _task12_receipt(protocol, ledger, run_id=run_id)
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    states = {item["attempt_id"]: item for item in persisted["attempts"]}
+    callback = _final_core_callback_v4(states[expert.attempt_id])
+    callback.update(
+        {
+            "status": "pass",
+            "finding_count": 1,
+            "severe_finding_count": 1,
+            "finding_digest": _digest("d"),
+            "repair_digest": _digest("e"),
+            "repaired_candidate_digest": _digest("c"),
+        }
+    )
+    callback["rereviews"] = []
+    for attempt_id, exit_code in (
+        (rereview.attempt_id, 1),
+        (retry.attempt_id, 0),
+    ):
+        state = states[attempt_id]
+        callback["rereviews"].append(
+            {
+                "attempt_id": attempt_id,
+                "status": state["status"],
+                "child_session": state["child_session"],
+                "token_usage": copy.deepcopy(state["token_usage"]),
+                "raw_output_sha256": state["raw_provider_output_sha256"],
+                "finding_digest": _digest("d"),
+                "repair_digest": _digest("e"),
+                "candidate_digest": _digest("c"),
+                "argv": _task12_review_argv(run_id, _digest("c")),
+                "exit_code": exit_code,
+                "snapshot_sha256": _digest("1"),
+                "input_sha256": _digest("2"),
+                "parent_tree_before_sha256": _digest("4"),
+                "parent_tree_after_sha256": _digest("4"),
+            }
+        )
+    receipt["loop"]["expert_callbacks"] = [callback]
+    assert not verify_receipt(receipt, protocol, ledger)
+
+    receipt["loop"]["expert_callbacks"][0]["rereviews"].pop(0)
+    assert any(
+        issue.code == "receipt.a11.evidence"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
 
 
 def test_task13_cli_preserves_public_https_uri_while_sanitizing_input_error(
