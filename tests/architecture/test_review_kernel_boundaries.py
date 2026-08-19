@@ -7,6 +7,8 @@ from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[2]
 _KERNEL = _ROOT / "src" / "ai_sdlc" / "core" / "review_kernel.py"
+_OUTCOME_MODELS = _ROOT / "src" / "ai_sdlc" / "core" / "loop_review_models.py"
+_OUTCOME_SERVICE = _ROOT / "src" / "ai_sdlc" / "core" / "loop_review_service.py"
 
 
 def test_review_kernel_has_no_runtime_or_persistence_dependencies() -> None:
@@ -65,3 +67,45 @@ def test_review_kernel_exposes_no_close_or_persistence_symbols() -> None:
         for symbol in public_symbols
         if any(fragment in symbol.lower() for fragment in forbidden_fragments)
     }
+
+
+def test_review_outcome_has_no_governance_platform_fields() -> None:
+    tree = ast.parse(_OUTCOME_MODELS.read_text(encoding="utf-8"))
+    outcome = next(
+        node
+        for node in tree.body
+        if isinstance(node, ast.ClassDef) and node.name == "LoopReviewOutcome"
+    )
+    fields = {
+        statement.target.id
+        for statement in outcome.body
+        if isinstance(statement, ast.AnnAssign)
+        and isinstance(statement.target, ast.Name)
+    }
+
+    assert fields.isdisjoint(
+        {
+            "authority",
+            "certificate",
+            "session",
+            "quorum",
+            "score",
+            "verdict",
+            "passed",
+            "closed",
+        }
+    )
+
+
+def test_only_two_fixed_loop_outcome_names_exist_in_runtime() -> None:
+    runtime = _ROOT / "src" / "ai_sdlc"
+    occurrences = [
+        path.relative_to(_ROOT).as_posix()
+        for path in runtime.rglob("*.py")
+        if "review-outcome-round-" in path.read_text(encoding="utf-8")
+    ]
+    assert occurrences == ["src/ai_sdlc/core/loop_review_service.py"]
+
+    service = _OUTCOME_SERVICE.read_text(encoding="utf-8")
+    assert "round_number not in {1, 2}" in service
+    assert 'f"review-outcome-round-{round_number}.json"' in service

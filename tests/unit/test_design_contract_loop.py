@@ -32,6 +32,7 @@ from ai_sdlc.core.design_contract_store import (
 )
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRun
+from ai_sdlc.core.loop_review_models import LoopReviewOutcome
 from ai_sdlc.core.requirement_loop import (
     RequirementFreezeOptions,
     RequirementIntake,
@@ -1897,7 +1898,26 @@ def test_close_design_contract_loop_rechecks_review_digest_at_final_write(
         tmp_path,
         loop_type="design-contract",
         loop_id=loop_id,
+        review_round_number=1,
     )
+    outcome = LoopReviewOutcome(
+        loop_id=loop_id,
+        loop_type="design-contract",
+        round_number=1,
+        input_digest=reviewed.input_digest,
+        status="completed",
+        expert_roles=reviewed.expert_roles,
+        findings=[],
+        recorded_at="2026-08-17T00:00:00Z",
+    )
+    (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+        / "review-outcome-round-1.json"
+    ).write_text(outcome.model_dump_json(indent=2) + "\n", encoding="utf-8")
     original_refresh = design_contract_loop_module._refresh_report_before_close
 
     def mutate_after_state_validation(*args: object, **kwargs: object) -> object:
@@ -1960,7 +1980,26 @@ def test_close_design_contract_loop_preserves_unchanged_review_digest(
         tmp_path,
         loop_type="design-contract",
         loop_id=loop_id,
+        review_round_number=1,
     )
+    outcome = LoopReviewOutcome(
+        loop_id=loop_id,
+        loop_type="design-contract",
+        round_number=1,
+        input_digest=reviewed.input_digest,
+        status="completed",
+        expert_roles=reviewed.expert_roles,
+        findings=[],
+        recorded_at="2026-08-17T00:00:00Z",
+    )
+    (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "design-contract"
+        / loop_id
+        / "review-outcome-round-1.json"
+    ).write_text(outcome.model_dump_json(indent=2) + "\n", encoding="utf-8")
     refresh_persistence: list[bool] = []
     original_refresh = design_contract_loop_module._refresh_report_before_close
 

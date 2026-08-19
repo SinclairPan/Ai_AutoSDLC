@@ -8,12 +8,20 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ai_sdlc.branch.git_client import GitClient, GitError
+from ai_sdlc.core.git_filter_safety import (
+    safe_git_read_command,
+    safe_git_read_environment,
+)
 from ai_sdlc.core.pr_review_models import (
     DiffSourceKind,
     SourceAccessStatus,
     SourceAdapterResolution,
 )
-from ai_sdlc.core.source_snapshot import SourceSnapshotOptions, build_source_snapshot
+from ai_sdlc.core.source_snapshot import (
+    SourceSnapshotOptions,
+    build_source_snapshot,
+    is_runtime_artifact_path,
+)
 
 LOCAL_WORKTREE_SOURCE_KINDS = ("local-staged", "local-unstaged")
 
@@ -211,11 +219,30 @@ def _resolve_local_worktree_source(
 ) -> SourceAdapterResolution:
     root = options.root.resolve()
     try:
+        if source_kind == DiffSourceKind.LOCAL_STAGED:
+            excluded_paths = _staged_runtime_paths(root)
+            if excluded_paths:
+                sample = ", ".join(excluded_paths[:5])
+                return SourceAdapterResolution(
+                    source_kind=source_kind,
+                    adapter_id=source_kind.value,
+                    repo_root=str(root),
+                    head_ref="HEAD",
+                    access_status=SourceAccessStatus.BLOCKED,
+                    unavailable_reason="staged_runtime_artifacts",
+                    blocker=(
+                        "Local PR delivery cannot include staged runtime artifacts "
+                        f"excluded from review: {sample}."
+                    ),
+                    next_command=(
+                        "Unstage generated runtime artifacts, then restart Local PR Review."
+                    ),
+                )
         # 复用统一 snapshot，保持 index、未跟踪文件和 diff 身份一致。
         snapshot = build_source_snapshot(
             SourceSnapshotOptions(root=root, source_kind=source_kind.value)
         )
-    except ValueError as exc:
+    except (GitError, ValueError) as exc:
         label = "staged" if source_kind == DiffSourceKind.LOCAL_STAGED else "unstaged"
         if str(exc) == "source snapshot contains no changed files":
             return SourceAdapterResolution(
@@ -251,6 +278,7 @@ def _resolve_local_worktree_source(
         head_ref=snapshot.head_ref,
         base_commit=snapshot.base_commit,
         head_commit=snapshot.head_commit,
+        staged_tree_oid=snapshot.staged_tree_oid,
         patch_hash=diff_hash,
         access_status=SourceAccessStatus.RESOLVED,
         next_command=f"Start local PR review from {source_kind.value}.",
@@ -259,6 +287,41 @@ def _resolve_local_worktree_source(
             "untracked_files": len(snapshot.untracked_files),
             "diff_hash": diff_hash,
         },
+    )
+
+
+def _staged_runtime_paths(root: Path) -> list[str]:
+    try:
+        result = subprocess.run(
+            safe_git_read_command(
+                "diff",
+                "--cached",
+                "--name-only",
+                "-z",
+                "--no-ext-diff",
+                "--",
+            ),
+            cwd=root,
+            env=safe_git_read_environment(),
+            capture_output=True,
+            check=False,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise GitError("git is not installed or not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError("git diff --cached timed out") from exc
+    if result.returncode != 0:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise GitError(message or "git diff --cached failed")
+    return sorted(
+        path
+        for path in (
+            item.decode("utf-8", errors="surrogateescape")
+            for item in result.stdout.split(b"\0")
+            if item
+        )
+        if is_runtime_artifact_path(path)
     )
 
 

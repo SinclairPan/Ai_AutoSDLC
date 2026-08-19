@@ -22,6 +22,7 @@ from ai_sdlc.core.implementation_models import (
     ImplementationReport,
 )
 from ai_sdlc.core.loop_models import LoopRun, LoopStatus, LoopType
+from ai_sdlc.core.loop_review_models import ReviewStatusOverlay
 from ai_sdlc.core.pr_review_models import ReviewRun
 from ai_sdlc.core.requirement_loop import (
     CURRENT_REQUIREMENT_PATH,
@@ -220,6 +221,60 @@ class LoopListResult(BaseModel):
     next_guidance: LoopNextActionGuidance = Field(
         default_factory=LoopNextActionGuidance
     )
+
+
+def apply_review_status_overlay(
+    result: LoopStatusResult,
+    overlay: ReviewStatusOverlay,
+) -> LoopStatusResult:
+    """Project review truth onto status output without mutating Loop artifacts."""
+
+    if result.current_loop is None:
+        return result
+    updated = result.model_copy(deep=True)
+    assert updated.current_loop is not None
+    mapped_status = {
+        "review_missing": LoopStatus.NEEDS_REVIEW,
+        "failed": LoopStatus.NEEDS_REVIEW,
+        "needs_fix": LoopStatus.NEEDS_FIX,
+        "needs_user": LoopStatus.NEEDS_USER,
+        "passed": LoopStatus.PASSED,
+    }[overlay.status]
+    updated.current_loop.status = mapped_status
+    if overlay.status == "passed":
+        updated.result = "Current Loop review passed."
+        updated.blocker = ""
+        updated.next_action = updated.current_loop.next_action
+        updated.next_guidance = updated.current_loop.next_guidance
+        return updated
+
+    updated.result = "Current Loop review is not ready to close."
+    updated.blocker = overlay.reason
+    updated.next_action = overlay.next_action
+    updated.current_loop.next_action = overlay.next_action
+    guidance = LoopNextActionGuidance(
+        command=(
+            "ai-sdlc loop review "
+            f"--type {updated.current_loop.loop_type} "
+            f"--loop-id {updated.current_loop.loop_id}"
+        ),
+        reason=overlay.reason,
+        requires_model=overlay.status in {"review_missing", "failed"},
+        writes_artifacts=False,
+        writes_code=False,
+        safety=(
+            LoopNextActionSafety.MAY_CALL_LOCAL_REVIEW_AGENT
+            if overlay.status in {"review_missing", "failed"}
+            else LoopNextActionSafety.NEEDS_USER
+        ),
+        evidence=[
+            updated.current_loop.loop_id,
+            f"review-round-{overlay.round_number}",
+        ],
+    )
+    updated.next_guidance = guidance
+    updated.current_loop.next_guidance = guidance
+    return updated
 
 
 def get_loop_status(

@@ -28,6 +28,21 @@ _CLOSE_MODULES = (
     "frontend_evidence_loop.py",
     "pr_review_service.py",
 )
+_SLIMMING_NON_AUTHORITY_FUNCTIONS = {
+    "core/implementation_loop.py": (
+        "_close_blockers",
+        "close_implementation_loop",
+        "_close_implementation_loop_locked",
+    ),
+    "core/pr_review_service.py": (
+        "close_pr_review",
+        "commit_pr_review",
+    ),
+    "cli/pr_review_cmd.py": (
+        "pr_review_close",
+        "pr_review_commit",
+    ),
+}
 
 
 def _retained_python_paths() -> list[Path]:
@@ -109,11 +124,39 @@ def test_retired_public_commands_and_workflows_are_absent() -> None:
 
 
 def test_constraint_gate_does_not_turn_comment_deletion_into_authority() -> None:
-    constraints = (_SRC / "core" / "verify_constraints.py").read_text(
-        encoding="utf-8"
-    )
+    constraints = (_SRC / "core" / "verify_constraints.py").read_text(encoding="utf-8")
 
     assert "collect_comment_deletion_blockers" not in constraints
+
+
+def test_run_routes_only_to_five_loop_truth() -> None:
+    run_command = (_SRC / "cli" / "run_cmd.py").read_text(encoding="utf-8")
+    tree = ast.parse(run_command)
+    imported = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module
+    }
+    imported.update(
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    )
+
+    assert "SDLCRunner" not in run_command
+    assert not any(
+        module.startswith(
+            (
+                "ai_sdlc.core.runner",
+                "ai_sdlc.core.executor",
+                "ai_sdlc.core.agentops_bridge",
+                "ai_sdlc.telemetry",
+            )
+        )
+        for module in imported
+    )
+    assert "route_five_loops" in run_command
 
 
 def test_review_values_cannot_become_a_persisted_authority() -> None:
@@ -133,7 +176,14 @@ def test_review_values_cannot_become_a_persisted_authority() -> None:
     assert not any(
         token in module
         for module in imported
-        for token in ("store", "pointer", "workflow", "subprocess", "urllib", "requests")
+        for token in (
+            "store",
+            "pointer",
+            "workflow",
+            "subprocess",
+            "urllib",
+            "requests",
+        )
     )
 
     field_names = {
@@ -148,3 +198,21 @@ def test_review_values_cannot_become_a_persisted_authority() -> None:
     assert field_names.isdisjoint(
         {"verdict", "passed", "closed", "certificate", "session", "quorum", "score"}
     )
+
+
+def test_slimming_never_participates_in_status_close_or_commit_decisions() -> None:
+    assert (
+        "slimming"
+        not in (_SRC / "core" / "loop_status.py").read_text(encoding="utf-8").lower()
+    )
+
+    for module_name, function_names in _SLIMMING_NON_AUTHORITY_FUNCTIONS.items():
+        tree = ast.parse((_SRC / module_name).read_text(encoding="utf-8"))
+        functions = {
+            node.name: ast.unparse(node).lower()
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        for function_name in function_names:
+            assert function_name in functions
+            assert "slimming" not in functions[function_name]

@@ -15,6 +15,8 @@ from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
 from ai_sdlc.cli.loop_review_cmd import (
     ReviewInputGuardError,
     loop_review,
+    loop_review_record,
+    prepare_current_loop_review,
     validate_review_input_for_close,
 )
 from ai_sdlc.core.design_contract_loop import (
@@ -41,16 +43,20 @@ from ai_sdlc.core.implementation_loop import (
     ImplementationCommandResult,
     ImplementationRecordOptions,
     ImplementationStartOptions,
+    ImplementationVerifyOptions,
     close_implementation_loop,
     record_implementation_progress,
     start_implementation_loop,
+    verify_implementation_task,
 )
+from ai_sdlc.core.loop_review_service import LoopReviewServiceError
 from ai_sdlc.core.loop_status import (
     LoopListResult,
     LoopNextActionGuidance,
     LoopStatusCommandStatus,
     LoopStatusResult,
     LoopSummary,
+    apply_review_status_overlay,
     get_loop_status,
     list_loops,
 )
@@ -112,7 +118,7 @@ def loop_status(
     """Show the current Loop Engine status from local artifacts."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = get_loop_status(root, loop_type=loop_type)
+    result = get_review_aware_loop_status(root, loop_type)
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -188,7 +194,7 @@ def requirement_status(
     """Show the current requirement loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = get_loop_status(root, loop_type="requirement")
+    result = get_review_aware_loop_status(root, "requirement")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -281,7 +287,7 @@ def design_contract_status(
     """Show the current design-contract loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = get_loop_status(root, loop_type="design-contract")
+    result = get_review_aware_loop_status(root, "design-contract")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -410,6 +416,40 @@ def implementation_record(
     raise typer.Exit(0 if result.status != "blocked" else 1)
 
 
+@implementation_app.command(
+    name="verify",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def implementation_verify(
+    ctx: typer.Context,
+    task_id: str = typer.Option(..., "--task-id", help="Task id such as T11."),
+    cwd: str = typer.Option(".", "--cwd", help="Project-relative command cwd."),
+    loop_id: str = typer.Option("", "--loop-id", help="Implementation loop id."),
+    timeout_seconds: float = typer.Option(
+        300.0,
+        "--timeout-seconds",
+        help="Maximum command runtime in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """不经 shell 执行任务验证命令。"""
+
+    _run_project_writer_adapter(json_output=json_output)
+    root = _project_root_or_exit(json_output=json_output)
+    result = verify_implementation_task(
+        ImplementationVerifyOptions(
+            root=root,
+            task_id=task_id,
+            cwd=cwd,
+            argv=tuple(ctx.args),
+            loop_id=loop_id,
+            timeout_seconds=timeout_seconds,
+        )
+    )
+    _emit_implementation_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status == "ready" else 1)
+
+
 @implementation_app.command(name="status")
 def implementation_status(
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
@@ -417,7 +457,7 @@ def implementation_status(
     """Show the current implementation loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = get_loop_status(root, loop_type="implementation")
+    result = get_review_aware_loop_status(root, "implementation")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -600,7 +640,7 @@ def frontend_evidence_status(
     """Show the current frontend-evidence loop status."""
 
     root = _project_root_or_exit(json_output=json_output)
-    result = get_loop_status(root, loop_type="frontend-evidence")
+    result = get_review_aware_loop_status(root, "frontend-evidence")
     _emit_status_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status != LoopStatusCommandStatus.BLOCKED else 1)
 
@@ -719,6 +759,33 @@ def _project_root_or_exit(*, json_output: bool = False) -> Path:
         _emit_payload(payload, json_output=json_output)
         raise typer.Exit(1)
     return root
+
+
+def get_review_aware_loop_status(root: Path, loop_type: str) -> LoopStatusResult:
+    """Overlay bounded expert-review truth onto the existing Loop status."""
+
+    result = get_loop_status(root, loop_type=loop_type)
+    if result.status != LoopStatusCommandStatus.READY or result.current_loop is None:
+        return result
+    try:
+        prepared, _ = prepare_current_loop_review(
+            root,
+            loop_type,
+            result.current_loop.loop_id,
+        )
+    except LoopReviewServiceError as exc:
+        return LoopStatusResult(
+            status=LoopStatusCommandStatus.BLOCKED,
+            result="Current Loop review state is invalid.",
+            current_loop=result.current_loop,
+            blocker=exc.reason,
+            next_action="Repair the current Loop review artifacts before continuing.",
+            next_guidance=result.next_guidance,
+        )
+    except (OSError, ValueError):
+        # A running Loop may not have produced its substantive review input yet.
+        return result
+    return apply_review_status_overlay(result, prepared.overlay)
 
 
 def _emit_status_result(
@@ -1069,5 +1136,6 @@ loop_app.add_typer(design_contract_app, name="design-contract")
 loop_app.add_typer(implementation_app, name="implementation")
 loop_app.add_typer(frontend_evidence_app, name="frontend-evidence")
 loop_app.command(name="review")(loop_review)
+loop_app.command(name="review-record")(loop_review_record)
 
 __all__ = ["loop_app"]

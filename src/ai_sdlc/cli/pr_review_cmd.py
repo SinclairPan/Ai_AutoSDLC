@@ -19,6 +19,7 @@ from ai_sdlc.core.pr_review_service import (
     PRReviewCommandStatus,
     PRReviewStartOptions,
     close_pr_review,
+    commit_pr_review,
     doctor_pr_review,
     fix_pr_review,
     parse_provider_command,
@@ -26,6 +27,7 @@ from ai_sdlc.core.pr_review_service import (
     rerun_pr_review,
     start_pr_review,
     status_pr_review,
+    verify_pr_review_command,
 )
 from ai_sdlc.utils.helpers import find_project_root
 
@@ -44,7 +46,7 @@ def pr_review_doctor(
     ),
     head_ref: str = typer.Option("HEAD", "--head", help="Head branch or revision."),
     diff_source: str = typer.Option(
-        "local-git-range",
+        "local-staged",
         "--diff-source",
         help="Review input source: local-git-range, patch, local-staged, local-unstaged, or scm-pr.",
     ),
@@ -128,7 +130,7 @@ def pr_review_start(
     ),
     head_ref: str = typer.Option("HEAD", "--head", help="Head branch or revision."),
     diff_source: str = typer.Option(
-        "local-git-range",
+        "local-staged",
         "--diff-source",
         help="Review input source: local-git-range, patch, local-staged, local-unstaged, or scm-pr.",
     ),
@@ -293,10 +295,50 @@ def pr_review_record_evidence(
     ),
     json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
 ) -> None:
-    """Record verification evidence before bounded expert review."""
+    """Report that legacy string evidence is no longer authoritative."""
 
     root = _project_root_or_exit(json_output=json_output)
     result = record_pr_review_verification_evidence(root, evidence=evidence)
+    _emit_result(result.model_dump(mode="json"), json_output=json_output)
+    raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
+
+
+@pr_review_app.command(
+    name="verify",
+    context_settings={"allow_extra_args": True, "ignore_unknown_options": True},
+)
+def pr_review_verify(
+    ctx: typer.Context,
+    cwd: str = typer.Option(".", "--cwd", help="Project-relative command cwd."),
+    timeout_seconds: float = typer.Option(
+        300.0,
+        "--timeout-seconds",
+        help="Maximum command runtime in seconds.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """不经 shell 执行并记录 Local PR 验证命令。"""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = verify_pr_review_command(
+        root,
+        cwd=cwd,
+        argv=tuple(ctx.args),
+        timeout_seconds=timeout_seconds,
+    )
+    _emit_result(result.model_dump(mode="json"), json_output=json_output)
+    raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
+
+
+@pr_review_app.command(name="commit")
+def pr_review_commit(
+    message: str = typer.Option(..., "--message", help="Git commit message."),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """提交完全相同的 reviewed staged tree，不自动 add。"""
+
+    root = _project_root_or_exit(json_output=json_output)
+    result = commit_pr_review(root, message=message)
     _emit_result(result.model_dump(mode="json"), json_output=json_output)
     raise typer.Exit(0 if result.status == PRReviewCommandStatus.READY else 1)
 

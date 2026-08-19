@@ -50,7 +50,11 @@ def test_fresh_init_installs_minimal_review_guidance_without_legacy_state(
     assert result.exit_code == 0, result.output
     guidance = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
     assert "五类结果的内置动态专家复核" in guidance
-    assert "最多增加一个交叉风险专家" in guidance
+    assert "expert_roles" in guidance
+    assert "每个角色启动一个全新且只读的独立上下文" in guidance
+    assert "ai-sdlc loop review-record" in guidance
+    assert "不得要求用户手动触发专家" in guidance
+    assert "review-outcome-round-2.json" in guidance
     assert "只提供建议" in guidance
     assert "Local PR Review" in guidance
     for retired in (

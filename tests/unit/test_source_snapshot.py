@@ -392,6 +392,7 @@ def test_staged_snapshot_changes_when_index_changes(tmp_path: Path) -> None:
     first = build_source_snapshot(
         SourceSnapshotOptions(root=tmp_path, source_kind="local-staged")
     )
+    assert first.staged_tree_oid == _git(tmp_path, "write-tree")
 
     target.write_text("print('two')\n", encoding="utf-8")
     _git(tmp_path, "add", "src/app.py")
@@ -400,6 +401,8 @@ def test_staged_snapshot_changes_when_index_changes(tmp_path: Path) -> None:
     )
 
     assert first.index_identity != second.index_identity
+    assert first.staged_tree_oid != second.staged_tree_oid
+    assert second.staged_tree_oid == _git(tmp_path, "write-tree")
     assert first.diff_hash != second.diff_hash
     assert revalidate_source_snapshot(tmp_path, first).fresh is False
 
@@ -791,10 +794,7 @@ def test_materialized_view_reads_regular_blobs_with_one_git_process(
     def counted_popen(*args: object, **kwargs: object):
         nonlocal cat_file_processes
         command = args[0] if args else kwargs.get("args")
-        if (
-            isinstance(command, (list, tuple))
-            and "cat-file" in command
-        ):
+        if isinstance(command, (list, tuple)) and "cat-file" in command:
             cat_file_processes += 1
         return real_popen(*args, **kwargs)
 
@@ -1366,9 +1366,7 @@ def test_dirty_gitlink_is_rejected_fail_closed(
     _write(root / "vendor/sub", "version.txt", "dirty source\n")
 
     with pytest.raises(ValueError, match="dirty gitlink"):
-        build_source_snapshot(
-            SourceSnapshotOptions(root=root, source_kind=source_kind)
-        )
+        build_source_snapshot(SourceSnapshotOptions(root=root, source_kind=source_kind))
 
 
 def test_dirty_unchanged_gitlink_is_not_hidden_by_parent_source_change(
@@ -1393,9 +1391,7 @@ def test_gitlink_capture_does_not_execute_submodule_fsmonitor(
     marker = tmp_path / "submodule-fsmonitor-invoked.txt"
     hook = tmp_path / "submodule-fsmonitor"
     hook.write_text(
-        "#!/bin/sh\n"
-        f"touch '{marker.as_posix()}'\n"
-        "exit 1\n",
+        f"#!/bin/sh\ntouch '{marker.as_posix()}'\nexit 1\n",
         encoding="utf-8",
     )
     hook.chmod(0o755)
@@ -1426,8 +1422,7 @@ def test_gitlink_capture_overrides_parent_submodule_config_without_child_filters
     diff_marker = tmp_path / "submodule-diff-driver-invoked.txt"
     diff_script = tmp_path / "submodule-diff-driver.py"
     diff_script.write_text(
-        "import pathlib\n"
-        f"pathlib.Path({str(diff_marker)!r}).write_text('invoked')\n",
+        f"import pathlib\npathlib.Path({str(diff_marker)!r}).write_text('invoked')\n",
         encoding="utf-8",
     )
     git_dir = Path(_git(submodule, "rev-parse", "--git-dir"))
@@ -1560,9 +1555,7 @@ def test_worktree_snapshot_does_not_execute_repository_fsmonitor(
     marker = tmp_path / ".git" / "fsmonitor-invoked.txt"
     hook = tmp_path / ".git" / "fsmonitor-side-effect"
     hook.write_text(
-        "#!/bin/sh\n"
-        f"touch '{marker.as_posix()}'\n"
-        "exit 1\n",
+        f"#!/bin/sh\ntouch '{marker.as_posix()}'\nexit 1\n",
         encoding="utf-8",
     )
     hook.chmod(0o755)
@@ -1642,8 +1635,7 @@ def test_materialized_source_does_not_execute_post_index_change_hook(
     marker = tmp_path / ".git" / "post-index-change-invoked.txt"
     hook = tmp_path / ".git" / "hooks" / "post-index-change"
     hook.write_text(
-        "#!/bin/sh\n"
-        f"touch '{marker.as_posix()}'\n",
+        f"#!/bin/sh\ntouch '{marker.as_posix()}'\n",
         encoding="utf-8",
     )
     hook.chmod(0o755)

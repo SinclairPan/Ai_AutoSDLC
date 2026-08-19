@@ -24,6 +24,20 @@ ReviewExecutionStatus = Literal["completed", "failed"]
 ReviewInputValidator = Callable[..., object]
 
 _ROLE_BRIEF = "Choose one primary expert and at most one cross-risk expert."
+_PRIMARY_EXPERTS: dict[LoopReviewType, str] = {
+    "requirement": "product-value-and-acceptance",
+    "design-contract": "architecture-and-maintainability",
+    "implementation": "correctness-and-regression",
+    "frontend-evidence": "ux-accessibility-and-evidence",
+    "local-pr-review": "cross-stage-delivery",
+}
+_CROSS_RISK_EXPERTS: tuple[tuple[str, str], ...] = (
+    ("security", "security-and-permissions"),
+    ("data-integrity", "data-integrity-and-migration"),
+    ("concurrency", "concurrency-and-recovery"),
+    ("public-api", "api-compatibility"),
+    ("frontend", "frontend-integration"),
+)
 _SEVERITY_RANK: dict[ReviewSeverity, int] = {
     "advisory": 0,
     "important": 1,
@@ -43,6 +57,8 @@ class ReviewInput(BaseModel):
     artifact_paths: list[str] = Field(min_length=1)
     upstream_context_paths: list[str] = Field(default_factory=list)
     risk_signals: list[str] = Field(default_factory=list)
+    expert_roles: list[str] = Field(min_length=1, max_length=2)
+    expert_reasons: dict[str, str]
     role_brief: str = _ROLE_BRIEF
 
     @field_validator("loop_id", "role_brief")
@@ -67,6 +83,20 @@ class ReviewInput(BaseModel):
     def _paths_cannot_overlap(self) -> ReviewInput:
         if set(self.artifact_paths) & set(self.upstream_context_paths):
             raise ValueError("artifact and upstream paths cannot overlap")
+        normalized_roles = [role.strip() for role in self.expert_roles]
+        if any(not role for role in normalized_roles):
+            raise ValueError("expert role cannot be empty")
+        if len(normalized_roles) != len(set(normalized_roles)):
+            raise ValueError("expert roles must be unique")
+        normalized_reasons = {
+            role.strip(): reason.strip() for role, reason in self.expert_reasons.items()
+        }
+        if set(normalized_reasons) != set(normalized_roles):
+            raise ValueError("every selected expert requires exactly one reason")
+        if any(not reason for reason in normalized_reasons.values()):
+            raise ValueError("expert reason cannot be empty")
+        self.expert_roles = normalized_roles
+        self.expert_reasons = normalized_reasons
         return self
 
 
@@ -149,13 +179,15 @@ def build_review_input(
     upstream_context_paths: Sequence[str | Path],
     risk_signals: Sequence[str],
     capture_artifact_paths: Sequence[str | Path] = (),
+    capture_only_paths: Sequence[str | Path] = (),
     captured_artifacts: MutableMapping[str, bytes] | None = None,
 ) -> ReviewInput:
     """Read stable regular files and bind their raw bytes to one review input."""
 
     resolved_root = root.resolve(strict=True)
     capture_paths = {
-        _review_relative_path(resolved_root, path) for path in capture_artifact_paths
+        _review_relative_path(resolved_root, path)
+        for path in (*capture_artifact_paths, *capture_only_paths)
     }
     if capture_paths and captured_artifacts is None:
         raise ValueError("captured_artifacts is required when capture paths are set")
@@ -168,6 +200,12 @@ def build_review_input(
     upstream = _read_paths(
         resolved_root,
         upstream_context_paths,
+        capture_paths=capture_paths,
+        captured_artifacts=captured_artifacts,
+    )
+    _read_paths(
+        resolved_root,
+        capture_only_paths,
         capture_paths=capture_paths,
         captured_artifacts=captured_artifacts,
     )
@@ -185,6 +223,7 @@ def build_review_input(
         raise ValueError("risk signal cannot be empty")
     if len(normalized_signals) != len(set(normalized_signals)):
         raise ValueError("risk signals must be unique")
+    expert_roles, expert_reasons = select_expert_roles(loop_type, normalized_signals)
 
     digest_payload = {
         "loop_id": loop_id.strip(),
@@ -199,6 +238,8 @@ def build_review_input(
             for path, mode, size, digest in upstream
         ],
         "risk_signals": normalized_signals,
+        "expert_roles": expert_roles,
+        "expert_reasons": expert_reasons,
     }
     encoded = json.dumps(
         digest_payload,
@@ -214,7 +255,28 @@ def build_review_input(
         artifact_paths=[path for path, _, _, _ in artifacts],
         upstream_context_paths=[path for path, _, _, _ in upstream],
         risk_signals=normalized_signals,
+        expert_roles=expert_roles,
+        expert_reasons=expert_reasons,
     )
+
+
+def select_expert_roles(
+    loop_type: LoopReviewType,
+    risk_signals: Sequence[str],
+) -> tuple[list[str], dict[str, str]]:
+    """Select one primary and at most one deterministic cross-risk expert."""
+
+    primary = _PRIMARY_EXPERTS[loop_type]
+    roles = [primary]
+    reasons = {primary: f"Primary expert for {loop_type}."}
+    normalized_signals = {signal.strip() for signal in risk_signals}
+    for signal, expert in _CROSS_RISK_EXPERTS:
+        if signal not in normalized_signals or expert == primary:
+            continue
+        roles.append(expert)
+        reasons[expert] = f"Cross-risk expert for {signal}."
+        break
+    return roles, reasons
 
 
 def merge_expert_findings(executions: Sequence[ReviewExecution]) -> ReviewExecution:
@@ -471,4 +533,5 @@ __all__ = [
     "build_review_input",
     "merge_expert_findings",
     "revalidate_review_input_at_transition",
+    "select_expert_roles",
 ]

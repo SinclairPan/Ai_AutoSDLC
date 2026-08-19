@@ -34,6 +34,7 @@ from ai_sdlc.core.pr_review_models import (
     ModelResolution,
     ModelResolutionStatus,
     ProviderMode,
+    PRReviewVerificationEvidence,
     ReviewFinding,
     ReviewFindings,
     ReviewPack,
@@ -63,6 +64,11 @@ from ai_sdlc.core.pr_review_redaction import RedactionReport, analyze_redaction
 from ai_sdlc.core.pr_review_source import (
     DiffSourceResolutionOptions,
     resolve_diff_source,
+)
+from ai_sdlc.core.quality_command import (
+    QualityCommandOptions,
+    quality_command_environment,
+    run_quality_command,
 )
 from ai_sdlc.core.review_kernel import (
     ReviewInputValidator,
@@ -245,6 +251,19 @@ class PRReviewCloseResult(BaseModel):
     unresolved_blockers: int = 0
     unresolved_required: int = 0
     unresolved_advisory: int = 0
+    blocker: str = ""
+    next_action: str = ""
+
+
+class PRReviewCommitResult(BaseModel):
+    """Result for committing exactly the reviewed staged tree."""
+
+    model_config = ConfigDict(extra="forbid", use_enum_values=True)
+
+    status: PRReviewCommandStatus
+    review_id: str = ""
+    commit: str = ""
+    tree_oid: str = ""
     blocker: str = ""
     next_action: str = ""
 
@@ -608,59 +627,257 @@ def record_pr_review_verification_evidence(
     *,
     evidence: list[str],
 ) -> PRReviewEvidenceResult:
-    """Record ordinary verification output before bounded expert review."""
+    """拒绝把人工字符串冒充为 Local PR 可执行证据。"""
 
-    entries = list(dict.fromkeys(item.strip() for item in evidence if item.strip()))
-    if not entries:
-        return PRReviewEvidenceResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            blocker="At least one non-empty verification evidence line is required.",
-            next_action="Pass --evidence with the command and result to record.",
-        )
+    del evidence
+    return PRReviewEvidenceResult(
+        status=PRReviewCommandStatus.BLOCKED,
+        blocker="Legacy verification strings cannot satisfy Local PR Review.",
+        next_action="Run ai-sdlc pr-review verify --cwd . -- <argv...>.",
+    )
+
+
+def verify_pr_review_command(
+    root: Path,
+    *,
+    cwd: str,
+    argv: tuple[str, ...],
+    timeout_seconds: float = 300.0,
+) -> PRReviewEvidenceResult:
+    """执行并记录一次绑定 reviewed staged tree 的质量命令。"""
+
+    resolved_root = root.resolve()
     try:
-        review_run, _ = _load_current_review_run(root)
+        review_run, _ = _load_current_review_run(resolved_root)
+        review_pack = _load_review_pack(resolved_root, review_run.review_pack_path)
     except FileNotFoundError as exc:
         return PRReviewEvidenceResult(
             status=PRReviewCommandStatus.NO_REVIEW,
             blocker=str(exc),
-            next_action="Run ai-sdlc pr-review start --base <branch>.",
+            next_action="Run ai-sdlc pr-review start --diff-source local-staged.",
         )
     except (json.JSONDecodeError, ValidationError, ValueError, OSError) as exc:
         return PRReviewEvidenceResult(
             status=PRReviewCommandStatus.BLOCKED,
             blocker=f"Current PR review artifacts are malformed: {exc}",
-            next_action="Rerun ai-sdlc pr-review start.",
+            next_action="Rerun ai-sdlc pr-review start --diff-source local-staged.",
         )
     if review_run.status == LoopStatus.CLOSED:
         return PRReviewEvidenceResult(
             status=PRReviewCommandStatus.BLOCKED,
             review_id=review_run.review_id,
             blocker="Closed PR review evidence cannot be changed.",
-            next_action="Start a new local PR review for a changed diff.",
+            next_action="Start a new local PR review for a changed staged tree.",
+        )
+    if (
+        DiffSourceKind(review_run.diff_source.source_kind)
+        != DiffSourceKind.LOCAL_STAGED
+    ):
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker="Only local-staged review is eligible for delivery verification.",
+            next_action="Restart PR review with --diff-source local-staged.",
+        )
+    source_blocker = _precommit_staged_source_blocker(
+        resolved_root,
+        review_run,
+        review_pack,
+    )
+    if source_blocker:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=source_blocker,
+            next_action="Rerun PR review for the current staged tree.",
+        )
+    try:
+        result = run_quality_command(
+            QualityCommandOptions(
+                root=resolved_root,
+                cwd=resolved_root / (cwd.strip() or "."),
+                argv=argv,
+                timeout_seconds=timeout_seconds,
+            )
+        )
+    except ValueError as exc:
+        return PRReviewEvidenceResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=str(exc),
+            next_action="Fix the verification command and rerun it.",
         )
     evidence_path = (
-        LoopArtifactStore(root.resolve()).review_run_dir(review_run.review_id)
+        LoopArtifactStore(resolved_root).review_run_dir(review_run.review_id)
         / "verification-evidence.json"
     )
-    LoopArtifactStore(root.resolve()).write_json_artifact(
-        evidence_path,
-        {
-            "schema_version": "1",
-            "artifact_kind": "review-verification-evidence",
-            "review_id": review_run.review_id,
-            "loop_id": review_run.loop_id,
-            "entries": entries,
-        },
+    previous_results = []
+    if evidence_path.is_file():
+        try:
+            previous = PRReviewVerificationEvidence.model_validate_json(
+                evidence_path.read_text(encoding="utf-8")
+            )
+        except (OSError, ValidationError) as exc:
+            return PRReviewEvidenceResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                review_id=review_run.review_id,
+                blocker=f"Current verification evidence is malformed: {exc}",
+                next_action="Restart PR review for the current staged tree.",
+            )
+        if (
+            previous.review_id != review_run.review_id
+            or previous.loop_id != review_run.loop_id
+            or previous.staged_tree_oid != review_run.staged_tree_oid
+        ):
+            return PRReviewEvidenceResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                review_id=review_run.review_id,
+                blocker="Current verification evidence belongs to another staged tree.",
+                next_action="Restart PR review for the current staged tree.",
+            )
+        previous_results = previous.results
+    evidence = PRReviewVerificationEvidence(
+        review_id=review_run.review_id,
+        loop_id=review_run.loop_id,
+        staged_tree_oid=review_run.staged_tree_oid,
+        results=[*previous_results, result],
     )
+    LoopArtifactStore(resolved_root).write_json_artifact(evidence_path, evidence)
     return PRReviewEvidenceResult(
-        status=PRReviewCommandStatus.READY,
+        status=(
+            PRReviewCommandStatus.READY
+            if result.successful
+            else PRReviewCommandStatus.BLOCKED
+        ),
         review_id=review_run.review_id,
         evidence_path=str(evidence_path),
-        evidence_count=len(entries),
+        evidence_count=len(evidence.results),
+        blocker="" if result.successful else f"Verification command {result.status}.",
         next_action=(
-            "Run ai-sdlc loop review --type local-pr-review "
-            f"--loop-id {review_run.loop_id}."
+            "Run bounded Local PR expert review."
+            if result.successful
+            else "Fix the command failure or source mutation, then verify again."
         ),
+    )
+
+
+def commit_pr_review(root: Path, *, message: str) -> PRReviewCommitResult:
+    """使用普通 Git hooks 提交完全相同的 reviewed staged tree。"""
+
+    resolved_root = root.resolve()
+    commit_message = message.strip()
+    if not commit_message:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker="Commit message is required.",
+            next_action="Pass --message with a non-empty commit message.",
+        )
+    try:
+        review_run, review_run_path = _load_current_review_run(resolved_root)
+        review_pack = _load_review_pack(resolved_root, review_run.review_pack_path)
+        evidence = _load_verification_evidence(resolved_root, review_run)
+    except FileNotFoundError as exc:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.NO_REVIEW,
+            blocker=str(exc),
+            next_action="Run ai-sdlc pr-review start --diff-source local-staged.",
+        )
+    except (json.JSONDecodeError, ValidationError, ValueError, OSError) as exc:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            blocker=f"Current PR review artifacts are malformed: {exc}",
+            next_action="Restart PR review for the current staged tree.",
+        )
+    if (
+        DiffSourceKind(review_run.diff_source.source_kind)
+        != DiffSourceKind.LOCAL_STAGED
+    ):
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker="Diagnostic review sources cannot authorize a delivery commit.",
+            next_action="Restart PR review with --diff-source local-staged.",
+        )
+    evidence_blocker = _verification_evidence_blocker(review_run, evidence)
+    if evidence_blocker:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=evidence_blocker,
+            next_action="Run ai-sdlc pr-review verify before commit.",
+        )
+    outcome_blocker = _current_expert_outcome_blocker(resolved_root, review_run)
+    if outcome_blocker:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=outcome_blocker,
+            next_action="Complete the bounded Local PR expert review before commit.",
+        )
+    source_blocker = _precommit_staged_source_blocker(
+        resolved_root,
+        review_run,
+        review_pack,
+    )
+    if source_blocker:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=source_blocker,
+            next_action="Rerun PR review for the current staged tree.",
+        )
+    try:
+        process = subprocess.run(
+            ["git", "commit", "-m", commit_message],
+            cwd=resolved_root,
+            env=quality_command_environment(os.environ),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=300,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=f"Git commit could not complete: {exc}",
+            next_action="Inspect hooks and repository state; history was not rolled back.",
+        )
+    if process.returncode != 0:
+        detail = process.stderr.strip() or process.stdout.strip()
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            blocker=f"Git commit failed: {detail or process.returncode}",
+            next_action="Inspect hooks and repository state; history was not rolled back.",
+        )
+    delivery_blocker, commit, tree_oid = _delivery_commit_state(
+        resolved_root,
+        review_run,
+        review_pack,
+    )
+    if delivery_blocker:
+        return PRReviewCommitResult(
+            status=PRReviewCommandStatus.BLOCKED,
+            review_id=review_run.review_id,
+            commit=commit,
+            tree_oid=tree_oid,
+            blocker=delivery_blocker,
+            next_action="Review the current HEAD as a new staged change; history was not rolled back.",
+        )
+    review_run.delivery_commit = commit
+    review_run.delivery_parent_commit = review_run.head_commit
+    review_run.next_action = "Close the unchanged Local PR review."
+    review_run.updated_at = utc_now_iso()
+    LoopArtifactStore(resolved_root).write_json_artifact(review_run_path, review_run)
+    return PRReviewCommitResult(
+        status=PRReviewCommandStatus.READY,
+        review_id=review_run.review_id,
+        commit=commit,
+        tree_oid=tree_oid,
+        next_action="Run ai-sdlc pr-review close with the reviewed digest.",
     )
 
 
@@ -1276,50 +1493,68 @@ def close_pr_review(
             next_action="Fix the blocked review provider and rerun PR review before closing.",
         )
 
-    head_mismatch = _reviewed_head_mismatch(root, review_run)
-    if head_mismatch:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            verdict=ReviewVerdict.BLOCKED,
-            unresolved_blockers=review_run.unresolved_blockers,
-            unresolved_required=review_run.unresolved_required,
-            unresolved_advisory=review_run.unresolved_advisory,
-            blocker=head_mismatch,
-            next_action="Run ai-sdlc pr-review rerun before closing.",
-        )
+    delivery_close = bool(expected_review_digest.strip() or review_input_validator)
+    source_kind = DiffSourceKind(review_run.diff_source.source_kind)
+    if delivery_close:
+        if source_kind != DiffSourceKind.LOCAL_STAGED:
+            return PRReviewCloseResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                review_id=review_run.review_id,
+                verdict=ReviewVerdict.BLOCKED,
+                blocker="Diagnostic review sources cannot complete delivery Close.",
+                next_action="Restart PR review with --diff-source local-staged.",
+            )
 
-    diff_source_mismatch = _reviewed_diff_source_mismatch(root, review_run)
-    if diff_source_mismatch:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            verdict=ReviewVerdict.BLOCKED,
-            unresolved_blockers=review_run.unresolved_blockers,
-            unresolved_required=review_run.unresolved_required,
-            unresolved_advisory=review_run.unresolved_advisory,
-            blocker=diff_source_mismatch,
-            next_action="Rerun PR review for the current diff source before closing.",
+        delivery_blocker, delivery_commit, _delivery_tree = _delivery_commit_state(
+            root.resolve(),
+            review_run,
+            review_pack,
         )
+        if delivery_blocker:
+            return PRReviewCloseResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                review_id=review_run.review_id,
+                verdict=ReviewVerdict.BLOCKED,
+                unresolved_blockers=review_run.unresolved_blockers,
+                unresolved_required=review_run.unresolved_required,
+                unresolved_advisory=review_run.unresolved_advisory,
+                blocker=delivery_blocker,
+                next_action="Commit the exact reviewed staged tree or rerun PR review.",
+            )
+        review_run.delivery_commit = delivery_commit
+        review_run.delivery_parent_commit = review_run.head_commit
 
-    dirty_blocker = _reviewed_worktree_dirty(
-        root,
-        review_run,
-        review_pack=review_pack,
-    )
-    if dirty_blocker:
-        return PRReviewCloseResult(
-            status=PRReviewCommandStatus.BLOCKED,
-            review_id=review_run.review_id,
-            verdict=ReviewVerdict.BLOCKED,
-            unresolved_blockers=review_run.unresolved_blockers,
-            unresolved_required=review_run.unresolved_required,
-            unresolved_advisory=review_run.unresolved_advisory,
-            blocker=dirty_blocker,
-            next_action=(
-                "Commit or discard unreviewed worktree changes, then rerun PR review."
-            ),
+        evidence_blocker = _verification_evidence_blocker(
+            review_run,
+            verification_evidence,
         )
+        if evidence_blocker:
+            return PRReviewCloseResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                review_id=review_run.review_id,
+                verdict=ReviewVerdict.BLOCKED,
+                blocker=evidence_blocker,
+                next_action=(
+                    "Run ai-sdlc pr-review verify before expert review and Close."
+                ),
+            )
+    else:
+        head_mismatch = _reviewed_head_mismatch(root, review_run)
+        source_mismatch = _reviewed_diff_source_mismatch(root, review_run)
+        dirty_blocker = _reviewed_worktree_dirty(
+            root,
+            review_run,
+            review_pack=review_pack,
+        )
+        legacy_blocker = head_mismatch or source_mismatch or dirty_blocker
+        if legacy_blocker:
+            return PRReviewCloseResult(
+                status=PRReviewCommandStatus.BLOCKED,
+                review_id=review_run.review_id,
+                verdict=ReviewVerdict.BLOCKED,
+                blocker=legacy_blocker,
+                next_action="rerun PR review for the current source before closing.",
+            )
 
     if findings.verdict == ReviewVerdict.BLOCKED:
         return PRReviewCloseResult(
@@ -1448,7 +1683,7 @@ def _write_pr_review_close(
     resolution_records: dict[str, FindingResolution],
     verdict: ReviewVerdict,
     unresolved: dict[FindingSeverity, int],
-    verification_evidence: list[str],
+    verification_evidence: PRReviewVerificationEvidence | None,
     status: PRReviewCommandStatus,
     blocker: str,
     next_action: str,
@@ -1586,6 +1821,134 @@ def _blocked_not_closeable_review_result(review_run: ReviewRun) -> PRReviewClose
 
 def _review_pack_has_incomplete_waiver(review_pack: ReviewPack) -> bool:
     return review_pack.policy_decisions.get("incomplete_review_waiver") is True
+
+
+def _precommit_staged_source_blocker(
+    root: Path,
+    review_run: ReviewRun,
+    review_pack: ReviewPack,
+) -> str:
+    if not review_run.staged_tree_oid.strip():
+        return "Reviewed staged tree is missing."
+    head_mismatch = _reviewed_head_mismatch(root, review_run)
+    if head_mismatch:
+        return head_mismatch
+    source_mismatch = _reviewed_diff_source_mismatch(root, review_run)
+    if source_mismatch:
+        return source_mismatch
+    return _reviewed_worktree_dirty(root, review_run, review_pack=review_pack)
+
+
+def _verification_evidence_blocker(
+    review_run: ReviewRun,
+    evidence: PRReviewVerificationEvidence | None,
+) -> str:
+    if evidence is None:
+        return "Executable Local PR verification evidence is missing."
+    if evidence.entries:
+        return "Legacy verification strings cannot satisfy Local PR Review."
+    if (
+        evidence.review_id != review_run.review_id
+        or evidence.loop_id != review_run.loop_id
+        or evidence.staged_tree_oid != review_run.staged_tree_oid
+    ):
+        return "Local PR verification evidence does not match the reviewed staged tree."
+    if not any(
+        result.successful and result.source_digest_before == result.source_digest_after
+        for result in evidence.results
+    ):
+        return "No successful executable verification result matches the reviewed tree."
+    return ""
+
+
+def _current_expert_outcome_blocker(root: Path, review_run: ReviewRun) -> str:
+    try:
+        from ai_sdlc.cli.loop_review_cmd import prepare_current_loop_review
+        from ai_sdlc.core.loop_review_service import (
+            validate_prepared_outcome_for_close,
+        )
+
+        prepared, _ = prepare_current_loop_review(
+            root,
+            "local-pr-review",
+            review_run.loop_id,
+        )
+        validate_prepared_outcome_for_close(
+            prepared,
+            expected_digest=prepared.review_input.input_digest,
+        )
+    except (OSError, ValueError) as exc:
+        return f"Local PR expert review is not current and clean: {exc}"
+    return ""
+
+
+def _delivery_commit_state(
+    root: Path,
+    review_run: ReviewRun,
+    review_pack: ReviewPack,
+) -> tuple[str, str, str]:
+    try:
+        commit_line = _git_read_text(root, "rev-list", "--parents", "-n", "1", "HEAD")
+        fields = commit_line.split()
+        commit = fields[0] if fields else ""
+        parents = fields[1:]
+        tree_oid = _git_read_text(root, "rev-parse", "HEAD^{tree}")
+    except GitError as exc:
+        return f"Unable to verify delivered commit: {exc}", "", ""
+    if len(parents) != 1:
+        return "Delivered commit must have exactly one parent.", commit, tree_oid
+    if parents[0] != review_run.head_commit:
+        return (
+            "Delivered commit parent does not match the reviewed HEAD: "
+            f"{parents[0]} != {review_run.head_commit}.",
+            commit,
+            tree_oid,
+        )
+    if tree_oid != review_run.staged_tree_oid:
+        return (
+            "Delivered commit tree does not match the reviewed staged tree: "
+            f"{tree_oid} != {review_run.staged_tree_oid}.",
+            commit,
+            tree_oid,
+        )
+    if review_pack.staged_tree_oid != review_run.staged_tree_oid:
+        return (
+            "Review pack staged tree no longer matches the review run.",
+            commit,
+            tree_oid,
+        )
+    if review_run.delivery_commit and review_run.delivery_commit != commit:
+        return (
+            "Current HEAD no longer matches the recorded delivery commit.",
+            commit,
+            tree_oid,
+        )
+    dirty = _reviewed_worktree_dirty(root, review_run, review_pack=review_pack)
+    if dirty:
+        return dirty, commit, tree_oid
+    return "", commit, tree_oid
+
+
+def _git_read_text(root: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", *args],
+            cwd=root,
+            env=quality_command_environment(os.environ),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=30,
+        )
+    except FileNotFoundError as exc:
+        raise GitError("git is not installed or not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise GitError(f"git {' '.join(args)} timed out") from exc
+    if result.returncode != 0:
+        raise GitError(result.stderr.strip() or f"git {' '.join(args)} failed")
+    return result.stdout.strip()
 
 
 def _reviewed_head_mismatch(root: Path, review_run: ReviewRun) -> str:
@@ -2402,6 +2765,7 @@ def _write_review_run(
         head_ref=review_pack.head_ref,
         base_commit=review_pack.base_commit,
         head_commit=review_pack.head_commit,
+        staged_tree_oid=review_pack.staged_tree_oid,
         provider_command=options.provider_command,
         review_pack_path=_repo_relative_path(root, Path(pack_result.review_pack_path)),
         review_pack_digest=_file_sha256(Path(pack_result.review_pack_path))
@@ -2654,33 +3018,25 @@ def _load_verification_evidence(
     review_run: ReviewRun,
     *,
     reviewed_artifacts: Mapping[str, bytes] | None = None,
-) -> list[str]:
+) -> PRReviewVerificationEvidence | None:
     path = LoopArtifactStore(root).review_run_dir(review_run.review_id) / (
         "verification-evidence.json"
     )
     if reviewed_artifacts is None:
         if not path.is_file():
-            return []
+            return None
         payload = json.loads(path.read_text(encoding="utf-8"))
     else:
         content = _review_snapshot_optional_bytes(root, path, reviewed_artifacts)
         if content is None:
-            return []
+            return None
         payload = _parse_review_json_bytes(content, name=path.name)
-    if not isinstance(payload, dict):
-        raise ValueError("verification-evidence.json root must be an object")
-    if payload.get("artifact_kind") != "review-verification-evidence":
-        raise ValueError("verification-evidence.json artifact kind is invalid")
-    if payload.get("review_id") != review_run.review_id:
+    evidence = PRReviewVerificationEvidence.model_validate(payload)
+    if evidence.review_id != review_run.review_id:
         raise ValueError("verification-evidence.json review id does not match")
-    if payload.get("loop_id") != review_run.loop_id:
+    if evidence.loop_id != review_run.loop_id:
         raise ValueError("verification-evidence.json loop id does not match")
-    entries = payload.get("entries")
-    if not isinstance(entries, list) or not all(
-        isinstance(item, str) and item.strip() for item in entries
-    ):
-        raise ValueError("verification-evidence.json entries must be non-empty strings")
-    return list(dict.fromkeys(item.strip() for item in entries))
+    return evidence
 
 
 def _review_snapshot_key(root: Path, path: Path) -> str:
@@ -2912,10 +3268,18 @@ def _render_final_report(
     resolution_records: dict[str, FindingResolution],
     verdict: ReviewVerdict,
     unresolved: dict[FindingSeverity, int],
-    verification_evidence: list[str],
+    verification_evidence: PRReviewVerificationEvidence | None,
     next_action: str,
 ) -> str:
-    evidence = verification_evidence or ["No verification evidence provided."]
+    evidence = (
+        [
+            f"{' '.join(result.argv)} => {result.status} (exit={result.exit_code})"
+            for result in verification_evidence.results
+        ]
+        + [f"[legacy] {entry}" for entry in verification_evidence.entries]
+        if verification_evidence is not None
+        else ["No executable verification evidence provided."]
+    )
     coverage = review_pack.diff_coverage
     lines = [
         f"# Local PR Review Final Report: {review_run.review_id}",
@@ -2998,6 +3362,7 @@ __all__ = [
     "PRReviewCheck",
     "PRReviewCommandStatus",
     "PRReviewCloseResult",
+    "PRReviewCommitResult",
     "PRReviewDoctorResult",
     "PRReviewEvidenceResult",
     "PRReviewFixResult",
@@ -3005,6 +3370,7 @@ __all__ = [
     "PRReviewStartResult",
     "PRReviewStatusResult",
     "close_pr_review",
+    "commit_pr_review",
     "detect_current_model",
     "doctor_pr_review",
     "fix_pr_review",
@@ -3013,4 +3379,5 @@ __all__ = [
     "rerun_pr_review",
     "start_pr_review",
     "status_pr_review",
+    "verify_pr_review_command",
 ]

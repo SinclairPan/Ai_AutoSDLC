@@ -6,7 +6,9 @@
 
 1. 提交前由独立本地只读代理执行 Local PR Review。
 2. 代码精简分析只给出建议，可因正确性和交付价值灵活突破，不作为硬门禁。
-3. Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review 五类结果可按内容临时选择最多两名只读专家；有发现时最多修复并复审一次。
+3. Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review 五类结果由 CLI 按内容选择最多两种专家角色（即最多两名只读专家），宿主 Agent 自动以独立只读上下文执行并调用 `loop review-record`；有发现时最多修复并复审一次，不要求用户手动触发专家。
+
+每个 Loop 只新增固定的 `review-outcome-round-1.json`，修复后至多再新增 `review-outcome-round-2.json`。这些文件只记录当前输入摘要、所选角色、执行状态和 findings，不保存对话、长期专家身份或第三轮历史。
 
 ## 已删除的旧入口
 

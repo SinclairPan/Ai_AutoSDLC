@@ -33,6 +33,7 @@ from ai_sdlc.core.implementation_models import (
 from ai_sdlc.core.implementation_store import implementation_artifacts
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
+from ai_sdlc.core.loop_review_models import LoopReviewOutcome
 from ai_sdlc.core.loop_status import CURRENT_REVIEW_PATH
 from ai_sdlc.core.pr_review_models import (
     ModelResolutionSource,
@@ -53,17 +54,38 @@ pytestmark = pytest.mark.usefixtures("isolated_cli_cwd")
 
 
 def _review_close_args(root: Path, loop_type: str, loop_id: str) -> list[str]:
-    digest = resolve_review_input(
-        root,
-        loop_type=loop_type,
-        loop_id=loop_id,
-    ).input_digest
+    review_input = _record_clean_review(root, loop_type, loop_id)
     return [
         "--loop-id",
         loop_id,
         "--expect-review-digest",
-        digest,
+        review_input.input_digest,
     ]
+
+
+def _record_clean_review(root: Path, loop_type: str, loop_id: str):
+    review_input = resolve_review_input(
+        root,
+        loop_type=loop_type,
+        loop_id=loop_id,
+        review_round_number=1,
+    )
+    loop_dir = root / ".ai-sdlc" / "loops" / loop_type / loop_id
+    outcome = LoopReviewOutcome(
+        loop_id=loop_id,
+        loop_type=loop_type,
+        round_number=1,
+        input_digest=review_input.input_digest,
+        status="completed",
+        expert_roles=review_input.expert_roles,
+        findings=[],
+        recorded_at="2026-08-17T00:00:00Z",
+    )
+    (loop_dir / "review-outcome-round-1.json").write_text(
+        outcome.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return review_input
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="symlink creation is not portable")
@@ -773,11 +795,7 @@ def test_loop_requirement_freeze_uses_reviewed_state_across_aba(
         )
 
     assert start.exit_code == 0
-    reviewed = resolve_review_input(
-        tmp_path,
-        loop_type="requirement",
-        loop_id="req-aba",
-    )
+    reviewed = _record_clean_review(tmp_path, "requirement", "req-aba")
     reviewed_bytes = {
         path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
     }
@@ -1161,11 +1179,7 @@ def test_loop_design_contract_close_uses_reviewed_state_across_aba(
         )
 
     assert check.exit_code == 0
-    reviewed = resolve_review_input(
-        tmp_path,
-        loop_type="design-contract",
-        loop_id="dc-aba",
-    )
+    reviewed = _record_clean_review(tmp_path, "design-contract", "dc-aba")
     reviewed_bytes = {
         path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
     }
@@ -1270,10 +1284,10 @@ def test_loop_design_contract_close_rechecks_reviewed_document_snapshot(
         ),
         encoding="utf-8",
     )
-    reviewed = resolve_review_input(
+    reviewed = _record_clean_review(
         tmp_path,
-        loop_type="design-contract",
-        loop_id="dc-reviewed-docs",
+        "design-contract",
+        "dc-reviewed-docs",
     )
 
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
@@ -1402,6 +1416,26 @@ def test_loop_implementation_start_record_status_and_close_json(
                 "--json",
             ],
         )
+        _ensure_git_repository(tmp_path)
+        verify = runner.invoke(
+            app,
+            [
+                "loop",
+                "implementation",
+                "verify",
+                "--loop-id",
+                "impl-cli",
+                "--task-id",
+                "T11",
+                "--cwd",
+                ".",
+                "--json",
+                "--",
+                sys.executable,
+                "-c",
+                "print('verified')",
+            ],
+        )
         close = runner.invoke(
             app,
             [
@@ -1432,9 +1466,14 @@ def test_loop_implementation_start_record_status_and_close_json(
 
     assert record.exit_code == 0
     record_payload = json.loads(record.output)
-    assert record_payload["loop_status"] == "needs_review"
-    assert record_payload["done_count"] == 1
-    assert record_payload["next_guidance"]["command"] == (
+    assert record_payload["loop_status"] == "running"
+    assert record_payload["done_count"] == 0
+
+    assert verify.exit_code == 0
+    verify_payload = json.loads(verify.output)
+    assert verify_payload["loop_status"] == "needs_review"
+    assert verify_payload["done_count"] == 1
+    assert verify_payload["next_guidance"]["command"] == (
         "ai-sdlc loop review --type implementation --loop-id impl-cli"
     )
 
@@ -1491,11 +1530,7 @@ def test_loop_implementation_close_uses_reviewed_state_across_aba(
         )
 
     assert start.exit_code == 0
-    reviewed = resolve_review_input(
-        tmp_path,
-        loop_type="implementation",
-        loop_id="impl-aba",
-    )
+    reviewed = _record_clean_review(tmp_path, "implementation", "impl-aba")
     reviewed_bytes = {
         path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
     }
@@ -1608,10 +1643,10 @@ def test_loop_implementation_failed_close_persists_reviewed_decision(
         )
 
     assert start.exit_code == 0
-    reviewed = resolve_review_input(
+    reviewed = _record_clean_review(
         tmp_path,
-        loop_type="implementation",
-        loop_id="impl-needs-fix",
+        "implementation",
+        "impl-needs-fix",
     )
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
         close = runner.invoke(
@@ -1693,10 +1728,10 @@ def test_loop_implementation_close_does_not_overwrite_newer_progress(
         )
 
     assert start.exit_code == 0
-    reviewed = resolve_review_input(
+    reviewed = _record_clean_review(
         tmp_path,
-        loop_type="implementation",
-        loop_id="impl-concurrent",
+        "implementation",
+        "impl-concurrent",
     )
     validation_count = 0
     worker: threading.Thread | None = None
@@ -2011,11 +2046,7 @@ def test_loop_frontend_evidence_close_uses_reviewed_state_across_aba(
         )
 
     assert start.exit_code == 1
-    reviewed = resolve_review_input(
-        tmp_path,
-        loop_type="frontend-evidence",
-        loop_id="fe-aba",
-    )
+    reviewed = _record_clean_review(tmp_path, "frontend-evidence", "fe-aba")
     reviewed_bytes = {
         path: (tmp_path / path).read_bytes() for path in reviewed.artifact_paths
     }
@@ -2227,6 +2258,24 @@ def _write_frontend_work_item(root: Path) -> Path:
     work_item.joinpath("plan.md").write_text("# Plan\n", encoding="utf-8")
     work_item.joinpath("tasks.md").write_text("# Tasks\n", encoding="utf-8")
     return work_item
+
+
+def _ensure_git_repository(root: Path) -> None:
+    if (root / ".git").exists():
+        return
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Tests"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(["git", "add", "specs"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "test baseline"], cwd=root, check=True)
 
 
 def _write_closed_frontend_implementation(root: Path, work_item: Path) -> None:

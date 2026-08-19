@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -23,18 +25,23 @@ from ai_sdlc.core.design_contract_loop import (
 from ai_sdlc.core.implementation_loop import (
     CURRENT_IMPLEMENTATION_PATH,
     ImplementationCloseOptions,
+    ImplementationCommandResult,
     ImplementationRecordOptions,
     ImplementationStartOptions,
+    ImplementationVerifyOptions,
     close_implementation_loop,
     record_implementation_progress,
     start_implementation_loop,
+    verify_implementation_task,
 )
+from ai_sdlc.core.loop_review_models import LoopReviewOutcome
 from ai_sdlc.core.requirement_loop import (
     RequirementFreezeOptions,
     RequirementStartOptions,
     freeze_requirement_loop,
     start_requirement_loop,
 )
+from ai_sdlc.core.review_kernel import ReviewInput
 
 
 def test_non_git_implementation_lock_dir_is_user_scoped(
@@ -424,7 +431,7 @@ def test_record_implementation_progress_updates_evidence_and_report(
         )
     )
 
-    result = record_implementation_progress(
+    record_implementation_progress(
         ImplementationRecordOptions(
             root=tmp_path,
             loop_id="impl-record",
@@ -436,10 +443,11 @@ def test_record_implementation_progress_updates_evidence_and_report(
         )
     )
 
+    result = _record_successful_quality_result(tmp_path, "impl-record", "T11")
     assert result.status == "ready"
     assert result.loop_status == "needs_review"
     assert result.done_count == 1
-    assert result.evidence_count == 2
+    assert result.evidence_count == 3
     assert result.next_action == (
         "Run ai-sdlc loop review --type implementation --loop-id impl-record."
     )
@@ -453,6 +461,123 @@ def test_record_implementation_progress_updates_evidence_and_report(
     assert task["verification_commands"] == [
         "uv run pytest tests/unit/test_implementation_loop.py -q"
     ]
+    assert task["quality_results"][0]["status"] == "passed"
+    assert task["quality_results"][0]["argv"] == [
+        sys.executable,
+        "-c",
+        "print('verified')",
+    ]
+
+
+def test_verify_implementation_task_persists_nonzero_result_without_promotion(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-failed-quality",
+        )
+    )
+    _ensure_git_repository(tmp_path)
+
+    result = verify_implementation_task(
+        ImplementationVerifyOptions(
+            root=tmp_path,
+            loop_id="impl-failed-quality",
+            task_id="T11",
+            cwd=".",
+            argv=(sys.executable, "-c", "raise SystemExit(7)"),
+        )
+    )
+
+    assert result.status == "needs_fix"
+    assert result.loop_status == "running"
+    progress = json.loads(
+        (
+            tmp_path
+            / ".ai-sdlc"
+            / "loops"
+            / "implementation"
+            / "impl-failed-quality"
+            / "implementation-progress.json"
+        ).read_text(encoding="utf-8")
+    )
+    quality = progress["tasks"][0]["quality_results"][0]
+    assert quality["status"] == "failed"
+    assert quality["exit_code"] == 7
+
+
+def test_verify_implementation_task_rejects_source_mutation(tmp_path: Path) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-mutating-quality",
+        )
+    )
+    _ensure_git_repository(tmp_path)
+
+    result = verify_implementation_task(
+        ImplementationVerifyOptions(
+            root=tmp_path,
+            loop_id="impl-mutating-quality",
+            task_id="T11",
+            cwd=".",
+            argv=(
+                sys.executable,
+                "-c",
+                "from pathlib import Path; Path('changed.py').write_text('changed')",
+            ),
+        )
+    )
+
+    assert result.status == "needs_fix"
+    assert result.blocker == "Verification status is source_changed."
+
+
+def test_successful_verification_becomes_stale_after_source_change(
+    tmp_path: Path,
+) -> None:
+    work_item = _write_ready_work_item(tmp_path)
+    _close_design_contract_for_work_item(tmp_path, work_item)
+    start_implementation_loop(
+        ImplementationStartOptions(
+            root=tmp_path,
+            work_item="specs/demo-implementation-loop",
+            loop_id="impl-stale-quality",
+        )
+    )
+    record_implementation_progress(
+        ImplementationRecordOptions(
+            root=tmp_path,
+            loop_id="impl-stale-quality",
+            task_id="T11",
+            status="done",
+            verification=("pytest -q",),
+        )
+    )
+    _record_successful_quality_result(tmp_path, "impl-stale-quality", "T11")
+    spec_path = work_item / "spec.md"
+    spec_path.write_text(
+        spec_path.read_text(encoding="utf-8") + "\nUnreviewed source change.\n",
+        encoding="utf-8",
+    )
+
+    result = close_implementation_loop(
+        ImplementationCloseOptions(
+            root=tmp_path,
+            loop_id="impl-stale-quality",
+            yes=True,
+        )
+    )
+
+    assert result.status == "needs_fix"
+    assert result.blocker == ("T11 has no successful verification for current source.")
 
 
 def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> None:
@@ -477,7 +602,7 @@ def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> No
         )
     )
 
-    result = record_implementation_progress(
+    record_implementation_progress(
         ImplementationRecordOptions(
             root=tmp_path,
             loop_id="impl-advisory-only",
@@ -487,6 +612,11 @@ def test_slimming_advice_never_blocks_implementation_close(tmp_path: Path) -> No
         )
     )
 
+    result = _record_successful_quality_result(
+        tmp_path,
+        "impl-advisory-only",
+        "T11",
+    )
     assert result.loop_status == "needs_review"
     assert result.next_action == (
         "Run ai-sdlc loop review --type implementation --loop-id impl-advisory-only."
@@ -713,6 +843,14 @@ def test_close_implementation_loop_writes_close_artifact(tmp_path: Path) -> None
         )
     )
 
+    blocked = close_implementation_loop(
+        ImplementationCloseOptions(root=tmp_path, loop_id="impl-close", yes=True)
+    )
+    assert blocked.status == "needs_fix"
+    assert blocked.blocker == ("T11 has no successful verification for current source.")
+
+    _record_successful_quality_result(tmp_path, "impl-close", "T11")
+
     result = close_implementation_loop(
         ImplementationCloseOptions(root=tmp_path, loop_id="impl-close", yes=True)
     )
@@ -771,11 +909,14 @@ def test_close_implementation_loop_rechecks_review_digest_at_final_write(
             verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
         )
     )
+    _record_successful_quality_result(tmp_path, loop_id, "T11")
     reviewed = resolve_review_input(
         tmp_path,
         loop_type="implementation",
         loop_id=loop_id,
+        review_round_number=1,
     )
+    _write_clean_implementation_review(tmp_path, loop_id, reviewed)
     original_blockers = implementation_loop_module._close_blockers
 
     def mutate_after_state_validation(*args: object, **kwargs: object) -> list[str]:
@@ -842,6 +983,7 @@ def test_close_implementation_loop_routes_frontend_work_to_frontend_evidence(
             verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
         )
     )
+    _record_successful_quality_result(tmp_path, "impl-frontend", "T11")
 
     result = close_implementation_loop(
         ImplementationCloseOptions(root=tmp_path, loop_id="impl-frontend", yes=True)
@@ -887,6 +1029,11 @@ def test_close_implementation_loop_ignores_frontend_signal_inside_words(
             status="done",
             verification=("uv run pytest tests/unit/test_implementation_loop.py -q",),
         )
+    )
+    _record_successful_quality_result(
+        tmp_path,
+        "impl-non-frontend-words",
+        "T11",
     )
 
     result = close_implementation_loop(
@@ -1151,3 +1298,62 @@ def _close_design_contract_for_work_item(tmp_path: Path, work_item: Path) -> Non
     )
     assert close.status == "ready"
     assert close.closed is True
+
+
+def _record_successful_quality_result(
+    root: Path,
+    loop_id: str,
+    task_id: str,
+) -> ImplementationCommandResult:
+    _ensure_git_repository(root)
+    result = verify_implementation_task(
+        ImplementationVerifyOptions(
+            root=root,
+            loop_id=loop_id,
+            task_id=task_id,
+            cwd=".",
+            argv=(sys.executable, "-c", "print('verified')"),
+        )
+    )
+    assert result.status == "ready"
+    return result
+
+
+def _write_clean_implementation_review(
+    root: Path,
+    loop_id: str,
+    reviewed: ReviewInput,
+) -> None:
+    outcome = LoopReviewOutcome(
+        loop_id=loop_id,
+        loop_type="implementation",
+        round_number=reviewed.round_number,
+        input_digest=reviewed.input_digest,
+        status="completed",
+        expert_roles=reviewed.expert_roles,
+        findings=[],
+        recorded_at="2026-08-18T00:00:00Z",
+    )
+    loop_dir = root / ".ai-sdlc" / "loops" / "implementation" / loop_id
+    (loop_dir / f"review-outcome-round-{reviewed.round_number}.json").write_text(
+        outcome.model_dump_json(indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _ensure_git_repository(root: Path) -> None:
+    if (root / ".git").exists():
+        return
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Tests"],
+        cwd=root,
+        check=True,
+    )
+    subprocess.run(["git", "add", "specs"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "test baseline"], cwd=root, check=True)

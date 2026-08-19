@@ -160,17 +160,133 @@ def test_loop_e2e_release_gate_covers_browser_probe_runner_changes() -> None:
     assert "scripts/frontend_browser_gate_probe_runner.mjs" in workflow
 
 
-def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
+def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
+    tmp_path: Path,
+) -> None:
+    script = runpy.run_path(_REPO_ROOT / "scripts" / "loop_e2e_release_gate.py")
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.email", "loop-e2e@example.com"],
+        cwd=project_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Loop E2E"],
+        cwd=project_root,
+        check=True,
+    )
+    (project_root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=project_root, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initialize fixture"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    candidate_paths = (
+        "specs/demo-loop-e2e/requirements.md",
+        "src/app.py",
+        "tests/test_app.py",
+    )
+    delivery_roots = tuple(script["_WINDOWS_FRONTEND_DELIVERY_ROOTS"])
+    assert delivery_roots[-1] == "managed/frontend"
+    governance_paths = tuple(
+        path
+        for root in delivery_roots[:-1]
+        for path in (f"{root}/fixture.yaml", f"{root}/nested/fixture.yaml")
+    )
+    managed_paths = (
+        "managed/frontend/index.html",
+        "managed/frontend/package.json",
+    )
+    generated_paths = (*governance_paths, *managed_paths)
+    for relative_path in (*candidate_paths, *governance_paths):
+        path = project_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"fixture: {relative_path}\n", encoding="utf-8")
+    managed_root = project_root / "managed" / "frontend"
+    (managed_root / "index.html").parent.mkdir(parents=True, exist_ok=True)
+    (managed_root / "index.html").write_text("<main>review me</main>\n", encoding="utf-8")
+    (managed_root / "package.json").write_text('{"dependencies":{"temp":"1"}}\n', encoding="utf-8")
+    ignored_noise = managed_root / "node_modules" / "noise"
+    ignored_noise.parent.mkdir(parents=True, exist_ok=True)
+    ignored_noise.write_text("ignored\n", encoding="utf-8")
+    (managed_root / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    (managed_root / "npm-shrinkwrap.json").write_text("{}\n", encoding="utf-8")
+    script["_cleanup_playwright_install_files"](managed_root)
+
+    assert not ignored_noise.exists()
+    assert not (managed_root / "package-lock.json").exists()
+    assert not (managed_root / "npm-shrinkwrap.json").exists()
+    assert (managed_root / "package.json").read_text(encoding="utf-8") == script[
+        "_frontend_package_json"
+    ]("frontend-loop-playwright-evidence-e2e")
+
+    script["_stage_local_pr_candidate"](
+        project_root,
+        include_windows_frontend_delivery=True,
+    )
+
+    staged = set(
+        subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    assert set(candidate_paths).issubset(staged)
+    staged_delivery = {
+        path
+        for path in staged
+        if any(path.startswith(f"{root}/") for root in delivery_roots)
+    }
+    assert staged_delivery == set(generated_paths)
+    assert "managed/frontend/node_modules/noise" not in staged
+
+    unexpected = project_root / "governance" / "frontend" / "unreviewed.yaml"
+    unexpected.parent.mkdir(parents=True, exist_ok=True)
+    unexpected.write_text("unreviewed: true\n", encoding="utf-8")
+    managed_sibling = project_root / "managed" / "unreviewed.txt"
+    managed_sibling.write_text("unreviewed\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="unreviewed candidate paths"):
+        script["_stage_local_pr_candidate"](
+            project_root,
+            include_windows_frontend_delivery=True,
+        )
+
+
+def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings(
+    tmp_path: Path,
+) -> None:
     script = runpy.run_path(_REPO_ROOT / "scripts" / "loop_e2e_release_gate.py")
 
     class FakeHarness:
         def __init__(self) -> None:
+            self.evidence_root = tmp_path / "evidence"
+            self.evidence_root.mkdir()
+            self.project_root = tmp_path / "project"
+            self.project_root.mkdir()
             self.close_args: list[str] = []
+            self.review_record_args: list[str] = []
+            self.calls: list[str] = []
 
         def assert_true(self, message: str, condition: bool) -> None:
             assert condition, message
 
         def run(self, slug: str, args: list[str], **_kwargs: object) -> SimpleNamespace:
+            self.calls.append(slug)
             if slug == "frontend_evidence_doctor_auto_artifact":
                 payload = {
                     "browser_artifact_available": True,
@@ -189,7 +305,17 @@ def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
                     ),
                 }
             elif slug.endswith("_review_input") or slug.endswith("_review_recheck"):
-                payload = {"input_digest": "stable-review-input"}
+                payload = {
+                    "input_digest": "stable-review-input",
+                    "round_number": 1,
+                    "expert_roles": ["ux-accessibility-and-evidence"],
+                    "expert_reasons": {
+                        "ux-accessibility-and-evidence": "Primary expert for frontend evidence."
+                    },
+                }
+            elif slug.endswith("_review_record"):
+                self.review_record_args = args
+                payload = {"status": "passed"}
             elif slug == "frontend_evidence_close":
                 self.close_args = args
                 payload = {"closed": True, "next_action": "Run local pr-review."}
@@ -206,6 +332,26 @@ def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
     )
 
     assert "--allow-warnings" in harness.close_args
+    assert harness.review_record_args[:7] == [
+        "loop",
+        "review-record",
+        "--type",
+        "frontend-evidence",
+        "--loop-id",
+        "frontend-e2e",
+        "--expect-digest",
+    ]
+    assert harness.calls.index("frontend_evidence_start_review_record") < (
+        harness.calls.index("frontend_evidence_close")
+    )
+    result_path = harness.project_root / Path(
+        harness.review_record_args[harness.review_record_args.index("--result") + 1]
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["roles"] == ["ux-accessibility-and-evidence"]
+    assert result["role_reasons"] == {
+        "ux-accessibility-and-evidence": "Primary expert for frontend evidence."
+    }
 
 
 def test_release_artifact_smoke_workflow_installs_published_assets() -> None:

@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
+import sys
 from pathlib import Path
 
+from ai_sdlc.cli.loop_review_cmd import (
+    resolve_review_input,
+    validate_review_input_for_close,
+)
 from ai_sdlc.core.design_contract_loop import (
     DesignContractCheckOptions,
     DesignContractCloseOptions,
@@ -27,9 +33,12 @@ from ai_sdlc.core.implementation_loop import (
     close_implementation_loop,
     record_implementation_progress,
     start_implementation_loop,
+    verify_implementation_task,
 )
+from ai_sdlc.core.implementation_models import ImplementationVerifyOptions
 from ai_sdlc.core.loop_artifacts import LoopArtifactStore
 from ai_sdlc.core.loop_models import LoopRound, LoopRun, LoopStatus, LoopType
+from ai_sdlc.core.loop_review_models import LoopReviewOutcome
 from ai_sdlc.core.loop_status import (
     CURRENT_REVIEW_PATH,
     LoopStatusCommandStatus,
@@ -121,7 +130,9 @@ def test_get_loop_status_reports_no_current_loop(tmp_path: Path) -> None:
     assert result.next_guidance.command == "ai-sdlc pr-review doctor --base <branch>"
     assert result.next_guidance.requires_model is False
     assert result.next_guidance.writes_artifacts is False
-    assert "ai-sdlc pr-review start --base <branch>" in result.next_guidance.alternatives
+    assert (
+        "ai-sdlc pr-review start --base <branch>" in result.next_guidance.alternatives
+    )
 
 
 def test_get_loop_status_blocks_uninitialized_project(tmp_path: Path) -> None:
@@ -525,7 +536,10 @@ def test_get_loop_status_reports_no_current_requirement_loop(tmp_path: Path) -> 
 
     assert result.status == LoopStatusCommandStatus.NO_CURRENT
     assert result.result == "No current requirement loop."
-    assert result.next_guidance.command == 'ai-sdlc loop requirement start --idea "<需求描述>"'
+    assert (
+        result.next_guidance.command
+        == 'ai-sdlc loop requirement start --idea "<需求描述>"'
+    )
 
 
 def test_get_loop_status_blocks_malformed_requirement_pointer_with_requirement_guidance(
@@ -539,7 +553,10 @@ def test_get_loop_status_blocks_malformed_requirement_pointer_with_requirement_g
 
     assert result.status == LoopStatusCommandStatus.BLOCKED
     assert result.next_action == "Rerun ai-sdlc loop requirement start."
-    assert result.next_guidance.command == 'ai-sdlc loop requirement start --idea "<需求描述>"'
+    assert (
+        result.next_guidance.command
+        == 'ai-sdlc loop requirement start --idea "<需求描述>"'
+    )
     assert result.next_guidance.requires_model is False
     assert result.next_guidance.writes_artifacts is True
     assert result.next_guidance.writes_code is False
@@ -945,9 +962,7 @@ def test_get_loop_status_reads_current_implementation_loop(tmp_path: Path) -> No
     assert result.current_loop is not None
     assert result.current_loop.loop_type == "implementation"
     assert result.current_loop.status == "running"
-    assert result.next_guidance.command.startswith(
-        "ai-sdlc loop implementation record"
-    )
+    assert result.next_guidance.command.startswith("ai-sdlc loop implementation record")
     assert result.next_guidance.requires_model is False
     assert result.current_loop.implementation is not None
     assert result.current_loop.implementation.work_item_id == "demo-design-contract"
@@ -981,6 +996,15 @@ def test_implementation_status_after_close_points_to_local_pr_review(
     tmp_path: Path,
 ) -> None:
     _start_implementation_status_loop(tmp_path, loop_id="impl-closed")
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tests@example.com"],
+        cwd=tmp_path,
+        check=True,
+    )
+    subprocess.run(["git", "config", "user.name", "Tests"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "add", "specs"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "test baseline"], cwd=tmp_path, check=True)
     record_implementation_progress(
         ImplementationRecordOptions(
             root=tmp_path,
@@ -990,8 +1014,51 @@ def test_implementation_status_after_close_points_to_local_pr_review(
             verification=("uv run pytest tests/unit/test_loop_status.py -q",),
         )
     )
+    verify_implementation_task(
+        ImplementationVerifyOptions(
+            root=tmp_path,
+            loop_id="impl-closed",
+            task_id="T11",
+            cwd=".",
+            argv=(sys.executable, "-c", "print('verified')"),
+        )
+    )
+    review_input = resolve_review_input(
+        tmp_path,
+        loop_type="implementation",
+        loop_id="impl-closed",
+        review_round_number=1,
+    )
+    review_path = (
+        tmp_path
+        / ".ai-sdlc"
+        / "loops"
+        / "implementation"
+        / "impl-closed"
+        / "review-outcome-round-1.json"
+    )
+    review_path.write_text(
+        LoopReviewOutcome(
+            loop_id="impl-closed",
+            loop_type="implementation",
+            round_number=1,
+            input_digest=review_input.input_digest,
+            status="completed",
+            expert_roles=review_input.expert_roles,
+            findings=[],
+            recorded_at="2026-08-18T00:00:00Z",
+        ).model_dump_json(indent=2)
+        + "\n",
+        encoding="utf-8",
+    )
     close_implementation_loop(
-        ImplementationCloseOptions(root=tmp_path, loop_id="impl-closed", yes=True)
+        ImplementationCloseOptions(
+            root=tmp_path,
+            loop_id="impl-closed",
+            yes=True,
+            expected_review_digest=review_input.input_digest,
+        ),
+        review_input_validator=validate_review_input_for_close,
     )
 
     result = get_loop_status(tmp_path, loop_type="implementation")

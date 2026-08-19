@@ -392,6 +392,7 @@ def build_review_pack(options: ReviewPackBuildOptions) -> ReviewPackBuildResult:
         head_ref=source_resolution.head_ref,
         base_commit=base_commit,
         head_commit=head_commit,
+        staged_tree_oid=source_resolution.staged_tree_oid,
         changed_files=changed_files,
         diff_summary=(
             f"{len(changed_files)} changed file(s), "

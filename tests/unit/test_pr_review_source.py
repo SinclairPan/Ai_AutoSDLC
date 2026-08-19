@@ -87,10 +87,7 @@ def test_resolve_patch_source_blocks_unresolvable_head_ref(tmp_path: Path) -> No
     _init_repo(tmp_path)
     patch_path = tmp_path / "change.patch"
     patch_path.write_text(
-        "--- a/src/app.py\n"
-        "+++ b/src/app.py\n"
-        "@@ -0,0 +1 @@\n"
-        "+print('from patch')\n",
+        "--- a/src/app.py\n+++ b/src/app.py\n@@ -0,0 +1 @@\n+print('from patch')\n",
         encoding="utf-8",
     )
 
@@ -133,8 +130,33 @@ def test_resolve_local_staged_source_records_diff_hash(tmp_path: Path) -> None:
     assert result.adapter_id == "local-staged"
     assert result.base_ref == "HEAD"
     assert result.head_ref == "INDEX"
+    assert result.staged_tree_oid == _git(tmp_path, "write-tree")
+    assert result.to_descriptor().staged_tree_oid == result.staged_tree_oid
     assert result.source_metadata["changed_files"] == 1
     assert result.source_metadata["diff_hash"]
+
+
+def test_resolve_local_staged_source_rejects_excluded_runtime_change(
+    tmp_path: Path,
+) -> None:
+    _init_repo(tmp_path)
+    _commit_file(
+        tmp_path,
+        ".ai-sdlc/loops/runtime.json",
+        '{"round": 0}\n',
+        "add runtime baseline",
+    )
+    _write_file(tmp_path, "src/app.py", "print('staged')\n")
+    _write_file(tmp_path, ".ai-sdlc/loops/runtime.json", '{"round": 1}\n')
+    _git(tmp_path, "add", "src/app.py", ".ai-sdlc/loops/runtime.json")
+
+    result = resolve_diff_source(
+        DiffSourceResolutionOptions(root=tmp_path, source_kind="local-staged")
+    )
+
+    assert result.access_status == SourceAccessStatus.BLOCKED
+    assert result.unavailable_reason == "staged_runtime_artifacts"
+    assert ".ai-sdlc/loops/runtime.json" in result.blocker
 
 
 def test_resolve_local_staged_source_uses_current_head_for_attribution(
@@ -232,7 +254,5 @@ def _git(path: Path, *args: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout.strip()

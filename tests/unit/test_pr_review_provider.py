@@ -111,7 +111,13 @@ def test_local_agent_expands_diff_path_placeholder(tmp_path) -> None:
         ProviderCommandOptions(
             root=tmp_path,
             review_pack_path=review_pack_path,
-            command=[sys.executable, str(script), "{review_pack}", "{findings}", "{diff_path}"],
+            command=[
+                sys.executable,
+                str(script),
+                "{review_pack}",
+                "{findings}",
+                "{diff_path}",
+            ],
         )
     )
 
@@ -355,7 +361,7 @@ def test_local_agent_blocks_changed_local_staged_diff_before_launch(
     )
 
     assert result.status == ProviderRunStatus.BLOCKED
-    assert "worktree diff hash does not match" in result.blocker
+    assert "staged tree does not match" in result.blocker
     assert result.invocation_path == ""
 
 
@@ -557,15 +563,15 @@ def test_local_agent_blocks_non_json_findings_even_when_yaml_schema_is_valid(
                 "pack = json.load(open(args.review_pack, encoding='utf-8'))",
                 "open(args.output, 'w', encoding='utf-8').write(",
                 "  \"schema_version: '1'\\n\"",
-                "  \"artifact_kind: review-findings\\n\"",
+                '  "artifact_kind: review-findings\\n"',
                 "  f\"review_id: {pack['review_id']}\\n\"",
                 "  f\"loop_id: {pack['loop_id']}\\n\"",
                 "  f\"review_pack_path: '{args.review_pack}'\\n\"",
-                "  \"provider_id: local-agent\\n\"",
-                "  \"model_selector: current\\n\"",
-                "  \"resolved_model: gpt-5\\n\"",
-                "  \"verdict: clean\\n\"",
-                "  \"findings: []\\n\"",
+                '  "provider_id: local-agent\\n"',
+                '  "model_selector: current\\n"',
+                '  "resolved_model: gpt-5\\n"',
+                '  "verdict: clean\\n"',
+                '  "findings: []\\n"',
                 ")",
             ]
         ),
@@ -886,7 +892,9 @@ def test_local_agent_blocks_when_reviewer_mutates_dirty_path_with_space(
     assert "file with space.txt" in result.blocker
 
 
-def test_local_agent_reports_worktree_mutation_when_reviewer_times_out(tmp_path) -> None:
+def test_local_agent_reports_worktree_mutation_when_reviewer_times_out(
+    tmp_path,
+) -> None:
     _init_git_repo(tmp_path)
     _write_file(tmp_path, "src/app.py", "print('before')\n")
     _git(tmp_path, "add", "src/app.py")
@@ -1295,6 +1303,11 @@ def _write_review_pack(
         review_dir / "diff.patch",
         "diff --git a/src/app.py b/src/app.py\n",
     )
+    staged_tree_oid = (
+        _git(root, "write-tree")
+        if diff_source_kind == DiffSourceKind.LOCAL_STAGED
+        else ""
+    )
     review_pack = ReviewPack(
         review_id=review_id,
         loop_id=f"{review_id}-loop",
@@ -1305,6 +1318,7 @@ def _write_review_pack(
             head_ref=head_ref,
             patch_file=patch_file,
             patch_hash=patch_hash,
+            staged_tree_oid=staged_tree_oid,
         ),
         source_adapter=diff_source_kind.value,
         repo_root=str(root),
@@ -1312,6 +1326,7 @@ def _write_review_pack(
         head_ref=head_ref,
         base_commit="a" * 40,
         head_commit=head_commit or _maybe_git_head(root) or "b" * 40,
+        staged_tree_oid=staged_tree_oid,
         changed_files=changed_files or ["src/app.py"],
         diff_path=str(diff_path),
         diff_coverage=diff_coverage or {},
@@ -1366,9 +1381,7 @@ def _git_raw(path: Path, *args: str) -> str:
         check=False,
     )
     if result.returncode != 0:
-        raise AssertionError(
-            f"git {' '.join(args)} failed: {result.stderr.strip()}"
-        )
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr.strip()}")
     return result.stdout
 
 

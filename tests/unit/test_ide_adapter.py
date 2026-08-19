@@ -248,6 +248,7 @@ class TestApplyAdapter:
                 "内部诊断详情只在排查命令的 `--details` / `--json` 输出中查看" in text
             )
             assert "ai-sdlc run --dry-run" in text
+            assert "当前五 Loop 路由（只读）" in text
             assert "后续 agent 或人工需要维护" in text
             assert "维护契约" in text
             assert "docstring" in text
@@ -279,16 +280,22 @@ class TestApplyAdapter:
                 in text
             )
             assert "ai-sdlc loop review --type" in text
-            assert "一个主专家" in text
-            assert "最多增加一个交叉风险专家" in text
-            assert "全新且只读的独立上下文" in text
+            assert "expert_roles" in text
+            assert "expert_reasons" in text
+            assert "round_number" in text
+            assert "每个角色启动一个全新且只读的独立上下文" in text
+            assert "ai-sdlc loop review-record" in text
+            assert "--result <专家结果.json>" in text
             assert "--read-path" in text
             assert "不得重新读取 `artifact_paths`" in text
             assert "不要求用户选择专家" in text
+            assert "不得要求用户手动触发专家" in text
             assert "最多进行一次修复后复审" in text
             assert "--expect-review-digest" in text
             assert "--review-id" in text
             assert "保持 `needs_review`" in text
+            assert "review-outcome-round-1.json" in text
+            assert "review-outcome-round-2.json" in text
             assert "Local PR Review" in text
             assert "禁止继续评审该复核结果" in text
             for retired_term in (

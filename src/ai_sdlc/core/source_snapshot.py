@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import subprocess
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -82,6 +83,7 @@ class SourceSnapshot(LoopArtifactModel):
     portable_change_identities: dict[str, str] = Field(default_factory=dict)
     safe_eol_paths: list[str] = Field(default_factory=list)
     index_identity: str = ""
+    staged_tree_oid: str = ""
     patch_file: str = ""
     source_input_digest: str = ""
 
@@ -124,6 +126,7 @@ class _SnapshotParts:
     base_commit: str
     head_commit: str
     index_identity: str = ""
+    staged_tree_oid: str = ""
     patch_file: str = ""
     untracked_files: tuple[str, ...] = ()
     untracked_payload: bytes = b""
@@ -166,11 +169,12 @@ def build_source_snapshot(options: SourceSnapshotOptions) -> SourceSnapshot:
         portable_change_identities={},
         safe_eol_paths=[],
         index_identity=parts.index_identity,
+        staged_tree_oid=parts.staged_tree_oid,
         patch_file=parts.patch_file,
         source_input_digest=parts.source_input_digest,
     )
     completed = _complete_snapshot(root, snapshot, parts)
-    if options.source_kind in {"local-unstaged", "local-worktree"}:
+    if options.source_kind in {"local-staged", "local-unstaged", "local-worktree"}:
         current_parts = _build_parts(root, options)
         if _source_epoch(parts) != _source_epoch(current_parts):
             raise ValueError("source changed during snapshot capture")
@@ -195,6 +199,7 @@ def _source_epoch(parts: _SnapshotParts) -> tuple[object, ...]:
         parts.base_commit,
         parts.head_commit,
         parts.index_identity,
+        parts.staged_tree_oid,
         parts.untracked_files,
         parts.untracked_payload,
     )
@@ -321,13 +326,21 @@ def _compare_fresh_snapshot(
             current_diff_hash=current.diff_hash,
         )
     if (
-        snapshot.source_kind
-        in {"local-staged", "local-unstaged", "loop-artifacts"}
+        snapshot.source_kind in {"local-staged", "local-unstaged", "loop-artifacts"}
         and current.index_identity != snapshot.index_identity
     ):
         return SourceFreshness(
             fresh=False,
             reason="index_identity_changed",
+            current_diff_hash=current.diff_hash,
+        )
+    if (
+        snapshot.source_kind == "local-staged"
+        and current.staged_tree_oid != snapshot.staged_tree_oid
+    ):
+        return SourceFreshness(
+            fresh=False,
+            reason="staged_tree_changed",
             current_diff_hash=current.diff_hash,
         )
     if not _same_source_content(snapshot, current):
@@ -433,6 +446,7 @@ def _worktree_parts(root: Path, *, staged: bool) -> _SnapshotParts:
         base_commit=head,
         head_commit=head,
         index_identity=_index_identity(root),
+        staged_tree_oid=_staged_tree_oid(root) if staged else "",
         untracked_files=untracked,
         untracked_payload=_untracked_payload(root, untracked),
         git_config_args=git_config_args,
@@ -644,6 +658,71 @@ def _index_identity(root: Path) -> str:
     return _digest(entries + b"\0INDEX-FLAGS\0" + flags)
 
 
+def _staged_tree_oid(root: Path) -> str:
+    """从 index entries 构建精确 tree，且不执行仓库内容过滤器。"""
+
+    records = _git(root, "ls-files", "-s", "-z")
+    index_info = bytearray()
+    for record in records.split(b"\0"):
+        if not record:
+            continue
+        metadata, separator, path = record.partition(b"\t")
+        fields = metadata.split(b" ")
+        if not separator or len(fields) != 3 or fields[2] != b"0":
+            raise ValueError("git index contains unmerged or malformed entries")
+        mode, oid, _stage = fields
+        index_info.extend(mode + b" " + oid + b"\t" + path + b"\0")
+
+    with tempfile.TemporaryDirectory(prefix="ai-sdlc-index-tree-") as temp_dir:
+        index_path = Path(temp_dir) / "index"
+        environment = safe_git_read_environment()
+        environment["GIT_INDEX_FILE"] = str(index_path)
+        _git_with_input(
+            root,
+            "update-index",
+            "-z",
+            "--index-info",
+            input_bytes=bytes(index_info),
+            env=environment,
+        )
+        return (
+            _git_with_input(
+                root,
+                "write-tree",
+                input_bytes=b"",
+                env=environment,
+            )
+            .decode("ascii", errors="strict")
+            .strip()
+        )
+
+
+def _git_with_input(
+    root: Path,
+    *args: str,
+    input_bytes: bytes,
+    env: dict[str, str],
+) -> bytes:
+    try:
+        result = subprocess.run(
+            safe_git_read_command(*args),
+            cwd=root,
+            input=input_bytes,
+            capture_output=True,
+            check=False,
+            env=env,
+            timeout=30,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"git {' '.join(args)} timed out") from exc
+    except OSError as exc:
+        raise ValueError(f"git {' '.join(args)} is unavailable: {exc}") from exc
+    if result.returncode:
+        message = result.stderr.decode("utf-8", errors="replace").strip()
+        raise ValueError(f"git {' '.join(args)} failed: {message}")
+    return result.stdout
+
+
 def _filtered_index_records(payload: bytes) -> bytes:
     selected = bytearray()
     for record in payload.split(b"\0"):
@@ -809,10 +888,7 @@ def is_runtime_artifact_path(path: str) -> bool:
 
 
 def _runtime_pathspecs() -> tuple[str, ...]:
-    managed = tuple(
-        f":(exclude,glob){path}**"
-        for path in _AI_SDLC_RUNTIME_PREFIXES
-    )
+    managed = tuple(f":(exclude,glob){path}**" for path in _AI_SDLC_RUNTIME_PREFIXES)
     generated = (
         ":(exclude,glob)**/__pycache__/**",
         ":(exclude,glob)**/.pytest_cache/**",

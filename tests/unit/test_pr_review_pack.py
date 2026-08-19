@@ -73,7 +73,9 @@ def test_build_review_pack_writes_required_artifacts(tmp_path) -> None:
     assert review_payload["redaction_report_path"].endswith(
         ".ai-sdlc/reviews/pr/review-001/redaction-report.json"
     )
-    assert not (Path(result.review_pack_path).parent / "lean-closed-scope.json").exists()
+    assert not (
+        Path(result.review_pack_path).parent / "lean-closed-scope.json"
+    ).exists()
     assert "src/app.py" in changed_files
     assert "+print('review me')" in diff_text
 
@@ -646,6 +648,11 @@ def test_build_review_pack_from_local_staged_source(tmp_path) -> None:
     assert result.review_pack.changed_files == ["src/app.py"]
     assert result.review_pack.base_ref == "HEAD"
     assert result.review_pack.head_ref == "INDEX"
+    assert result.review_pack.staged_tree_oid == _git(tmp_path, "write-tree")
+    assert (
+        result.review_pack.diff_source.staged_tree_oid
+        == result.review_pack.staged_tree_oid
+    )
     diff_text = Path(result.diff_path).read_text(encoding="utf-8")
     assert "+print('staged')" in diff_text
 

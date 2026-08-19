@@ -101,7 +101,7 @@ def test_run_dry_run_materialized_adapter_explains_upgrade_is_not_failed(
 
     assert result.exit_code == 0
     assert "当前结果 / Result" in result.output
-    assert "安全预演已完成" in result.output
+    assert "ai-sdlc loop requirement start" in result.output
     assert "adapter ingress truth not yet verified" not in result.output
     assert "Current ingress truth is not yet verified" not in result.output
     assert "ai-sdlc host-runtime plan" not in result.output
@@ -117,7 +117,9 @@ def test_adapter_status_generic_recovery_does_not_reselect_generic(
     monkeypatch,
 ) -> None:
     assert (
-        runner.invoke(app, ["init", str(tmp_path), "--agent-target", "generic"]).exit_code
+        runner.invoke(
+            app, ["init", str(tmp_path), "--agent-target", "generic"]
+        ).exit_code
         == 0
     )
 

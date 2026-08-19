@@ -28,6 +28,18 @@ from typing import Any
 import yaml
 from rich.console import Console
 
+_LOCAL_PR_CANDIDATE_PATHS = (
+    "specs/demo-loop-e2e",
+    "src/app.py",
+    "tests/test_app.py",
+)
+_WINDOWS_FRONTEND_DELIVERY_ROOTS = (
+    "governance/frontend/solution",
+    "governance/frontend/quality-platform",
+    "governance/frontend/provider-runtime-adapter",
+    "managed/frontend",
+)
+
 
 @dataclass
 class StepResult:
@@ -346,6 +358,8 @@ def _review_input_and_recheck(
     loop_type: str,
     loop_id: str,
     slug: str,
+    *,
+    record_clean: bool = False,
 ) -> str:
     first = h.run(
         f"{slug}_input",
@@ -383,7 +397,79 @@ def _review_input_and_recheck(
         recheck.parsed_json is not None
         and recheck.parsed_json.get("input_digest") == digest,
     )
+    if record_clean:
+        _record_clean_review(h, loop_type, loop_id, slug, first.parsed_json)
     return digest
+
+
+def _record_clean_review(
+    h: E2EHarness,
+    loop_type: str,
+    loop_id: str,
+    slug: str,
+    review_input: dict[str, Any],
+) -> None:
+    roles = review_input.get("expert_roles")
+    reasons = review_input.get("expert_reasons")
+    round_number = review_input.get("round_number")
+    digest = review_input.get("input_digest")
+    if (
+        not isinstance(roles, list)
+        or not roles
+        or not isinstance(reasons, dict)
+        or not isinstance(round_number, int)
+        or not isinstance(digest, str)
+    ):
+        raise AssertionError(f"{slug} review input omitted selected expert metadata")
+
+    result_dir = h.project_root / ".git" / "ai-sdlc-e2e-review-fixtures" / slug
+    result_dir.mkdir(parents=True, exist_ok=True)
+    record_args = [
+        "loop",
+        "review-record",
+        "--type",
+        loop_type,
+        "--loop-id",
+        loop_id,
+        "--expect-digest",
+        digest,
+    ]
+    for index, role_value in enumerate(roles):
+        if not isinstance(role_value, str):
+            raise AssertionError(f"{slug} selected a non-string expert role")
+        reason = reasons.get(role_value)
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssertionError(f"{slug} omitted the reason for {role_value}")
+        result_path = result_dir / f"round-{round_number}-expert-{index}.json"
+        result_path.write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "roles": [role_value],
+                    "role_reasons": {role_value: reason},
+                    "findings": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        record_args.extend(
+            ["--result", result_path.relative_to(h.project_root).as_posix()]
+        )
+    record_args.append("--json")
+    recorded = h.run(
+        f"{slug}_record",
+        record_args,
+        parse_json=True,
+        note="Test fixture records one clean completed execution per selected expert.",
+    )
+    h.assert_true(
+        f"{loop_type} selected experts are recorded before close",
+        recorded.parsed_json is not None
+        and recorded.parsed_json.get("status") == "passed",
+    )
 
 
 def run_scenario(
@@ -480,7 +566,11 @@ def run_scenario(
     )
     h.run("requirement_status_human", ["loop", "status", "--type", "requirement"])
     requirement_digest = _review_input_and_recheck(
-        h, "requirement", "req-e2e", "requirement_review"
+        h,
+        "requirement",
+        "req-e2e",
+        "requirement_review",
+        record_clean=True,
     )
     req_freeze = h.run(
         "requirement_freeze",
@@ -574,7 +664,11 @@ def run_scenario(
         "design_contract_status_human", ["loop", "status", "--type", "design-contract"]
     )
     design_digest = _review_input_and_recheck(
-        h, "design-contract", "dc-e2e", "design_contract_review"
+        h,
+        "design-contract",
+        "dc-e2e",
+        "design_contract_review",
+        record_clean=True,
     )
     dc_close = h.run(
         "design_contract_close",
@@ -646,13 +740,6 @@ def run_scenario(
         h.project_root / "tests" / "test_app.py",
         "from src.app import approval_enabled\n\n\ndef test_approval_enabled():\n    assert approval_enabled() is True\n",
     )
-    _git(
-        h.project_root, "add", "specs/demo-loop-e2e", "src/app.py", "tests/test_app.py"
-    )
-    _git(h.project_root, "commit", "-m", "implement loop e2e demo")
-    first_feature_commit = _git(h.project_root, "rev-parse", "HEAD")
-    h.result.key_artifacts["first_feature_commit"] = first_feature_commit
-
     impl_record = h.run(
         "implementation_record_done",
         [
@@ -674,13 +761,47 @@ def run_scenario(
         parse_json=True,
     )
     h.assert_true(
-        "Implementation record marks required task done",
+        "Implementation record waits for executable verification",
         impl_record.parsed_json is not None
-        and impl_record.parsed_json.get("done_count") == 1,
+        and impl_record.parsed_json.get("done_count") == 0,
+    )
+    impl_verify = h.run(
+        "implementation_verify_done",
+        [
+            "loop",
+            "implementation",
+            "verify",
+            "--loop-id",
+            "impl-e2e",
+            "--task-id",
+            "T11",
+            "--cwd",
+            ".",
+            "--json",
+            "--",
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; "
+                "compile(Path('src/app.py').read_text(encoding='utf-8'), "
+                "'src/app.py', 'exec')"
+            ),
+        ],
+        parse_json=True,
+    )
+    h.assert_true(
+        "Executable implementation verification marks the task done",
+        impl_verify.parsed_json is not None
+        and impl_verify.parsed_json.get("done_count") == 1
+        and impl_verify.parsed_json.get("loop_status") == "needs_review",
     )
     h.run("implementation_status_human", ["loop", "status", "--type", "implementation"])
     implementation_digest = _review_input_and_recheck(
-        h, "implementation", "impl-e2e", "implementation_review"
+        h,
+        "implementation",
+        "impl-e2e",
+        "implementation_review",
+        record_clean=True,
     )
     impl_close = h.run(
         "implementation_close",
@@ -835,13 +956,22 @@ def run_scenario(
     h.result.assertions.append(
         "PR review policy explicitly waives omitted binary browser artifacts"
     )
-    _git(h.project_root, "add", ".")
-    _git(h.project_root, "commit", "-m", "record loop evidence artifacts")
+    _git(h.project_root, "add", ".ai-sdlc")
+    _git(h.project_root, "commit", "-m", "record loop execution evidence")
     h.result.key_artifacts["loop_evidence_commit"] = _git(
-        h.project_root,
-        "rev-parse",
-        "HEAD",
+        h.project_root, "rev-parse", "HEAD"
     )
+    _stage_local_pr_candidate(
+        h.project_root,
+        include_windows_frontend_delivery=(
+            include_windows_playwright_provider_e2e
+            and platform.system().lower() == "windows"
+        ),
+    )
+    h.result.assertions.append(
+        "Every generated delivery file is staged before Local PR Review"
+    )
+    h.result.key_artifacts["initial_reviewed_tree"] = _git(h.project_root, "write-tree")
 
     review_start = h.run(
         "pr_review_start_changes_required",
@@ -880,14 +1010,10 @@ def run_scenario(
         h.project_root / "src" / "app.py",
         "def approval_enabled() -> bool:\n    return True\n\n\ndef review_feedback_addressed() -> bool:\n    return True\n",
     )
-    _git(h.project_root, "add", "src/app.py")
-    _git(h.project_root, "commit", "-m", "address review feedback")
-    h.result.key_artifacts["review_fix_commit"] = _git(
-        h.project_root, "rev-parse", "HEAD"
-    )
     if review_fix.parsed_json is None:
         raise AssertionError("pr_review_fix did not produce JSON")
     _mark_resolution_fixed(Path(str(review_fix.parsed_json["resolution_path"])))
+    _git(h.project_root, "add", "src/app.py")
 
     review_rerun = h.run(
         "pr_review_rerun_clean",
@@ -900,16 +1026,27 @@ def run_scenario(
         and review_rerun.parsed_json.get("verdict") == "clean",
     )
     h.run("local_pr_review_status_clean_human", ["loop", "status"])
-    h.run(
-        "pr_review_record_evidence",
+    review_verify = h.run(
+        "pr_review_verify",
         [
             "pr-review",
-            "record-evidence",
-            "--evidence",
-            "loop E2E verification passed",
+            "verify",
             "--json",
+            "--",
+            sys.executable,
+            "-c",
+            (
+                "from pathlib import Path; "
+                "compile(Path('src/app.py').read_text(encoding='utf-8'), "
+                "'src/app.py', 'exec')"
+            ),
         ],
         parse_json=True,
+    )
+    h.assert_true(
+        "Local PR review records executable verification for the reviewed tree",
+        review_verify.parsed_json is not None
+        and review_verify.parsed_json.get("status") == "ready",
     )
     if review_rerun.parsed_json is None:
         raise AssertionError("pr_review_rerun_clean did not produce JSON")
@@ -919,7 +1056,31 @@ def run_scenario(
         "local-pr-review",
         local_review_loop_id,
         "local_pr_review",
+        record_clean=True,
     )
+    review_commit = h.run(
+        "pr_review_commit",
+        [
+            "pr-review",
+            "commit",
+            "--message",
+            "deliver reviewed loop e2e tree",
+            "--json",
+        ],
+        parse_json=True,
+    )
+    h.assert_true(
+        "Local PR review commits exactly the reviewed staged tree",
+        review_commit.parsed_json is not None
+        and review_commit.parsed_json.get("status") == "ready"
+        and bool(review_commit.parsed_json.get("commit"))
+        and review_commit.parsed_json.get("tree_oid")
+        == _git(h.project_root, "rev-parse", "HEAD^{tree}"),
+    )
+    if review_commit.parsed_json is not None:
+        h.result.key_artifacts["reviewed_delivery_commit"] = str(
+            review_commit.parsed_json["commit"]
+        )
     review_close = h.run(
         "pr_review_close",
         [
@@ -1203,7 +1364,11 @@ def _run_frontend_evidence_ready_path(
     )
     h.run(status_slug, ["loop", "status", "--type", "frontend-evidence"])
     frontend_digest = _review_input_and_recheck(
-        h, "frontend-evidence", loop_id, f"{start_slug}_review"
+        h,
+        "frontend-evidence",
+        loop_id,
+        f"{start_slug}_review",
+        record_clean=True,
     )
     close_args = [
         "loop",
@@ -1850,6 +2015,65 @@ def _git(cwd: Path, *args: str) -> str:
     if completed.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
     return completed.stdout.strip()
+
+
+def _stage_local_pr_candidate(
+    project_root: Path,
+    *,
+    include_windows_frontend_delivery: bool,
+) -> None:
+    candidate_paths = list(_LOCAL_PR_CANDIDATE_PATHS)
+    required_paths: tuple[str, ...] = ()
+    if include_windows_frontend_delivery:
+        generated_paths: list[str] = []
+        missing_roots: list[str] = []
+        for relative_root in _WINDOWS_FRONTEND_DELIVERY_ROOTS:
+            artifact_root = project_root / relative_root
+            root_paths = (
+                [
+                    path.relative_to(project_root).as_posix()
+                    for path in sorted(artifact_root.rglob("*"))
+                    if path.is_file() or path.is_symlink()
+                ]
+                if artifact_root.is_dir()
+                else []
+            )
+            if not root_paths:
+                missing_roots.append(relative_root)
+                continue
+            generated_paths.extend(root_paths)
+        if missing_roots:
+            raise AssertionError(
+                "Windows frontend delivery roots are missing or empty: "
+                + ", ".join(missing_roots)
+            )
+        required_paths = tuple(generated_paths)
+        candidate_paths.extend(_WINDOWS_FRONTEND_DELIVERY_ROOTS)
+
+    _git(project_root, "add", *candidate_paths)
+    staged_paths = set(
+        _git(project_root, "diff", "--cached", "--name-only").splitlines()
+    )
+    missing_staged_paths = sorted(set(required_paths) - staged_paths)
+    if missing_staged_paths:
+        raise AssertionError(
+            "Windows frontend delivery artifacts were not staged: "
+            + ", ".join(missing_staged_paths)
+        )
+
+    unstaged_paths = _git(project_root, "diff", "--name-only").splitlines()
+    untracked_paths = _git(
+        project_root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+    ).splitlines()
+    unreviewed_paths = sorted(set(unstaged_paths) | set(untracked_paths))
+    if unreviewed_paths:
+        raise AssertionError(
+            "Local PR candidate has unreviewed candidate paths: "
+            + ", ".join(unreviewed_paths[:10])
+        )
 
 
 def _write_file(path: Path, content: str) -> None:
