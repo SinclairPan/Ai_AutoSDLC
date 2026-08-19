@@ -6,7 +6,9 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import click
 import pytest
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from ai_sdlc.cli.main import app
@@ -38,8 +40,16 @@ def test_run_help_keeps_legacy_options_but_describes_read_only_route() -> None:
 
     assert result.exit_code == 0
     assert "five-Loop" in result.output
-    assert "--mode" in result.output
-    assert "--acknowledge-execute-batch" in result.output
+
+    run_command = get_command(app).commands["run"]
+    options = {
+        option.name: option
+        for option in run_command.params
+        if isinstance(option, click.Option)
+    }
+    assert "--mode" in options["mode"].opts
+    assert options["mode"].default == "auto"
+    assert "--acknowledge-execute-batch" in options["acknowledge_execute_batch"].opts
 
 
 def test_run_without_loop_is_read_only_and_requests_requirement(
