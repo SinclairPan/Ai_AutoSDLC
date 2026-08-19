@@ -65,7 +65,7 @@ def test_quality_command_executes_direct_argv_and_records_clean_identity(
 
     assert result.successful is True
     assert result.exit_code == 0
-    assert result.stdout_tail == "ok\n"
+    assert result.stdout_tail == f"ok{os.linesep}"
     assert result.source_digest_before == result.source_digest_after
     assert result.source_digest_before == build_source_digest(repository)
 
