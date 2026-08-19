@@ -3019,6 +3019,109 @@ def test_fix_round_two_a11_partial_failure_rejects_cross_run_callback(
     assert verify_receipt(receipt, protocol, ledger)
 
 
+def _task12_a11_terminal_after_completed_rereview(tmp_path: Path, status: str):
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    run_id = "A11:requirement-contract-ambiguity"
+    writer, expert = _writer_at_review_with_expert(ledger, protocol)
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            expert.attempt_id,
+            "completed",
+            True,
+            finding_digest=_digest("d"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("c"),
+            finding_digest=_digest("d"),
+            repair_digest=_digest("e"),
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "review_pending",
+            True,
+            candidate_digest=_digest("c"),
+        ),
+    )
+    rereview = reserve_provider_attempt(
+        ledger,
+        protocol,
+        _rereview_request(expert.attempt_id, _digest("c")),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(rereview.attempt_id, "completed", True),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(writer.attempt_id, status, True),
+    )
+    receipt = _task12_receipt(protocol, ledger, run_id=run_id)
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    attempts = {attempt["attempt_id"]: attempt for attempt in persisted["attempts"]}
+    callback = _task12_partial_callback(
+        attempts[expert.attempt_id],
+        loop_id="benefit-a11-requirement-contract-ambiguity",
+        loop_type="design-contract",
+    )
+    callback.update(
+        {
+            "finding_count": 1,
+            "severe_finding_count": 1,
+            "finding_digest": _digest("d"),
+            "repair_digest": _digest("e"),
+            "repaired_candidate_digest": _digest("c"),
+            "rereview_attempt_id": rereview.attempt_id,
+            "rereview_digest": _digest("c"),
+            "rereview_argv": _task12_review_argv(run_id, _digest("c")),
+            "rereview_exit_code": 0,
+            "rereview_raw_output_sha256": attempts[rereview.attempt_id][
+                "raw_provider_output_sha256"
+            ],
+        }
+    )
+    receipt["loop"]["expert_callbacks"] = [callback]
+    return protocol, ledger, receipt
+
+
+@pytest.mark.parametrize("status", ["failed", "timeout", "budget_exhausted"])
+def test_fix_round_three_completed_rereview_cannot_be_omitted_from_terminal_receipt(
+    tmp_path: Path, status: str
+) -> None:
+    protocol, ledger, receipt = _task12_a11_terminal_after_completed_rereview(
+        tmp_path, status
+    )
+    assert not verify_receipt(receipt, protocol, ledger)
+
+    callback = receipt["loop"]["expert_callbacks"][0]
+    for key in (
+        "repair_digest",
+        "repaired_candidate_digest",
+        "rereview_attempt_id",
+        "rereview_digest",
+        "rereview_argv",
+        "rereview_exit_code",
+        "rereview_raw_output_sha256",
+    ):
+        callback[key] = None
+    assert verify_receipt(receipt, protocol, ledger)
+
+
 def test_fix_round_two_ledger_event_time_is_global_sequence_monotonic(
     tmp_path: Path,
 ) -> None:

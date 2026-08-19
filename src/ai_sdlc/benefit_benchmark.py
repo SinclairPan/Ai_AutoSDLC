@@ -1425,6 +1425,39 @@ def _validate_a11_terminal_failure_evidence(
         for attempt in receipt.get("provider_attempts", [])
         if isinstance(attempt, Mapping)
     }
+    completed_rereviews = {
+        attempt.get("attempt_id"): attempt
+        for attempt in attempts
+        if attempt.get("effective_kind") == "expert_rereview"
+        and attempt.get("status") == "completed"
+    }
+    published_rereview_ids = [
+        callback.get("rereview_attempt_id")
+        for callback in callbacks
+        if isinstance(callback, Mapping)
+        and callback.get("rereview_attempt_id") is not None
+    ]
+    if (
+        len(published_rereview_ids) != len(set(published_rereview_ids))
+        or set(published_rereview_ids) != set(completed_rereviews)
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.failure",
+                "terminal A11 callbacks must disclose every completed rereview exactly once",
+            )
+        )
+    rereviews_by_parent = {
+        attempt.get("parent_attempt_id"): attempt
+        for attempt in completed_rereviews.values()
+    }
+    writers = [
+        attempt
+        for attempt in attempts
+        if attempt.get("effective_kind") == "writer"
+        and attempt.get("status") != "technical_failure"
+    ]
+    writer = writers[0] if len(writers) == 1 else None
     loop_type, loop_id = _expected_loop_identity(receipt)
     nullable_repair = (
         "repair_digest",
@@ -1508,57 +1541,69 @@ def _validate_a11_terminal_failure_evidence(
                     "terminal callback Finding does not bind the expert ledger event",
                 )
             )
-        if any(callback.get(key) is not None for key in nullable_repair):
-            if any(callback.get(key) is None for key in nullable_repair):
+        rereview = rereviews_by_parent.get(expert.get("attempt_id"))
+        if rereview is None:
+            if any(callback.get(key) is not None for key in nullable_repair):
                 issues.append(
                     BenchmarkIssue(
                         "receipt.a11.failure",
-                        "terminal callback publishes partial repair/rereview evidence",
+                        "terminal callback publishes repair evidence without a completed rereview",
                     )
                 )
-                continue
-            rereview = next(
-                (
-                    attempt
-                    for attempt in attempts
-                    if attempt.get("attempt_id")
-                    == callback.get("rereview_attempt_id")
-                    and attempt.get("effective_kind") == "expert_rereview"
-                    and attempt.get("status") == "completed"
-                ),
-                None,
-            )
-            rereview_provider = (
-                providers.get(rereview.get("attempt_id"))
-                if isinstance(rereview, Mapping)
-                else None
-            )
-            if (
-                not isinstance(rereview, Mapping)
-                or rereview.get("parent_attempt_id") != expert.get("attempt_id")
-                or rereview.get("finding_digest") != ledger_finding
-                or rereview.get("repair_digest") != callback.get("repair_digest")
-                or rereview.get("candidate_digest")
-                != callback.get("repaired_candidate_digest")
-                or callback.get("rereview_digest")
-                != rereview.get("candidate_digest")
-                or not isinstance(rereview_provider, Mapping)
-                or callback.get("rereview_raw_output_sha256")
-                != rereview_provider.get("raw_provider_output_sha256")
-                or callback.get("rereview_exit_code") != 0
-                or not _is_loop_review_command(
-                    callback.get("rereview_argv"),
-                    loop_type=loop_type,
-                    loop_id=loop_id,
-                    expected_digest=callback.get("rereview_digest"),
+            continue
+        if any(callback.get(key) is None for key in nullable_repair):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.a11.failure",
+                    "terminal callback omits its completed repair/rereview evidence",
                 )
-            ):
-                issues.append(
-                    BenchmarkIssue(
-                        "receipt.a11.failure",
-                        "terminal callback rereview evidence is unbound",
-                    )
+            )
+            continue
+        repair = (
+            _find_repair_event(
+                writer,
+                ledger_finding,
+                callback.get("repair_digest"),
+                callback.get("repaired_candidate_digest"),
+            )
+            if isinstance(writer, Mapping)
+            else None
+        )
+        rereview_provider = providers.get(rereview.get("attempt_id"))
+        writer_sequence = writer.get("sequence") if isinstance(writer, Mapping) else None
+        if (
+            callback.get("rereview_attempt_id") != rereview.get("attempt_id")
+            or rereview.get("parent_attempt_id") != expert.get("attempt_id")
+            or rereview.get("finding_digest") != ledger_finding
+            or rereview.get("repair_digest") != callback.get("repair_digest")
+            or rereview.get("candidate_digest")
+            != callback.get("repaired_candidate_digest")
+            or callback.get("rereview_digest") != rereview.get("candidate_digest")
+            or not isinstance(rereview_provider, Mapping)
+            or callback.get("rereview_raw_output_sha256")
+            != rereview_provider.get("raw_provider_output_sha256")
+            or callback.get("rereview_exit_code") != 0
+            or not _is_loop_review_command(
+                callback.get("rereview_argv"),
+                loop_type=loop_type,
+                loop_id=loop_id,
+                expected_digest=callback.get("rereview_digest"),
+            )
+            or not isinstance(repair, Mapping)
+            or not _non_bool_int(writer_sequence)
+            or not (
+                expert.get("sequence")
+                < repair.get("sequence")
+                < rereview.get("sequence")
+                < writer_sequence
+            )
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.a11.failure",
+                    "terminal callback rereview evidence is unbound or out of order",
                 )
+            )
 
 
 def _validate_receipt_verified_delivery_timing(
