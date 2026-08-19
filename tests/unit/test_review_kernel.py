@@ -264,7 +264,7 @@ def test_build_review_input_captures_identity_without_digesting_mutable_state(
     artifact = tmp_path / "result.md"
     mutable_state = tmp_path / "loop-run.json"
     artifact.write_text("reviewed result\n", encoding="utf-8")
-    mutable_state.write_text('{"status":"running"}\n', encoding="utf-8")
+    mutable_state.write_bytes(b'{"status":"running"}\n')
     captured: dict[str, bytes] = {}
 
     first = build_review_input(
@@ -278,7 +278,7 @@ def test_build_review_input_captures_identity_without_digesting_mutable_state(
         capture_only_paths=[mutable_state],
         captured_artifacts=captured,
     )
-    mutable_state.write_text('{"status":"passed"}\n', encoding="utf-8")
+    mutable_state.write_bytes(b'{"status":"passed"}\n')
     second = build_review_input(
         tmp_path,
         loop_id="loop-identity-capture",

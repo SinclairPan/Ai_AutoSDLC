@@ -160,17 +160,26 @@ def test_loop_e2e_release_gate_covers_browser_probe_runner_changes() -> None:
     assert "scripts/frontend_browser_gate_probe_runner.mjs" in workflow
 
 
-def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
+def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings(
+    tmp_path: Path,
+) -> None:
     script = runpy.run_path(_REPO_ROOT / "scripts" / "loop_e2e_release_gate.py")
 
     class FakeHarness:
         def __init__(self) -> None:
+            self.evidence_root = tmp_path / "evidence"
+            self.evidence_root.mkdir()
+            self.project_root = tmp_path / "project"
+            self.project_root.mkdir()
             self.close_args: list[str] = []
+            self.review_record_args: list[str] = []
+            self.calls: list[str] = []
 
         def assert_true(self, message: str, condition: bool) -> None:
             assert condition, message
 
         def run(self, slug: str, args: list[str], **_kwargs: object) -> SimpleNamespace:
+            self.calls.append(slug)
             if slug == "frontend_evidence_doctor_auto_artifact":
                 payload = {
                     "browser_artifact_available": True,
@@ -189,7 +198,17 @@ def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
                     ),
                 }
             elif slug.endswith("_review_input") or slug.endswith("_review_recheck"):
-                payload = {"input_digest": "stable-review-input"}
+                payload = {
+                    "input_digest": "stable-review-input",
+                    "round_number": 1,
+                    "expert_roles": ["ux-accessibility-and-evidence"],
+                    "expert_reasons": {
+                        "ux-accessibility-and-evidence": "Primary expert for frontend evidence."
+                    },
+                }
+            elif slug.endswith("_review_record"):
+                self.review_record_args = args
+                payload = {"status": "passed"}
             elif slug == "frontend_evidence_close":
                 self.close_args = args
                 payload = {"closed": True, "next_action": "Run local pr-review."}
@@ -206,6 +225,26 @@ def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings() -> None:
     )
 
     assert "--allow-warnings" in harness.close_args
+    assert harness.review_record_args[:7] == [
+        "loop",
+        "review-record",
+        "--type",
+        "frontend-evidence",
+        "--loop-id",
+        "frontend-e2e",
+        "--expect-digest",
+    ]
+    assert harness.calls.index("frontend_evidence_start_review_record") < (
+        harness.calls.index("frontend_evidence_close")
+    )
+    result_path = harness.project_root / Path(
+        harness.review_record_args[harness.review_record_args.index("--result") + 1]
+    )
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    assert result["roles"] == ["ux-accessibility-and-evidence"]
+    assert result["role_reasons"] == {
+        "ux-accessibility-and-evidence": "Primary expert for frontend evidence."
+    }
 
 
 def test_release_artifact_smoke_workflow_installs_published_assets() -> None:

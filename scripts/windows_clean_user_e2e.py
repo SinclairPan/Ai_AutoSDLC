@@ -43,6 +43,78 @@ def _assert_contains(text: str, *expected: str) -> None:
         raise AssertionError(f"输出缺少预期内容: {missing}")
 
 
+def _record_clean_review(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+    *,
+    loop_type: str,
+    loop_id: str,
+    review_payload: dict[str, object],
+    slug: str,
+) -> None:
+    roles = review_payload.get("expert_roles")
+    reasons = review_payload.get("expert_reasons")
+    round_number = review_payload.get("round_number")
+    digest = review_payload.get("input_digest")
+    if (
+        not isinstance(roles, list)
+        or not roles
+        or not isinstance(reasons, dict)
+        or not isinstance(round_number, int)
+        or not isinstance(digest, str)
+    ):
+        raise AssertionError("评审输入缺少所选专家元数据")
+
+    result_dir = (
+        project_root / ".git" / "ai-sdlc-windows-user-e2e-review-fixtures" / slug
+    )
+    result_dir.mkdir(parents=True, exist_ok=True)
+    record_args = [
+        "loop",
+        "review-record",
+        "--type",
+        loop_type,
+        "--loop-id",
+        loop_id,
+        "--expect-digest",
+        digest,
+    ]
+    for index, role_value in enumerate(roles):
+        if not isinstance(role_value, str):
+            raise AssertionError("评审输入包含无效专家角色")
+        reason = reasons.get(role_value)
+        if not isinstance(reason, str) or not reason.strip():
+            raise AssertionError(f"评审输入缺少 {role_value} 的选择原因")
+        result_path = result_dir / f"round-{round_number}-expert-{index}.json"
+        result_path.write_text(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "roles": [role_value],
+                    "role_reasons": {role_value: reason},
+                    "findings": [],
+                },
+                ensure_ascii=False,
+                indent=2,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        record_args.extend(
+            ["--result", result_path.relative_to(project_root).as_posix()]
+        )
+    record_args.append("--json")
+    record_output = _run_cli(
+        cli_path,
+        record_args,
+        cwd=project_root,
+        evidence_path=evidence_root / f"{slug}-review-record.json",
+    )
+    if json.loads(record_output).get("status") != "passed":
+        raise AssertionError("普通用户路径未完成所选专家评审")
+
+
 class _ConPtyTranscript:
     """持续读取 ConPTY，确保只有看到真实提示后才发送用户输入。"""
 
@@ -305,11 +377,14 @@ def _run_requirement_and_workitem_flow(
         cwd=project_root,
         evidence_path=evidence_root / "requirement-status.json",
     )
-    _assert_contains(
-        status_output,
-        '"result": "Current requirement loop found."',
-        '"status": "needs_review"',
-    )
+    status_payload = json.loads(status_output)
+    current_loop = status_payload.get("current_loop")
+    if (
+        not isinstance(current_loop, dict)
+        or current_loop.get("status") != "needs_review"
+        or status_payload.get("blocker") != "review-result-missing"
+    ):
+        raise AssertionError("Requirement 状态未投影缺失专家结果的稳定阻断字段")
     requirement_payload = json.loads(start_output)
     requirement_loop_id = str(requirement_payload["loop_id"])
     review_output = _run_cli(
@@ -326,7 +401,17 @@ def _run_requirement_and_workitem_flow(
         cwd=project_root,
         evidence_path=evidence_root / "requirement-review.json",
     )
-    requirement_review_digest = str(json.loads(review_output)["input_digest"])
+    requirement_review_payload = json.loads(review_output)
+    requirement_review_digest = str(requirement_review_payload["input_digest"])
+    _record_clean_review(
+        cli_path,
+        project_root,
+        evidence_root,
+        loop_type="requirement",
+        loop_id=requirement_loop_id,
+        review_payload=requirement_review_payload,
+        slug="requirement",
+    )
     freeze_output = _run_cli(
         cli_path,
         [
