@@ -11,6 +11,7 @@ from pathlib import Path
 from ai_sdlc.benefit_benchmark import (
     AttemptCompletion,
     AttemptRequest,
+    BenchmarkIssue,
     load_protocol,
     record_provider_completion,
     reserve_provider_attempt,
@@ -34,6 +35,23 @@ _POSIX_PRIVATE_PATH = re.compile(r"(?<![A-Za-z0-9_])/(?:[^\s'\"/:]+/)*[^\s'\"/:]
 _WINDOWS_PRIVATE_PATH = re.compile(
     r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|\\\\[^\s'\"]+)"
 )
+_HTTP_URI = re.compile(r"https?://[^\s'\"]+", re.IGNORECASE)
+
+
+def _public_message(message: str) -> str:
+    public_uris: list[str] = []
+
+    def protect_public_uri(match: re.Match[str]) -> str:
+        marker = f"__AI_SDLC_PUBLIC_URI_{len(public_uris)}__"
+        public_uris.append(match.group(0))
+        return marker
+
+    message = _HTTP_URI.sub(protect_public_uri, message)
+    message = _WINDOWS_PRIVATE_PATH.sub("<redacted-path>", message)
+    message = _POSIX_PRIVATE_PATH.sub("<redacted-path>", message)
+    for index, uri in enumerate(public_uris):
+        message = message.replace(f"__AI_SDLC_PUBLIC_URI_{index}__", uri)
+    return message
 
 
 def _public_error_message(error: Exception) -> str:
@@ -41,9 +59,11 @@ def _public_error_message(error: Exception) -> str:
         return "input or output file operation failed"
     if isinstance(error, json.JSONDecodeError):
         return "input is not valid JSON"
-    message = str(error) or "benchmark input was rejected"
-    message = _WINDOWS_PRIVATE_PATH.sub("<redacted-path>", message)
-    return _POSIX_PRIVATE_PATH.sub("<redacted-path>", message)
+    return _public_message(str(error) or "benchmark input was rejected")
+
+
+def _issue_payload(issue: BenchmarkIssue) -> Mapping[str, str]:
+    return {"code": issue.code, "message": _public_message(issue.message)}
 
 
 def _json_object(path: Path, label: str) -> Mapping[str, object]:
@@ -130,7 +150,7 @@ def main() -> int:
             _emit(
                 {
                     "execution_ready": not issues,
-                    "issues": [issue.__dict__ for issue in issues],
+                    "issues": [_issue_payload(issue) for issue in issues],
                     "structurally_valid": not structural_issues,
                 }
             )
@@ -197,7 +217,7 @@ def main() -> int:
                 _json_object(arguments.summary, "summary"),
                 _protocol(arguments.protocol),
             )
-        _emit({"issues": [issue.__dict__ for issue in issues]})
+        _emit({"issues": [_issue_payload(issue) for issue in issues]})
         return 1 if issues else 0
     except _CliUsageError as error:
         _emit_error("cli.usage", str(error))

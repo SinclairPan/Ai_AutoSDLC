@@ -3834,3 +3834,86 @@ def test_task13_cli_missing_private_file_error_is_json_and_path_redacted() -> No
     _assert_task13_json_error(result, "cli.input")
     assert private_path not in result.stdout
     assert "/Users/private-owner" not in result.stdout
+
+
+@pytest.mark.parametrize("surface", ["receipt", "ledger", "summary"])
+@pytest.mark.parametrize(
+    "private_value",
+    [
+        "/Users/private-owner/secret/result.json",
+        r"C:\Users\private-owner\secret\result.json",
+        r"\\private-server\share\secret\result.json",
+        "file:///Users/private-owner/secret/result.json",
+    ],
+    ids=["posix", "windows", "unc", "file-uri"],
+)
+def test_task13_cli_redacts_private_paths_from_all_issue_messages(
+    tmp_path: Path, surface: str, private_value: str
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    protocol_path = tmp_path / "protocol.json"
+    if surface == "receipt":
+        receipt[private_value] = "unexpected"
+        artifact = tmp_path / "receipt.json"
+        artifact.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(artifact),
+            "--protocol",
+            str(protocol_path),
+            "--ledger",
+            str(ledger),
+        )
+    elif surface == "ledger":
+        raw_ledger = json.loads(ledger.read_text(encoding="utf-8"))
+        raw_ledger[private_value] = "unexpected"
+        ledger.write_text(json.dumps(raw_ledger), encoding="utf-8")
+        artifact = tmp_path / "receipt.json"
+        artifact.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(artifact),
+            "--protocol",
+            str(protocol_path),
+            "--ledger",
+            str(ledger),
+        )
+    else:
+        summary = _task12_summary(protocol)
+        summary[private_value] = "unexpected"
+        artifact = tmp_path / "summary.json"
+        artifact.write_text(json.dumps(summary), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-summary",
+            "--summary",
+            str(artifact),
+            "--protocol",
+            str(protocol_path),
+        )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    payload = json.loads(result.stdout)
+    assert payload["issues"]
+    messages = "\n".join(issue["message"] for issue in payload["issues"])
+    assert private_value not in messages
+    assert "private-owner" not in messages
+    assert "private-server" not in messages
+    assert "<redacted-path>" in messages
+
+
+def test_task13_cli_preserves_public_https_uri_while_sanitizing_input_error(
+    tmp_path: Path,
+) -> None:
+    public_uri = "https://example.test/public/benchmark.json"
+    raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    raw[public_uri] = "unexpected"
+    protocol_path = tmp_path / "protocol-with-public-uri.json"
+    protocol_path.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = _run_task13_cli("validate", "--protocol", str(protocol_path))
+
+    _assert_task13_json_error(result, "cli.input")
+    assert json.loads(result.stdout)["error"]["message"].endswith(public_uri)
