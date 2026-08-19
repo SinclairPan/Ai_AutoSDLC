@@ -12,19 +12,22 @@ from pathlib import Path
 import pytest
 
 from ai_sdlc.benefit_benchmark import (
-    AttemptCompletion as RawAttemptCompletion,
-)
-from ai_sdlc.benefit_benchmark import (
+    ArtifactRequirement,
     AttemptRequest,
     ExecutionLock,
+    RunEvidenceRequest,
     canonical_protocol_digest,
     load_protocol,
     record_provider_completion,
+    record_run_evidence,
     reserve_provider_attempt,
     validate_protocol,
     validate_provider_output_schema,
     verify_receipt,
     verify_summary,
+)
+from ai_sdlc.benefit_benchmark import (
+    AttemptCompletion as RawAttemptCompletion,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -615,7 +618,7 @@ def test_ledger_load_rejects_any_corrupt_attempt_shape(
         )
 
 
-def test_completion_evidence_schema_bump_rejects_legacy_v3_without_rewriting(
+def test_completion_evidence_schema_bump_rejects_legacy_v4_without_rewriting(
     tmp_path: Path,
 ) -> None:
     ledger = tmp_path / "ledger.json"
@@ -626,7 +629,7 @@ def test_completion_evidence_schema_bump_rejects_legacy_v3_without_rewriting(
         AttemptRequest("P:requirement-contract-ambiguity", "writer"),
     )
     raw = json.loads(ledger.read_text(encoding="utf-8"))
-    raw["schema"] = "ai-sdlc-v2-benefit-attempt-ledger/v3"
+    raw["schema"] = "ai-sdlc-v2-benefit-attempt-ledger/v4"
     legacy_bytes = json.dumps(raw).encode()
     ledger.write_bytes(legacy_bytes)
 
@@ -1821,6 +1824,7 @@ def _task12_receipt(
     ledger: Path,
     *,
     run_id: str = "P:requirement-contract-ambiguity",
+    automated_events: tuple[dict[str, object], ...] = (),
 ) -> dict[str, object]:
     run = next(row for row in protocol.run_matrix if row.run_id == run_id)
     raw_ledger = json.loads(ledger.read_text(encoding="utf-8"))
@@ -1866,26 +1870,39 @@ def _task12_receipt(
         "needs_operator": "needs_operator",
         "budget_exhausted": "budget_exhausted",
     }[writer["status"]]
+    failure_classification = {
+        "completed": "none",
+        "timeout": "timeout",
+        "needs_operator": "expert_conflict",
+        "budget_exhausted": "provider_budget_exhausted",
+    }.get(receipt_status)
+    if failure_classification is None:
+        if any(
+            attempt["effective_kind"]
+            in {"primary_expert", "cross_risk_expert", "expert_rereview"}
+            and attempt["status"]
+            in {"failed", "timeout", "needs_operator", "budget_exhausted"}
+            for attempt in persisted_attempts
+        ):
+            failure_classification = "expert_failure"
+        elif writer["status"] == "technical_failure":
+            failure_classification = "provider_pre_output_failure"
+        else:
+            failure_classification = "writer_failure"
     first_reserved_at = datetime.fromisoformat(
         persisted_attempts[0]["history"][0]["recorded_at"].replace("Z", "+00:00")
     )
     evaluator_completed_at = first_reserved_at + timedelta(seconds=20)
     started_at = evaluator_completed_at - timedelta(seconds=21)
-    return {
-        "schema": "ai-sdlc-v2-benefit-run-receipt/v4",
+    receipt = {
+        "schema": "ai-sdlc-v2-benefit-run-receipt/v5",
         "protocol_sha256": canonical_protocol_digest(protocol),
         "run_id": run.run_id,
         "arm": run.arm,
         "fixture": run.fixture,
         "order": run.position,
         "status": receipt_status,
-        "failure_classification": {
-            "completed": "none",
-            "failed": "writer_failure",
-            "timeout": "timeout",
-            "needs_operator": "expert_conflict",
-            "budget_exhausted": "provider_budget_exhausted",
-        }[receipt_status],
+        "failure_classification": failure_classification,
         "identity": {
             field.name: getattr(protocol.execution_lock, field.name)
             for field in fields(ExecutionLock)
@@ -1936,31 +1953,34 @@ def _task12_receipt(
         "artifact_inventory": [
             {
                 "path": "benchmark-task/.evidence/setup.json",
-                "sha256": _digest("a"),
+                "sha256": sha256(b"a").hexdigest(),
                 "size_bytes": 1,
                 "category": "setup",
                 "required": True,
+                "applicable": True,
                 "observed": True,
             },
             {
                 "path": "benchmark-task/.evidence/governance.json",
-                "sha256": _digest("b"),
+                "sha256": sha256(b"bb").hexdigest(),
                 "size_bytes": 2,
                 "category": "governance",
                 "required": True,
+                "applicable": True,
                 "observed": True,
             },
             {
                 "path": "benchmark-task/result.txt",
-                "sha256": _digest("c"),
+                "sha256": sha256(b"ccc").hexdigest(),
                 "size_bytes": 3,
                 "category": "delivery",
                 "required": True,
+                "applicable": True,
                 "observed": True,
             },
         ],
         "human_events": [],
-        "automated_events": [],
+        "automated_events": [copy.deepcopy(event) for event in automated_events],
         "command_evidence": [
             _task12_command_evidence(attempt, protocol) for attempt in attempts
         ],
@@ -1977,6 +1997,48 @@ def _task12_receipt(
             "invalid_completion": False,
         },
     }
+    workspace = ledger.parent / "workspace"
+    for relative, payload in (
+        ("benchmark-task/.evidence/setup.json", b"a"),
+        ("benchmark-task/.evidence/governance.json", b"bb"),
+        ("benchmark-task/result.txt", b"ccc"),
+    ):
+        target = workspace.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    record_run_evidence(
+        ledger,
+        protocol,
+        RunEvidenceRequest(
+            run_id=run_id,
+            workspace_root=workspace,
+            phase_evidence=receipt["phase_evidence"],
+            artifacts=(
+                ArtifactRequirement(
+                    "benchmark-task/.evidence/setup.json", "setup"
+                ),
+                ArtifactRequirement(
+                    "benchmark-task/.evidence/governance.json", "governance"
+                ),
+                ArtifactRequirement("benchmark-task/result.txt", "delivery"),
+            ),
+            changed_files=("benchmark-task/result.txt",),
+            automated_events=tuple(receipt["automated_events"]),
+            human_events=tuple(receipt["human_events"]),
+        ),
+    )
+    persisted_evidence = json.loads(ledger.read_text(encoding="utf-8"))[
+        "run_evidence"
+    ][run_id]
+    for key in (
+        "phase_evidence",
+        "artifact_inventory",
+        "changed_files",
+        "automated_events",
+        "human_events",
+    ):
+        receipt[key] = copy.deepcopy(persisted_evidence[key])
+    return receipt
 
 
 def _task12_default_loop(run, status: str, writer: dict[str, object]) -> dict[str, object]:
@@ -2071,7 +2133,9 @@ def _task12_close_argv(run_id: str, review_digest: str) -> list[str]:
     ]
 
 
-def _task12_completed_p_run(tmp_path: Path):
+def _task12_completed_p_run(
+    tmp_path: Path, *, automated_events: tuple[dict[str, object], ...] = ()
+):
     protocol = _bound_protocol(tmp_path)
     ledger = tmp_path / "ledger.json"
     writer = reserve_provider_attempt(
@@ -2086,7 +2150,9 @@ def _task12_completed_p_run(tmp_path: Path):
             writer.attempt_id, "completed", True, candidate_digest=_digest("b")
         ),
     )
-    return protocol, ledger, _task12_receipt(protocol, ledger)
+    return protocol, ledger, _task12_receipt(
+        protocol, ledger, automated_events=automated_events
+    )
 
 
 def _task12_completed_a11_run(tmp_path: Path):
@@ -3718,7 +3784,7 @@ def test_task13_cli_round_trips_writer_expert_retry_and_rereview_fields(
     )
 
     persisted = json.loads(ledger.read_text(encoding="utf-8"))
-    assert persisted["schema"] == "ai-sdlc-v2-benefit-attempt-ledger/v4"
+    assert persisted["schema"] == "ai-sdlc-v2-benefit-attempt-ledger/v5"
     attempts = {attempt["attempt_id"]: attempt for attempt in persisted["attempts"]}
     assert attempts[writer]["arm"] == "A11"
     assert attempts[writer]["parent_digest"] == _digest("a")
@@ -3988,7 +4054,7 @@ def test_final_core_receipt_v3_fails_closed_without_implicit_migration(
     tmp_path: Path,
 ) -> None:
     protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
-    receipt["schema"] = "ai-sdlc-v2-benefit-run-receipt/v3"
+    receipt["schema"] = "ai-sdlc-v2-benefit-run-receipt/v4"
     assert any(
         issue.code == "receipt.schema"
         for issue in verify_receipt(receipt, protocol, ledger)
@@ -4062,7 +4128,6 @@ def test_final_core_allows_independent_public_http_uri(tmp_path: Path) -> None:
     [
         ("completed", "timeout"),
         ("timeout", "none"),
-        ("needs_operator", "writer_failure"),
         ("budget_exhausted", "timeout"),
     ],
 )
@@ -4324,7 +4389,6 @@ def test_final_core_needs_operator_rejects_duplicate_callback_attempt(
 def test_final_core_clarification_events_recompute_count_latency_and_digest(
     tmp_path: Path,
 ) -> None:
-    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
     event = {
         "type": "clarification_request_event",
         "started_at": "2026-08-19T00:00:00.000000Z",
@@ -4336,14 +4400,16 @@ def test_final_core_clarification_events_recompute_count_latency_and_digest(
             event, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
     ).hexdigest()
-    receipt["automated_events"] = [event]
+    protocol, ledger, receipt = _task12_completed_p_run(
+        tmp_path, automated_events=(event,)
+    )
     receipt["measurements"]["clarification_request_count"] = 1
     receipt["measurements"]["intent_approval_service_latency_ms"] = 10
     assert not verify_receipt(receipt, protocol, ledger)
 
     receipt["automated_events"][0]["latency_ms"] = 11
     assert any(
-        issue.code == "receipt.measurements"
+        issue.code in {"receipt.measurements", "receipt.ledger-evidence"}
         for issue in verify_receipt(receipt, protocol, ledger)
     )
 
@@ -4356,7 +4422,7 @@ def test_final_core_artifact_inventory_rejects_duplicate_or_unobserved_binding(
         "path"
     ]
     assert any(
-        issue.code == "receipt.measurements"
+        issue.code in {"receipt.measurements", "receipt.ledger-evidence"}
         for issue in verify_receipt(receipt, protocol, ledger)
     )
 
@@ -4722,3 +4788,363 @@ def test_task13_cli_surfaces_core_http_query_private_path_finding(
         issue["code"] == "receipt.absolute-path"
         for issue in json.loads(result.stdout)["issues"]
     )
+
+
+def test_release_gate_protocol_rejects_zero_fixture_commitment(tmp_path: Path) -> None:
+    raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    raw["execution_lock"]["fixture_tree_sha256"] = "0" * 64
+    raw["execution_lock"]["fixture_commitment"] = "0" * 64
+    path = tmp_path / "zero-bound-protocol.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    assert "protocol.lock" in {
+        issue.code for issue in validate_protocol(load_protocol(path), REPO_ROOT)
+    }
+
+
+def test_release_gate_ledger_rejects_global_duplicate_child_session(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    for index, (run_id, candidate) in enumerate((
+        ("P:requirement-contract-ambiguity", _digest("a")),
+        ("S:requirement-contract-ambiguity", _digest("b")),
+    )):
+        writer = reserve_provider_attempt(
+            ledger, protocol, AttemptRequest(run_id, "writer")
+        )
+        completion = RawAttemptCompletion(
+            writer.attempt_id,
+            "completed",
+            True,
+            candidate_digest=candidate,
+            child_session="duplicate-logical-session",
+            token_usage={
+                "input_tokens": 1,
+                "cached_input_tokens": 0,
+                "output_tokens": 1,
+                "reasoning_output_tokens": 0,
+            },
+            raw_provider_output_sha256=_digest("9"),
+        )
+        if index == 0:
+            record_provider_completion(ledger, protocol, completion)
+        else:
+            with pytest.raises(ValueError, match="child session"):
+                record_provider_completion(ledger, protocol, completion)
+
+
+@pytest.mark.parametrize(
+    "run_id",
+    [
+        "P:requirement-contract-ambiguity",
+        "S:requirement-contract-ambiguity",
+        "A00:requirement-contract-ambiguity",
+        "A10:requirement-contract-ambiguity",
+        "A11:requirement-contract-ambiguity",
+    ],
+)
+def test_release_gate_needs_operator_is_security_a11_only(
+    tmp_path: Path, run_id: str
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest(
+            run_id,
+            "writer",
+            parent_digest=_digest("a") if run_id.startswith("A11:") else None,
+        ),
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id,
+            "candidate_ready",
+            True,
+            candidate_digest=_digest("b"),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="security"):
+        record_provider_completion(
+            ledger,
+            protocol,
+            _completion(writer.attempt_id, "needs_operator", True),
+        )
+
+
+def test_release_gate_receipt_cannot_self_attest_phase_or_artifact_measurements(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["phase_evidence"]["setup"]["ended_at"] = receipt["phase_evidence"][
+        "framework_init"
+    ]["ended_at"]
+    receipt["phase_evidence"]["framework_init"]["started_at"] = receipt[
+        "phase_evidence"
+    ]["setup"]["ended_at"]
+    for phase_name in ("setup", "framework_init"):
+        phase = receipt["phase_evidence"][phase_name]
+        payload = {
+            "phase": phase_name,
+            "started_at": phase["started_at"],
+            "ended_at": phase["ended_at"],
+        }
+        phase["evidence_sha256"] = sha256(
+            json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+    receipt["timings"]["setup_wall_seconds"] = 3
+    receipt["timings"]["framework_init_wall_seconds"] = 0
+    receipt["artifact_inventory"][0].update(
+        {"sha256": _digest("e"), "size_bytes": 4}
+    )
+    receipt["measurements"]["setup_artifact_bytes"] = 4
+    receipt["measurements"]["total_artifact_bytes"] = 9
+
+    assert any(
+        issue.code == "receipt.ledger-evidence"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+def test_release_gate_failure_classification_is_uniquely_derived(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    writer = reserve_provider_attempt(
+        ledger,
+        protocol,
+        AttemptRequest("P:requirement-contract-ambiguity", "writer"),
+    )
+    record_provider_completion(
+        ledger, protocol, _completion(writer.attempt_id, "failed", True)
+    )
+    receipt = _task12_receipt(protocol, ledger)
+    receipt["failure_classification"] = "evaluation_failure"
+
+    assert any(
+        issue.code == "receipt.failure-classification"
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "https://example.test/x?api%5Fkey%5B%5D=privatecredential",
+        "https://example.test/x#next=%2FUsers%2Fprivate-owner%2Fsecret.txt",
+        "https://example.test/x?next=C%3A%5CUsers%5Cprivate-owner%5Csecret.txt",
+        "https://example.test/x?next=%5C%5Cprivate-server%5Cshare%5Csecret.txt",
+        "https://example.test/x#next=file%3A%2F%2F%2FUsers%2Fprivate-owner%2Fx",
+    ],
+)
+def test_release_gate_core_single_decode_uri_privacy(value: str, tmp_path: Path) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["changed_files"] = [value]
+
+    assert any(
+        issue.code in {"receipt.absolute-path", "receipt.secret"}
+        for issue in verify_receipt(receipt, protocol, ledger)
+    )
+
+
+@pytest.mark.parametrize("surface", ["validation", "exception"])
+@pytest.mark.parametrize(
+    "ordinary",
+    [
+        "https://example.test/x?notoken=visible",
+        "https://example.test/x?nosecret=visible",
+        "https://example.test/x?mypassword=visible",
+        "https://example.test/x?myapikey=visible",
+    ],
+)
+def test_release_gate_cli_preserves_non_secret_substring_keys(
+    ordinary: str, surface: str, tmp_path: Path
+) -> None:
+    if surface == "exception":
+        raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+        raw[ordinary] = "unexpected"
+        protocol_path = tmp_path / "ordinary-key-protocol.json"
+        protocol_path.write_text(json.dumps(raw), encoding="utf-8")
+        result = _run_task13_cli("validate", "--protocol", str(protocol_path))
+        _assert_task13_json_error(result, "cli.input")
+        message = json.loads(result.stdout)["error"]["message"]
+    else:
+        _, ledger, receipt = _task12_completed_p_run(tmp_path)
+        receipt[ordinary] = "unexpected"
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(receipt_path),
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--ledger",
+            str(ledger),
+        )
+        assert result.returncode == 1
+        message = "\n".join(
+            issue["message"] for issue in json.loads(result.stdout)["issues"]
+        )
+    assert ordinary in message
+
+
+@pytest.mark.parametrize("surface", ["validation", "exception"])
+@pytest.mark.parametrize(
+    ("private_uri", "expected_marker"),
+    [
+        (
+            "https://example.test/x?api%5Fkey%5B%5D=privatecredential",
+            "REDACTED",
+        ),
+        (
+            "https://example.test/x#next=%2FUsers%2Fprivate-owner%2Fsecret.txt",
+            "<redacted-path>",
+        ),
+        (
+            "https://example.test/x?next=C%3A%5CUsers%5Cprivate-owner%5Cx",
+            "<redacted-path>",
+        ),
+        (
+            "https://example.test/x?next=%5C%5Cprivate-server%5Cshare%5Cx",
+            "<redacted-path>",
+        ),
+        (
+            "https://example.test/x#next=file%3A%2F%2F%2FUsers%2Fprivate-owner%2Fx",
+            "<redacted-path>",
+        ),
+    ],
+)
+def test_release_gate_cli_single_decode_uri_privacy_on_all_surfaces(
+    tmp_path: Path, surface: str, private_uri: str, expected_marker: str
+) -> None:
+    if surface == "exception":
+        raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+        raw[private_uri] = "unexpected"
+        path = tmp_path / "private-protocol.json"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        result = _run_task13_cli("validate", "--protocol", str(path))
+        _assert_task13_json_error(result, "cli.input")
+        message = json.loads(result.stdout)["error"]["message"]
+    else:
+        _, ledger, receipt = _task12_completed_p_run(tmp_path)
+        receipt[private_uri] = "unexpected"
+        path = tmp_path / "private-receipt.json"
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(path),
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--ledger",
+            str(ledger),
+        )
+        assert result.returncode == 1
+        message = "\n".join(
+            issue["message"] for issue in json.loads(result.stdout)["issues"]
+        )
+    assert "privatecredential" not in message
+    assert "private-owner" not in message
+    assert "private-server" not in message
+    assert expected_marker in message
+
+
+def test_release_gate_cli_atomically_snapshots_real_run_evidence(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    protocol_path = tmp_path / "protocol.json"
+    ledger = tmp_path / "ledger.json"
+    run_id = "P:requirement-contract-ambiguity"
+    writer = reserve_provider_attempt(
+        ledger, protocol, AttemptRequest(run_id, "writer")
+    )
+    record_provider_completion(
+        ledger,
+        protocol,
+        _completion(
+            writer.attempt_id, "completed", True, candidate_digest=_digest("b")
+        ),
+    )
+    workspace = tmp_path / "real-workspace"
+    artifact = workspace / "benchmark-task" / "result.txt"
+    artifact.parent.mkdir(parents=True)
+    artifact.write_bytes(b"real-result")
+    first_reserved = datetime.fromisoformat(
+        json.loads(ledger.read_text(encoding="utf-8"))["attempts"][0]["history"][0][
+            "recorded_at"
+        ].replace("Z", "+00:00")
+    )
+    phases = _task12_phase_evidence(first_reserved - timedelta(seconds=1))
+    manifest = {
+        "phase_evidence": phases,
+        "artifacts": [
+            {
+                "path": "benchmark-task/result.txt",
+                "category": "delivery",
+                "required": True,
+                "applicable": True,
+            }
+        ],
+        "changed_files": ["benchmark-task/result.txt"],
+        "automated_events": [],
+        "human_events": [],
+    }
+    manifest_path = tmp_path / "evidence-manifest.json"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    result = _run_task13_cli(
+        "record-run-evidence",
+        "--protocol",
+        str(protocol_path),
+        "--ledger",
+        str(ledger),
+        "--run-id",
+        run_id,
+        "--workspace-root",
+        str(workspace),
+        "--manifest",
+        str(manifest_path),
+    )
+
+    assert result.returncode == 0
+    assert result.stderr == ""
+    snapshot = json.loads(ledger.read_text(encoding="utf-8"))["run_evidence"][run_id]
+    assert snapshot["artifact_inventory"] == [
+        {
+            "path": "benchmark-task/result.txt",
+            "category": "delivery",
+            "required": True,
+            "applicable": True,
+            "observed": True,
+            "size_bytes": len(b"real-result"),
+            "sha256": sha256(b"real-result").hexdigest(),
+        }
+    ]
+    ledger_bytes = ledger.read_bytes()
+    artifact.write_bytes(b"later-tamper")
+    repeated = _run_task13_cli(
+        "record-run-evidence",
+        "--protocol",
+        str(protocol_path),
+        "--ledger",
+        str(ledger),
+        "--run-id",
+        run_id,
+        "--workspace-root",
+        str(workspace),
+        "--manifest",
+        str(manifest_path),
+    )
+    assert repeated.returncode == 2
+    assert ledger.read_bytes() == ledger_bytes

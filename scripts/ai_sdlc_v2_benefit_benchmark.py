@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
-import re
 from collections.abc import Mapping
 from pathlib import Path
-from urllib.parse import urlsplit
 
 from ai_sdlc.benefit_benchmark import (
+    ArtifactRequirement,
     AttemptCompletion,
     AttemptRequest,
     BenchmarkIssue,
+    RunEvidenceRequest,
     load_protocol,
     record_provider_completion,
+    record_run_evidence,
+    redact_public_message,
     reserve_provider_attempt,
     validate_protocol,
     verify_receipt,
@@ -32,92 +34,8 @@ class _JsonArgumentParser(argparse.ArgumentParser):
         raise _CliUsageError("invalid command arguments")
 
 
-_POSIX_PRIVATE_PATH = re.compile(r"(?<![A-Za-z0-9_])/(?:[^\s'\"/:]+/)*[^\s'\"/:]+")
-_WINDOWS_PRIVATE_PATH = re.compile(
-    r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|\\\\[^\s'\"]+)",
-    re.IGNORECASE,
-)
-_HTTP_URI = re.compile(r"https?://[^\s'\";,()]+", re.IGNORECASE)
-_HTTP_EMBEDDED_POSIX_PATH = re.compile(r"(?<=[?=&#])/(?!/)[^\s'\";,()]+")
-_ENCODED_KEY_JOINER = r"(?:_|-|%5[fF]|%2[dD])"
-_SECRET_KEY_NAME = (
-    rf"(?:api{_ENCODED_KEY_JOINER}?key|access{_ENCODED_KEY_JOINER}?token|"
-    rf"auth{_ENCODED_KEY_JOINER}?token|authorization|token|secret|password)"
-)
-_SECRET_ASSIGNMENT = re.compile(
-    rf"(?P<prefix>{_SECRET_KEY_NAME}(?:\s|\+|%20)*"
-    rf"(?:=|:|%3[dD]|%3[aA])(?:\s|\+|%20)*(?:[\"']|%22|%27)?)"
-    r"(?P<value>.+?)(?=(?:%22|%27|[\"'&#\s,;)]|$))",
-    re.IGNORECASE,
-)
-_BEARER_SECRET = re.compile(
-    r"\bBearer(?P<space>\s+|%20|\+)+[^&#\s,;)]+", re.IGNORECASE
-)
-_SECRET_TOKEN = re.compile(
-    r"(?:sk(?:-|%2[dD])[A-Za-z0-9_%.-]{8,}|"
-    r"gh[pousr](?:_|%5[fF])[A-Za-z0-9_%.-]{20,}|AKIA[0-9A-Z]{16})",
-    re.IGNORECASE,
-)
-
-
-def _redact_secret_values(message: str) -> str:
-    message = _SECRET_ASSIGNMENT.sub(
-        lambda match: f"{match.group('prefix')}REDACTED", message
-    )
-    message = _BEARER_SECRET.sub(
-        lambda match: f"Bearer{match.group('space')}REDACTED", message
-    )
-    return _SECRET_TOKEN.sub("REDACTED", message)
-
-
-def _strict_public_http_prefix(candidate: str) -> int | None:
-    try:
-        parsed = urlsplit(candidate)
-        _ = parsed.port
-    except ValueError:
-        return None
-    if (
-        parsed.scheme.lower() not in {"http", "https"}
-        or not parsed.hostname
-        or parsed.username is not None
-        or parsed.password is not None
-        or "\\" in parsed.netloc
-    ):
-        return None
-    query_or_fragment = min(
-        (offset for offset in (candidate.find("?"), candidate.find("#")) if offset >= 0),
-        default=len(candidate),
-    )
-    suffix = candidate[query_or_fragment:]
-    private_offsets = [
-        match.start()
-        for pattern in (_WINDOWS_PRIVATE_PATH, _HTTP_EMBEDDED_POSIX_PATH)
-        for match in pattern.finditer(suffix)
-    ]
-    if not private_offsets:
-        return len(candidate)
-    return query_or_fragment + min(private_offsets)
-
-
 def _public_message(message: str) -> str:
-    public_uris: list[str] = []
-
-    def protect_public_uri(match: re.Match[str]) -> str:
-        candidate = match.group(0)
-        safe_length = _strict_public_http_prefix(candidate)
-        if safe_length is None or safe_length == 0:
-            return candidate
-        marker = f"__AI_SDLC_PUBLIC_URI_{len(public_uris)}__::"
-        public_uris.append(candidate[:safe_length])
-        return marker + candidate[safe_length:]
-
-    message = _redact_secret_values(message)
-    message = _HTTP_URI.sub(protect_public_uri, message)
-    message = _WINDOWS_PRIVATE_PATH.sub("<redacted-path>", message)
-    message = _POSIX_PRIVATE_PATH.sub("<redacted-path>", message)
-    for index, uri in enumerate(public_uris):
-        message = message.replace(f"__AI_SDLC_PUBLIC_URI_{index}__::", uri)
-    return message
+    return redact_public_message(message)
 
 
 def _public_error_message(error: Exception) -> str:
@@ -153,6 +71,72 @@ def _protocol(path: Path):
         raise ValueError("protocol could not be read") from error
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError("protocol is not valid JSON") from error
+
+
+def _run_evidence_request(
+    manifest: Mapping[str, object], *, run_id: str, workspace_root: Path
+) -> RunEvidenceRequest:
+    expected = {
+        "phase_evidence",
+        "artifacts",
+        "changed_files",
+        "automated_events",
+        "human_events",
+    }
+    if set(manifest) != expected:
+        raise ValueError("run evidence manifest has invalid fields")
+    artifacts = manifest.get("artifacts")
+    changed_files = manifest.get("changed_files")
+    automated_events = manifest.get("automated_events")
+    human_events = manifest.get("human_events")
+    phases = manifest.get("phase_evidence")
+    if (
+        not isinstance(phases, Mapping)
+        or not isinstance(artifacts, list)
+        or not isinstance(changed_files, list)
+        or not all(isinstance(path, str) for path in changed_files)
+        or not isinstance(automated_events, list)
+        or not all(isinstance(event, Mapping) for event in automated_events)
+        or not isinstance(human_events, list)
+        or not all(isinstance(event, Mapping) for event in human_events)
+    ):
+        raise ValueError("run evidence manifest has invalid values")
+    requirements: list[ArtifactRequirement] = []
+    for artifact in artifacts:
+        if not isinstance(artifact, Mapping) or set(artifact) != {
+            "path",
+            "category",
+            "required",
+            "applicable",
+        }:
+            raise ValueError("run evidence artifact rule is invalid")
+        path = artifact.get("path")
+        category = artifact.get("category")
+        required = artifact.get("required")
+        applicable = artifact.get("applicable")
+        if (
+            not isinstance(path, str)
+            or not isinstance(category, str)
+            or not isinstance(required, bool)
+            or not isinstance(applicable, bool)
+        ):
+            raise ValueError("run evidence artifact rule is invalid")
+        requirements.append(
+            ArtifactRequirement(path, category, required, applicable)
+        )
+    return RunEvidenceRequest(
+        run_id=run_id,
+        workspace_root=workspace_root,
+        phase_evidence={
+            str(name): dict(value)
+            for name, value in phases.items()
+            if isinstance(value, Mapping)
+        },
+        artifacts=tuple(requirements),
+        changed_files=tuple(changed_files),
+        automated_events=tuple(dict(event) for event in automated_events),
+        human_events=tuple(dict(event) for event in human_events),
+    )
 
 
 def _emit(payload: Mapping[str, object]) -> None:
@@ -198,6 +182,12 @@ def main() -> int:
     complete.add_argument("--output-tokens", type=int)
     complete.add_argument("--reasoning-output-tokens", type=int)
     complete.add_argument("--raw-provider-output-sha256")
+    run_evidence = commands.add_parser("record-run-evidence")
+    run_evidence.add_argument("--ledger", type=Path, required=True)
+    run_evidence.add_argument("--protocol", type=Path, required=True)
+    run_evidence.add_argument("--run-id", required=True)
+    run_evidence.add_argument("--workspace-root", type=Path, required=True)
+    run_evidence.add_argument("--manifest", type=Path, required=True)
     receipt = commands.add_parser("verify-receipt")
     receipt.add_argument("--receipt", type=Path, required=True)
     receipt.add_argument("--protocol", type=Path, required=True)
@@ -271,6 +261,18 @@ def main() -> int:
                 ),
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
+            return 0
+        if arguments.command == "record-run-evidence":
+            record_run_evidence(
+                arguments.ledger,
+                _protocol(arguments.protocol),
+                _run_evidence_request(
+                    _json_object(arguments.manifest, "run evidence manifest"),
+                    run_id=arguments.run_id,
+                    workspace_root=arguments.workspace_root,
+                ),
+            )
+            _emit({"recorded": True, "run_id": arguments.run_id})
             return 0
         if arguments.command == "verify-receipt":
             issues = verify_receipt(

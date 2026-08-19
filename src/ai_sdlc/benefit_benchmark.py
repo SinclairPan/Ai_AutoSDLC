@@ -105,6 +105,29 @@ class AttemptCompletion:
     raw_provider_output_sha256: str | None = None
 
 
+@dataclass(frozen=True)
+class ArtifactRequirement:
+    """One frozen artifact applicability rule evaluated against a real workspace."""
+
+    path: str
+    category: str
+    required: bool = True
+    applicable: bool = True
+
+
+@dataclass(frozen=True)
+class RunEvidenceRequest:
+    """Runner-owned evidence persisted independently from the public receipt."""
+
+    run_id: str
+    workspace_root: Path
+    phase_evidence: Mapping[str, Mapping[str, str]]
+    artifacts: tuple[ArtifactRequirement, ...]
+    changed_files: tuple[str, ...]
+    automated_events: tuple[Mapping[str, object], ...] = ()
+    human_events: tuple[Mapping[str, object], ...] = ()
+
+
 _PROTOCOL_KEYS = {
     "schema",
     "arms",
@@ -177,8 +200,14 @@ _SCHEDULE = (
     ("P", _FIXTURES[2], 4),
     ("A00", _FIXTURES[2], 5),
 )
-_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v4"
-_LEDGER_KEYS = {"schema", "protocol_sha256", "attempts_started", "attempts"}
+_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v5"
+_LEDGER_KEYS = {
+    "schema",
+    "protocol_sha256",
+    "attempts_started",
+    "attempts",
+    "run_evidence",
+}
 _ATTEMPT_KEYS = {
     "attempt_id",
     "run_id",
@@ -250,25 +279,32 @@ _TRANSITIONS = {
     "technical_retry": {"reserved": _TERMINAL_STATUSES},
 }
 _SHA256 = re.compile(r"^[a-f0-9]{64}$")
-_SECRET_KEY = re.compile(
-    r"(?:api[_-]?key|secret|password|authorization|access[_-]?token|auth[_-]?token)",
-    re.I,
-)
-_SECRET_VALUE = re.compile(
-    r"(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|AKIA[0-9A-Z]{16}|"
-    r"(?:api[_-]?key|secret|password|authorization|access[_-]?token|auth[_-]?token|gh[_-]?token|token)"
-    r"\s*(?::|=)\s*(?!REDACTED(?:\b|$))\S+|"
-    r"--(?:api[_-]?key|secret|password|authorization|access[_-]?token|auth[_-]?token|token)"
-    r"(?:=|\s+)(?!REDACTED(?:\b|$))\S+|Bearer\s+(?!REDACTED(?:\b|$))\S+)",
+_SECRET_FIELD_NAMES = {
+    "api_key",
+    "api-key",
+    "secret",
+    "password",
+    "authorization",
+    "access_token",
+    "access-token",
+    "auth_token",
+    "auth-token",
+    "gh_token",
+    "gh-token",
+    "token",
+}
+_SECRET_TOKEN = re.compile(
+    r"(?:sk-[A-Za-z0-9_-]{8,}|gh[pousr]_[A-Za-z0-9]{20,}|"
+    r"AKIA[0-9A-Z]{16}|Bearer(?:\s+|%20|\+)+(?!REDACTED(?:\b|$))[^&#\s,;)]+)",
     re.I,
 )
 _PRIVATE_PATH = re.compile(
     r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|"
     r"(?<!:)(?:\\\\|//)[A-Za-z0-9._-]+[\\/][^\s'\"]+|"
-    r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"]+)",
+    r"(?<![A-Za-z0-9_/-])/(?!/)[^\s'\"]+)",
     re.I,
 )
-_HTTP_URI = re.compile(r"https?://[^\s'\"]+", re.I)
+_HTTP_URI = re.compile(r"https?://[^\s'\";,()]+", re.I)
 _JSON_TYPES = {
     "object",
     "array",
@@ -345,6 +381,40 @@ def record_provider_completion(
         raise ValueError("Provider completion requires a prior reservation")
 
 
+def record_run_evidence(
+    ledger_path: Path,
+    protocol: BenchmarkProtocol,
+    request: RunEvidenceRequest,
+) -> None:
+    """Atomically snapshot runner-owned timing, event and real-file evidence.
+
+    Receipt authors cannot supply these observations.  The runner provides the
+    frozen applicability rules and phase event timestamps; this function reads
+    artifact bytes/stat data itself and persists one immutable projection under
+    the same cross-process ledger lock used for Provider attempts.
+    """
+    protocol_digest = _require_executable_protocol(protocol)
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(ledger_path, protocol_digest, protocol.attempt_budget)
+        attempts = [
+            item
+            for item in ledger["attempts"]
+            if isinstance(item, Mapping) and item.get("run_id") == request.run_id
+        ]
+        if not attempts or any(item.get("terminal") is not True for item in attempts):
+            raise ValueError("run evidence requires every started run attempt terminal")
+        snapshot = _build_run_evidence_snapshot(request)
+        run_evidence = ledger["run_evidence"]
+        if not isinstance(run_evidence, dict):
+            raise ValueError("attempt ledger has invalid run evidence")
+        existing = run_evidence.get(request.run_id)
+        if existing is not None and existing != snapshot:
+            raise ValueError("run evidence is immutable once recorded")
+        run_evidence[request.run_id] = snapshot
+        _validate_run_evidence_registry(run_evidence)
+        _atomic_write_json(ledger_path, ledger)
+
+
 def validate_provider_output_schema(
     schema: Mapping[str, object],
 ) -> list[BenchmarkIssue]:
@@ -374,10 +444,10 @@ def verify_receipt(
     _validate_receipt_protocol_binding(receipt, protocol, issues)
     if issues:
         return issues
+    _scan_public_value(receipt, "$", issues)
     _validate_receipt_ledger_binding(receipt, protocol, ledger_path, issues)
     if issues:
         return issues
-    _scan_public_value(receipt, "$", issues)
     digests = _mapping(receipt.get("digests"))
     evaluator = _mapping(receipt.get("external_evaluator"))
     candidate = receipt.get("final_candidate_tree_sha256")
@@ -584,7 +654,7 @@ def _validate_receipt_ledger_binding(
     ledger_path: Path,
     issues: list[BenchmarkIssue],
 ) -> None:
-    """Bind receipt attempts and A11 evidence to the validated persisted v4 ledger."""
+    """Bind receipt attempts and runner evidence to the validated persisted v5 ledger."""
     if not ledger_path.is_file():
         issues.append(BenchmarkIssue("receipt.ledger", "attempt ledger is missing"))
         return
@@ -602,6 +672,23 @@ def _validate_receipt_ledger_binding(
         return
 
     run_id = receipt.get("run_id")
+    evidence_registry = ledger.get("run_evidence")
+    authoritative_evidence = (
+        evidence_registry.get(run_id)
+        if isinstance(evidence_registry, Mapping) and isinstance(run_id, str)
+        else None
+    )
+    if not isinstance(authoritative_evidence, Mapping):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.ledger-evidence",
+                "runner-owned run evidence is missing from the attempt ledger",
+            )
+        )
+        return
+    _validate_receipt_run_evidence_projection(
+        receipt, authoritative_evidence, issues
+    )
     expected = [
         attempt
         for attempt in ledger["attempts"]
@@ -724,6 +811,16 @@ def _validate_receipt_ledger_binding(
                 "receipt.ledger", "receipt status must be derived from the terminal writer"
             )
         )
+    expected_classification = _derive_failure_classification(
+        receipt, expected, writer
+    )
+    if receipt.get("failure_classification") != expected_classification:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.failure-classification",
+                "failure classification must be uniquely derived from ledger and evaluator state",
+            )
+        )
     _validate_command_evidence(receipt, protocol, observed, issues)
     _validate_receipt_verified_delivery_timing(receipt, expected, issues)
     close = _mapping(_mapping(receipt.get("loop")).get("close"))
@@ -769,6 +866,73 @@ def _validate_receipt_ledger_binding(
         )
     if arm == "A11":
         _validate_a11_attempt_closure(receipt, expected, writer, issues)
+
+
+def _validate_receipt_run_evidence_projection(
+    receipt: Mapping[str, object],
+    authoritative: Mapping[str, object],
+    issues: list[BenchmarkIssue],
+) -> None:
+    bindings = {
+        "phase_evidence": "phase_evidence",
+        "artifact_inventory": "artifact_inventory",
+        "changed_files": "changed_files",
+        "automated_events": "automated_events",
+        "human_events": "human_events",
+    }
+    for receipt_key, ledger_key in bindings.items():
+        if receipt.get(receipt_key) != authoritative.get(ledger_key):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.ledger-evidence",
+                    f"{receipt_key} must exactly project runner-owned ledger evidence",
+                )
+            )
+
+
+def _derive_failure_classification(
+    receipt: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    writer: Mapping[str, object],
+) -> str:
+    status = receipt.get("status")
+    fixed = {
+        "completed": "none",
+        "timeout": "timeout",
+        "needs_operator": "expert_conflict",
+        "budget_exhausted": "provider_budget_exhausted",
+    }
+    if status in fixed:
+        return fixed[status]
+    if status != "failed":
+        return "evidence_failure"
+    expert_failures = {
+        "failed",
+        "timeout",
+        "needs_operator",
+        "budget_exhausted",
+    }
+    if any(
+        attempt.get("effective_kind")
+        in {"primary_expert", "cross_risk_expert", "expert_rereview"}
+        and attempt.get("status") in expert_failures
+        for attempt in attempts
+    ):
+        return "expert_failure"
+    if writer.get("status") == "technical_failure" and writer.get(
+        "content_produced"
+    ) is False:
+        return "provider_pre_output_failure"
+    if writer.get("status") == "failed":
+        return "writer_failure"
+    measurements = _mapping(receipt.get("measurements"))
+    if measurements.get("evidence_completeness") != 1:
+        return "evidence_failure"
+    if _mapping(receipt.get("external_evaluator")).get(
+        "external_verified_delivery"
+    ) is False:
+        return "evaluation_failure"
+    return "writer_failure"
 
 
 def _validate_a11_attempt_closure(
@@ -1502,8 +1666,8 @@ def validate_protocol(
         )
     elif (
         fixture_tree != fixture_commitment
-        or not _is_digest(fixture_tree)
-        or not _is_digest(fixture_commitment)
+        or not _is_non_placeholder_digest(fixture_tree)
+        or not _is_non_placeholder_digest(fixture_commitment)
     ):
         issues.append(
             BenchmarkIssue(
@@ -1537,6 +1701,7 @@ def _load_ledger(
             "protocol_sha256": protocol_digest,
             "attempts_started": 0,
             "attempts": [],
+            "run_evidence": {},
         }
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -1555,6 +1720,8 @@ def _load_ledger(
         raise ValueError("attempt ledger has invalid attempts_started")
     if not isinstance(raw["attempts"], list):
         raise ValueError("attempt ledger has invalid attempts")
+    if not isinstance(raw["run_evidence"], dict):
+        raise ValueError("attempt ledger has invalid run evidence")
     attempts = raw["attempts"]
     if raw["attempts_started"] != len(attempts):
         raise ValueError("attempt ledger count does not match attempts")
@@ -1564,7 +1731,262 @@ def _load_ledger(
             raise ValueError("attempt ledger attempt must be an object")
         _validate_persisted_attempt(item, expected)
     _validate_attempt_ledger_invariants(attempts, attempt_budget)
+    _validate_run_evidence_registry(raw["run_evidence"])
     return raw
+
+
+def _build_run_evidence_snapshot(request: RunEvidenceRequest) -> dict[str, object]:
+    registry = {f"{arm}:{fixture}" for arm, fixture, _position in _SCHEDULE}
+    if request.run_id not in registry:
+        raise ValueError("run evidence has an invalid run")
+    workspace_root = request.workspace_root.resolve()
+    if not workspace_root.is_dir():
+        raise ValueError("run evidence workspace root is unavailable")
+    phases = _canonical_phase_evidence(request.phase_evidence)
+    artifacts: list[dict[str, object]] = []
+    seen_paths: set[str] = set()
+    for requirement in request.artifacts:
+        path = requirement.path
+        if not _is_safe_relative_path(path) or path in seen_paths:
+            raise ValueError("run evidence artifact paths must be unique and relative")
+        if requirement.category not in {"setup", "governance", "delivery"}:
+            raise ValueError("run evidence artifact category is invalid")
+        if not isinstance(requirement.required, bool) or not isinstance(
+            requirement.applicable, bool
+        ):
+            raise ValueError("run evidence artifact applicability is invalid")
+        if requirement.required and not requirement.applicable:
+            raise ValueError("a required artifact must be applicable")
+        seen_paths.add(path)
+        artifact_path = workspace_root.joinpath(*path.split("/"))
+        try:
+            resolved = artifact_path.resolve(strict=False)
+            resolved.relative_to(workspace_root)
+        except (OSError, ValueError) as error:
+            raise ValueError("run evidence artifact escapes the workspace") from error
+        observed = requirement.applicable and artifact_path.is_file()
+        digest: str | None = None
+        size = 0
+        if observed:
+            payload = artifact_path.read_bytes()
+            digest = sha256(payload).hexdigest()
+            size = len(payload)
+            if size == 0:
+                raise ValueError("observed run evidence artifacts cannot be empty")
+        artifacts.append(
+            {
+                "path": path,
+                "sha256": digest,
+                "size_bytes": size,
+                "category": requirement.category,
+                "required": requirement.required,
+                "applicable": requirement.applicable,
+                "observed": observed,
+            }
+        )
+    changed_files = list(request.changed_files)
+    if (
+        any(not _is_safe_relative_path(path) for path in changed_files)
+        or len(changed_files) != len(set(changed_files))
+        or set(changed_files)
+        - {
+            item["path"]
+            for item in artifacts
+            if item["category"] == "delivery" and item["observed"] is True
+        }
+    ):
+        raise ValueError("run evidence changed files are not observed delivery artifacts")
+    automated = [
+        _canonical_automated_event(event) for event in request.automated_events
+    ]
+    human = [dict(event) for event in request.human_events]
+    human_issues: list[BenchmarkIssue] = []
+    _validate_human_events(human, human_issues)
+    if human_issues:
+        raise ValueError("run evidence human events are invalid")
+    return {
+        "phase_evidence": phases,
+        "artifact_inventory": artifacts,
+        "changed_files": changed_files,
+        "automated_events": automated,
+        "human_events": human,
+    }
+
+
+def _canonical_phase_evidence(
+    supplied: Mapping[str, Mapping[str, str]],
+) -> dict[str, object]:
+    names = (
+        "setup",
+        "framework_init",
+        "provider",
+        "governance",
+        "review",
+        "evaluation",
+    )
+    if set(supplied) != set(names):
+        raise ValueError("run evidence phase surface is incomplete")
+    result: dict[str, object] = {}
+    cursor: datetime | None = None
+    for name in names:
+        phase = supplied[name]
+        if set(phase) - {"started_at", "ended_at", "evidence_sha256"}:
+            raise ValueError("run evidence phase fields are invalid")
+        start_text = phase.get("started_at")
+        end_text = phase.get("ended_at")
+        started = _parse_rfc3339(start_text)
+        ended = _parse_rfc3339(end_text)
+        if started is None or ended is None or ended < started:
+            raise ValueError("run evidence phase timing is invalid")
+        if cursor is not None and started != cursor:
+            raise ValueError("run evidence phases must be adjacent")
+        payload = {"phase": name, "started_at": start_text, "ended_at": end_text}
+        result[name] = {
+            "started_at": start_text,
+            "ended_at": end_text,
+            "evidence_sha256": sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+        cursor = ended
+    return result
+
+
+def _canonical_automated_event(event: Mapping[str, object]) -> dict[str, object]:
+    if set(event) - {"type", "started_at", "ended_at", "latency_ms", "evidence_sha256"}:
+        raise ValueError("run evidence automated event fields are invalid")
+    event_type = event.get("type")
+    if event_type not in {
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event",
+    }:
+        raise ValueError("run evidence automated event type is invalid")
+    started_text = event.get("started_at")
+    ended_text = event.get("ended_at")
+    started = _parse_rfc3339(started_text)
+    ended = _parse_rfc3339(ended_text)
+    if started is None or ended is None or ended < started:
+        raise ValueError("run evidence automated event timing is invalid")
+    latency_ms = (ended - started).total_seconds() * 1000
+    payload = {
+        "type": event_type,
+        "started_at": started_text,
+        "ended_at": ended_text,
+        "latency_ms": latency_ms,
+    }
+    return {
+        **payload,
+        "evidence_sha256": sha256(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest(),
+    }
+
+
+def _validate_run_evidence_registry(value: Mapping[str, object]) -> None:
+    registry = {f"{arm}:{fixture}" for arm, fixture, _position in _SCHEDULE}
+    for run_id, snapshot in value.items():
+        if run_id not in registry or not isinstance(snapshot, Mapping):
+            raise ValueError("attempt ledger run evidence is invalid")
+        if set(snapshot) != {
+            "phase_evidence",
+            "artifact_inventory",
+            "changed_files",
+            "automated_events",
+            "human_events",
+        }:
+            raise ValueError("attempt ledger run evidence surface is invalid")
+        # Re-validate all persisted primitive shapes without touching the workspace.
+        canonical_phases = _canonical_phase_evidence(
+            _mapping(snapshot.get("phase_evidence"))
+        )
+        if canonical_phases != snapshot.get("phase_evidence"):
+            raise ValueError("attempt ledger phase evidence is invalid")
+        inventory = snapshot.get("artifact_inventory")
+        if not isinstance(inventory, list) or not inventory:
+            raise ValueError("attempt ledger artifact inventory is invalid")
+        paths: list[object] = []
+        for artifact in inventory:
+            if not isinstance(artifact, Mapping) or set(artifact) != {
+                "path",
+                "sha256",
+                "size_bytes",
+                "category",
+                "required",
+                "applicable",
+                "observed",
+            }:
+                raise ValueError("attempt ledger artifact inventory is invalid")
+            path = artifact.get("path")
+            observed = artifact.get("observed")
+            applicable = artifact.get("applicable")
+            required = artifact.get("required")
+            digest = artifact.get("sha256")
+            size = artifact.get("size_bytes")
+            if (
+                not isinstance(path, str)
+                or not _is_safe_relative_path(path)
+                or artifact.get("category") not in {"setup", "governance", "delivery"}
+                or not isinstance(required, bool)
+                or not isinstance(applicable, bool)
+                or not isinstance(observed, bool)
+                or (required and not applicable)
+                or (observed and (not applicable or not _is_non_placeholder_digest(digest) or not _non_bool_int(size) or size < 1))
+                or (not observed and (digest is not None or size != 0))
+            ):
+                raise ValueError("attempt ledger artifact inventory is invalid")
+            paths.append(path)
+        if len(paths) != len(set(paths)):
+            raise ValueError("attempt ledger artifact paths must be unique")
+        changed = snapshot.get("changed_files")
+        if (
+            not isinstance(changed, list)
+            or any(
+                not isinstance(path, str) or not _is_safe_relative_path(path)
+                for path in changed
+            )
+            or len(changed) != len(set(changed))
+        ):
+            raise ValueError("attempt ledger changed files are invalid")
+        observed_delivery = {
+            artifact.get("path")
+            for artifact in inventory
+            if isinstance(artifact, Mapping)
+            and artifact.get("category") == "delivery"
+            and artifact.get("observed") is True
+        }
+        if set(changed) - observed_delivery:
+            raise ValueError("attempt ledger changed files lack observed artifacts")
+        automated = snapshot.get("automated_events")
+        if not isinstance(automated, list) or any(
+            _canonical_automated_event(_mapping(event)) != event for event in automated
+        ):
+            raise ValueError("attempt ledger automated events are invalid")
+        human_issues: list[BenchmarkIssue] = []
+        _validate_human_events(snapshot.get("human_events"), human_issues)
+        if human_issues:
+            raise ValueError("attempt ledger human events are invalid")
+
+
+def _is_safe_relative_path(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and not value.startswith(("/", "\\"))
+        and re.match(r"^[A-Za-z]:[\\/]", value) is None
+        and "\\" not in value
+        and all(part not in {"", ".", ".."} for part in value.split("/"))
+    )
 
 
 def _new_attempt(
@@ -1925,6 +2347,15 @@ def _validate_attempt_ledger_invariants(
 ) -> None:
     if len(attempts) > attempt_budget.limit:
         raise ValueError("attempt ledger invariant: Provider attempt budget exceeded")
+    child_sessions = [
+        attempt.get("child_session")
+        for attempt in attempts
+        if isinstance(attempt, Mapping) and attempt.get("terminal") is True
+    ]
+    if len(child_sessions) != len(set(child_sessions)):
+        raise ValueError(
+            "attempt ledger invariant: child session must be globally unique"
+        )
     kind_limits = {
         "writer": 15,
         "primary_expert": 3,
@@ -2153,6 +2584,8 @@ def _validate_attempt_ledger_invariants(
                 _validate_writer_close(attempts, raw_attempt, history[-1])
             except ValueError as error:
                 raise ValueError(f"attempt ledger invariant: {error}") from error
+        if raw_attempt.get("status") == "needs_operator":
+            _validate_writer_conflict(attempts, raw_attempt)
 
 
 def _state_before_sequence(
@@ -2243,6 +2676,54 @@ def _required_first_review_roles(writer: Mapping[str, object]) -> set[str]:
     if writer.get("run_id") == "A11:multi-tenant-security-review":
         roles.add("cross-risk")
     return roles
+
+
+def _validate_writer_conflict(
+    attempts: list[object], writer: Mapping[str, object]
+) -> None:
+    if (
+        writer.get("effective_kind") != "writer"
+        or writer.get("run_id") != "A11:multi-tenant-security-review"
+    ):
+        raise ValueError("needs_operator is restricted to the A11 security run")
+    history = writer.get("history")
+    if (
+        not isinstance(history, list)
+        or len(history) < 2
+        or not isinstance(history[-2], Mapping)
+        or history[-2].get("status") != "review_pending"
+    ):
+        raise ValueError("security needs_operator requires a review-pending Candidate")
+    experts = [
+        attempt
+        for attempt in attempts
+        if isinstance(attempt, Mapping)
+        and attempt.get("parent_attempt_id") == writer.get("attempt_id")
+        and attempt.get("effective_kind") in {"primary_expert", "cross_risk_expert"}
+        and attempt.get("status") == "completed"
+        and attempt.get("sequence") < writer.get("sequence")
+    ]
+    role_findings = {
+        attempt.get("role"): attempt.get("finding_digest") for attempt in experts
+    }
+    if (
+        set(role_findings) != {"primary", "cross-risk"}
+        or any(not _is_non_placeholder_digest(value) for value in role_findings.values())
+        or len(set(role_findings.values())) != 2
+        or any(
+            isinstance(attempt, Mapping)
+            and attempt.get("run_id") == writer.get("run_id")
+            and attempt.get("effective_kind") == "expert_rereview"
+            for attempt in attempts
+        )
+        or any(
+            isinstance(event, Mapping) and event.get("repair_digest") is not None
+            for event in history
+        )
+    ):
+        raise ValueError(
+            "security needs_operator requires two distinct immutable required expert Findings"
+        )
 
 
 def _validate_security_first_review_baselines(attempts: list[object]) -> None:
@@ -3088,7 +3569,7 @@ def _is_non_placeholder_digest(value: object) -> bool:
 def _scan_public_value(value: object, path: str, issues: list[BenchmarkIssue]) -> None:
     if isinstance(value, Mapping):
         for key, child in value.items():
-            if _SECRET_KEY.search(str(key)) and not (
+            if _is_secret_field_name(str(key)) and not (
                 isinstance(child, str) and child.strip().upper() == "REDACTED"
             ):
                 issues.append(
@@ -3107,10 +3588,7 @@ def _scan_public_value(value: object, path: str, issues: list[BenchmarkIssue]) -
                     "receipt.absolute-path", f"{path} contains an absolute path"
                 )
             )
-        normalized = re.sub(
-            r"(['\"])REDACTED\1", "REDACTED", value, flags=re.IGNORECASE
-        )
-        if _SECRET_VALUE.search(normalized):
+        if _contains_secret_value(value):
             issues.append(
                 BenchmarkIssue("receipt.secret", f"{path} contains a secret-like value")
             )
@@ -3148,26 +3626,197 @@ def _is_private_path(value: str) -> bool:
     scrubbed = value
     for match in reversed(list(_HTTP_URI.finditer(value))):
         candidate = match.group(0)
-        try:
-            parsed = urlsplit(candidate)
-            _ = parsed.port
-        except ValueError:
-            continue
-        if (
-            parsed.scheme.lower() not in {"http", "https"}
-            or not parsed.hostname
-            or parsed.username is not None
-            or parsed.password is not None
-            or "\\" in parsed.netloc
-        ):
+        parsed = _strict_public_http(candidate)
+        if parsed is None:
             continue
         retained = ""
         if parsed.query:
-            retained += f"?{unquote(parsed.query)}"
+            retained += f"?{_percent_decode_once(parsed.query)}"
         if parsed.fragment:
-            retained += f"#{unquote(parsed.fragment)}"
+            retained += f"#{_percent_decode_once(parsed.fragment)}"
         scrubbed = scrubbed[: match.start()] + f"http-uri{retained}" + scrubbed[match.end() :]
     return bool(_PRIVATE_PATH.search(scrubbed))
+
+
+def redact_public_message(message: str) -> str:
+    """Redact secrets/private paths with one shared, bounded URI classifier."""
+    message = _redact_secret_values(message)
+    protected: list[str] = []
+
+    def protect(match: re.Match[str]) -> str:
+        candidate = match.group(0)
+        parsed = _strict_public_http(candidate)
+        if parsed is None:
+            return candidate
+        redacted = _redact_uri_parameters(candidate)
+        suffix_start = min(
+            (
+                offset
+                for offset in (redacted.find("?"), redacted.find("#"))
+                if offset >= 0
+            ),
+            default=len(redacted),
+        )
+        suffix = redacted[suffix_start:]
+        decoded_suffix = _percent_decode_once(suffix)
+        private_match = _PRIVATE_PATH.search(decoded_suffix)
+        safe_end = suffix_start
+        if private_match is None:
+            safe_end = len(redacted)
+        else:
+            # Protect only the stable public prefix. The original encoded private
+            # suffix remains outside the marker and is redacted below.
+            original_prefix = _encoded_prefix_for_decoded_offset(
+                suffix, private_match.start()
+            )
+            safe_end += original_prefix
+            redacted = f"{redacted[:safe_end]}<redacted-path>"
+            safe_end = len(redacted)
+        marker = f"__AI_SDLC_PUBLIC_URI_{len(protected)}__::"
+        protected.append(redacted[:safe_end])
+        return marker + redacted[safe_end:]
+
+    message = _HTTP_URI.sub(protect, message)
+    message = _PRIVATE_PATH.sub("<redacted-path>", message)
+    for index, uri in enumerate(protected):
+        message = message.replace(f"__AI_SDLC_PUBLIC_URI_{index}__::", uri)
+    return message
+
+
+def _strict_public_http(value: str):
+    try:
+        parsed = urlsplit(value)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in parsed.netloc
+    ):
+        return None
+    return parsed
+
+
+def _percent_decode_once(value: str) -> str:
+    return unquote(value)
+
+
+def _is_secret_field_name(value: str) -> bool:
+    decoded = _percent_decode_once(value).strip().lower()
+    while decoded.endswith("[]"):
+        decoded = decoded[:-2]
+    return decoded in _SECRET_FIELD_NAMES
+
+
+def _contains_secret_value(value: str) -> bool:
+    normalized = re.sub(
+        r"(['\"])REDACTED\1", "REDACTED", value, flags=re.IGNORECASE
+    )
+    if _SECRET_TOKEN.search(normalized):
+        return True
+    for candidate in _HTTP_URI.findall(normalized):
+        parsed = _strict_public_http(candidate)
+        if parsed is not None and _uri_has_secret_parameter(parsed.query, parsed.fragment):
+            return True
+    decoded = _percent_decode_once(normalized)
+    assignment = re.compile(
+        r"(?<![A-Za-z0-9_.%-])(?P<key>[A-Za-z][A-Za-z0-9_%\-]*(?:\[\])*)"
+        r"\s*(?::|=)\s*(?P<value>[^&#\s,;)]+)",
+        re.I,
+    )
+    return any(
+        _is_secret_field_name(match.group("key"))
+        and match.group("value").strip("\"'").upper() != "REDACTED"
+        for match in assignment.finditer(decoded)
+    )
+
+
+def _uri_has_secret_parameter(*parts: str) -> bool:
+    for raw in parts:
+        decoded = _percent_decode_once(raw)
+        for component in re.split(r"[&;]", decoded):
+            key, separator, value = component.partition("=")
+            if not separator:
+                key, separator, value = component.partition(":")
+            if (
+                separator
+                and _is_secret_field_name(key)
+                and value.strip("\"'").upper() != "REDACTED"
+            ):
+                return True
+    return False
+
+
+def _redact_secret_values(value: str) -> str:
+    assignment = re.compile(
+        r"(?<![A-Za-z0-9_.%-])"
+        r"(?P<key>[A-Za-z][A-Za-z0-9_%\-]*(?:(?:\[\])|(?:%5[bB]%5[dD]))*)"
+        r"(?P<space>(?:\s|\+|%20)*)"
+        r"(?P<separator>=|:|%3[dD]|%3[aA])"
+        r"(?P<after>(?:\s|\+|%20)*(?:[\"']|%22|%27)?)"
+        r"(?P<value>.+?)(?=(?:%22|%27|[\"'&#\s,;)]|$))",
+        re.I,
+    )
+
+    def replace(match: re.Match[str]) -> str:
+        if not _is_secret_field_name(match.group("key")):
+            return match.group(0)
+        return (
+            f"{match.group('key')}{match.group('space')}"
+            f"{match.group('separator')}{match.group('after')}REDACTED"
+        )
+
+    value = _HTTP_URI.sub(
+        lambda match: _redact_uri_parameters(match.group(0)), value
+    )
+    return _SECRET_TOKEN.sub("REDACTED", assignment.sub(replace, value))
+
+
+def _redact_uri_parameters(value: str) -> str:
+    start = min(
+        (offset for offset in (value.find("?"), value.find("#")) if offset >= 0),
+        default=len(value),
+    )
+    if start == len(value):
+        return value
+    prefix = value[:start]
+    components = re.split(r"([&#;])", value[start:])
+    assignment = re.compile(
+        r"^(?P<head>[?#]?)(?P<key>[A-Za-z][A-Za-z0-9_%\-]*(?:(?:\[\])|(?:%5[bB]%5[dD]))*)"
+        r"(?P<separator>=|:|%3[dD]|%3[aA])(?P<value>.*)$",
+        re.I,
+    )
+    for index in range(0, len(components), 2):
+        component = components[index]
+        match = assignment.fullmatch(component)
+        if match is None or not _is_secret_field_name(match.group("key")):
+            continue
+        raw_value = match.group("value")
+        quote = next(
+            (
+                marker
+                for marker in ('"', "'", "%22", "%27")
+                if raw_value.lower().startswith(marker.lower())
+            ),
+            "",
+        )
+        components[index] = (
+            f"{match.group('head')}{match.group('key')}"
+            f"{match.group('separator')}{quote}REDACTED"
+        )
+    return prefix + "".join(components)
+
+
+def _encoded_prefix_for_decoded_offset(value: str, decoded_offset: int) -> int:
+    if decoded_offset <= 0:
+        return 0
+    for index in range(1, len(value) + 1):
+        if len(_percent_decode_once(value[:index])) >= decoded_offset:
+            return index - 1
+    return len(value)
 
 
 def _validate_receipt_timing(value: object, issues: list[BenchmarkIssue]) -> None:
@@ -3492,23 +4141,25 @@ def _validate_artifact_inventory(
         size = artifact.get("size_bytes")
         category = artifact.get("category")
         required = artifact.get("required")
+        applicable = artifact.get("applicable")
         observed = artifact.get("observed")
-        path_is_relative = (
-            isinstance(path, str)
-            and bool(path)
-            and not path.startswith(("/", "\\"))
-            and not re.match(r"^[A-Za-z]:[\\/]", path)
-            and "\\" not in path
-            and all(part not in {"", ".", ".."} for part in path.split("/"))
-        )
         if (
-            not path_is_relative
-            or not _is_non_placeholder_digest(digest)
+            not _is_safe_relative_path(path)
             or not _non_bool_int(size)
-            or size < 1
             or category not in totals
             or not isinstance(required, bool)
+            or not isinstance(applicable, bool)
             or not isinstance(observed, bool)
+            or (required and not applicable)
+            or (
+                observed
+                and (
+                    not applicable
+                    or not _is_non_placeholder_digest(digest)
+                    or size < 1
+                )
+            )
+            or (not observed and (digest is not None or size != 0))
         ):
             issues.append(
                 BenchmarkIssue(
@@ -3521,7 +4172,7 @@ def _validate_artifact_inventory(
             totals[category] += size
             if category == "delivery":
                 observed_delivery.add(path)
-        if required:
+        if required and applicable:
             required_count += 1
             observed_required += int(observed)
     if len(paths) != len(set(paths)):
