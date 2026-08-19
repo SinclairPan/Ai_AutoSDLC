@@ -10,6 +10,7 @@ import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from hashlib import sha256
 from pathlib import Path
 
@@ -98,6 +99,9 @@ class AttemptCompletion:
     finding_digest: str | None = None
     repair_digest: str | None = None
     close_digest: str | None = None
+    child_session: str | None = None
+    token_usage: Mapping[str, int] | None = None
+    raw_provider_output_sha256: str | None = None
 
 
 _PROTOCOL_KEYS = {
@@ -167,7 +171,7 @@ _SCHEDULE = (
     ("P", _FIXTURES[2], 4),
     ("A00", _FIXTURES[2], 5),
 )
-_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v3"
+_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v4"
 _LEDGER_KEYS = {"schema", "protocol_sha256", "attempts_started", "attempts"}
 _ATTEMPT_KEYS = {
     "attempt_id",
@@ -188,6 +192,10 @@ _ATTEMPT_KEYS = {
     "status",
     "content_produced",
     "terminal",
+    "recorded_at",
+    "child_session",
+    "token_usage",
+    "raw_provider_output_sha256",
     "history",
 }
 _EVENT_KEYS = {
@@ -199,6 +207,10 @@ _EVENT_KEYS = {
     "repair_digest",
     "close_digest",
     "terminal",
+    "recorded_at",
+    "child_session",
+    "token_usage",
+    "raw_provider_output_sha256",
 }
 _ATTEMPT_KINDS = {
     "writer",
@@ -247,9 +259,10 @@ _SECRET_VALUE = re.compile(
 _PRIVATE_PATH = re.compile(
     r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|"
     r"(?<!:)(?:\\\\|//)[A-Za-z0-9._-]+[\\/][^\s'\"]+|"
-    r"(?<![A-Za-z0-9_.:/-])/(?!/)[^\s'\"]+)",
+    r"(?<![A-Za-z0-9_./-])/(?!/)[^\s'\"]+)",
     re.I,
 )
+_HTTP_URI = re.compile(r"https?://[^\s'\"]+", re.I)
 _BENCHMARK_ROOT = (
     Path(__file__).resolve().parents[2] / "benchmarks" / "ai-sdlc-v2-benefits"
 )
@@ -366,7 +379,7 @@ def verify_receipt(
                 "receipt.evaluator", "evaluator result digest must match receipt digest"
             )
         )
-    _validate_receipt_timing(receipt.get("timings"), issues)
+    _validate_receipt_timing(receipt, issues)
     _validate_token_usage(receipt.get("token_usage"), issues)
     _validate_human_events(receipt.get("human_events"), issues)
     _validate_receipt_measurements(receipt, issues)
@@ -399,49 +412,44 @@ def verify_summary(
     runs = summary.get("runs")
     if not isinstance(runs, list):
         return issues + [BenchmarkIssue("summary.runs", "runs must be a list")]
-    pairs: set[tuple[str, str]] = set()
-    for run in runs:
+    for index, (run, canonical) in enumerate(
+        zip(runs, protocol.run_matrix, strict=True), start=1
+    ):
         if not isinstance(run, Mapping):
             issues.append(BenchmarkIssue("summary.runs", "run entry must be an object"))
             continue
-        arm, fixture, receipt_digest = (
+        receipt_digest = run.get("receipt_sha256")
+        actual_row = (
+            run.get("run_id"),
             run.get("arm"),
             run.get("fixture"),
-            run.get("receipt_sha256"),
+            run.get("position"),
+            run.get("order"),
         )
-        if not isinstance(arm, str) or not isinstance(fixture, str):
+        expected_row = (
+            canonical.run_id,
+            canonical.arm,
+            canonical.fixture,
+            canonical.position,
+            canonical.position,
+        )
+        if actual_row != expected_row:
             issues.append(
-                BenchmarkIssue("summary.runs", "run arm and fixture are required")
+                BenchmarkIssue(
+                    "summary.matrix",
+                    f"summary row {index} must match the canonical protocol row",
+                )
             )
-            continue
-        pairs.add((arm, fixture))
         if not isinstance(receipt_digest, str) or not _is_digest(receipt_digest):
             issues.append(
                 BenchmarkIssue("summary.digest", "receipt digest must be SHA-256")
             )
-    expected = {(run.arm, run.fixture) for run in protocol.run_matrix}
-    if len(runs) != 15 or pairs != expected:
-        issues.append(
-            BenchmarkIssue(
-                "summary.matrix", "summary must index the frozen 15-run matrix"
-            )
-        )
     _scan_public_value(summary, "$", issues)
     if digest != protocol_digest:
         issues.append(
             BenchmarkIssue(
                 "summary.protocol-digest",
                 "summary must digest canonical protocol bytes",
-            )
-        )
-    run_ids = [run.get("run_id") for run in runs if isinstance(run, Mapping)]
-    if (
-        run_ids != [run.run_id for run in protocol.run_matrix]
-        or len(set(run_ids)) != 15
-    ):
-        issues.append(
-            BenchmarkIssue(
-                "summary.run-id", "summary run IDs must match canonical rows once"
             )
         )
     receipt_digests = [
@@ -590,6 +598,9 @@ def _validate_receipt_ledger_binding(
         "status",
         "content_produced",
         "terminal",
+        "child_session",
+        "token_usage",
+        "raw_provider_output_sha256",
     )
     sessions: list[object] = []
     token_keys = (
@@ -649,36 +660,70 @@ def _validate_receipt_ledger_binding(
         for attempt in writer_lineage
         if attempt.get("status") != "technical_failure"
     ]
+    if not writers and writer_lineage and all(
+        attempt.get("status") == "technical_failure" for attempt in writer_lineage
+    ):
+        writers = [writer_lineage[-1]]
     if len(writers) != 1:
         issues.append(
             BenchmarkIssue("receipt.ledger", "run must bind exactly one effective writer")
         )
         return
     writer = writers[0]
-    if receipt.get("status") == "completed" and writer.get("status") != "completed":
+    expected_receipt_status = {
+        "completed": "completed",
+        "technical_failure": "failed",
+        "failed": "failed",
+        "timeout": "timeout",
+        "needs_operator": "needs_operator",
+        "budget_exhausted": "budget_exhausted",
+    }.get(writer.get("status"))
+    if receipt.get("status") != expected_receipt_status:
         issues.append(
             BenchmarkIssue(
-                "receipt.ledger", "completed receipt requires completed writer"
+                "receipt.ledger", "receipt status must be derived from the terminal writer"
             )
         )
+    _validate_command_evidence(receipt, observed, issues)
+    _validate_receipt_verified_delivery_timing(receipt, expected, issues)
     close = _mapping(_mapping(receipt.get("loop")).get("close"))
-    if (
-        receipt.get("arm") in {"A10", "A11"}
-        and receipt.get("status") == "completed"
-        and (
-            close.get("state") != "closed"
-            or close.get("exit_code") != 0
-            or not _is_non_placeholder_digest(close.get("review_digest"))
-            or close.get("close_digest") != writer.get("close_digest")
+    callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
+    arm = receipt.get("arm")
+    status = receipt.get("status")
+    if arm in {"P", "S", "A00"}:
+        if not _is_empty_loop_evidence(close, "not_applicable") or callbacks != []:
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.loop", "non-Loop arms cannot publish Close or expert evidence"
+                )
+            )
+        return
+    if arm == "A10" and callbacks != []:
+        issues.append(BenchmarkIssue("receipt.loop", "A10 cannot publish expert evidence"))
+    expected_loop_state = "closed" if status == "completed" else "open"
+    if close.get("state") != expected_loop_state:
+        issues.append(
+            BenchmarkIssue("receipt.close", "Loop state does not match the run terminal state")
         )
+    if status == "completed" and (
+        close.get("exit_code") != 0
+        or not _is_loop_argv(close.get("argv"), "close")
+        or not _is_non_placeholder_digest(close.get("review_digest"))
+        or close.get("close_digest") != writer.get("close_digest")
     ):
         issues.append(
             BenchmarkIssue(
                 "receipt.close", "Loop Close must match the writer ledger event"
             )
         )
-    if receipt.get("arm") == "A11" and receipt.get("status") == "completed":
+    if status != "completed" and not _is_empty_loop_evidence(close, "open"):
+        issues.append(
+            BenchmarkIssue("receipt.close", "an unclosed Loop cannot carry Close evidence")
+        )
+    if arm == "A11" and status == "completed":
         _validate_a11_receipt_evidence(receipt, expected, writer, issues)
+    elif arm == "A11" and status == "needs_operator":
+        _validate_a11_conflict_evidence(receipt, expected, issues)
 
 
 def _validate_a11_receipt_evidence(
@@ -713,9 +758,9 @@ def _validate_a11_receipt_evidence(
         )
         return
     close = _mapping(loop.get("close"))
-    close_command = close.get("command")
-    if not isinstance(close_command, str) or not all(
-        marker in close_command for marker in ("loop close", "--expect-review-digest")
+    close_argv = close.get("argv")
+    if not _is_loop_argv(close_argv, "close") or not _argv_has_options(
+        close_argv, "--expect-review-digest"
     ):
         issues.append(
             BenchmarkIssue(
@@ -769,6 +814,8 @@ def _validate_a11_receipt_evidence(
             or callback.get("candidate_digest") != expert.get("candidate_digest")
             or not isinstance(expert_receipt, Mapping)
             or callback.get("child_session") != expert_receipt.get("child_session")
+            or callback.get("raw_output_sha256")
+            != expert_receipt.get("raw_provider_output_sha256")
         ):
             issues.append(
                 BenchmarkIssue(
@@ -776,10 +823,9 @@ def _validate_a11_receipt_evidence(
                     f"{role} callback does not bind the completed expert",
                 )
             )
-        review_command = callback.get("review_command")
-        if not isinstance(review_command, str) or not all(
-            marker in review_command
-            for marker in ("loop review", "--expect-digest", "--read-path")
+        review_argv = callback.get("review_argv")
+        if not _is_loop_argv(review_argv, "review") or not _argv_has_options(
+            review_argv, "--expect-digest", "--read-path"
         ):
             issues.append(
                 BenchmarkIssue(
@@ -833,14 +879,16 @@ def _validate_a11_receipt_evidence(
         ledger_finding = expert.get("finding_digest")
         if finding_count == 0:
             if ledger_finding is not None or any(
-                key in callback
+                callback.get(key) is not None
                 for key in (
                     "finding_digest",
                     "repair_digest",
                     "repaired_candidate_digest",
                     "rereview_attempt_id",
                     "rereview_digest",
-                    "rereview_command",
+                    "rereview_argv",
+                    "rereview_exit_code",
+                    "rereview_raw_output_sha256",
                 )
             ):
                 issues.append(
@@ -856,7 +904,7 @@ def _validate_a11_receipt_evidence(
             "repaired_candidate_digest",
             "rereview_attempt_id",
             "rereview_digest",
-            "rereview_command",
+            "rereview_argv",
             "rereview_exit_code",
             "rereview_raw_output_sha256",
         }
@@ -888,10 +936,14 @@ def _validate_a11_receipt_evidence(
             ),
             None,
         )
-        rereview_command = callback.get("rereview_command")
-        if not isinstance(rereview_command, str) or not all(
-            marker in rereview_command
-            for marker in ("loop review", "--expect-digest", "--read-path")
+        rereview_receipt = (
+            provider_attempts.get(rereview.get("attempt_id"))
+            if isinstance(rereview, Mapping)
+            else None
+        )
+        rereview_argv = callback.get("rereview_argv")
+        if not _is_loop_argv(rereview_argv, "review") or not _argv_has_options(
+            rereview_argv, "--expect-digest", "--read-path"
         ):
             issues.append(
                 BenchmarkIssue(
@@ -917,6 +969,9 @@ def _validate_a11_receipt_evidence(
             or rereview.get("candidate_digest")
             != callback.get("repaired_candidate_digest")
             or callback.get("rereview_digest") != rereview.get("candidate_digest")
+            or not isinstance(rereview_receipt, Mapping)
+            or callback.get("rereview_raw_output_sha256")
+            != rereview_receipt.get("raw_provider_output_sha256")
             or not (
                 expert.get("sequence")
                 < repair.get("sequence")
@@ -930,6 +985,263 @@ def _validate_a11_receipt_evidence(
                     f"{role} writer/Finding/repair/rereview/Close order is invalid",
                 )
             )
+
+
+def _validate_command_evidence(
+    receipt: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    issues: list[BenchmarkIssue],
+) -> None:
+    evidence = receipt.get("command_evidence")
+    if not isinstance(evidence, list):
+        issues.append(BenchmarkIssue("receipt.command", "command evidence is missing"))
+        return
+    attempts_by_id = {item.get("attempt_id"): item for item in attempts}
+    seen: set[object] = set()
+    for item in evidence:
+        if not isinstance(item, Mapping):
+            issues.append(
+                BenchmarkIssue("receipt.command", "command evidence must be an object")
+            )
+            continue
+        attempt_id = item.get("attempt_id")
+        attempt = attempts_by_id.get(attempt_id)
+        if attempt is None or attempt_id in seen:
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.command",
+                    "command evidence attempt binding is missing or duplicated",
+                )
+            )
+            continue
+        seen.add(attempt_id)
+        argv = item.get("argv")
+        if (
+            not isinstance(argv, list)
+            or len(argv) < 2
+            or any(not isinstance(argument, str) or not argument for argument in argv)
+        ):
+            issues.append(
+                BenchmarkIssue("receipt.command", "command argv is not closed")
+            )
+        raw_digest = item.get("raw_provider_output_sha256")
+        if (
+            raw_digest != attempt.get("raw_provider_output_sha256")
+            or not _is_non_placeholder_digest(raw_digest)
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.command",
+                    "command raw output digest does not bind its Provider attempt",
+                )
+            )
+        if any(
+            not _is_non_placeholder_digest(item.get(key))
+            for key in ("stdout_sha256", "stderr_sha256")
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.command", "command stdout/stderr digests are placeholders"
+                )
+            )
+        if item.get("evidence_id") != _command_evidence_id(item):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.command", "command evidence ID does not bind its record"
+                )
+            )
+    if seen != set(attempts_by_id):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.command",
+                "command evidence must close over every Provider attempt exactly once",
+            )
+        )
+
+
+def _command_evidence_id(value: Mapping[str, object]) -> str:
+    bound = {
+        key: value.get(key)
+        for key in (
+            "attempt_id",
+            "argv",
+            "exit_code",
+            "stdout_sha256",
+            "stderr_sha256",
+            "raw_provider_output_sha256",
+        )
+    }
+    canonical = json.dumps(
+        bound, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    return sha256(canonical).hexdigest()
+
+
+def _is_loop_argv(value: object, action: str) -> bool:
+    if not isinstance(value, list) or any(
+        not isinstance(argument, str) or not argument for argument in value
+    ):
+        return False
+    prefixes = (
+        ["ai-sdlc", "loop", action],
+        ["python", "-m", "ai_sdlc", "loop", action],
+        ["uv", "run", "ai-sdlc", "loop", action],
+    )
+    return any(value[: len(prefix)] == prefix for prefix in prefixes)
+
+
+def _argv_has_options(value: object, *options: str) -> bool:
+    return isinstance(value, list) and all(option in value for option in options)
+
+
+def _is_empty_loop_evidence(close: Mapping[str, object], state: str) -> bool:
+    return close.get("state") == state and all(
+        close.get(key) is None
+        for key in ("argv", "exit_code", "review_digest", "close_digest")
+    )
+
+
+def _validate_a11_conflict_evidence(
+    receipt: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    issues: list[BenchmarkIssue],
+) -> None:
+    callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
+    if not isinstance(callbacks, list) or len(callbacks) < 2:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.conflict",
+                "needs_operator requires at least two conflicting expert callbacks",
+            )
+        )
+        return
+    providers = {
+        item.get("attempt_id"): item
+        for item in receipt.get("provider_attempts", [])
+        if isinstance(item, Mapping)
+    }
+    experts = {
+        item.get("attempt_id"): item
+        for item in attempts
+        if item.get("effective_kind") in {"primary_expert", "cross_risk_expert"}
+        and item.get("status") == "completed"
+    }
+    callback_ids = {
+        item.get("expert_attempt_id")
+        for item in callbacks
+        if isinstance(item, Mapping)
+    }
+    if callback_ids != set(experts):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.conflict",
+                "conflict callbacks must bind every completed first-review expert",
+            )
+        )
+    for callback in callbacks:
+        if not isinstance(callback, Mapping):
+            issues.append(
+                BenchmarkIssue("receipt.a11.conflict", "conflict callback is malformed")
+            )
+            continue
+        expert = experts.get(callback.get("expert_attempt_id"))
+        provider = providers.get(callback.get("expert_attempt_id"))
+        reason = callback.get("reason")
+        proof_keys = (
+            "finding_digest",
+            "snapshot_sha256",
+            "input_sha256",
+            "raw_output_sha256",
+            "parent_tree_before_sha256",
+            "parent_tree_after_sha256",
+        )
+        if (
+            callback.get("status") != "conflict"
+            or not isinstance(reason, str)
+            or reason.strip().lower()
+            in {"", "tbd", "todo", "placeholder", "unknown", "not_applicable"}
+            or not isinstance(expert, Mapping)
+            or not isinstance(provider, Mapping)
+            or callback.get("role") != expert.get("role")
+            or callback.get("child_session") != provider.get("child_session")
+            or callback.get("parent_digest") != expert.get("parent_digest")
+            or callback.get("candidate_digest") != expert.get("candidate_digest")
+            or callback.get("finding_digest") != expert.get("finding_digest")
+            or callback.get("raw_output_sha256")
+            != provider.get("raw_provider_output_sha256")
+            or not _is_loop_argv(callback.get("review_argv"), "review")
+            or not _argv_has_options(
+                callback.get("review_argv"), "--expect-digest", "--read-path"
+            )
+            or callback.get("review_exit_code") != 0
+            or any(
+                not _is_non_placeholder_digest(callback.get(key))
+                for key in proof_keys
+            )
+            or callback.get("parent_tree_before_sha256")
+            != callback.get("parent_tree_after_sha256")
+            or not _non_bool_int(callback.get("finding_count"))
+            or callback.get("finding_count", 0) < 1
+            or not _non_bool_int(callback.get("severe_finding_count"))
+            or callback.get("severe_finding_count", 0)
+            > callback.get("finding_count", 0)
+            or any(
+                callback.get(key) is not None
+                for key in (
+                    "repair_digest",
+                    "repaired_candidate_digest",
+                    "rereview_attempt_id",
+                    "rereview_digest",
+                    "rereview_argv",
+                    "rereview_exit_code",
+                    "rereview_raw_output_sha256",
+                )
+            )
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.a11.conflict",
+                    "needs_operator callback lacks real immutable conflict evidence",
+                )
+            )
+
+
+def _validate_receipt_verified_delivery_timing(
+    receipt: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    issues: list[BenchmarkIssue],
+) -> None:
+    reservations = []
+    for attempt in attempts:
+        history = attempt.get("history")
+        if isinstance(history, list) and history and isinstance(history[0], Mapping):
+            reserved_at = _parse_rfc3339(history[0].get("recorded_at"))
+            if reserved_at is not None:
+                reservations.append(reserved_at)
+    completed_at = _parse_rfc3339(
+        _mapping(receipt.get("external_evaluator")).get("completed_at")
+    )
+    if not reservations or completed_at is None or completed_at < min(reservations):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.timing",
+                "verified delivery timestamps do not bind reservation to evaluator",
+            )
+        )
+        return
+    expected = (completed_at - min(reservations)).total_seconds()
+    actual = _mapping(receipt.get("timings")).get(
+        "verified_delivery_wall_seconds"
+    )
+    if not _finite_number(actual) or not math.isclose(
+        actual, expected, rel_tol=0, abs_tol=1e-6
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.timing",
+                "verified delivery timing must equal first reservation to evaluator",
+            )
+        )
 
 
 def _validate_summary_metrics(
@@ -1192,6 +1504,10 @@ def _new_attempt(
         "repair_digest": repair_digest,
         "close_digest": None,
         "terminal": False,
+        "recorded_at": _now_rfc3339(),
+        "child_session": None,
+        "token_usage": None,
+        "raw_provider_output_sha256": None,
     }
     return {
         "attempt_id": attempt_id,
@@ -1212,6 +1528,10 @@ def _new_attempt(
         "status": "reserved",
         "content_produced": False,
         "terminal": False,
+        "recorded_at": reserved["recorded_at"],
+        "child_session": None,
+        "token_usage": None,
+        "raw_provider_output_sha256": None,
         "history": [reserved],
     }
 
@@ -1301,6 +1621,10 @@ def _validate_event(
         event["terminal"], bool
     ):
         raise ValueError("attempt ledger attempt event has invalid state flags")
+    recorded_at = _parse_rfc3339(event.get("recorded_at"))
+    if recorded_at is None:
+        raise ValueError("attempt ledger attempt event has invalid recorded_at")
+    _validate_completion_evidence(event)
     for key in (
         "candidate_digest",
         "finding_digest",
@@ -1317,10 +1641,16 @@ def _validate_event(
             or event["content_produced"]
             or event["terminal"]
             or event["close_digest"] is not None
+            or event["child_session"] is not None
+            or event["token_usage"] is not None
+            or event["raw_provider_output_sha256"] is not None
         ):
             raise ValueError("attempt ledger attempt must begin reserved")
         return
     previous_status = previous["status"]
+    previous_at = _parse_rfc3339(previous.get("recorded_at"))
+    if previous_at is None or recorded_at < previous_at:
+        raise ValueError("attempt ledger attempt event time is invalid")
     if sequence <= previous["sequence"]:
         raise ValueError("attempt ledger attempt event sequence is invalid")
     allowed = _TRANSITIONS.get(kind, {}).get(previous_status, set())
@@ -2127,6 +2457,12 @@ def _apply_attempt_transition(
         if completion.close_digest is not None
         else attempt["close_digest"],
         "terminal": completion.status in _TERMINAL_STATUSES,
+        "recorded_at": _now_rfc3339(),
+        "child_session": completion.child_session,
+        "token_usage": dict(completion.token_usage)
+        if completion.token_usage is not None
+        else None,
+        "raw_provider_output_sha256": completion.raw_provider_output_sha256,
     }
     history = attempt["history"]
     if not isinstance(history, list) or not history:
@@ -2480,6 +2816,67 @@ def _non_bool_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
+def _now_rfc3339() -> str:
+    return datetime.now(UTC).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+
+def _parse_rfc3339(value: object) -> datetime | None:
+    if not isinstance(value, str) or re.fullmatch(
+        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+        value,
+    ) is None:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(UTC)
+
+
+def _validate_token_usage_object(value: object, *, allow_all_zero: bool) -> None:
+    required = {
+        "input_tokens",
+        "cached_input_tokens",
+        "output_tokens",
+        "reasoning_output_tokens",
+    }
+    if not isinstance(value, Mapping) or set(value) != required or any(
+        not _non_bool_int(value.get(key)) or value[key] < 0 for key in required
+    ):
+        raise ValueError("Provider completion token usage is invalid")
+    if not allow_all_zero and sum(value.values()) == 0:
+        raise ValueError("content-producing Provider completion has zero token usage")
+
+
+def _validate_completion_evidence(event: Mapping[str, object]) -> None:
+    if event.get("terminal") is not True:
+        if any(
+            event.get(key) is not None
+            for key in (
+                "child_session",
+                "token_usage",
+                "raw_provider_output_sha256",
+            )
+        ):
+            raise ValueError("non-terminal event cannot carry completion evidence")
+        return
+    session = event.get("child_session")
+    if not isinstance(session, str) or session.strip().lower() in {
+        "",
+        "placeholder",
+        "unknown",
+        "tbd",
+    }:
+        raise ValueError("Provider completion child session is invalid")
+    _validate_token_usage_object(
+        event.get("token_usage"), allow_all_zero=event.get("content_produced") is False
+    )
+    if not _is_non_placeholder_digest(event.get("raw_provider_output_sha256")):
+        raise ValueError("Provider completion raw output digest is invalid")
+
+
 def _finite_number(value: object) -> bool:
     return (
         isinstance(value, (int, float))
@@ -2560,18 +2957,22 @@ def _scan_public_value(value: object, path: str, issues: list[BenchmarkIssue]) -
                     "receipt.absolute-path", f"{path} contains an absolute path"
                 )
             )
-        if _SECRET_VALUE.search(value):
+        normalized = re.sub(
+            r"(['\"])REDACTED\1", "REDACTED", value, flags=re.IGNORECASE
+        )
+        if _SECRET_VALUE.search(normalized):
             issues.append(
                 BenchmarkIssue("receipt.secret", f"{path} contains a secret-like value")
             )
 
 
 def _is_private_path(value: str) -> bool:
-    return bool(_PRIVATE_PATH.search(value))
+    return bool(_PRIVATE_PATH.search(_HTTP_URI.sub("", value)))
 
 
 def _validate_receipt_timing(value: object, issues: list[BenchmarkIssue]) -> None:
-    timings = _mapping(value)
+    receipt = _mapping(value)
+    timings = _mapping(receipt.get("timings"))
     components = (
         "setup_wall_seconds",
         "framework_init_wall_seconds",
@@ -2580,7 +2981,7 @@ def _validate_receipt_timing(value: object, issues: list[BenchmarkIssue]) -> Non
         "review_wall_seconds",
         "evaluation_wall_seconds",
     )
-    if any(not isinstance(timings.get(name), (int, float)) for name in components):
+    if any(not _finite_number(timings.get(name)) for name in components):
         issues.append(
             BenchmarkIssue(
                 "receipt.timing", "all additive timing components are required"
@@ -2588,10 +2989,37 @@ def _validate_receipt_timing(value: object, issues: list[BenchmarkIssue]) -> Non
         )
         return
     total = sum(timings[name] for name in components)
-    if timings.get("end_to_end_wall_seconds") != total:
+    end_to_end = timings.get("end_to_end_wall_seconds")
+    timestamps = _mapping(receipt.get("timestamps"))
+    started_at = _parse_rfc3339(timestamps.get("started_at"))
+    ended_at = _parse_rfc3339(timestamps.get("ended_at"))
+    evaluator_at = _parse_rfc3339(
+        _mapping(receipt.get("external_evaluator")).get("completed_at")
+    )
+    if (
+        started_at is None
+        or ended_at is None
+        or evaluator_at is None
+        or ended_at < started_at
+        or evaluator_at != ended_at
+    ):
         issues.append(
             BenchmarkIssue(
-                "receipt.timing", "end-to-end timing must equal additive components"
+                "receipt.timing",
+                "start/end/evaluator timestamps must be ordered and bound",
+            )
+        )
+        return
+    elapsed = (ended_at - started_at).total_seconds()
+    if (
+        not _finite_number(end_to_end)
+        or not math.isclose(end_to_end, total, rel_tol=0, abs_tol=1e-6)
+        or not math.isclose(end_to_end, elapsed, rel_tol=0, abs_tol=1e-6)
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.timing",
+                "end-to-end timing must equal timestamps and additive components",
             )
         )
 

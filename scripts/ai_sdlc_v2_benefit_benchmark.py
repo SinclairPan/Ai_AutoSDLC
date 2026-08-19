@@ -59,6 +59,12 @@ def main() -> int:
     complete.add_argument("--finding-digest")
     complete.add_argument("--repair-digest")
     complete.add_argument("--close-digest")
+    complete.add_argument("--child-session")
+    complete.add_argument("--input-tokens", type=int)
+    complete.add_argument("--cached-input-tokens", type=int)
+    complete.add_argument("--output-tokens", type=int)
+    complete.add_argument("--reasoning-output-tokens", type=int)
+    complete.add_argument("--raw-provider-output-sha256")
     receipt = commands.add_parser("verify-receipt")
     receipt.add_argument("--receipt", type=Path, required=True)
     receipt.add_argument("--protocol", type=Path, required=True)
@@ -99,6 +105,13 @@ def main() -> int:
             )
             return 0
         if arguments.command == "complete-attempt":
+            token_values = {
+                "input_tokens": arguments.input_tokens,
+                "cached_input_tokens": arguments.cached_input_tokens,
+                "output_tokens": arguments.output_tokens,
+                "reasoning_output_tokens": arguments.reasoning_output_tokens,
+            }
+            token_usage = None if all(value is None for value in token_values.values()) else token_values
             record_provider_completion(
                 arguments.ledger,
                 load_protocol(arguments.protocol),
@@ -110,6 +123,9 @@ def main() -> int:
                     finding_digest=arguments.finding_digest,
                     repair_digest=arguments.repair_digest,
                     close_digest=arguments.close_digest,
+                    child_session=arguments.child_session,
+                    token_usage=token_usage,
+                    raw_provider_output_sha256=arguments.raw_provider_output_sha256,
                 ),
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})

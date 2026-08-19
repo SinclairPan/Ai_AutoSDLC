@@ -51,6 +51,32 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
     assert reserved.returncode == 0, reserved.stderr
     assert json.loads(reserved.stdout)["attempt_id"] == "attempt-001"
 
+    checkpointed = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(script),
+            "complete-attempt",
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol),
+            "--attempt-id",
+            "attempt-001",
+            "--status",
+            "candidate_ready",
+            "--content-produced",
+            "--candidate-digest",
+            "b" * 64,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert checkpointed.returncode == 0, checkpointed.stderr
+
     completed = subprocess.run(
         [
             "uv",
@@ -66,6 +92,18 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             "attempt-001",
             "--status",
             "failed",
+            "--child-session",
+            "session-attempt-001",
+            "--input-tokens",
+            "0",
+            "--cached-input-tokens",
+            "0",
+            "--output-tokens",
+            "0",
+            "--reasoning-output-tokens",
+            "0",
+            "--raw-provider-output-sha256",
+            "9" * 64,
         ],
         cwd=REPO_ROOT,
         check=False,
