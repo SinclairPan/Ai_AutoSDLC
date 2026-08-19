@@ -16,7 +16,7 @@
     {
       "fixture_id": "frontend-recovery-delivery",
       "public_root": "frontend-recovery-delivery/public",
-      "public_tree_sha256": "8038e0940566bb3b75e4595c49d7a610fc311a57ca2030e9560dd78e924d3bc4",
+      "public_tree_sha256": "1c49f9ad3f47c65d0dbb27ed1002907ae60c234e9b2f75a84ecc972a542a4fcf",
       "input_contract_sha256": "b0c1c48355d3794d7175b553e356928c583740266539c7300447324c06bb37b7",
       "provenance_commit": "9f430becd28d4dd6402e0f22b0c9bbed81c19b13",
       "provenance_paths": ["fixtures/competition/topic1-release-risk-workbench/business-request.md", "fixtures/competition/topic1-release-risk-workbench/project"],
@@ -37,6 +37,6 @@
       ]
     }
   ],
-  "canonical_sha256": "9a2c106ae3ec258f4d1fa98fe86c2509838a817168e5b3e8ac49ac8abe3ce718",
-  "evidence_contract_template_sha256": "bc61562698649ab8df533f9d196c6357d09352416bc4f4cb96a75e2eb7d87519"
+  "canonical_sha256": "96c67f8be165b52b7471fa9955c36ecc62efe29361d8b4c0d2ba56cfa58d02e1",
+  "evidence_contract_template_sha256": "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c"
 }

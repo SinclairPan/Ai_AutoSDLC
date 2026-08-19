@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+import ai_sdlc.benefit_benchmark_fixtures as fixture_module
 from ai_sdlc.benefit_benchmark import _load_evidence_contract, load_protocol
 from ai_sdlc.benefit_benchmark_fixtures import (
     FIXTURE_IDS,
@@ -20,8 +21,10 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     normalized_semantic_view,
     prepare_fixture,
     probe_provider_isolation,
+    run_frontend_browser_e2e,
     scan_candidate_for_sealed_leak,
     validate_fixture_manifest,
+    validate_frontend_runtime,
     validate_sealed_commitments,
 )
 
@@ -84,10 +87,25 @@ def _write_sealed_test_root(root: Path) -> Path:
         entries.append(
             {"fixture_id": fixture_id, "path": filename, "sha256": sha256(data).hexdigest()}
         )
+    intent_map = {
+        "schema": "ai-sdlc-v2-benefit-intent-map/v2",
+        "questions": {
+            "contract.boundary": {"answer": "opaque-answer", "delay_ms": 0}
+        },
+        "approvals": ["design-contract", "frontend-solution"],
+    }
+    intent_bytes = json.dumps(
+        intent_map, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode()
+    (root / "intent-map.json").write_bytes(intent_bytes)
     manifest = {
-        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v1",
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v2",
         "lock_id": "unit-test-only",
         "entries": entries,
+        "intent_map": {
+            "path": "intent-map.json",
+            "sha256": sha256(intent_bytes).hexdigest(),
+        },
     }
     manifest_bytes = json.dumps(
         manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -178,11 +196,13 @@ def test_task2_red_baseline_fails_sealed_criterion_deterministically(
     tmp_path: Path, fixture_id: str
 ) -> None:
     sealed = _write_sealed_test_root(tmp_path / "sealed")
-    prepared = prepare_fixture(fixture_id, tmp_path / fixture_id)
+    first_prepared = prepare_fixture(fixture_id, tmp_path / "first" / fixture_id)
+    second_prepared = prepare_fixture(fixture_id, tmp_path / "second" / fixture_id)
 
-    first = evaluate_fixture(fixture_id, prepared.root, sealed)
-    second = evaluate_fixture(fixture_id, prepared.root, sealed)
+    first = evaluate_fixture(fixture_id, first_prepared.root, sealed)
+    second = evaluate_fixture(fixture_id, second_prepared.root, sealed)
 
+    assert first_prepared.visible_results == second_prepared.visible_results
     assert first == second
     assert first.external_verified_delivery is False
     assert first.failed_criteria
@@ -209,7 +229,7 @@ def test_task2_red_canonical_pre_state_is_method_neutral_semantic_parity(
         assert state["canonical_pre_state"] == ["requirement", "design-contract"]
 
 
-def test_task2_red_frontend_target_is_identical_and_confirmation_pending(
+def test_task2_red_frontend_target_is_treatment_neutral(
     tmp_path: Path,
 ) -> None:
     prepared = prepare_fixture("frontend-recovery-delivery", tmp_path / "frontend")
@@ -220,26 +240,14 @@ def test_task2_red_frontend_target_is_identical_and_confirmation_pending(
         (prepared.root / "benchmark-task" / "input-contract.json").read_text()
     )
 
-    assert manifest["arm_confirmation_state"] == {
-        "P": "not_applicable",
-        "S": "not_applicable",
-        "A00": "pending",
-        "A10": "pending",
-        "A11": "pending",
-    }
     assert manifest["solution_target"] == input_contract["solution_target"]
     assert manifest["solution_target"] == {
         "frontend_stack": "vue3",
         "provider_id": "public-primevue",
         "style_pack_id": "modern-saas",
     }
-    assert manifest["applies_to_arms"] == list(FIXTURE_IDS[:0]) + [
-        "P",
-        "S",
-        "A00",
-        "A10",
-        "A11",
-    ]
+    assert "applies_to_arms" not in manifest
+    assert "arm_confirmation_state" not in manifest
 
 
 def test_task2_red_intent_and_approval_service_is_deterministic_and_automated(
@@ -288,7 +296,7 @@ def test_task2_red_commitment_pair_verifies_without_exposing_root(tmp_path: Path
         (FIXTURE_ROOT / "evidence-contract.template.json").read_bytes()
     ).hexdigest()
     commitments = {
-        "schema": "ai-sdlc-v2-benefit-sealed-commitments/v1",
+        "schema": "ai-sdlc-v2-benefit-sealed-commitments/v2",
         "lock_id": "unit-test-only",
         "sealed_manifest_sha256": sha256(
             (sealed / "sealed-manifest.json").read_bytes()
@@ -301,6 +309,7 @@ def test_task2_red_commitment_pair_verifies_without_exposing_root(tmp_path: Path
             {"fixture_id": item["fixture_id"], "sha256": item["sha256"]}
             for item in sealed_manifest["entries"]
         ],
+        "intent_map_sha256": sealed_manifest["intent_map"]["sha256"],
         "publication_state": "sealed-outside-provider-root",
     }
     path = tmp_path / "sealed-commitments.json"
@@ -344,8 +353,10 @@ def test_task2_red_isolation_rejects_links_env_other_run_and_add_dir(
     sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
     run = tmp_path / "runs" / "run-1"
     other_run = tmp_path / "runs" / "run-2"
+    raw = tmp_path / "raw-results"
     run.mkdir(parents=True)
     other_run.mkdir(parents=True)
+    raw.mkdir()
     source = next(path for path in sealed.iterdir() if path.suffix == ".json")
     os.symlink(source, run / "sealed-link.json")
     os.link(source, run / "sealed-hardlink.json")
@@ -356,6 +367,7 @@ def test_task2_red_isolation_rejects_links_env_other_run_and_add_dir(
         other_run_roots=[other_run],
         argv=["codex", "exec", "--add-dir", str(sealed)],
         environment={"PATH": os.environ.get("PATH", ""), "SEALED_ROOT": str(sealed)},
+        raw_results_root=raw,
     )
 
     assert {issue.code for issue in profile.issues} >= {
@@ -374,9 +386,11 @@ def test_task2_red_exact_provider_profile_denies_all_canary_shapes(tmp_path: Pat
     run = tmp_path / "runs" / "run-1"
     other_run = tmp_path / "runs" / "run-2"
     control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
     run.mkdir(parents=True)
     other_run.mkdir(parents=True)
     control.mkdir()
+    raw.mkdir()
     profile = build_provider_isolation_profile(
         run_root=run,
         sealed_root=sealed,
@@ -384,6 +398,7 @@ def test_task2_red_exact_provider_profile_denies_all_canary_shapes(tmp_path: Pat
         other_run_roots=[other_run],
         argv=["/usr/bin/true"],
         environment={"PATH": os.environ.get("PATH", "")},
+        raw_results_root=raw,
     )
 
     try:
@@ -399,6 +414,8 @@ def test_task2_red_exact_provider_profile_denies_all_canary_shapes(tmp_path: Pat
     assert result.environment is True
     assert result.other_run is True
     assert result.add_dir is True
+    assert result.protected_root_results
+    assert all(denied for _, denied in result.protected_root_results)
 
 
 def test_task2_red_tracked_public_tree_contains_no_sealed_plaintext() -> None:
@@ -435,3 +452,471 @@ def test_task2_red_public_fixtures_remove_old_method_leakage() -> None:
         "operator-decision",
     ):
         assert forbidden.lower() not in public_text
+
+
+def test_fix_round1_requirement_placeholder_cannot_receive_credit(tmp_path: Path) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "sealed")
+    payload_path = sealed / "requirement-contract-ambiguity.sealed.json"
+    payload = {
+        "schema": "ai-sdlc-v2-benefit-sealed-evaluator/v2",
+        "fixture_id": "requirement-contract-ambiguity",
+        "criteria": [
+            {
+                "id": "r-literal",
+                "weight": 1,
+                "severity": "blocker",
+                "kind": "json_literal",
+                "path": ["decisions", "version_binding"],
+                "expected": "required",
+            },
+            {
+                "id": "r-subset",
+                "weight": 1,
+                "severity": "important",
+                "kind": "json_set_contains",
+                "path": ["state_machine", "terminal_states"],
+                "expected": ["approved", "rejected", "withdrawn"],
+            },
+            {
+                "id": "r-relation",
+                "weight": 1,
+                "severity": "important",
+                "kind": "json_relation",
+                "path": ["failure_policy"],
+                "relation": "committed_fact_survives_notification_failure",
+            },
+            {
+                "id": "r-command",
+                "weight": 1,
+                "severity": "important",
+                "kind": "verification_command",
+                "path": ["verification", "commands"],
+                "expected": ["python -m unittest -q"],
+            },
+            {
+                "id": "r-enum",
+                "weight": 1,
+                "severity": "important",
+                "kind": "json_enum",
+                "path": ["open_questions", "status"],
+                "allowed": ["none", "blocked"],
+            },
+            {
+                "id": "r-contradiction",
+                "weight": 1,
+                "severity": "important",
+                "kind": "json_no_contradiction",
+                "path": [],
+                "forbidden": ["wrong-but-nonempty"],
+            },
+        ],
+    }
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload_path.write_bytes(data)
+    manifest_path = sealed / "sealed-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    entry = next(
+        item
+        for item in manifest["entries"]
+        if item["fixture_id"] == "requirement-contract-ambiguity"
+    )
+    entry["sha256"] = sha256(data).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    candidate = tmp_path / "candidate"
+    (candidate / "benchmark-task").mkdir(parents=True)
+    (candidate / "benchmark-task" / "design-contract.json").write_text(
+        json.dumps(
+            {
+                "decisions": {"version_binding": "wrong-but-nonempty"},
+                "state_machine": {"terminal_states": ["approved"]},
+                "failure_policy": {"description": "nonempty"},
+                "verification": {"commands": ["echo ok"]},
+                "open_questions": {"status": "guessed"},
+            }
+        )
+    )
+
+    result = evaluate_fixture("requirement-contract-ambiguity", candidate, sealed)
+
+    assert result.external_verified_delivery is False
+    assert result.weighted_ac_coverage == 0
+    assert set(result.failed_criteria) == {
+        "r-literal",
+        "r-subset",
+        "r-relation",
+        "r-command",
+        "r-enum",
+        "r-contradiction",
+    }
+    payload["implementation_hint"] = "must be rejected"
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload_path.write_bytes(data)
+    entry["sha256"] = sha256(data).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    with pytest.raises(ValueError, match="closed"):
+        evaluate_fixture("requirement-contract-ambiguity", candidate, sealed)
+
+
+def test_fix_round1_materialized_intent_map_is_independent_and_roundtrips(
+    tmp_path: Path,
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "sealed")
+    intent_map = {
+        "schema": "ai-sdlc-v2-benefit-intent-map/v2",
+        "questions": {
+            "release.emergency-authority": {
+                "answer": {"authority": "service_owner", "second_approval": True},
+                "delay_ms": 0,
+            }
+        },
+        "approvals": ["design-contract"],
+    }
+    intent_bytes = json.dumps(intent_map, sort_keys=True, separators=(",", ":")).encode()
+    (sealed / "intent-map.json").write_bytes(intent_bytes)
+    manifest = json.loads((sealed / "sealed-manifest.json").read_text())
+    manifest["intent_map"] = {
+        "path": "intent-map.json",
+        "sha256": sha256(intent_bytes).hexdigest(),
+    }
+    (sealed / "sealed-manifest.json").write_text(
+        json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    )
+
+    service = FrozenIntentApprovalService.from_sealed_root(sealed, tmp_path / "events.jsonl")
+
+    assert service.answer("run-1", "release.emergency-authority") == {
+        "status": "answered",
+        "answer": {"authority": "service_owner", "second_approval": True},
+    }
+    assert "intent-map.json" not in (
+        FIXTURE_ROOT / "sealed-commitments.json"
+    ).read_text(encoding="utf-8")
+
+
+def test_fix_round1_security_oracle_reports_finding_confusion_metrics(tmp_path: Path) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    payload_path = sealed / "multi-tenant-security-review.sealed.json"
+    scenarios = [
+        ("tenant", {"actor_id": "a", "actor_tenant": "b", "roles": ["admin"], "request_id": "r", "request_tenant": "a", "requester_id": "u", "expires_at": "2030-01-01T00:00:00+00:00", "now": "2029-01-01T00:00:00+00:00"}),
+        ("self_approval", {"actor_id": "u", "actor_tenant": "a", "roles": ["approver"], "request_id": "r", "request_tenant": "a", "requester_id": "u", "expires_at": "2030-01-01T00:00:00+00:00", "now": "2029-01-01T00:00:00+00:00"}),
+        ("nonpending", {"actor_id": "a", "actor_tenant": "a", "roles": ["approver"], "request_id": "r", "request_tenant": "a", "requester_id": "u", "expires_at": "2030-01-01T00:00:00+00:00", "now": "2029-01-01T00:00:00+00:00", "status": "approved"}),
+        ("unknown_role", {"actor_id": "a", "actor_tenant": "a", "roles": ["operator"], "request_id": "r", "request_tenant": "a", "requester_id": "u", "expires_at": "2030-01-01T00:00:00+00:00", "now": "2029-01-01T00:00:00+00:00"}),
+        ("unknown_action", {"actor_id": "a", "actor_tenant": "a", "roles": ["approver"], "request_id": "r", "request_tenant": "a", "requester_id": "u", "expires_at": "2030-01-01T00:00:00+00:00", "now": "2029-01-01T00:00:00+00:00", "action": "escalate"}),
+        ("audit_failure", {"actor_id": "a", "actor_tenant": "a", "roles": ["approver"], "request_id": "r", "request_tenant": "a", "requester_id": "u", "expires_at": "2030-01-01T00:00:00+00:00", "now": "2029-01-01T00:00:00+00:00", "audit_mode": "failing"}),
+    ]
+    payload = {
+        "schema": "ai-sdlc-v2-benefit-sealed-evaluator/v2",
+        "fixture_id": "multi-tenant-security-review",
+        "criteria": [
+            {"id": root, "weight": 1, "severity": "blocker", "kind": "security_oracle", "path": "benchmark-task/access_control.py", "root_cause": root, "scenario": scenario, "expected": {"allowed": False, "status": "pending"}}
+            for root, scenario in scenarios
+        ],
+        "root_causes": [root for root, _ in scenarios],
+        "held_out_variant_classes": ["tenant", "time", "action", "audit"],
+    }
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload_path.write_bytes(data)
+    manifest_path = sealed / "sealed-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    next(item for item in manifest["entries"] if item["fixture_id"] == "multi-tenant-security-review")["sha256"] = sha256(data).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    prepared = prepare_fixture("multi-tenant-security-review", tmp_path / "candidate")
+    (prepared.root / "benchmark-task" / "findings.json").write_text(
+        json.dumps({"findings": [{"root_cause": "tenant"}, {"root_cause": "unknown-role"}]})
+    )
+
+    try:
+        result = evaluate_fixture("multi-tenant-security-review", prepared.root, sealed)
+    except RuntimeError as error:
+        if "sandbox_apply: Operation not permitted" in str(error):
+            pytest.skip("nested Seatbelt is unavailable inside the test sandbox")
+        raise
+
+    assert result.root_cause_count == 6
+    assert result.finding_true_positive_count == 1
+    assert result.finding_false_positive_count == 1
+    assert result.finding_false_negative_count == 5
+    assert result.finding_precision == 0.5
+    assert result.finding_recall == pytest.approx(1 / 6)
+    assert result.severe_finding_miss_count == 5
+
+
+def test_fix_round1_frontend_is_locked_and_real_browser_e2e(tmp_path: Path) -> None:
+    prepared = prepare_fixture("frontend-recovery-delivery", tmp_path / "frontend")
+    task = prepared.root / "benchmark-task"
+    package = json.loads((task / "package.json").read_text())
+    lock = json.loads((task / "package-lock.json").read_text())
+    environment = json.loads((task / "environment-lock.json").read_text())
+    program = json.loads((task / "program-manifest.json").read_text())
+
+    assert "dependencies" in package and "devDependencies" in package
+    assert lock["lockfileVersion"] == 3
+    assert len(environment["preinstalled_dependency_tree_sha256"]) == 64
+    assert len(environment["node"]["executable_identity_sha256"]) == 64
+    assert len(environment["browser"]["executable_identity_sha256"]) == 64
+    assert set(program) == {
+        "schema", "solution_target", "component_identity", "theme_identity",
+        "tooling_identity", "application_identity", "quality_identity",
+    }
+    try:
+        result = run_frontend_browser_e2e(task)
+    except PermissionError:
+        pytest.skip("nested sandbox blocks the local same-origin browser server")
+    assert set(result["scenarios"]) == {
+        "normal", "failure_recovery", "consecutive_failure_recovery",
+        "delayed_race", "rapid_double_click", "malformed_response",
+    }
+    assert result["executed_with_real_browser"] is True
+    assert result["same_origin"] is True
+    assert result["scenarios"]["normal"] is True
+    assert result["behavior_checks"] == {
+        "field_rendering": True,
+        "filtering": True,
+    }
+    assert not all(result["scenarios"].values())
+    assert result["console_errors"] == []
+    assert result["basic_accessibility"] is True
+    dependency_root = os.environ.get("AI_SDLC_BENCHMARK_DEPENDENCY_ROOT")
+    if dependency_root:
+        node = subprocess.run(
+            ["which", "node"], check=True, capture_output=True, text=True
+        ).stdout.strip()
+        assert validate_frontend_runtime(
+            task,
+            Path(dependency_root),
+            node_binary=Path(node),
+            browser_binary=Path(
+                "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+            ),
+        ) == []
+
+
+def test_fix_round1_frontend_held_out_harness_is_not_provider_readable(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_fixture("frontend-recovery-delivery", tmp_path / "frontend")
+    task = prepared.root / "benchmark-task"
+    public_bytes = b"\n".join(
+        path.read_bytes()
+        for path in task.rglob("*")
+        if path.is_file() and ".git" not in path.relative_to(prepared.root).parts
+    )
+
+    assert not (task / "tests" / "browser-harness.html").exists()
+    for marker in (
+        b"consecutive_failure_recovery",
+        b"delayed_race",
+        b"rapid_double_click",
+        b"malformed_response",
+    ):
+        assert marker not in public_bytes
+
+
+def test_fix_round1_frontend_v2_scores_only_real_browser_behavior(
+    tmp_path: Path,
+) -> None:
+    if not os.environ.get("AI_SDLC_BENCHMARK_PLAYWRIGHT_MODULE"):
+        pytest.skip("exact real-browser runner is verified outside the nested sandbox")
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    payload_path = sealed / "frontend-recovery-delivery.sealed.json"
+    payload = {
+        "schema": "ai-sdlc-v2-benefit-sealed-evaluator/v2",
+        "fixture_id": "frontend-recovery-delivery",
+        "held_out_variant_classes": [
+            "consecutive-failure-recovery",
+            "delayed-response-race",
+            "rapid-double-submit",
+            "malformed-response",
+        ],
+        "criteria": [
+            {
+                "id": "FRD-AC001",
+                "weight": 1,
+                "severity": "important",
+                "kind": "frontend_browser_suite",
+                "expected": {"behavior_checks": {"field_rendering": True}},
+            },
+            {
+                "id": "FRD-AC002",
+                "weight": 1,
+                "severity": "important",
+                "kind": "frontend_browser_suite",
+                "expected": {"behavior_checks": {"filtering": True}},
+            },
+            {
+                "id": "FRD-AC006",
+                "weight": 1,
+                "severity": "important",
+                "kind": "frontend_browser_suite",
+                "expected": {
+                    "executed_with_real_browser": True,
+                    "console_errors": [],
+                    "basic_accessibility": True,
+                },
+            },
+            {
+                "id": "FRD-H1",
+                "weight": 1,
+                "severity": "blocker",
+                "kind": "frontend_browser_suite",
+                "expected": {"scenarios": {"failure_recovery": True}},
+            },
+        ],
+    }
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload_path.write_bytes(data)
+    manifest_path = sealed / "sealed-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    next(
+        item
+        for item in manifest["entries"]
+        if item["fixture_id"] == "frontend-recovery-delivery"
+    )["sha256"] = sha256(data).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    prepared = prepare_fixture("frontend-recovery-delivery", tmp_path / "candidate")
+
+    try:
+        result = evaluate_fixture("frontend-recovery-delivery", prepared.root, sealed)
+    except PermissionError:
+        pytest.skip("nested sandbox blocks the local same-origin browser server")
+
+    assert result.external_verified_delivery is False
+    assert result.satisfied_criteria == ("FRD-AC001", "FRD-AC002", "FRD-AC006")
+    assert result.failed_criteria == ("FRD-H1",)
+
+
+def test_fix_round1_canonical_contract_rejects_recursive_semantic_extras(
+    tmp_path: Path,
+) -> None:
+    prepared = prepare_fixture("requirement-contract-ambiguity", tmp_path / "fixture")
+    contract = json.loads(
+        (prepared.root / "benchmark-task" / "input-contract.json").read_text()
+    )
+    contract["semantics"]["requirement"]["answer"] = "leak"
+    with pytest.raises(ValueError, match="closed"):
+        normalized_semantic_view(contract)
+    del contract["semantics"]["requirement"]["answer"]
+    contract["semantics"]["requirement"]["acceptance_criteria"] = ["AC-999"]
+    with pytest.raises(ValueError, match="closed"):
+        normalized_semantic_view(contract)
+
+
+def test_fix_round1_leak_scanner_uses_payload_inventory_and_git_objects(
+    tmp_path: Path,
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "sealed")
+    phrase = "opaque evaluator phrase unique 61371"
+    payload_path = sealed / "requirement-contract-ambiguity.sealed.json"
+    payload = json.loads(payload_path.read_text())
+    payload["rubric_boundary"] = phrase
+    data = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    payload_path.write_bytes(data)
+    manifest_path = sealed / "sealed-manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    next(item for item in manifest["entries"] if item["fixture_id"] == "requirement-contract-ambiguity")["sha256"] = sha256(data).hexdigest()
+    manifest_path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    subprocess.run(["git", "init", "-q"], cwd=candidate, check=True)
+    leaked = candidate / f"proof-{phrase.replace(' ', '-')}.bin"
+    leaked.write_bytes(b"\x00" + phrase.encode() + b"\xff")
+    subprocess.run(["git", "add", leaked.name], cwd=candidate, check=True)
+    subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@invalid", "commit", "-qm", "leak"],
+        cwd=candidate,
+        check=True,
+    )
+    leaked.unlink()
+
+    issues = scan_candidate_for_sealed_leak(candidate, manifest_path)
+
+    codes = {issue.code for issue in issues}
+    assert "fixture.leak.path-name" in codes
+    assert "fixture.leak.git-object" in codes
+    assert all(phrase not in issue.message for issue in issues)
+
+
+def test_fix_round1_leak_scanner_fails_closed_when_inventory_scan_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "sealed")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+
+    def fail_inventory(_root: Path) -> set[tuple[int, int]]:
+        raise OSError("protected inventory unavailable")
+
+    monkeypatch.setattr(fixture_module, "_protected_inodes", fail_inventory)
+
+    issues = scan_candidate_for_sealed_leak(candidate, sealed / "sealed-manifest.json")
+
+    assert [(issue.code, issue.message) for issue in issues] == [
+        ("fixture.leak.scan-error", "sealed-inventory")
+    ]
+
+
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="macOS Seatbelt profile")
+def test_fix_round1_candidate_adapter_uses_dynamic_isolation_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source = candidate / "candidate.py"
+    source.write_text("pass\n")
+    launches: list[tuple[str, ...]] = []
+
+    def isolated_launch(
+        _profile: object,
+        argv: tuple[str, ...] | list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        launches.append(tuple(argv))
+        return subprocess.CompletedProcess(
+            list(argv), 0, '{"allowed":false,"status":"pending"}\n', ""
+        )
+
+    monkeypatch.setattr(fixture_module, "run_provider_isolated", isolated_launch)
+
+    result = fixture_module._run_candidate_adapter(
+        candidate,
+        sealed,
+        runtime="python",
+        source=source,
+        scenario={},
+    )
+
+    assert result == {"allowed": False, "status": "pending"}
+    assert len(launches) == 1
+
+
+def test_fix_round1_isolation_is_closed_over_all_protected_roots(tmp_path: Path) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    control = tmp_path / "control"
+    source_git = tmp_path / "source.git"
+    raw = tmp_path / "raw-results"
+    run = tmp_path / "runs" / "run-1"
+    other = tmp_path / "runs" / "run-2"
+    for path in (control, source_git, raw, run, other):
+        path.mkdir(parents=True)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("outside")
+    os.symlink(outside, run / "outside-link")
+    linked = run / "hardlinked"
+    os.link(outside, linked)
+
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=[source_git],
+        other_run_roots=[other],
+        argv=["codex", "exec", f"--add-dir={run / 'missing' / '..' / '..'}"],
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+
+    codes = {issue.code for issue in profile.issues}
+    assert {"isolation.symlink", "isolation.hardlink", "isolation.add-dir"} <= codes
+    for root in (sealed, sealed.parent, control, source_git, raw, other):
+        assert str(root.resolve()) in profile.sandbox_text

@@ -7,7 +7,10 @@ const controller = createRiskController(
   async () => undefined,
 );
 await controller.load();
-if (controller.state.error !== "加载失败" || typeof controller.retry !== "function") {
+if (
+  controller.state.error !== "加载失败" ||
+  typeof controller.retry !== "function"
+) {
   process.stderr.write("VISIBLE_RED: recoverable failure state is absent\n");
   process.exit(1);
 }

@@ -1,20 +1,662 @@
 {
   "schema": "ai-sdlc-v2-benefit-evidence-contract/v1",
   "runs": [
-    {"run_id":"P:requirement-contract-ambiguity","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/design-contract.json","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"S:requirement-contract-ambiguity","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/design-contract.json","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A00:requirement-contract-ambiguity","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/design-contract.json","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A10:requirement-contract-ambiguity","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/loop-close.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/design-contract.json","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A11:requirement-contract-ambiguity","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/loop-close.json","category":"governance","required":true,"applicable":true},{"path":"governance/expert-callback.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/design-contract.json","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A00:frontend-recovery-delivery","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/solution-confirmation.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/src/release-state.mjs","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A10:frontend-recovery-delivery","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/solution-confirmation.json","category":"governance","required":true,"applicable":true},{"path":"governance/loop-close.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/src/release-state.mjs","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A11:frontend-recovery-delivery","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/solution-confirmation.json","category":"governance","required":true,"applicable":true},{"path":"governance/loop-close.json","category":"governance","required":true,"applicable":true},{"path":"governance/expert-callback.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/src/release-state.mjs","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"P:frontend-recovery-delivery","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/src/release-state.mjs","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"S:frontend-recovery-delivery","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/src/release-state.mjs","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A11:multi-tenant-security-review","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/loop-close.json","category":"governance","required":true,"applicable":true},{"path":"governance/expert-callback.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/access_control.py","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"S:multi-tenant-security-review","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/access_control.py","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A10:multi-tenant-security-review","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"governance/loop-close.json","category":"governance","required":true,"applicable":true},{"path":"candidate/benchmark-task/access_control.py","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"P:multi-tenant-security-review","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/access_control.py","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]},
-    {"run_id":"A00:multi-tenant-security-review","artifact_slots":[{"path":"setup/fixture-manifest.json","category":"setup","required":true,"applicable":true},{"path":"candidate/benchmark-task/access_control.py","category":"delivery","required":true,"applicable":true}],"changed_files_scope":{"baseline_root":"baseline","candidate_root":"candidate","include_paths":["benchmark-task"]},"allowed_automated_event_types":["intent_service_event","clarification_request_event","approval_service_event"]}
+    {
+      "run_id": "P:requirement-contract-ambiguity",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/design-contract.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/requirement-structured-rubric.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "S:requirement-contract-ambiguity",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/design-contract.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/requirement-structured-rubric.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A00:requirement-contract-ambiguity",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/design-contract.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/requirement-structured-rubric.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A10:requirement-contract-ambiguity",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/loop-close.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/design-contract.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/requirement-structured-rubric.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A11:requirement-contract-ambiguity",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/loop-close.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/expert-callback.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/design-contract.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/requirement-structured-rubric.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A00:frontend-recovery-delivery",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/solution-confirmation.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/src/release-state.mjs",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-browser-e2e.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-quality.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A10:frontend-recovery-delivery",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/solution-confirmation.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/loop-close.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/src/release-state.mjs",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-browser-e2e.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-quality.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A11:frontend-recovery-delivery",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/solution-confirmation.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/loop-close.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/expert-callback.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/src/release-state.mjs",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-browser-e2e.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-quality.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "P:frontend-recovery-delivery",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/src/release-state.mjs",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-browser-e2e.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-quality.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "S:frontend-recovery-delivery",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/src/release-state.mjs",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-browser-e2e.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/frontend-quality.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A11:multi-tenant-security-review",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/loop-close.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/expert-callback.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/access_control.py",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-root-cause-oracles.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-findings-metrics.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "S:multi-tenant-security-review",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/access_control.py",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-root-cause-oracles.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-findings-metrics.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A10:multi-tenant-security-review",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "governance/loop-close.json",
+          "category": "governance",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/access_control.py",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-root-cause-oracles.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-findings-metrics.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "P:multi-tenant-security-review",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/access_control.py",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-root-cause-oracles.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-findings-metrics.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    },
+    {
+      "run_id": "A00:multi-tenant-security-review",
+      "artifact_slots": [
+        {
+          "path": "setup/fixture-manifest.json",
+          "category": "setup",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "candidate/benchmark-task/access_control.py",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-root-cause-oracles.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        },
+        {
+          "path": "evaluation/security-findings-metrics.json",
+          "category": "delivery",
+          "required": true,
+          "applicable": true
+        }
+      ],
+      "changed_files_scope": {
+        "baseline_root": "baseline",
+        "candidate_root": "candidate",
+        "include_paths": [
+          "benchmark-task"
+        ]
+      },
+      "allowed_automated_event_types": [
+        "intent_service_event",
+        "clarification_request_event",
+        "approval_service_event"
+      ]
+    }
   ]
 }

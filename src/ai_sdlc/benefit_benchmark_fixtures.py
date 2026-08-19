@@ -8,10 +8,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import threading
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import quote
 
 from ai_sdlc.benefit_benchmark import BenchmarkIssue
 
@@ -108,6 +112,13 @@ class EvaluationResult:
     satisfied_criteria: tuple[str, ...]
     failed_criteria: tuple[str, ...]
     result_sha256: str
+    root_cause_count: int = 0
+    finding_true_positive_count: int = 0
+    finding_false_positive_count: int = 0
+    finding_false_negative_count: int = 0
+    finding_precision: float | None = None
+    finding_recall: float | None = None
+    severe_finding_miss_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -115,6 +126,8 @@ class ProviderIsolationProfile:
     run_root: Path
     sealed_root: Path
     control_root: Path
+    raw_results_root: Path
+    protected_roots: tuple[Path, ...]
     other_run_roots: tuple[Path, ...]
     argv: tuple[str, ...]
     environment: Mapping[str, str]
@@ -132,6 +145,290 @@ class IsolationProbeResult:
     environment: bool
     other_run: bool
     add_dir: bool
+    protected_root_results: tuple[tuple[str, bool], ...] = ()
+
+
+_FRONTEND_BROWSER_HARNESS = r'''<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>外部浏览器验收</title><link rel="icon" href="data:,"></head>
+<body>
+<main aria-labelledby="title">
+  <h1 id="title">发布风险工作台</h1>
+  <nav aria-label="风险等级筛选"><button type="button">全部</button><button type="button">高</button></nav>
+  <section id="workspace" aria-live="polite"></section>
+</main>
+<pre id="result">{"pending":true}</pre>
+<script type="module">
+import { createRiskController } from "../src/release-state.mjs";
+const scenario=new URL(location.href).searchParams.get("scenario")||"normal";
+const errors=[];
+window.addEventListener("error",event=>errors.push(event.message));
+window.addEventListener("unhandledrejection",event=>errors.push(String(event.reason)));
+const sample=[
+  {id:"R-1",name:"鉴权回归",service:"release-api",level:"high",owner:"质量团队",confirmed:false},
+  {id:"R-2",name:"缓存预热",service:"risk-query",level:"medium",owner:"平台团队",confirmed:false},
+  {id:"R-3",name:"容量余量",service:"gateway",level:"low",owner:"运维团队",confirmed:false},
+];
+const outcomes=[];
+const delayed=[];
+if(scenario==="failure_recovery") outcomes.push("reject",sample);
+else if(scenario==="consecutive_failure_recovery") outcomes.push("reject","reject",sample);
+else if(scenario==="malformed_response") outcomes.push({id:"not-an-array"});
+else outcomes.push(sample);
+let loadCalls=0;
+let confirmCalls=0;
+const releaseConfirm=[];
+const loader=()=>{
+  loadCalls+=1;
+  if(scenario==="delayed_race") return new Promise(resolve=>delayed.push(resolve));
+  const outcome=outcomes.shift();
+  return outcome==="reject"?Promise.reject(new Error("unavailable")):Promise.resolve(outcome);
+};
+const confirmer=()=>{confirmCalls+=1;return new Promise(resolve=>releaseConfirm.push(resolve));};
+const controller=createRiskController(loader,confirmer);
+const behaviorChecks={};
+function render(level="all"){
+  const workspace=document.querySelector("#workspace");
+  const risks=Array.isArray(controller.state.risks)
+    ? controller.state.risks.filter(risk=>level==="all"||risk.level===level)
+    : [];
+  workspace.innerHTML=controller.state.error
+    ? `<div role="alert">${controller.state.error}<button type="button" data-retry>重试</button></div>`
+    : `<table><caption>发布风险</caption><thead><tr><th>风险</th><th>服务</th><th>等级</th><th>负责人</th><th>状态</th></tr></thead><tbody>${risks.map(risk=>`<tr data-risk="${risk.id}"><td>${risk.name}</td><td>${risk.service}</td><td>${risk.level}</td><td>${risk.owner}</td><td><button type="button" data-confirm="${risk.id}" ${risk.confirmed?"disabled":""}>确认风险</button></td></tr>`).join("")}</tbody></table>`;
+}
+let passed=false;
+if(scenario==="delayed_race"){
+  const first=controller.load();
+  const second=controller.load();
+  delayed[1]([{...sample[2],id:"NEW"}]);
+  await second;
+  delayed[0]([{...sample[0],id:"OLD"}]);
+  await first;
+  render();
+  passed=controller.state.risks?.[0]?.id==="NEW";
+}else{
+  await controller.load();
+  render();
+  if(scenario==="normal"){
+    render("high");
+    behaviorChecks.field_rendering=document.body.textContent.includes("release-api")&&document.body.textContent.includes("质量团队")&&document.body.textContent.includes("high");
+    behaviorChecks.filtering=document.querySelectorAll("tbody tr").length===1;
+    passed=behaviorChecks.field_rendering&&behaviorChecks.filtering;
+  }else if(scenario==="failure_recovery"){
+    const red=controller.state.error==="加载失败"&&typeof controller.retry==="function"&&document.querySelector("[role=alert] [data-retry]");
+    if(typeof controller.retry==="function") await controller.retry();
+    render();
+    passed=Boolean(red&&controller.state.error===null&&controller.state.risks.length===3);
+  }else if(scenario==="consecutive_failure_recovery"){
+    if(typeof controller.retry==="function") await controller.retry();
+    const stayedRecoverable=controller.state.error==="加载失败";
+    if(typeof controller.retry==="function") await controller.retry();
+    render();
+    passed=stayedRecoverable&&controller.state.error===null&&controller.state.risks.length===3;
+  }else if(scenario==="rapid_double_click"){
+    const first=controller.confirm("R-1");
+    const second=controller.confirm("R-1");
+    for(const release of releaseConfirm) release();
+    await Promise.all([first,second]);
+    render();
+    passed=confirmCalls===1&&controller.state.risks[0].confirmed===true;
+  }else if(scenario==="malformed_response"){
+    render();
+    passed=controller.state.error==="加载失败"&&controller.state.risks.length===0;
+  }
+}
+const basicAccessibility=Boolean(document.querySelector("main[aria-labelledby]")&&document.querySelector("nav[aria-label]")&&(document.querySelector("table caption")||document.querySelector("[role=alert]")));
+document.querySelector("#result").textContent=JSON.stringify({scenario,passed,loadCalls,confirmCalls,console_errors:errors,basic_accessibility:basicAccessibility,behavior_checks:behaviorChecks});
+</script>
+</body>
+</html>
+'''
+
+
+def run_frontend_browser_e2e(task_root: Path) -> Mapping[str, object]:
+    """Run the same-origin frozen scenarios in a real Chrome process."""
+    root = task_root.resolve(strict=True)
+    release_state = root / "src" / "release-state.mjs"
+    if not release_state.is_file():
+        raise ValueError("frontend release-state module is missing")
+    browser = Path(
+        os.environ.get(
+            "AI_SDLC_BENCHMARK_BROWSER",
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        )
+    )
+    if not browser.is_file():
+        raise RuntimeError("frozen browser executable is unavailable")
+    evaluator_workspace = tempfile.TemporaryDirectory(
+        prefix="ai-sdlc-frontend-evaluator-"
+    )
+    evaluator_root = Path(evaluator_workspace.name)
+    (evaluator_root / "tests").mkdir()
+    (evaluator_root / "src").mkdir()
+    (evaluator_root / "tests" / "browser-harness.html").write_text(
+        _FRONTEND_BROWSER_HARNESS, encoding="utf-8"
+    )
+    shutil.copy2(release_state, evaluator_root / "src" / "release-state.mjs")
+
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, _format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        lambda *args, **kwargs: QuietHandler(
+            *args, directory=str(evaluator_root), **kwargs
+        ),
+    )
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    scenarios = (
+        "normal",
+        "failure_recovery",
+        "consecutive_failure_recovery",
+        "delayed_race",
+        "rapid_double_click",
+        "malformed_response",
+    )
+    observed: dict[str, bool] = {}
+    console_errors: list[str] = []
+    accessibility: list[bool] = []
+    behavior_checks: dict[str, bool] = {}
+    try:
+        playwright_module = os.environ.get("AI_SDLC_BENCHMARK_PLAYWRIGHT_MODULE")
+        if playwright_module:
+            module = Path(playwright_module).resolve(strict=True)
+            adapter = r'''
+import { pathToFileURL } from "node:url";
+const [modulePath,browserPath,baseUrl,rawScenarios]=process.argv.slice(1);
+const { chromium }=await import(pathToFileURL(modulePath).href);
+const browser=await chromium.launch({executablePath:browserPath,headless:true});
+const outputs=[];
+try {
+  for (const scenario of JSON.parse(rawScenarios)) {
+    const page=await browser.newPage();
+    const browserErrors=[];
+    page.on("console",message=>{if(message.type()==="error") browserErrors.push(message.text());});
+    page.on("pageerror",error=>browserErrors.push(error.message));
+    await page.goto(`${baseUrl}/tests/browser-harness.html?scenario=${encodeURIComponent(scenario)}`,{waitUntil:"networkidle"});
+    await page.waitForFunction(()=>!document.querySelector("#result")?.textContent?.includes('"pending":true'),null,{timeout:10000});
+    const payload=JSON.parse(await page.locator("#result").textContent());
+    payload.console_errors=[...(payload.console_errors||[]),...browserErrors];
+    outputs.push(payload);
+    await page.close();
+  }
+} finally { await browser.close(); }
+console.log(JSON.stringify(outputs));
+'''
+            completed = subprocess.run(
+                [
+                    "node",
+                    "--input-type=module",
+                    "-e",
+                    adapter,
+                    str(module),
+                    str(browser),
+                    f"http://127.0.0.1:{server.server_port}",
+                    json.dumps(scenarios),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=60,
+                check=False,
+            )
+            if completed.returncode != 0:
+                raise RuntimeError("Playwright browser acceptance process failed")
+            payloads = json.loads(completed.stdout)
+            if not isinstance(payloads, list) or len(payloads) != len(scenarios):
+                raise RuntimeError("Playwright browser acceptance output is invalid")
+            for scenario, payload in zip(scenarios, payloads, strict=True):
+                if not isinstance(payload, Mapping):
+                    raise RuntimeError("Playwright browser scenario output is invalid")
+                observed[scenario] = payload.get("passed") is True
+                accessibility.append(payload.get("basic_accessibility") is True)
+                errors = payload.get("console_errors")
+                if isinstance(errors, list):
+                    console_errors.extend(str(item) for item in errors)
+                checks = payload.get("behavior_checks")
+                if isinstance(checks, Mapping):
+                    behavior_checks.update(
+                        {str(key): value is True for key, value in checks.items()}
+                    )
+            return {
+                "executed_with_real_browser": True,
+                "same_origin": True,
+                "scenarios": observed,
+                "console_errors": console_errors,
+                "basic_accessibility": all(accessibility),
+                "behavior_checks": behavior_checks,
+            }
+        with tempfile.TemporaryDirectory(prefix="ai-sdlc-browser-profile-") as profile:
+            for scenario in scenarios:
+                url = (
+                    f"http://127.0.0.1:{server.server_port}/tests/browser-harness.html"
+                    f"?scenario={quote(scenario)}"
+                )
+                completed = subprocess.run(
+                    [
+                        str(browser),
+                        "--headless",
+                        f"--user-data-dir={profile}",
+                        "--disable-gpu",
+                        "--disable-background-networking",
+                        "--disable-component-update",
+                        "--disable-default-apps",
+                        "--disable-extensions",
+                        "--disable-sync",
+                        "--no-first-run",
+                        "--no-default-browser-check",
+                        "--no-proxy-server",
+                        "--proxy-bypass-list=*",
+                        "--virtual-time-budget=3000",
+                        "--dump-dom",
+                        url,
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                )
+                match = re.search(
+                    r'<pre id="result">([^<]+)</pre>',
+                    completed.stdout,
+                    flags=re.DOTALL,
+                )
+                if completed.returncode != 0 or match is None:
+                    raise RuntimeError("real-browser acceptance process failed")
+                payload = json.loads(
+                    match.group(1)
+                    .replace("&quot;", '"')
+                    .replace("&amp;", "&")
+                    .replace("&lt;", "<")
+                    .replace("&gt;", ">")
+                )
+                observed[scenario] = payload.get("passed") is True
+                accessibility.append(payload.get("basic_accessibility") is True)
+                errors = payload.get("console_errors")
+                if isinstance(errors, list):
+                    console_errors.extend(str(item) for item in errors)
+                checks = payload.get("behavior_checks")
+                if isinstance(checks, Mapping):
+                    behavior_checks.update(
+                        {str(key): value is True for key, value in checks.items()}
+                    )
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)
+        evaluator_workspace.cleanup()
+    return {
+        "executed_with_real_browser": True,
+        "same_origin": True,
+        "scenarios": observed,
+        "console_errors": console_errors,
+        "basic_accessibility": all(accessibility),
+        "behavior_checks": behavior_checks,
+    }
 
 
 def _closed_object(value: object, keys: set[str], label: str) -> Mapping[str, object]:
@@ -179,6 +476,63 @@ def _tree_digest(root: Path) -> str:
                 }
             )
     return sha256(_canonical_json_bytes(entries)).hexdigest()
+
+
+def _dependency_tree_digest(root: Path) -> str:
+    """Hash one preinstalled dependency tree without its absolute path."""
+    if not root.is_dir():
+        raise ValueError("preinstalled dependency tree is unavailable")
+    entries: list[dict[str, object]] = []
+    for path in sorted(root.rglob("*"), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root).as_posix()
+        if path.is_symlink():
+            entries.append({"p": relative, "t": "l", "v": os.readlink(path)})
+        elif path.is_file():
+            entries.append(
+                {
+                    "p": relative,
+                    "t": "f",
+                    "s": path.stat().st_size,
+                    "h": _digest_file(path),
+                }
+            )
+    return sha256(_canonical_json_bytes(entries)).hexdigest()
+
+
+def validate_frontend_runtime(
+    task_root: Path,
+    dependency_root: Path,
+    *,
+    node_binary: Path,
+    browser_binary: Path,
+) -> list[BenchmarkIssue]:
+    """Validate the lockfile, shared preinstall and executable identities."""
+    issues: list[BenchmarkIssue] = []
+    try:
+        environment = json.loads(
+            (task_root / "environment-lock.json").read_text(encoding="utf-8")
+        )
+        if environment.get("package_lock_sha256") != _digest_file(
+            task_root / "package-lock.json"
+        ):
+            issues.append(BenchmarkIssue("frontend.lockfile", "package-lock drift"))
+        if environment.get(
+            "preinstalled_dependency_tree_sha256"
+        ) != _dependency_tree_digest(dependency_root):
+            issues.append(
+                BenchmarkIssue("frontend.dependencies", "preinstalled tree drift")
+            )
+        if environment.get("node", {}).get(
+            "executable_identity_sha256"
+        ) != _digest_file(node_binary):
+            issues.append(BenchmarkIssue("frontend.node", "node identity drift"))
+        if environment.get("browser", {}).get(
+            "executable_identity_sha256"
+        ) != _digest_file(browser_binary):
+            issues.append(BenchmarkIssue("frontend.browser", "browser identity drift"))
+    except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        issues.append(BenchmarkIssue("frontend.environment", str(error)))
+    return issues
 
 
 def fixture_tree_digest(fixture_root: Path = _FIXTURE_ROOT) -> str:
@@ -451,12 +805,93 @@ def prepare_fixture(fixture_id: str, destination: Path) -> PreparedFixture:
     )
 
 
+_SEMANTIC_SURFACES: Mapping[str, object] = {
+    "requirement-contract-ambiguity": {
+        "business_goal": None,
+        "requirement": {
+            "state": None,
+            "actors": None,
+            "capabilities": None,
+            "constraints": None,
+        },
+        "project_summary": {
+            "runtime": None,
+            "storage": None,
+            "integration": None,
+            "existing_endpoints": None,
+        },
+        "deliverable": {"path": None, "required_sections": None},
+        "question_taxonomy": None,
+    },
+    "frontend-recovery-delivery": {
+        "business_goal": None,
+        "requirement": {"state": None, "acceptance_criteria": None},
+        "design_contract": {
+            "state": None,
+            "controller_api": None,
+            "response_shape": None,
+            "stale_response_policy": None,
+            "submit_policy": None,
+            "error_policy": None,
+        },
+        "deliverable": {"root": None, "visible_commands": None},
+        "solution_target": {
+            "frontend_stack": None,
+            "provider_id": None,
+            "style_pack_id": None,
+        },
+    },
+    "multi-tenant-security-review": {
+        "business_goal": None,
+        "requirement": {"state": None, "rules": None},
+        "design_contract": {"state": None, "invariants": None},
+        "deliverable": {"source": None, "visible_command": None, "boundary": None},
+    },
+}
+
+
+def _validate_closed_surface(value: object, surface: object, label: str) -> None:
+    if surface is None:
+        return
+    if not isinstance(value, Mapping) or not isinstance(surface, Mapping):
+        raise ValueError(f"{label} must be a closed object")
+    if set(value) != set(surface):
+        raise ValueError(f"{label} must be a closed object")
+    for key, child_surface in surface.items():
+        _validate_closed_surface(value[key], child_surface, f"{label}.{key}")
+
+
 def normalized_semantic_view(value: Mapping[str, object]) -> Mapping[str, object]:
-    """Project public inputs and canonical state onto the same method-neutral semantics."""
+    """Validate and project the complete method-neutral semantic surface."""
+    fixture_id = value.get("fixture_id")
+    if fixture_id not in FIXTURE_IDS:
+        raise ValueError("semantic fixture binding is invalid")
     semantics = value.get("semantics")
     if not isinstance(semantics, Mapping):
         raise ValueError("semantic contract is missing")
-    return json.loads(_canonical_json_bytes(semantics))
+    _validate_closed_surface(
+        semantics, _SEMANTIC_SURFACES[str(fixture_id)], "semantic contract"
+    )
+    normalized: dict[str, object] = {
+        "fixture_id": fixture_id,
+        "target_stage": value.get("target_stage"),
+        "canonical_pre_state": value.get("canonical_pre_state"),
+        "semantics": semantics,
+    }
+    if fixture_id == "frontend-recovery-delivery":
+        normalized["solution_target"] = value.get("solution_target")
+    expected_top = {
+        "schema",
+        "fixture_id",
+        "target_stage",
+        "canonical_pre_state",
+        "semantics",
+        *(("solution_target",) if fixture_id == "frontend-recovery-delivery" else ()),
+    }
+    canonical_top = expected_top | {"source_input_contract_sha256"}
+    if set(value) not in {frozenset(expected_top), frozenset(canonical_top)}:
+        raise ValueError("semantic envelope must be a closed object")
+    return json.loads(_canonical_json_bytes(normalized))
 
 
 def build_canonical_pre_state(
@@ -467,7 +902,8 @@ def build_canonical_pre_state(
         raise ValueError("fixture id is not frozen")
     source = prepared_root / "benchmark-task" / "input-contract.json"
     contract = json.loads(source.read_text(encoding="utf-8"))
-    semantics = normalized_semantic_view(contract)
+    normalized = normalized_semantic_view(contract)
+    semantics = normalized["semantics"]
     target_stage = str(contract.get("target_stage"))
     canonical_pre_state = (
         ["requirement"]
@@ -482,6 +918,10 @@ def build_canonical_pre_state(
         "semantics": semantics,
         "source_input_contract_sha256": _digest_file(source),
     }
+    if fixture_id == "frontend-recovery-delivery":
+        state["solution_target"] = normalized["solution_target"]
+    if normalized_semantic_view(state) != normalized:
+        raise ValueError("canonical pre-state semantic parity failed")
     destination.mkdir(parents=True, exist_ok=True)
     (destination / "canonical-pre-state.json").write_bytes(
         _canonical_json_bytes(state) + b"\n"
@@ -498,7 +938,10 @@ class FrozenIntentApprovalService:
             {"schema", "questions", "approvals"},
             "intent map",
         )
-        if raw["schema"] != "ai-sdlc-v2-benefit-intent-map/v1":
+        if raw["schema"] not in {
+            "ai-sdlc-v2-benefit-intent-map/v1",
+            "ai-sdlc-v2-benefit-intent-map/v2",
+        }:
             raise ValueError("intent map schema is invalid")
         if not isinstance(raw["questions"], Mapping) or not isinstance(
             raw["approvals"], list
@@ -509,6 +952,41 @@ class FrozenIntentApprovalService:
         self._expected_proposals: dict[tuple[str, str], str] = {}
         self._event_log = event_log
 
+        for question_id, question in self._questions.items():
+            if (
+                not isinstance(question_id, str)
+                or not isinstance(question, Mapping)
+                or set(question) != {"answer", "delay_ms"}
+                or isinstance(question["delay_ms"], bool)
+                or not isinstance(question["delay_ms"], int)
+                or question["delay_ms"] < 0
+            ):
+                raise ValueError("intent map question surface is invalid")
+        if not all(isinstance(item, str) and item for item in self._approvals):
+            raise ValueError("intent map approval surface is invalid")
+
+    @classmethod
+    def from_sealed_root(
+        cls, sealed_root: Path, event_log: Path
+    ) -> FrozenIntentApprovalService:
+        root = sealed_root.resolve(strict=True)
+        manifest_path = root / "sealed-manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if not isinstance(manifest, Mapping):
+            raise ValueError("sealed manifest is invalid")
+        intent = manifest.get("intent_map")
+        if not isinstance(intent, Mapping) or set(intent) != {"path", "sha256"}:
+            raise ValueError("sealed intent-map commitment is invalid")
+        relative = _safe_relative(intent["path"])
+        path = root / relative
+        try:
+            path.resolve(strict=True).relative_to(root)
+        except (OSError, ValueError) as error:
+            raise ValueError("sealed intent map escapes evaluator root") from error
+        if _digest_file(path) != intent["sha256"]:
+            raise ValueError("sealed intent-map commitment mismatch")
+        return cls(path, event_log)
+
     def _record(self, payload: Mapping[str, object]) -> None:
         self._event_log.parent.mkdir(parents=True, exist_ok=True)
         with self._event_log.open("a", encoding="utf-8") as handle:
@@ -516,7 +994,7 @@ class FrozenIntentApprovalService:
 
     def answer(self, run_id: str, question_id: str) -> Mapping[str, object]:
         item = self._questions.get(question_id)
-        if isinstance(item, Mapping) and isinstance(item.get("answer"), str):
+        if isinstance(item, Mapping) and "answer" in item:
             result: Mapping[str, object] = {
                 "status": "answered",
                 "answer": item["answer"],
@@ -582,10 +1060,17 @@ def _load_sealed_payload(fixture_id: str, sealed_root: Path) -> Mapping[str, obj
     root = sealed_root.resolve(strict=True)
     manifest_path = root / "sealed-manifest.json"
     manifest_bytes = manifest_path.read_bytes()
-    manifest = _closed_object(
-        json.loads(manifest_bytes), {"schema", "lock_id", "entries"}, "sealed manifest"
-    )
-    if manifest["schema"] != "ai-sdlc-v2-benefit-sealed-manifest/v1":
+    manifest_raw = json.loads(manifest_bytes)
+    if not isinstance(manifest_raw, Mapping) or set(manifest_raw) not in {
+        frozenset({"schema", "lock_id", "entries"}),
+        frozenset({"schema", "lock_id", "entries", "intent_map"}),
+    }:
+        raise ValueError("sealed manifest must be a closed object")
+    manifest = manifest_raw
+    if manifest["schema"] not in {
+        "ai-sdlc-v2-benefit-sealed-manifest/v1",
+        "ai-sdlc-v2-benefit-sealed-manifest/v2",
+    }:
         raise ValueError("sealed manifest schema is invalid")
     entries = manifest["entries"]
     if not isinstance(entries, list) or len(entries) != len(FIXTURE_IDS):
@@ -624,6 +1109,15 @@ def _json_path_present(value: object, path: Sequence[object]) -> bool:
     return current not in (None, "", [], {})
 
 
+def _json_value_at(value: object, path: Sequence[object]) -> object:
+    current = value
+    for part in path:
+        if not isinstance(part, str) or not isinstance(current, Mapping) or part not in current:
+            raise KeyError("JSON path is absent")
+        current = current[part]
+    return current
+
+
 def _subset_matches(actual: object, expected: object) -> bool:
     if isinstance(expected, Mapping):
         return isinstance(actual, Mapping) and all(
@@ -655,11 +1149,13 @@ mode=scenario.get("audit_mode","list")
 audit=None if mode=="none" else FailingAudit() if mode=="failing" else []
 result=None
 error=None
+before={"status":request.status}
 try:
     result=module.approve_request(request,actor,action=scenario.get("action","approve"),now=datetime.fromisoformat(scenario["now"]),audit_log=audit)
 except Exception as exc:
     error=type(exc).__name__
-print(json.dumps({"allowed":getattr(result,"allowed",None),"reason":getattr(result,"reason",None),"status":request.status,"audit_count":None if audit is None else len(audit),"error":error},sort_keys=True))
+events=[] if audit is None else [{"actor_id":getattr(item,"actor_id",None),"decision":getattr(item,"decision",None),"reason":getattr(item,"reason",None),"timestamp":getattr(item,"timestamp",None).isoformat() if getattr(item,"timestamp",None) else None} for item in audit]
+print(json.dumps({"allowed":getattr(result,"allowed",None),"reason":getattr(result,"reason",None),"status":request.status,"status_unchanged":request.status==before["status"],"audit_count":None if audit is None else len(audit),"audit_events":events,"error":error},sort_keys=True))
 '''
 
 
@@ -715,6 +1211,9 @@ def _run_candidate_adapter(
         argv = ["node", "--input-type=module", "-e", _FRONTEND_ADAPTER, str(source), json.dumps(scenario)]
     else:
         raise ValueError("sealed candidate runtime is unsupported")
+    raw_results = candidate.parent / ".evaluation-raw-results"
+    raw_results.mkdir(exist_ok=True)
+    source_git = _BENCHMARK_ROOT.parent.parent / ".git"
     profile = build_provider_isolation_profile(
         run_root=candidate,
         sealed_root=sealed_root,
@@ -722,18 +1221,12 @@ def _run_candidate_adapter(
         other_run_roots=[],
         argv=argv,
         environment={"PATH": os.environ.get("PATH", "")},
+        raw_results_root=raw_results,
+        protected_roots=[source_git],
     )
     if not profile.executable:
         raise ValueError("sealed candidate isolation preflight failed")
-    completed = subprocess.run(
-        ["/usr/bin/sandbox-exec", "-p", profile.sandbox_text, *argv],
-        cwd=candidate,
-        env=dict(profile.environment),
-        capture_output=True,
-        text=True,
-        timeout=30,
-        check=False,
-    )
+    completed = run_provider_isolated(profile, argv)
     if "sandbox_apply: Operation not permitted" in completed.stderr:
         raise RuntimeError(completed.stderr.strip())
     if completed.returncode != 0:
@@ -746,7 +1239,10 @@ def _run_candidate_adapter(
 
 
 def _criterion_passes(
-    candidate: Path, sealed_root: Path, criterion: Mapping[str, object]
+    candidate: Path,
+    sealed_root: Path,
+    criterion: Mapping[str, object],
+    runtime_cache: dict[str, Mapping[str, object]] | None = None,
 ) -> bool:
     kind = criterion.get("kind")
     if kind == "json_key_present":
@@ -760,6 +1256,66 @@ def _criterion_passes(
             return _json_path_present(json.loads(target.read_text()), path)
         except json.JSONDecodeError:
             return False
+    if kind in {
+        "json_literal",
+        "json_enum",
+        "json_set_contains",
+        "json_relation",
+        "json_no_contradiction",
+        "verification_command",
+    }:
+        path = criterion.get("path")
+        if not isinstance(path, list):
+            return False
+        target = candidate / "benchmark-task" / "design-contract.json"
+        if not target.is_file():
+            return False
+        try:
+            value = _json_value_at(json.loads(target.read_text()), path)
+        except (json.JSONDecodeError, KeyError):
+            return False
+        if kind == "json_literal":
+            return value == criterion.get("expected")
+        if kind == "json_enum":
+            allowed = criterion.get("allowed")
+            return isinstance(allowed, list) and value in allowed
+        if kind == "json_set_contains":
+            expected = criterion.get("expected")
+            return (
+                isinstance(value, list)
+                and isinstance(expected, list)
+                and all(item in value for item in expected)
+            )
+        if kind == "json_relation":
+            relation = criterion.get("relation")
+            if relation == "committed_fact_survives_notification_failure":
+                return isinstance(value, Mapping) and value == {
+                    "transaction_boundary": "commit-before-notify",
+                    "notification_failure": "retry_without_rollback",
+                }
+            if relation == "version_guard_precedes_terminal_transition":
+                return isinstance(value, Mapping) and value.get("guard") == [
+                    "pending",
+                    "request_version_matches",
+                ] and value.get("effect") in {"approved", "rejected"}
+            return False
+        if kind == "json_no_contradiction":
+            forbidden = criterion.get("forbidden")
+            encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
+            return isinstance(forbidden, list) and all(
+                isinstance(item, str) and item not in encoded for item in forbidden
+            )
+        expected = criterion.get("expected")
+        return (
+            isinstance(value, list)
+            and isinstance(expected, list)
+            and value == expected
+            and all(
+                isinstance(item, str)
+                and item.startswith(("python -m ", "npm run "))
+                for item in value
+            )
+        )
     if kind in {"file_contains", "file_not_contains"}:
         relative = criterion.get("path")
         value = criterion.get("value")
@@ -773,7 +1329,7 @@ def _criterion_passes(
             return False
         present = value in content
         return present if kind == "file_contains" else not present
-    if kind in {"frontend_scenario", "security_scenario"}:
+    if kind in {"frontend_scenario", "security_scenario", "security_oracle"}:
         relative = criterion.get("path")
         scenario = criterion.get("scenario")
         expected = criterion.get("expected")
@@ -796,6 +1352,19 @@ def _criterion_passes(
             scenario=scenario,
         )
         return _subset_matches(actual, expected)
+    if kind == "frontend_browser_suite":
+        expected = criterion.get("expected")
+        if not isinstance(expected, Mapping):
+            return False
+        try:
+            cache = runtime_cache if runtime_cache is not None else {}
+            actual = cache.get("frontend_browser_suite")
+            if actual is None:
+                actual = run_frontend_browser_e2e(candidate / "benchmark-task")
+                cache["frontend_browser_suite"] = actual
+        except (OSError, RuntimeError, ValueError):
+            return False
+        return _subset_matches(actual, expected)
     raise ValueError("sealed evaluator criterion kind is unsupported")
 
 
@@ -814,6 +1383,25 @@ def evaluate_fixture(
         if str(error) == "sealed evaluator root must be outside the candidate":
             raise
     payload = _load_sealed_payload(fixture_id, sealed)
+    if payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2":
+        expected_surface = {
+            "requirement-contract-ambiguity": {"schema", "fixture_id", "criteria"},
+            "frontend-recovery-delivery": {
+                "schema",
+                "fixture_id",
+                "criteria",
+                "held_out_variant_classes",
+            },
+            "multi-tenant-security-review": {
+                "schema",
+                "fixture_id",
+                "criteria",
+                "held_out_variant_classes",
+                "root_causes",
+            },
+        }[fixture_id]
+        if set(payload) != expected_surface:
+            raise ValueError("sealed evaluator payload must be a closed object")
     criteria = payload.get("criteria")
     if not isinstance(criteria, list) or not criteria:
         raise ValueError("sealed evaluator criteria are invalid")
@@ -822,30 +1410,44 @@ def evaluate_fixture(
     total_weight = 0.0
     satisfied_weight = 0.0
     severe = 0
+    root_causes: set[str] = set()
+    runtime_cache: dict[str, Mapping[str, object]] = {}
     for raw in criteria:
         kind = raw.get("kind") if isinstance(raw, Mapping) else None
-        extra_keys = (
-            {"value"}
-            if kind in {"file_contains", "file_not_contains"}
-            else {"scenario", "expected"}
-            if kind in {"frontend_scenario", "security_scenario"}
-            else set()
-        )
-        if not isinstance(raw, Mapping) or set(raw) != {
-            "id",
-            "weight",
-            "severity",
-            "kind",
-            "path",
-            *extra_keys,
-        }:
+        required_by_kind = {
+            "json_key_present": {"id", "weight", "severity", "kind", "path"},
+            "file_contains": {"id", "weight", "severity", "kind", "path", "value"},
+            "file_not_contains": {"id", "weight", "severity", "kind", "path", "value"},
+            "frontend_scenario": {"id", "weight", "severity", "kind", "path", "scenario", "expected"},
+            "security_scenario": {"id", "weight", "severity", "kind", "path", "scenario", "expected"},
+            "security_oracle": {"id", "weight", "severity", "kind", "path", "root_cause", "scenario", "expected"},
+            "frontend_browser_suite": {"id", "weight", "severity", "kind", "expected"},
+            "json_literal": {"id", "weight", "severity", "kind", "path", "expected"},
+            "json_enum": {"id", "weight", "severity", "kind", "path", "allowed"},
+            "json_set_contains": {"id", "weight", "severity", "kind", "path", "expected"},
+            "json_relation": {"id", "weight", "severity", "kind", "path", "relation"},
+            "json_no_contradiction": {"id", "weight", "severity", "kind", "path", "forbidden"},
+            "verification_command": {"id", "weight", "severity", "kind", "path", "expected"},
+        }
+        if (
+            not isinstance(raw, Mapping)
+            or kind not in required_by_kind
+            or set(raw) != required_by_kind[kind]
+        ):
             raise ValueError("sealed evaluator criterion surface is invalid")
+        if fixture_id == "multi-tenant-security-review" and payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2" and kind != "security_oracle":
+            raise ValueError("security scoring must use behavioral root-cause oracles")
+        if kind == "security_oracle":
+            root_cause = raw.get("root_cause")
+            if not isinstance(root_cause, str) or not root_cause:
+                raise ValueError("security root-cause binding is invalid")
+            root_causes.add(root_cause)
         identifier = str(raw["id"])
         weight = raw["weight"]
         if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight <= 0:
             raise ValueError("sealed evaluator criterion weight is invalid")
         total_weight += float(weight)
-        passed = _criterion_passes(candidate_root, sealed, raw)
+        passed = _criterion_passes(candidate_root, sealed, raw, runtime_cache)
         if passed:
             satisfied.append(identifier)
             satisfied_weight += float(weight)
@@ -853,7 +1455,61 @@ def evaluate_fixture(
             failed.append(identifier)
             if raw["severity"] in {"blocker", "important"}:
                 severe += 1
+    if fixture_id == "requirement-contract-ambiguity" and payload.get(
+        "schema"
+    ) == "ai-sdlc-v2-benefit-sealed-evaluator/v2":
+        required_kinds = {
+            "json_literal",
+            "json_enum",
+            "json_set_contains",
+            "json_relation",
+            "json_no_contradiction",
+            "verification_command",
+        }
+        if {str(item["kind"]) for item in criteria} != required_kinds:
+            raise ValueError("requirement rubric is not structurally complete")
+    if fixture_id == "frontend-recovery-delivery" and payload.get(
+        "schema"
+    ) == "ai-sdlc-v2-benefit-sealed-evaluator/v2":
+        if any(item.get("kind") != "frontend_browser_suite" for item in criteria):
+            raise ValueError("frontend scoring must use real-browser behavior")
+        if not {"FRD-AC001", "FRD-AC002", "FRD-AC006"}.issubset(
+            {str(item["id"]) for item in criteria}
+        ):
+            raise ValueError("frontend acceptance behavior coverage is incomplete")
+    if fixture_id == "multi-tenant-security-review" and root_causes:
+        declared = payload.get("root_causes")
+        if (
+            not isinstance(declared, list)
+            or len(declared) != 6
+            or len(set(declared)) != 6
+            or set(declared) != root_causes
+        ):
+            raise ValueError("security root-cause oracle coverage is invalid")
     coverage = satisfied_weight / total_weight
+    tp = fp = fn = severe_miss = 0
+    precision: float | None = None
+    recall: float | None = None
+    if fixture_id == "multi-tenant-security-review" and root_causes:
+        findings_path = candidate_root / "benchmark-task" / "findings.json"
+        finding_roots: set[str] = set()
+        try:
+            findings_raw = json.loads(findings_path.read_text(encoding="utf-8"))
+            findings = findings_raw.get("findings", [])
+            if isinstance(findings, list):
+                finding_roots = {
+                    str(item["root_cause"])
+                    for item in findings
+                    if isinstance(item, Mapping) and isinstance(item.get("root_cause"), str)
+                }
+        except (OSError, json.JSONDecodeError):
+            pass
+        tp = len(finding_roots & root_causes)
+        fp = len(finding_roots - root_causes)
+        fn = len(root_causes - finding_roots)
+        severe_miss = fn
+        precision = tp / (tp + fp) if tp + fp else None
+        recall = tp / (tp + fn) if tp + fn else None
     public_result = {
         "fixture_id": fixture_id,
         "external_verified_delivery": not failed,
@@ -861,6 +1517,13 @@ def evaluate_fixture(
         "severe_defect_escape_count": severe,
         "satisfied_criteria": satisfied,
         "failed_criteria": failed,
+        "root_cause_count": len(root_causes),
+        "finding_true_positive_count": tp,
+        "finding_false_positive_count": fp,
+        "finding_false_negative_count": fn,
+        "finding_precision": precision,
+        "finding_recall": recall,
+        "severe_finding_miss_count": severe_miss,
     }
     return EvaluationResult(
         fixture_id=fixture_id,
@@ -870,41 +1533,178 @@ def evaluate_fixture(
         satisfied_criteria=tuple(satisfied),
         failed_criteria=tuple(failed),
         result_sha256=sha256(_canonical_json_bytes(public_result)).hexdigest(),
+        root_cause_count=len(root_causes),
+        finding_true_positive_count=tp,
+        finding_false_positive_count=fp,
+        finding_false_negative_count=fn,
+        finding_precision=precision,
+        finding_recall=recall,
+        severe_finding_miss_count=severe_miss,
     )
 
 
 def scan_candidate_for_sealed_leak(
     candidate: Path, sealed_manifest: Path
 ) -> list[BenchmarkIssue]:
-    """Detect public candidates that contain sealed names, commitments or root hints."""
+    """Scan bytes, names, links and every reachable Git object using opaque findings."""
+    sealed_root_path = sealed_manifest.parent.resolve(strict=True)
     raw = json.loads(sealed_manifest.read_text(encoding="utf-8"))
     entries = raw.get("entries", []) if isinstance(raw, Mapping) else []
+    references = list(entries) if isinstance(entries, list) else []
+    intent_reference = raw.get("intent_map") if isinstance(raw, Mapping) else None
+    if isinstance(intent_reference, Mapping):
+        references.append(intent_reference)
     filenames = {
-        Path(str(item.get("path"))).name
-        for item in entries
+        Path(str(item.get("path"))).name.encode()
+        for item in references
         if isinstance(item, Mapping)
     }
     digests = {
-        str(item.get("sha256")) for item in entries if isinstance(item, Mapping)
+        str(item.get("sha256")).encode()
+        for item in references
+        if isinstance(item, Mapping)
     }
-    sealed_root = sealed_manifest.parent.resolve().as_posix()
-    issues: list[BenchmarkIssue] = []
-    for path in sorted(candidate.rglob("*")):
-        if not path.is_file() or ".git" in path.parts:
+    payload_tokens: set[bytes] = set()
+
+    def collect(value: object) -> None:
+        if not isinstance(value, Mapping):
+            return
+        boundary = value.get("rubric_boundary")
+        if isinstance(boundary, str) and boundary:
+            payload_tokens.add(boundary.encode())
+        canaries = value.get("leak_canaries")
+        if isinstance(canaries, list):
+            payload_tokens.update(
+                item.encode() for item in canaries if isinstance(item, str) and item
+            )
+        criteria = value.get("criteria")
+        if isinstance(criteria, list):
+            for criterion in criteria:
+                if not isinstance(criterion, Mapping):
+                    continue
+                identifier = criterion.get("id")
+                if isinstance(identifier, str) and identifier:
+                    payload_tokens.add(identifier.encode())
+                scenario = criterion.get("scenario")
+                if isinstance(scenario, Mapping):
+                    for key, item in scenario.items():
+                        if (
+                            isinstance(key, str)
+                            and key.endswith("_id")
+                            and isinstance(item, str)
+                            and item
+                        ):
+                            payload_tokens.add(item.encode())
+
+    for item in references:
+        if not isinstance(item, Mapping):
             continue
         try:
-            text = path.read_text(encoding="utf-8", errors="strict")
-        except (OSError, UnicodeDecodeError):
-            continue
+            relative = _safe_relative(item.get("path"))
+            payload = json.loads((sealed_root_path / relative).read_text(encoding="utf-8"))
+        except (OSError, ValueError, json.JSONDecodeError):
+            return [BenchmarkIssue("fixture.leak.scan-error", "sealed-payload")]
+        collect(payload)
+    phrase_markers = {item.encode() for item in _SEALED_PHRASE_MARKERS}
+    inventory = filenames | digests | payload_tokens | phrase_markers | {
+        sealed_root_path.as_posix().encode(),
+        f"file://{sealed_root_path.as_posix()}".encode(),
+    }
+    try:
+        protected_inodes = _protected_inodes(sealed_root_path)
+    except OSError:
+        return [BenchmarkIssue("fixture.leak.scan-error", "sealed-inventory")]
+    issues: list[BenchmarkIssue] = []
+
+    def opaque_location(prefix: str, value: str) -> str:
+        return f"{prefix}:{sha256(value.encode()).hexdigest()[:12]}"
+
+    def scan_blob(blob: bytes, location: str, *, git_object: bool = False) -> None:
+        matches = [token for token in inventory if token and token in blob]
+        if not matches:
+            return
+        codes: set[str] = set()
+        if any(token in filenames for token in matches):
+            codes.add("fixture.leak.filename")
+        if any(token in digests for token in matches):
+            codes.add("fixture.leak.digest")
+        if any(token in payload_tokens or token in phrase_markers for token in matches):
+            codes.add("fixture.leak.rubric-phrase")
+        if any(b"/" in token or token.startswith(b"file://") for token in matches):
+            codes.add("fixture.leak.path")
+        if git_object:
+            codes.add("fixture.leak.git-object")
+            codes.add("fixture.leak.path-name")
+        for code in sorted(codes):
+            issues.append(BenchmarkIssue(code, location))
+
+    try:
+        paths = sorted(candidate.rglob("*"), key=lambda item: item.as_posix())
+    except OSError:
+        return [BenchmarkIssue("fixture.leak.scan-error", "candidate-tree")]
+    for path in paths:
         relative = path.relative_to(candidate).as_posix()
-        if any(name in text for name in filenames):
-            issues.append(BenchmarkIssue("fixture.leak.filename", relative))
-        if any(digest in text for digest in digests):
-            issues.append(BenchmarkIssue("fixture.leak.digest", relative))
-        if any(marker in text for marker in _SEALED_PHRASE_MARKERS):
-            issues.append(BenchmarkIssue("fixture.leak.rubric-phrase", relative))
-        if sealed_root in text or f"file://{sealed_root}" in text:
-            issues.append(BenchmarkIssue("fixture.leak.path", relative))
+        encoded_name = relative.encode(errors="surrogateescape")
+        if any(token and token in encoded_name for token in inventory):
+            issues.append(
+                BenchmarkIssue(
+                    "fixture.leak.path-name", opaque_location("candidate", relative)
+                )
+            )
+        if path.is_symlink():
+            issues.append(
+                BenchmarkIssue(
+                    "fixture.leak.symlink", opaque_location("candidate", relative)
+                )
+            )
+            continue
+        if not path.is_file() or ".git" in path.relative_to(candidate).parts:
+            continue
+        try:
+            stat = path.stat()
+            if stat.st_nlink > 1 or (stat.st_dev, stat.st_ino) in protected_inodes:
+                issues.append(
+                    BenchmarkIssue(
+                        "fixture.leak.hardlink", opaque_location("candidate", relative)
+                    )
+                )
+            scan_blob(
+                path.read_bytes(), opaque_location("candidate", relative)
+            )
+        except OSError:
+            issues.append(
+                BenchmarkIssue(
+                    "fixture.leak.scan-error", opaque_location("candidate", relative)
+                )
+            )
+            continue
+    git = candidate / ".git"
+    if git.exists():
+        completed = subprocess.run(
+            ["git", "cat-file", "--batch-all-objects", "--batch"],
+            cwd=candidate,
+            input=b"",
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        if completed.returncode != 0:
+            issues.append(BenchmarkIssue("fixture.leak.scan-error", "git-objects"))
+        else:
+            scan_blob(completed.stdout, "git:all-objects", git_object=True)
+        for git_path, label in ((git / "index", "git:index"), (git / "logs", "git:reflog")):
+            if git_path.is_file():
+                try:
+                    scan_blob(git_path.read_bytes(), label, git_object=True)
+                except OSError:
+                    issues.append(BenchmarkIssue("fixture.leak.scan-error", label))
+            elif git_path.is_dir():
+                try:
+                    for child in git_path.rglob("*"):
+                        if child.is_file():
+                            scan_blob(child.read_bytes(), label, git_object=True)
+                except OSError:
+                    issues.append(BenchmarkIssue("fixture.leak.scan-error", label))
     return issues
 
 
@@ -925,11 +1725,12 @@ def validate_sealed_commitments(
                 "evidence_contract_template_sha256",
                 "evidence_contract_commitment",
                 "fixture_payloads",
+                "intent_map_sha256",
                 "publication_state",
             },
             "sealed commitments",
         )
-        if commitments["schema"] != "ai-sdlc-v2-benefit-sealed-commitments/v1":
+        if commitments["schema"] != "ai-sdlc-v2-benefit-sealed-commitments/v2":
             raise ValueError("sealed commitment schema is invalid")
         if commitments["lock_id"] != sealed_root.name:
             raise ValueError("sealed root lock id is invalid")
@@ -964,6 +1765,19 @@ def validate_sealed_commitments(
             if isinstance(item, Mapping)
         } != manifest_entries:
             raise ValueError("sealed payload commitments are invalid")
+        intent = manifest_raw.get("intent_map")
+        if (
+            not isinstance(intent, Mapping)
+            or set(intent) != {"path", "sha256"}
+            or commitments["intent_map_sha256"] != intent["sha256"]
+        ):
+            raise ValueError("sealed intent-map commitment is invalid")
+        intent_path = sealed_root / _safe_relative(intent["path"])
+        if _digest_file(intent_path) != intent["sha256"]:
+            raise ValueError("sealed intent-map digest is invalid")
+        FrozenIntentApprovalService.from_sealed_root(
+            sealed_root, sealed_root.parent / ".intent-validation-events.jsonl"
+        )
         for fixture_id in FIXTURE_IDS:
             _load_sealed_payload(fixture_id, sealed_root)
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
@@ -983,18 +1797,24 @@ def _protected_inodes(root: Path) -> set[tuple[int, int]]:
     }
 
 
-def _link_issues(run_root: Path, sealed_root: Path) -> list[BenchmarkIssue]:
+def _link_issues(run_root: Path) -> list[BenchmarkIssue]:
     issues: list[BenchmarkIssue] = []
-    protected = _protected_inodes(sealed_root)
-    for path in run_root.rglob("*"):
-        if path.is_symlink():
+    try:
+        for path in run_root.rglob("*"):
+            relative = sha256(path.relative_to(run_root).as_posix().encode()).hexdigest()[:12]
             try:
-                path.resolve(strict=True).relative_to(sealed_root.resolve(strict=True))
-                issues.append(BenchmarkIssue("isolation.symlink", path.name))
-            except (OSError, ValueError):
-                pass
-        elif path.is_file() and (path.stat().st_dev, path.stat().st_ino) in protected:
-            issues.append(BenchmarkIssue("isolation.hardlink", path.name))
+                if path.is_symlink():
+                    target = path.resolve(strict=False)
+                    try:
+                        target.relative_to(run_root)
+                    except ValueError:
+                        issues.append(BenchmarkIssue("isolation.symlink", relative))
+                elif path.is_file() and path.stat().st_nlink > 1:
+                    issues.append(BenchmarkIssue("isolation.hardlink", relative))
+            except OSError:
+                issues.append(BenchmarkIssue("isolation.scan-error", relative))
+    except OSError:
+        issues.append(BenchmarkIssue("isolation.scan-error", "run-root"))
     return issues
 
 
@@ -1011,23 +1831,47 @@ def build_provider_isolation_profile(
     other_run_roots: Sequence[Path],
     argv: Sequence[str],
     environment: Mapping[str, str],
+    raw_results_root: Path,
+    protected_roots: Sequence[Path] = (),
 ) -> ProviderIsolationProfile:
     """Create a fail-closed macOS Provider profile plus link/env/add-dir preflight."""
     run = run_root.resolve(strict=True)
     sealed = sealed_root.resolve(strict=True)
     control = control_root.resolve(strict=True)
+    raw_results = raw_results_root.resolve(strict=True)
+    extra_protected = tuple(path.resolve(strict=True) for path in protected_roots)
     other = tuple(path.resolve(strict=True) for path in other_run_roots)
-    issues = _link_issues(run, sealed)
-    protected = (sealed, sealed.parent, control, *other)
+    issues = _link_issues(run)
+    protected = tuple(
+        dict.fromkeys(
+            (
+                sealed,
+                sealed.parent,
+                control,
+                raw_results,
+                *extra_protected,
+                *other,
+            )
+        )
+    )
+    for root in protected:
+        try:
+            run.relative_to(root)
+            issues.append(BenchmarkIssue("isolation.root-overlap", "run-in-protected"))
+        except ValueError:
+            pass
+        try:
+            root.relative_to(run)
+            issues.append(BenchmarkIssue("isolation.root-overlap", "protected-in-run"))
+        except ValueError:
+            pass
     for key, value in environment.items():
         if key != "PATH" and _contains_path(value, protected):
             issues.append(BenchmarkIssue("isolation.environment", key))
     for index, value in enumerate(argv):
-        if value == "--add-dir" and index + 1 < len(argv):
-            add_dir = argv[index + 1]
-            if _contains_path(add_dir, protected) or not _contains_path(add_dir, (run,)):
-                issues.append(BenchmarkIssue("isolation.add-dir", "forbidden --add-dir"))
-    deny_paths = tuple(dict.fromkeys((sealed, sealed.parent, control, *other)))
+        if value == "--add-dir" or value.startswith("--add-dir="):
+            issues.append(BenchmarkIssue("isolation.add-dir", f"argument-{index}"))
+    deny_paths = protected
     deny_rules = "\n".join(
         f'  (deny file-read* file-write* (subpath "{_seatbelt_literal(path)}"))'
         for path in deny_paths
@@ -1042,6 +1886,8 @@ def build_provider_isolation_profile(
         run_root=run,
         sealed_root=sealed,
         control_root=control,
+        raw_results_root=raw_results,
+        protected_roots=extra_protected,
         other_run_roots=other,
         argv=tuple(argv),
         environment={"PATH": environment.get("PATH", "")},
@@ -1051,18 +1897,49 @@ def build_provider_isolation_profile(
     )
 
 
-def _sandbox_denies(profile: ProviderIsolationProfile, target: Path) -> bool:
-    completed = subprocess.run(
-        ["/usr/bin/sandbox-exec", "-p", profile.sandbox_text, "/bin/cat", str(target)],
-        env=dict(profile.environment),
+def run_provider_isolated(
+    profile: ProviderIsolationProfile,
+    argv: Sequence[str],
+    *,
+    environment: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
+    """Apply the final dynamic preflight and Seatbelt profile to one subprocess."""
+    requested_environment = (
+        environment if environment is not None else profile.environment
+    )
+    refreshed = build_provider_isolation_profile(
+        run_root=profile.run_root,
+        sealed_root=profile.sealed_root,
+        control_root=profile.control_root,
+        raw_results_root=profile.raw_results_root,
+        protected_roots=profile.protected_roots,
+        other_run_roots=profile.other_run_roots,
+        argv=argv,
+        environment=requested_environment,
+    )
+    if refreshed.issues:
+        return subprocess.CompletedProcess(
+            list(argv), 126, "", "ISOLATION_REFUSED\n"
+        )
+    return subprocess.run(
+        ["/usr/bin/sandbox-exec", "-p", refreshed.sandbox_text, *argv],
+        cwd=profile.run_root,
+        env=dict(refreshed.environment),
         capture_output=True,
         text=True,
         timeout=10,
         check=False,
     )
+
+
+def _sandbox_denies(profile: ProviderIsolationProfile, target: Path) -> bool:
+    completed = run_provider_isolated(profile, ["/bin/cat", str(target)])
     if "sandbox_apply: Operation not permitted" in completed.stderr:
         raise RuntimeError(completed.stderr.strip())
-    return completed.returncode != 0 and "Operation not permitted" in completed.stderr
+    return completed.returncode != 0 and (
+        "Operation not permitted" in completed.stderr
+        or "ISOLATION_REFUSED" in completed.stderr
+    )
 
 
 def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProbeResult:
@@ -1071,9 +1948,35 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
         raise RuntimeError("OS deny-read profile is unavailable on this platform")
     if profile.issues:
         raise ValueError("Provider isolation preflight has unresolved issues")
-    sealed_file = next(path for path in profile.sealed_root.rglob("*") if path.is_file())
-    direct = _sandbox_denies(profile, sealed_file)
+    roots = tuple(
+        dict.fromkeys(
+            (
+                profile.sealed_root,
+                profile.sealed_root.parent,
+                profile.control_root,
+                profile.raw_results_root,
+                *profile.protected_roots,
+                *profile.other_run_roots,
+            )
+        )
+    )
+    created: list[Path] = []
+    canaries: list[Path] = []
+    for index, root in enumerate(roots):
+        existing = next((path for path in root.rglob("*") if path.is_file()), None)
+        if existing is None:
+            existing = root / f".provider-isolation-canary-{index}"
+            existing.write_text("protected", encoding="utf-8")
+            created.append(existing)
+        canaries.append(existing)
+    denied_roots = [_sandbox_denies(profile, target) for target in canaries]
+    direct = all(denied_roots)
+    protected_results = tuple(
+        (f"protected-root-{index}", denied)
+        for index, denied in enumerate(denied_roots)
+    )
     parent = _sandbox_denies(profile, profile.sealed_root.parent)
+    sealed_file = canaries[0]
     symlink_path = profile.run_root / ".isolation-symlink-canary"
     hardlink_path = profile.run_root / ".isolation-hardlink-canary"
     symlink_path.unlink(missing_ok=True)
@@ -1088,16 +1991,12 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
     try:
         symlink = _sandbox_denies(profile, symlink_path)
         if hardlink_created:
-            linked_profile = build_provider_isolation_profile(
-                run_root=profile.run_root,
-                sealed_root=profile.sealed_root,
-                control_root=profile.control_root,
-                other_run_roots=profile.other_run_roots,
-                argv=profile.argv,
-                environment=profile.environment,
+            hardlink_launch = run_provider_isolated(
+                profile, ["/bin/cat", str(hardlink_path)]
             )
-            hardlink = any(
-                issue.code == "isolation.hardlink" for issue in linked_profile.issues
+            hardlink = (
+                hardlink_launch.returncode == 126
+                and "ISOLATION_REFUSED" in hardlink_launch.stderr
             )
         else:
             hardlink = True
@@ -1105,17 +2004,33 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
         symlink_path.unlink(missing_ok=True)
         if hardlink_created:
             hardlink_path.unlink(missing_ok=True)
-    other_file = profile.other_run_roots[0] / ".other-run-canary"
-    other_file.write_text("other-run", encoding="utf-8")
-    try:
-        other_run = _sandbox_denies(profile, other_file)
-    finally:
-        other_file.unlink(missing_ok=True)
-    environment = not any(
-        _contains_path(value, (profile.sealed_root, profile.control_root))
-        for value in profile.environment.values()
+    other_run = all(
+        _sandbox_denies(profile, target)
+        for root, target in zip(roots, canaries, strict=True)
+        if root in profile.other_run_roots
     )
-    add_dir = not any(value == "--add-dir" for value in profile.argv)
+    environment_launch = run_provider_isolated(
+        profile,
+        ["/usr/bin/true"],
+        environment={
+            "PATH": profile.environment.get("PATH", ""),
+            "CANARY": str(sealed_file),
+        },
+    )
+    environment = (
+        environment_launch.returncode == 126
+        and "ISOLATION_REFUSED" in environment_launch.stderr
+    )
+    add_dir_launch = run_provider_isolated(
+        profile,
+        ["/usr/bin/true", "--add-dir=../protected"],
+    )
+    add_dir = (
+        add_dir_launch.returncode == 126
+        and "ISOLATION_REFUSED" in add_dir_launch.stderr
+    )
+    for path in created:
+        path.unlink(missing_ok=True)
     return IsolationProbeResult(
         direct=direct,
         parent=parent,
@@ -1124,4 +2039,5 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
         environment=environment,
         other_run=other_run,
         add_dir=add_dir,
+        protected_root_results=protected_results,
     )
