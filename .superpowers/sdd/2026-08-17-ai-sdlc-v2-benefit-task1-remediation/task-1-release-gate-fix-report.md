@@ -151,3 +151,67 @@ git diff --check：clean
 
 Task 2 才能生成真实 fixture tree 与 evidence contract 并原子绑定 protocol；本提交没有生成
 占位合同或放宽 NO-GO。
+
+## Fix Round 3：外部证据复算与阶段闭合状态机
+
+### 冻结边界与 RED
+
+- 修复基线：`ecc197876cc21198be8c0872107c16b316041880`。
+- 本轮只关闭 evidence authority 可自重签与 phase start/end 可拆分两个根因；未修改
+  fixture、网页、Task 2 或实验结果。
+- Provider、`codex exec` 与 benchmark experiment 调用继续保持为 0。
+
+在生产实现修改前先加入三个根因级反例，实际结果为：
+
+```text
+UV_CACHE_DIR=.uv-cache uv run pytest -q tests/unit/test_benefit_benchmark.py \
+  -k 'release_gate_round3'
+3 failed, 344 deselected
+```
+
+失败分别证明：攻击者可修改 contract-owned `required` 后同时重签 ledger seal 与 receipt；
+artifact 在 seal 后变化仍会通过；core 没有 `start_run / transition_run_phase`，仍暴露拆分式
+phase event 写入。实现统一方案后再扩展为 21 条 release-gate/CLI 回归，覆盖 contract/root
+缺失、baseline/candidate 漂移、非法顺序、pre-start reserve、post-provider reserve、future、
+gap、orphan、pending no-write 与真实 CLI 完整正向链。
+
+### 统一修复
+
+1. **Contract 与真实 workspace 双重权威**：`verify_receipt` 和 CLI `verify-receipt`
+   必须显式接收 exact hash-bound evidence contract 与可移植 workspace root。verifier 不再把
+   ledger seal 当作唯一事实，而是按 contract 逐 slot 重读真实文件，以打开文件的 `fstat`、
+   bytes SHA-256 和 size 重建 inventory，并重新计算 baseline/candidate 内容 diff 与两侧
+   changed-scope tree digest。ledger 与 receipt 只能投影该结果；同时修改字段、digest 与
+   seal binding 也无法绕过外部复算。
+2. **可移植且无私有根路径**：ledger/receipt 新增的
+   `changed_scope_tree_digests` 只保存 canonical tree digest；artifact 与 changed-file 只保存
+   contract 内的相对路径。contract/root 缺失、contract exact bytes 漂移、artifact 编辑、
+   baseline/candidate root 内容漂移均 fail closed，ledger 不保存 workspace 绝对路径。
+3. **六阶段原子状态机**：新增 `start-run`，由 core clock 在任何 writer reservation 前建立
+   `setup`；新增 `transition-phase(next)`，用一次 core timestamp 同时关闭当前阶段并打开固定
+   后继。唯一顺序为
+   `setup → framework_init → provider → post_provider → review → evaluation`。
+   reserve/completion/service transaction 只能发生在 provider；离开 provider 前至少存在一个
+   attempt 且全部 terminal；多 Provider attempt 始终留在同一 provider 阶段。
+4. **Seal 是最终原子闭合**：seal 只允许在 open evaluation，由 core now 关闭 evaluation，
+   随后构建 evidence、复用 receipt 同一 phase adjacency/additivity/digest validator、验证完整
+   ledger，全部成功后才原子写入。失败路径不会把半闭合 phase 或坏 evidence 写回；sealed 后
+   start/transition/reserve/complete/service/retry 全部拒绝。
+5. **Reload 与 CLI fail closed**：ledger v6 closed shape 增加 `current_phase` 并拒绝旧 shape
+   隐式迁移；reload 校验 run start、phase prefix、同 timestamp 邻接、attempt/service event
+   必须落在 provider interval、terminal closure、future/gap/orphan 与 seal 时序。CLI 删除
+   `record-phase-event`，新增 `start-run / transition-phase`；`verify-receipt` 的 contract 与
+   workspace root 均为 required 参数。tracked pending protocol 在所有新 phase 命令上仍返回
+  稳定 JSON input error 且不创建 ledger。
+
+### 验证
+
+```text
+Round 3 + CLI 必填聚焦：21 passed, 342 deselected
+benchmark + CLI 全回归：373 passed
+ledger/state/concurrency/release-gate 聚焦：149 passed, 214 deselected
+```
+
+两份 frozen JSON schema、Ruff、tracked protocol 状态与 Git diff/status 在本轮最终提交前再次
+独立校验。tracked protocol 仍为 fixture/evidence-contract paired `pending-unbound`，因此
+`structurally_valid=true / execution_ready=false`，正式实验继续 NO-GO。

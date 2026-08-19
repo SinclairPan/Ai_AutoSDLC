@@ -55,6 +55,30 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
     protocol.write_text(json.dumps(raw), encoding="utf-8")
     ledger = tmp_path / "ledger.json"
     script = REPO_ROOT / "scripts" / "ai_sdlc_v2_benefit_benchmark.py"
+    common = [
+        "--ledger",
+        str(ledger),
+        "--protocol",
+        str(protocol),
+        "--contract",
+        str(contract_path),
+        "--run-id",
+        "P:requirement-contract-ambiguity",
+    ]
+    phase_commands = [
+        ["start-run", *common],
+        ["transition-phase", *common, "--next-phase", "framework_init"],
+        ["transition-phase", *common, "--next-phase", "provider"],
+    ]
+    for phase_command in phase_commands:
+        phase_result = subprocess.run(
+            ["uv", "run", "python", str(script), *phase_command],
+            cwd=REPO_ROOT,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        assert phase_result.returncode == 0, phase_result.stdout
 
     reserved = subprocess.run(
         [

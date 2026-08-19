@@ -12,13 +12,14 @@ from ai_sdlc.benefit_benchmark import (
     AttemptRequest,
     BenchmarkIssue,
     load_protocol,
-    record_phase_event,
     record_provider_completion,
     record_service_transaction,
     redact_public_message,
     reserve_provider_attempt,
     seal_run_evidence,
+    start_run,
     start_service_transaction,
+    transition_run_phase,
     validate_protocol,
     verify_receipt,
     verify_summary,
@@ -87,6 +88,17 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate")
     validate.add_argument("--protocol", type=Path, required=True)
+    run_start = commands.add_parser("start-run")
+    run_start.add_argument("--ledger", type=Path, required=True)
+    run_start.add_argument("--protocol", type=Path, required=True)
+    run_start.add_argument("--contract", type=Path, required=True)
+    run_start.add_argument("--run-id", required=True)
+    phase_transition = commands.add_parser("transition-phase")
+    phase_transition.add_argument("--ledger", type=Path, required=True)
+    phase_transition.add_argument("--protocol", type=Path, required=True)
+    phase_transition.add_argument("--contract", type=Path, required=True)
+    phase_transition.add_argument("--run-id", required=True)
+    phase_transition.add_argument("--next-phase", required=True)
     reserve = commands.add_parser("reserve-attempt")
     reserve.add_argument("--ledger", type=Path, required=True)
     reserve.add_argument("--protocol", type=Path, required=True)
@@ -119,13 +131,6 @@ def main() -> int:
     complete.add_argument("--output-tokens", type=int)
     complete.add_argument("--reasoning-output-tokens", type=int)
     complete.add_argument("--raw-provider-output-sha256")
-    phase_event = commands.add_parser("record-phase-event")
-    phase_event.add_argument("--ledger", type=Path, required=True)
-    phase_event.add_argument("--protocol", type=Path, required=True)
-    phase_event.add_argument("--contract", type=Path, required=True)
-    phase_event.add_argument("--run-id", required=True)
-    phase_event.add_argument("--phase", required=True)
-    phase_event.add_argument("--action", required=True)
     service_start = commands.add_parser("start-service-transaction")
     service_start.add_argument("--ledger", type=Path, required=True)
     service_start.add_argument("--protocol", type=Path, required=True)
@@ -151,6 +156,8 @@ def main() -> int:
     receipt.add_argument("--receipt", type=Path, required=True)
     receipt.add_argument("--protocol", type=Path, required=True)
     receipt.add_argument("--ledger", type=Path, required=True)
+    receipt.add_argument("--contract", type=Path, required=True)
+    receipt.add_argument("--workspace-root", type=Path, required=True)
     summary = commands.add_parser("verify-summary")
     summary.add_argument("--summary", type=Path, required=True)
     summary.add_argument("--protocol", type=Path, required=True)
@@ -176,6 +183,25 @@ def main() -> int:
                 }
             )
             return 1 if structural_issues else 0
+        if arguments.command == "start-run":
+            start_run(
+                arguments.ledger,
+                _protocol(arguments.protocol),
+                arguments.contract,
+                run_id=arguments.run_id,
+            )
+            _emit({"run_id": arguments.run_id, "started": True})
+            return 0
+        if arguments.command == "transition-phase":
+            transition_run_phase(
+                arguments.ledger,
+                _protocol(arguments.protocol),
+                arguments.contract,
+                run_id=arguments.run_id,
+                next_phase=arguments.next_phase,
+            )
+            _emit({"next_phase": arguments.next_phase, "run_id": arguments.run_id})
+            return 0
         if arguments.command == "reserve-attempt":
             reservation = reserve_provider_attempt(
                 arguments.ledger,
@@ -229,17 +255,6 @@ def main() -> int:
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
-        if arguments.command == "record-phase-event":
-            record_phase_event(
-                arguments.ledger,
-                _protocol(arguments.protocol),
-                arguments.contract,
-                run_id=arguments.run_id,
-                phase=arguments.phase,
-                action=arguments.action,
-            )
-            _emit({"recorded": True, "run_id": arguments.run_id})
-            return 0
         if arguments.command == "start-service-transaction":
             start_service_transaction(
                 arguments.ledger,
@@ -278,6 +293,8 @@ def main() -> int:
                 _json_object(arguments.receipt, "receipt"),
                 _protocol(arguments.protocol),
                 arguments.ledger,
+                arguments.contract,
+                arguments.workspace_root,
             )
         else:
             issues = verify_summary(

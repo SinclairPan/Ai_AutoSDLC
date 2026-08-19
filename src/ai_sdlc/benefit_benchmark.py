@@ -244,6 +244,14 @@ _TERMINAL_STATUSES = {
     "needs_operator",
     "budget_exhausted",
 }
+_RUN_PHASES = (
+    "setup",
+    "framework_init",
+    "provider",
+    "post_provider",
+    "review",
+    "evaluation",
+)
 _POST_CONTENT_TERMINAL_STATUSES = _TERMINAL_STATUSES - {"technical_failure"}
 _TRANSITIONS = {
     "writer": {
@@ -318,6 +326,98 @@ def canonical_protocol_digest(protocol: BenchmarkProtocol) -> str:
     return sha256(protocol.canonical_bytes).hexdigest()
 
 
+def start_run(
+    ledger_path: Path,
+    protocol: BenchmarkProtocol,
+    evidence_contract_path: Path,
+    *,
+    run_id: str,
+) -> None:
+    """Create a run in setup before any Provider reservation."""
+    protocol_digest = _require_executable_protocol(protocol)
+    contract = _load_evidence_contract(evidence_contract_path, protocol)
+    _contract_run(contract, run_id)
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        runs = ledger["runs"]
+        if not isinstance(runs, dict) or run_id in runs:
+            raise ValueError("run start requires a new frozen run identity")
+        now = _now_rfc3339()
+        runs[run_id] = {
+            "run_id": run_id,
+            "run_started_at": now,
+            "current_phase": "setup",
+            "phase_events": [
+                {"phase": "setup", "started_at": now, "ended_at": None}
+            ],
+            "sealed_evidence": None,
+        }
+        _validate_run_registry(
+            runs,
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
+        )
+        _atomic_write_json(ledger_path, ledger)
+
+
+def transition_run_phase(
+    ledger_path: Path,
+    protocol: BenchmarkProtocol,
+    evidence_contract_path: Path,
+    *,
+    run_id: str,
+    next_phase: str,
+) -> None:
+    """Atomically close the current phase and open its fixed successor."""
+    protocol_digest = _require_executable_protocol(protocol)
+    _load_evidence_contract(evidence_contract_path, protocol)
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        run = _active_run_record(ledger, run_id)
+        current = run.get("current_phase")
+        try:
+            expected = _RUN_PHASES[_RUN_PHASES.index(str(current)) + 1]
+        except (ValueError, IndexError) as error:
+            raise ValueError("run phase has no transition successor") from error
+        if next_phase != expected:
+            raise ValueError("run phase transition violates the fixed order")
+        run_attempts = [
+            attempt
+            for attempt in ledger["attempts"]
+            if isinstance(attempt, Mapping) and attempt.get("run_id") == run_id
+        ]
+        if current == "provider" and (
+            not run_attempts
+            or any(attempt.get("terminal") is not True for attempt in run_attempts)
+        ):
+            raise ValueError("provider phase can close only after all attempts terminate")
+        events = run.get("phase_events")
+        if not isinstance(events, list) or not events:
+            raise ValueError("run phase state is invalid")
+        now = _now_rfc3339()
+        closed = {**events[-1], "ended_at": now}
+        opened = {"phase": next_phase, "started_at": now, "ended_at": None}
+        events[-1] = closed
+        events.append(opened)
+        run["current_phase"] = next_phase
+        _validate_run_registry(
+            ledger["runs"],
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
+        )
+        _atomic_write_json(ledger_path, ledger)
+
+
 def reserve_provider_attempt(
     ledger_path: Path,
     protocol: BenchmarkProtocol,
@@ -339,19 +439,12 @@ def reserve_provider_attempt(
         if not isinstance(runs, dict):
             raise ValueError("attempt ledger has invalid run registry")
         run = runs.get(request.run_id)
-        if run is None:
-            if request.kind != "writer":
-                raise ValueError("run must begin with a writer reservation")
-            now = _now_rfc3339()
-            run = {
-                "run_id": request.run_id,
-                "run_started_at": now,
-                "phase_events": [],
-                "sealed_evidence": None,
-            }
-            runs[request.run_id] = run
-        elif not isinstance(run, Mapping) or run.get("sealed_evidence") is not None:
+        if not isinstance(run, Mapping):
+            raise ValueError("run must be started before Provider reservation")
+        if run.get("sealed_evidence") is not None:
             raise ValueError("sealed run rejects late attempts and events")
+        if run.get("current_phase") != "provider":
+            raise ValueError("Provider reservation is allowed only in provider phase")
         if ledger["attempts_started"] >= protocol.attempt_budget.limit:
             raise ValueError(
                 f"Provider attempt budget of {protocol.attempt_budget.limit} is exhausted"
@@ -392,7 +485,11 @@ def record_provider_completion(
         )
         for attempt in ledger["attempts"]:
             if attempt["attempt_id"] == completion.attempt_id:
-                _active_run_record(ledger, str(attempt["run_id"]))
+                run = _active_run_record(ledger, str(attempt["run_id"]))
+                if run.get("current_phase") != "provider":
+                    raise ValueError(
+                        "Provider completion is allowed only in provider phase"
+                    )
                 _apply_attempt_transition(ledger["attempts"], attempt, completion)
                 _validate_persisted_attempt(attempt, completion.attempt_id)
                 _validate_attempt_ledger_invariants(
@@ -406,49 +503,6 @@ def record_provider_completion(
                 _atomic_write_json(ledger_path, ledger)
                 return
         raise ValueError("Provider completion requires a prior reservation")
-
-
-def record_phase_event(
-    ledger_path: Path,
-    protocol: BenchmarkProtocol,
-    evidence_contract_path: Path,
-    *,
-    run_id: str,
-    phase: str,
-    action: str,
-) -> None:
-    """Record a controller phase event using only the core clock."""
-    protocol_digest = _require_executable_protocol(protocol)
-    _load_evidence_contract(evidence_contract_path, protocol)
-    with _ledger_lock(ledger_path):
-        ledger = _load_ledger(
-            ledger_path,
-            protocol_digest,
-            protocol.attempt_budget,
-            protocol.execution_lock.evidence_contract_sha256,
-        )
-        run = _active_run_record(ledger, run_id)
-        if phase == "provider" or phase not in {
-            "setup",
-            "framework_init",
-            "governance",
-            "review",
-            "evaluation",
-        } or action not in {"start", "end"}:
-            raise ValueError("controller phase event is invalid")
-        events = run["phase_events"]
-        if not isinstance(events, list):
-            raise ValueError("attempt ledger phase events are invalid")
-        event = {"phase": phase, "action": action, "recorded_at": _now_rfc3339()}
-        _validate_new_phase_event(events, event)
-        _require_public_ledger_value(event, "controller phase event")
-        events.append(event)
-        _validate_run_registry(
-            ledger["runs"],
-            ledger["attempts"],
-            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
-        )
-        _atomic_write_json(ledger_path, ledger)
 
 
 def start_service_transaction(
@@ -474,6 +528,8 @@ def start_service_transaction(
         if attempt is None or attempt.get("terminal") is True:
             raise ValueError("service transaction requires an active attempt")
         run = _active_run_record(ledger, str(attempt.get("run_id")))
+        if run.get("current_phase") != "provider":
+            raise ValueError("service transaction is allowed only in provider phase")
         allowed = _contract_run(contract, str(attempt.get("run_id")))[
             "allowed_automated_event_types"
         ]
@@ -547,7 +603,9 @@ def record_service_transaction(
         attempt = _attempt_by_id(ledger["attempts"], attempt_id)
         if attempt is None or attempt.get("terminal") is True:
             raise ValueError("service transaction requires an active attempt")
-        _active_run_record(ledger, str(attempt.get("run_id")))
+        run = _active_run_record(ledger, str(attempt.get("run_id")))
+        if run.get("current_phase") != "provider":
+            raise ValueError("service transaction is allowed only in provider phase")
         allowed = _contract_run(contract, str(attempt.get("run_id")))[
             "allowed_automated_event_types"
         ]
@@ -640,6 +698,8 @@ def seal_run_evidence(
             protocol.execution_lock.evidence_contract_sha256,
         )
         run = _active_run_record(ledger, run_id)
+        if run.get("current_phase") != "evaluation":
+            raise ValueError("run evidence can be sealed only in evaluation phase")
         attempts = [
             item
             for item in ledger["attempts"]
@@ -648,6 +708,15 @@ def seal_run_evidence(
         if not attempts or any(item.get("terminal") is not True for item in attempts):
             raise ValueError("run evidence requires every started run attempt terminal")
         recorded_at = _now_rfc3339()
+        phase_events = run.get("phase_events")
+        if (
+            not isinstance(phase_events, list)
+            or not phase_events
+            or phase_events[-1].get("phase") != "evaluation"
+            or phase_events[-1].get("ended_at") is not None
+        ):
+            raise ValueError("run evidence requires one open evaluation phase")
+        phase_events[-1] = {**phase_events[-1], "ended_at": recorded_at}
         snapshot = _build_sealed_run_evidence(
             run_id=run_id,
             run=run,
@@ -656,6 +725,11 @@ def seal_run_evidence(
             workspace_root=workspace_root,
             recorded_at=recorded_at,
             contract_sha256=sha256(contract["canonical_bytes"]).hexdigest(),
+        )
+        _validated_phase_durations(
+            snapshot["phase_evidence"],
+            str(run.get("run_started_at")),
+            recorded_at,
         )
         run["sealed_evidence"] = snapshot
         _validate_run_registry(
@@ -676,7 +750,11 @@ def validate_provider_output_schema(
 
 
 def verify_receipt(
-    receipt: Mapping[str, object], protocol: BenchmarkProtocol, ledger_path: Path
+    receipt: Mapping[str, object],
+    protocol: BenchmarkProtocol,
+    ledger_path: Path,
+    evidence_contract_path: Path,
+    workspace_root: Path,
 ) -> list[BenchmarkIssue]:
     """Verify one receipt in the fixed schema, protocol and ledger order."""
     issues: list[BenchmarkIssue] = []
@@ -695,8 +773,24 @@ def verify_receipt(
     _validate_receipt_protocol_binding(receipt, protocol, issues)
     if issues:
         return issues
+    try:
+        contract = _load_evidence_contract(evidence_contract_path, protocol)
+    except (OSError, ValueError, json.JSONDecodeError) as error:
+        return [
+            BenchmarkIssue(
+                "receipt.evidence-contract",
+                f"evidence contract is invalid: {error}",
+            )
+        ]
     _scan_public_value(receipt, "$", issues)
-    _validate_receipt_ledger_binding(receipt, protocol, ledger_path, issues)
+    _validate_receipt_ledger_binding(
+        receipt,
+        protocol,
+        ledger_path,
+        contract,
+        workspace_root,
+        issues,
+    )
     if issues:
         return issues
     digests = _mapping(receipt.get("digests"))
@@ -903,6 +997,8 @@ def _validate_receipt_ledger_binding(
     receipt: Mapping[str, object],
     protocol: BenchmarkProtocol,
     ledger_path: Path,
+    contract: Mapping[str, object],
+    workspace_root: Path,
     issues: list[BenchmarkIssue],
 ) -> None:
     """Bind receipt attempts and runner evidence to the validated persisted v6 ledger."""
@@ -951,6 +1047,37 @@ def _validate_receipt_ledger_binding(
             BenchmarkIssue(
                 "receipt.ledger-evidence",
                 "sealed evidence contract does not match protocol",
+            )
+        )
+    try:
+        (
+            actual_inventory,
+            actual_changed_files,
+            actual_changed_file_evidence,
+            actual_tree_digests,
+        ) = _build_authoritative_file_evidence(contract, str(run_id), workspace_root)
+    except (OSError, ValueError) as error:
+        issues.append(
+            BenchmarkIssue(
+                "receipt.workspace-evidence",
+                f"workspace evidence is invalid: {error}",
+            )
+        )
+        return
+    actual_surfaces = {
+        "artifact_inventory": actual_inventory,
+        "changed_files": actual_changed_files,
+        "changed_file_evidence": actual_changed_file_evidence,
+        "changed_scope_tree_digests": actual_tree_digests,
+    }
+    if any(
+        authoritative_evidence.get(key) != value
+        for key, value in actual_surfaces.items()
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.workspace-evidence",
+                "sealed evidence does not match the contract-bound workspace",
             )
         )
     _validate_receipt_run_evidence_projection(
@@ -1144,6 +1271,7 @@ def _validate_receipt_run_evidence_projection(
         "phase_evidence": "phase_evidence",
         "artifact_inventory": "artifact_inventory",
         "changed_files": "changed_files",
+        "changed_scope_tree_digests": "changed_scope_tree_digests",
         "automated_events": "automated_events",
         "human_events": "human_events",
     }
@@ -2155,6 +2283,58 @@ def _build_sealed_run_evidence(
     recorded_at: str,
     contract_sha256: str,
 ) -> dict[str, object]:
+    (
+        artifacts,
+        changed_files,
+        changed_file_evidence,
+        changed_scope_tree_digests,
+    ) = _build_authoritative_file_evidence(contract, run_id, workspace_root)
+    phase_evidence = _derive_authoritative_phases(run, attempts, recorded_at)
+    automated_events = [
+        {
+            key: event[key]
+            for key in (
+                "type",
+                "started_at",
+                "ended_at",
+                "latency_ms",
+                "evidence_sha256",
+            )
+        }
+        for attempt in attempts
+        for event in attempt["service_events"]
+    ]
+    attempt_ids = [str(attempt["attempt_id"]) for attempt in attempts]
+    terminal_sequence = max(int(attempt["sequence"]) for attempt in attempts)
+    attempt_binding = _attempt_binding_digest(attempts)
+    snapshot = {
+        "run_id": run_id,
+        "evidence_contract_sha256": contract_sha256,
+        "attempt_ids": attempt_ids,
+        "terminal_sequence": terminal_sequence,
+        "attempt_binding_sha256": attempt_binding,
+        "recorded_at": recorded_at,
+        "phase_evidence": phase_evidence,
+        "artifact_inventory": artifacts,
+        "changed_files": changed_files,
+        "changed_file_evidence": changed_file_evidence,
+        "changed_scope_tree_digests": changed_scope_tree_digests,
+        "automated_events": automated_events,
+        "human_events": [],
+    }
+    snapshot["seal_binding_sha256"] = _seal_binding_digest(snapshot)
+    return snapshot
+
+
+def _build_authoritative_file_evidence(
+    contract: Mapping[str, object], run_id: str, workspace_root: Path
+) -> tuple[
+    list[dict[str, object]],
+    list[str],
+    list[dict[str, object]],
+    dict[str, str],
+]:
+    """Re-read the portable workspace under the exact contract authority."""
     workspace_root = workspace_root.resolve()
     if not workspace_root.is_dir():
         raise ValueError("run evidence workspace root is unavailable")
@@ -2191,43 +2371,19 @@ def _build_sealed_run_evidence(
                 "observed": observed,
             }
         )
-    changed_files, changed_file_evidence = _derive_changed_files(
+    (
+        changed_files,
+        changed_file_evidence,
+        changed_scope_tree_digests,
+    ) = _derive_changed_files(
         workspace_root, rule["changed_files_scope"]
     )
-    phase_evidence = _derive_authoritative_phases(run, attempts, recorded_at)
-    automated_events = [
-        {
-            key: event[key]
-            for key in (
-                "type",
-                "started_at",
-                "ended_at",
-                "latency_ms",
-                "evidence_sha256",
-            )
-        }
-        for attempt in attempts
-        for event in attempt["service_events"]
-    ]
-    attempt_ids = [str(attempt["attempt_id"]) for attempt in attempts]
-    terminal_sequence = max(int(attempt["sequence"]) for attempt in attempts)
-    attempt_binding = _attempt_binding_digest(attempts)
-    snapshot = {
-        "run_id": run_id,
-        "evidence_contract_sha256": contract_sha256,
-        "attempt_ids": attempt_ids,
-        "terminal_sequence": terminal_sequence,
-        "attempt_binding_sha256": attempt_binding,
-        "recorded_at": recorded_at,
-        "phase_evidence": phase_evidence,
-        "artifact_inventory": artifacts,
-        "changed_files": changed_files,
-        "changed_file_evidence": changed_file_evidence,
-        "automated_events": automated_events,
-        "human_events": [],
-    }
-    snapshot["seal_binding_sha256"] = _seal_binding_digest(snapshot)
-    return snapshot
+    return (
+        artifacts,
+        changed_files,
+        changed_file_evidence,
+        changed_scope_tree_digests,
+    )
 
 
 def _derive_authoritative_phases(
@@ -2235,69 +2391,20 @@ def _derive_authoritative_phases(
     attempts: list[Mapping[str, object]],
     recorded_at: str,
 ) -> dict[str, object]:
-    names = (
-        "setup",
-        "framework_init",
-        "provider",
-        "governance",
-        "review",
-        "evaluation",
-    )
-    run_started = _parse_rfc3339(run.get("run_started_at"))
-    sealed_at = _parse_rfc3339(recorded_at)
-    reservation_times = [
-        _parse_rfc3339(attempt["history"][0].get("recorded_at"))
-        for attempt in attempts
-    ]
-    terminal_times = [
-        _parse_rfc3339(attempt["history"][-1].get("recorded_at"))
-        for attempt in attempts
-    ]
-    if (
-        run_started is None
-        or sealed_at is None
-        or any(value is None for value in reservation_times + terminal_times)
-    ):
-        raise ValueError("run evidence clock binding is invalid")
-    first_reservation = min(value for value in reservation_times if value is not None)
-    last_terminal = max(value for value in terminal_times if value is not None)
-    if not run_started <= first_reservation <= last_terminal <= sealed_at:
-        raise ValueError("run evidence clock ordering is invalid")
-    boundaries: dict[str, tuple[datetime, datetime]] = {
-        "setup": (run_started, first_reservation),
-        "framework_init": (first_reservation, first_reservation),
-        "provider": (first_reservation, last_terminal),
-        "governance": (last_terminal, last_terminal),
-        "review": (last_terminal, last_terminal),
-        "evaluation": (last_terminal, sealed_at),
-    }
+    del attempts
     controller_events = run.get("phase_events")
-    if not isinstance(controller_events, list):
-        raise ValueError("run evidence controller phase events are invalid")
-    for name in names:
-        if name == "provider":
-            continue
-        matching = [event for event in controller_events if event.get("phase") == name]
-        if matching:
-            if (
-                len(matching) != 2
-                or matching[0].get("action") != "start"
-                or matching[1].get("action") != "end"
-            ):
-                raise ValueError("run evidence controller phase is not closed")
-            phase_start = _parse_rfc3339(matching[0].get("recorded_at"))
-            phase_end = _parse_rfc3339(matching[1].get("recorded_at"))
-            if (
-                phase_start is None
-                or phase_end is None
-                or not run_started <= phase_start <= phase_end <= sealed_at
-            ):
-                raise ValueError("run evidence controller phase clock is invalid")
-            boundaries[name] = (phase_start, phase_end)
+    if (
+        not isinstance(controller_events, list)
+        or [event.get("phase") for event in controller_events] != list(_RUN_PHASES)
+        or any(event.get("ended_at") is None for event in controller_events)
+        or controller_events[-1].get("ended_at") != recorded_at
+    ):
+        raise ValueError("run evidence requires one closed adjacent phase state")
     result: dict[str, object] = {}
-    for name in names:
-        start_text = _format_rfc3339(boundaries[name][0])
-        end_text = _format_rfc3339(boundaries[name][1])
+    for event in controller_events:
+        name = str(event["phase"])
+        start_text = str(event["started_at"])
+        end_text = str(event["ended_at"])
         payload = {"phase": name, "started_at": start_text, "ended_at": end_text}
         result[name] = {
             "started_at": start_text,
@@ -2329,12 +2436,13 @@ def _validate_run_registry(
     attempt_run_ids = {
         item.get("run_id") for item in attempts if isinstance(item, Mapping)
     }
-    if set(value) != attempt_run_ids:
+    if not attempt_run_ids <= set(value):
         raise ValueError("attempt ledger run registry does not close over attempts")
     for run_id, run in value.items():
         if run_id not in registry or not isinstance(run, Mapping) or set(run) != {
             "run_id",
             "run_started_at",
+            "current_phase",
             "phase_events",
             "sealed_evidence",
         }:
@@ -2343,46 +2451,116 @@ def _validate_run_registry(
         if run.get("run_id") != run_id or started is None or started > now:
             raise ValueError("attempt ledger run start is invalid")
         phase_events = run.get("phase_events")
-        if not isinstance(phase_events, list):
+        sealed = run.get("sealed_evidence")
+        if (
+            not isinstance(phase_events, list)
+            or not 1 <= len(phase_events) <= len(_RUN_PHASES)
+            or [event.get("phase") for event in phase_events]
+            != list(_RUN_PHASES[: len(phase_events)])
+            or run.get("current_phase") != phase_events[-1].get("phase")
+        ):
             raise ValueError("attempt ledger phase events are invalid")
-        previous_events: list[Mapping[str, object]] = []
-        for event in phase_events:
-            if not isinstance(event, Mapping):
+        cursor = started
+        for index, event in enumerate(phase_events):
+            if not isinstance(event, Mapping) or set(event) != {
+                "phase",
+                "started_at",
+                "ended_at",
+            }:
                 raise ValueError("attempt ledger phase event is invalid")
-            _validate_new_phase_event(previous_events, event)
-            event_at = _parse_rfc3339(event.get("recorded_at"))
-            if event_at is None or event_at < started or event_at > now:
+            event_start = _parse_rfc3339(event.get("started_at"))
+            event_end = _parse_rfc3339(event.get("ended_at"))
+            is_last = index == len(phase_events) - 1
+            if (
+                event_start is None
+                or event_start != cursor
+                or event_start > now
+                or (not is_last and (event_end is None or event_end < event_start))
+                or (is_last and sealed is None and event.get("ended_at") is not None)
+                or (is_last and sealed is not None and event_end is None)
+                or (event_end is not None and event_end > now)
+            ):
                 raise ValueError("attempt ledger phase event time is invalid")
-            previous_events.append(event)
+            if event_end is not None:
+                cursor = event_end
+        if phase_events[0].get("started_at") != run.get("run_started_at"):
+            raise ValueError("attempt ledger phase start is not bound to run start")
         run_attempts = [
             item
             for item in attempts
             if isinstance(item, Mapping) and item.get("run_id") == run_id
         ]
-        if not run_attempts:
-            raise ValueError("attempt ledger contains an orphan run record")
-        if _parse_rfc3339(run_attempts[0]["history"][0].get("recorded_at")) < started:
-            raise ValueError("attempt ledger run starts after its first reservation")
+        phase_index = _RUN_PHASES.index(str(run.get("current_phase")))
+        if run_attempts and phase_index < _RUN_PHASES.index("provider"):
+            raise ValueError("attempt ledger has a pre-provider orphan attempt")
+        if phase_index > _RUN_PHASES.index("provider") and (
+            not run_attempts
+            or any(attempt.get("terminal") is not True for attempt in run_attempts)
+        ):
+            raise ValueError("post-provider run does not close over terminal attempts")
+        provider_event = next(
+            (event for event in phase_events if event.get("phase") == "provider"), None
+        )
         for attempt in run_attempts:
             for attempt_event in attempt.get("history", []):
                 attempt_at = _parse_rfc3339(attempt_event.get("recorded_at"))
-                if attempt_at is None or attempt_at < started or attempt_at > now:
+                provider_start = _parse_rfc3339(
+                    provider_event.get("started_at")
+                    if isinstance(provider_event, Mapping)
+                    else None
+                )
+                provider_end = _parse_rfc3339(
+                    provider_event.get("ended_at")
+                    if isinstance(provider_event, Mapping)
+                    else None
+                )
+                if (
+                    attempt_at is None
+                    or provider_start is None
+                    or attempt_at < provider_start
+                    or attempt_at > now
+                    or (provider_end is not None and attempt_at > provider_end)
+                ):
                     raise ValueError("attempt ledger attempt event time is invalid")
             for service_event in attempt.get("service_events", []):
                 service_start = _parse_rfc3339(service_event.get("started_at"))
                 service_end = _parse_rfc3339(service_event.get("ended_at"))
+                provider_start = _parse_rfc3339(
+                    provider_event.get("started_at")
+                    if isinstance(provider_event, Mapping)
+                    else None
+                )
+                provider_end = _parse_rfc3339(
+                    provider_event.get("ended_at")
+                    if isinstance(provider_event, Mapping)
+                    else None
+                )
                 if (
                     service_start is None
-                    or service_start < started
+                    or provider_start is None
+                    or service_start < provider_start
                     or service_start > now
+                    or (provider_end is not None and service_start > provider_end)
                     or (
                         service_event.get("status") == "completed"
-                        and (service_end is None or service_end > now)
+                        and (
+                            service_end is None
+                            or service_end > now
+                            or service_end < service_start
+                            or (
+                                provider_end is not None
+                                and service_end > provider_end
+                            )
+                        )
                     )
                 ):
                     raise ValueError("attempt ledger service event time is invalid")
-        sealed = run.get("sealed_evidence")
         if sealed is not None:
+            if (
+                run.get("current_phase") != "evaluation"
+                or len(phase_events) != len(_RUN_PHASES)
+            ):
+                raise ValueError("sealed run is not in the final phase")
             _validate_sealed_run_evidence(
                 run,
                 sealed,
@@ -2414,6 +2592,7 @@ def _validate_sealed_run_evidence(
         "artifact_inventory",
         "changed_files",
         "changed_file_evidence",
+        "changed_scope_tree_digests",
         "automated_events",
         "human_events",
     }
@@ -2450,6 +2629,7 @@ def _validate_sealed_run_evidence(
     _validate_sealed_changed_files(
         sealed.get("changed_files"), sealed.get("changed_file_evidence")
     )
+    _validate_changed_scope_tree_digests(sealed.get("changed_scope_tree_digests"))
     expected_events = [
         {
             key: event[key]
@@ -2559,12 +2739,14 @@ def _seal_binding_digest(sealed: Mapping[str, object]) -> str:
 
 def _derive_changed_files(
     workspace_root: Path, scope: Mapping[str, object]
-) -> tuple[list[str], list[dict[str, object]]]:
+) -> tuple[list[str], list[dict[str, object]], dict[str, str]]:
     baseline_root = scope["baseline_root"]
     candidate_root = scope["candidate_root"]
     include_paths = scope["include_paths"]
     changed: list[str] = []
     evidence: list[dict[str, object]] = []
+    baseline_tree: list[dict[str, object]] = []
+    candidate_tree: list[dict[str, object]] = []
     for relative in include_paths:
         baseline_bytes = _read_scoped_workspace_file(
             workspace_root, f"{baseline_root}/{relative}"
@@ -2572,6 +2754,14 @@ def _derive_changed_files(
         candidate_bytes = _read_scoped_workspace_file(
             workspace_root, f"{candidate_root}/{relative}"
         )
+        baseline_digest = (
+            sha256(baseline_bytes).hexdigest() if baseline_bytes is not None else None
+        )
+        candidate_digest = (
+            sha256(candidate_bytes).hexdigest() if candidate_bytes is not None else None
+        )
+        baseline_tree.append({"path": relative, "sha256": baseline_digest})
+        candidate_tree.append({"path": relative, "sha256": candidate_digest})
         if baseline_bytes == candidate_bytes:
             continue
         receipt_path = f"{candidate_root.rstrip('/')}/{relative}"
@@ -2579,15 +2769,35 @@ def _derive_changed_files(
         evidence.append(
             {
                 "path": receipt_path,
-                "baseline_sha256": sha256(baseline_bytes).hexdigest()
-                if baseline_bytes is not None
-                else None,
-                "candidate_sha256": sha256(candidate_bytes).hexdigest()
-                if candidate_bytes is not None
-                else None,
+                "baseline_sha256": baseline_digest,
+                "candidate_sha256": candidate_digest,
             }
         )
-    return changed, evidence
+    return (
+        changed,
+        evidence,
+        {
+            "baseline_sha256": _canonical_json_digest(baseline_tree),
+            "candidate_sha256": _canonical_json_digest(candidate_tree),
+        },
+    )
+
+
+def _canonical_json_digest(value: object) -> str:
+    return sha256(
+        json.dumps(
+            value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _validate_changed_scope_tree_digests(value: object) -> None:
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != {"baseline_sha256", "candidate_sha256"}
+        or any(not _is_non_placeholder_digest(digest) for digest in value.values())
+    ):
+        raise ValueError("attempt ledger changed-scope tree digests are invalid")
 
 
 def _read_scoped_workspace_file(workspace_root: Path, relative: str) -> bytes | None:
@@ -2604,27 +2814,6 @@ def _read_scoped_workspace_file(workspace_root: Path, relative: str) -> bytes | 
     if size != len(payload):
         raise ValueError("changed-files input changed while being read")
     return payload
-
-
-def _validate_new_phase_event(
-    previous: list[Mapping[str, object]], event: Mapping[str, object]
-) -> None:
-    if set(event) != {"phase", "action", "recorded_at"}:
-        raise ValueError("controller phase event fields are invalid")
-    phase = event.get("phase")
-    action = event.get("action")
-    if phase not in {
-        "setup",
-        "framework_init",
-        "governance",
-        "review",
-        "evaluation",
-    } or action not in {"start", "end"} or _parse_rfc3339(event.get("recorded_at")) is None:
-        raise ValueError("controller phase event is invalid")
-    matching = [item for item in previous if item.get("phase") == phase]
-    expected = "start" if not matching else "end" if len(matching) == 1 else None
-    if action != expected:
-        raise ValueError("controller phase event order is invalid")
 
 
 def _validate_service_event(event: Mapping[str, object]) -> None:
@@ -4856,57 +5045,40 @@ def _validate_receipt_measurements(
 def _validate_phase_measurement_evidence(
     receipt: Mapping[str, object], issues: list[BenchmarkIssue]
 ) -> None:
-    phase_names = (
-        "setup",
-        "framework_init",
-        "provider",
-        "governance",
-        "review",
-        "evaluation",
-    )
-    timing_names = tuple(f"{name}_wall_seconds" for name in phase_names)
     phases = _mapping(receipt.get("phase_evidence"))
     timings = _mapping(receipt.get("timings"))
     timestamps = _mapping(receipt.get("timestamps"))
-    cursor = _parse_rfc3339(timestamps.get("started_at"))
-    final_end = _parse_rfc3339(timestamps.get("ended_at"))
-    if set(phases) != set(phase_names) or cursor is None or final_end is None:
+    try:
+        durations = _validated_phase_durations(
+            phases,
+            timestamps.get("started_at"),
+            timestamps.get("ended_at"),
+        )
+    except ValueError:
         issues.append(
             BenchmarkIssue(
-                "receipt.measurements", "phase evidence surface is incomplete"
+                "receipt.measurements",
+                "phase evidence must be one reproducible adjacent start-to-end partition",
             )
         )
         return
-    for phase_name, timing_name in zip(phase_names, timing_names, strict=True):
-        phase = _mapping(phases.get(phase_name))
-        started_at = _parse_rfc3339(phase.get("started_at"))
-        ended_at = _parse_rfc3339(phase.get("ended_at"))
-        payload = {
-            "phase": phase_name,
-            "started_at": phase.get("started_at"),
-            "ended_at": phase.get("ended_at"),
-        }
-        expected_digest = sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest()
+    timing_names = {
+        "setup": "setup_wall_seconds",
+        "framework_init": "framework_init_wall_seconds",
+        "provider": "provider_wall_seconds",
+        "post_provider": "governance_wall_seconds",
+        "review": "review_wall_seconds",
+        "evaluation": "evaluation_wall_seconds",
+    }
+    for phase_name, timing_name in timing_names.items():
         if (
-            started_at is None
-            or ended_at is None
-            or started_at != cursor
-            or ended_at < started_at
-            or not _finite_number(timings.get(timing_name))
+            not _finite_number(timings.get(timing_name))
             or not math.isclose(
                 timings[timing_name],
-                (ended_at - started_at).total_seconds(),
+                durations[phase_name],
                 rel_tol=0,
                 abs_tol=1e-6,
             )
-            or phase.get("evidence_sha256") != expected_digest
         ):
             issues.append(
                 BenchmarkIssue(
@@ -4914,15 +5086,46 @@ def _validate_phase_measurement_evidence(
                     f"{phase_name} phase timing is not independently reproducible",
                 )
             )
-        if ended_at is not None:
-            cursor = ended_at
+
+
+def _validated_phase_durations(
+    phases: object, started_text: object, ended_text: object
+) -> dict[str, float]:
+    if not isinstance(phases, Mapping) or set(phases) != set(_RUN_PHASES):
+        raise ValueError("phase evidence surface is incomplete")
+    cursor = _parse_rfc3339(started_text)
+    final_end = _parse_rfc3339(ended_text)
+    if cursor is None or final_end is None or final_end < cursor:
+        raise ValueError("phase evidence boundary is invalid")
+    durations: dict[str, float] = {}
+    for phase_name in _RUN_PHASES:
+        phase = phases.get(phase_name)
+        if not isinstance(phase, Mapping) or set(phase) != {
+            "started_at",
+            "ended_at",
+            "evidence_sha256",
+        }:
+            raise ValueError("phase evidence entry is invalid")
+        started_at = _parse_rfc3339(phase.get("started_at"))
+        ended_at = _parse_rfc3339(phase.get("ended_at"))
+        payload = {
+            "phase": phase_name,
+            "started_at": phase.get("started_at"),
+            "ended_at": phase.get("ended_at"),
+        }
+        if (
+            started_at is None
+            or ended_at is None
+            or started_at != cursor
+            or ended_at < started_at
+            or phase.get("evidence_sha256") != _canonical_json_digest(payload)
+        ):
+            raise ValueError("phase evidence is not reproducible")
+        durations[phase_name] = (ended_at - started_at).total_seconds()
+        cursor = ended_at
     if cursor != final_end:
-        issues.append(
-            BenchmarkIssue(
-                "receipt.measurements",
-                "phase evidence must form one adjacent start-to-end partition",
-            )
-        )
+        raise ValueError("phase evidence is not a complete adjacent partition")
+    return durations
 
 
 def _validate_artifact_inventory(

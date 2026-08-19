@@ -20,13 +20,12 @@ from ai_sdlc.benefit_benchmark import (
     ExecutionLock,
     canonical_protocol_digest,
     load_protocol,
-    record_phase_event,
     record_service_transaction,
-    seal_run_evidence,
+    start_run,
     start_service_transaction,
+    transition_run_phase,
     validate_protocol,
     validate_provider_output_schema,
-    verify_receipt,
     verify_summary,
 )
 from ai_sdlc.benefit_benchmark import (
@@ -35,12 +34,33 @@ from ai_sdlc.benefit_benchmark import (
 from ai_sdlc.benefit_benchmark import (
     reserve_provider_attempt as _reserve_provider_attempt,
 )
+from ai_sdlc.benefit_benchmark import seal_run_evidence as _seal_run_evidence
+from ai_sdlc.benefit_benchmark import verify_receipt as _verify_receipt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL_PATH = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json"
 
 
+def _ensure_run_provider(ledger: Path, protocol, run_id: str) -> None:
+    contract = ledger.parent / "evidence-contract.json"
+    raw = json.loads(ledger.read_text(encoding="utf-8")) if ledger.is_file() else {}
+    if run_id not in raw.get("runs", {}):
+        start_run(ledger, protocol, contract, run_id=run_id)
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    current = raw["runs"][run_id]["current_phase"]
+    if current == "setup":
+        transition_run_phase(
+            ledger, protocol, contract, run_id=run_id, next_phase="framework_init"
+        )
+        current = "framework_init"
+    if current == "framework_init":
+        transition_run_phase(
+            ledger, protocol, contract, run_id=run_id, next_phase="provider"
+        )
+
+
 def reserve_provider_attempt(ledger: Path, protocol, request: AttemptRequest):
+    _ensure_run_provider(ledger, protocol, request.run_id)
     return _reserve_provider_attempt(
         ledger, protocol, request, ledger.parent / "evidence-contract.json"
     )
@@ -51,6 +71,46 @@ def record_provider_completion(
 ) -> None:
     _record_provider_completion(
         ledger, protocol, completion, ledger.parent / "evidence-contract.json"
+    )
+
+
+def seal_run_evidence(
+    ledger: Path,
+    protocol,
+    contract: Path,
+    *,
+    run_id: str,
+    workspace_root: Path,
+) -> None:
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    current = raw["runs"][run_id]["current_phase"]
+    remaining = ("post_provider", "review", "evaluation")
+    if current in ("provider", *remaining):
+        start = ("provider", *remaining).index(current)
+        for next_phase in remaining[start:]:
+            transition_run_phase(
+                ledger,
+                protocol,
+                contract,
+                run_id=run_id,
+                next_phase=next_phase,
+            )
+    _seal_run_evidence(
+        ledger,
+        protocol,
+        contract,
+        run_id=run_id,
+        workspace_root=workspace_root,
+    )
+
+
+def verify_receipt(receipt, protocol, ledger: Path):
+    return _verify_receipt(
+        receipt,
+        protocol,
+        ledger,
+        ledger.parent / "evidence-contract.json",
+        ledger.parent / "workspace",
     )
 
 
@@ -1858,7 +1918,7 @@ def _task12_phase_evidence(started_at: datetime) -> dict[str, object]:
         "setup": 1,
         "framework_init": 2,
         "provider": 3,
-        "governance": 4,
+        "post_provider": 4,
         "review": 5,
         "evaluation": 6,
     }
@@ -1892,6 +1952,7 @@ def _task12_receipt(
     ledger: Path,
     *,
     run_id: str = "P:requirement-contract-ambiguity",
+    seal: bool = True,
 ) -> dict[str, object]:
     run = next(row for row in protocol.run_matrix if row.run_id == run_id)
     raw_ledger = json.loads(ledger.read_text(encoding="utf-8"))
@@ -1957,22 +2018,23 @@ def _task12_receipt(
         else:
             failure_classification = "writer_failure"
     workspace = ledger.parent / "workspace"
-    for relative, payload in (
-        ("benchmark-task/.evidence/setup.json", b"a"),
-        ("benchmark-task/.evidence/governance.json", b"bb"),
-        ("benchmark-task/result.txt", b"ccc"),
-        ("baseline/result.txt", b"old"),
-    ):
-        target = workspace.joinpath(*relative.split("/"))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_bytes(payload)
-    seal_run_evidence(
-        ledger,
-        protocol,
-        ledger.parent / "evidence-contract.json",
-        run_id=run_id,
-        workspace_root=workspace,
-    )
+    if seal:
+        for relative, payload in (
+            ("benchmark-task/.evidence/setup.json", b"a"),
+            ("benchmark-task/.evidence/governance.json", b"bb"),
+            ("benchmark-task/result.txt", b"ccc"),
+            ("baseline/result.txt", b"old"),
+        ):
+            target = workspace.joinpath(*relative.split("/"))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(payload)
+        seal_run_evidence(
+            ledger,
+            protocol,
+            ledger.parent / "evidence-contract.json",
+            run_id=run_id,
+            workspace_root=workspace,
+        )
     raw_ledger = json.loads(ledger.read_text(encoding="utf-8"))
     sealed = raw_ledger["runs"][run_id]["sealed_evidence"]
     phases = sealed["phase_evidence"]
@@ -2029,7 +2091,7 @@ def _task12_receipt(
             "setup_wall_seconds": phase_seconds["setup"],
             "framework_init_wall_seconds": phase_seconds["framework_init"],
             "provider_wall_seconds": phase_seconds["provider"],
-            "governance_wall_seconds": phase_seconds["governance"],
+            "governance_wall_seconds": phase_seconds["post_provider"],
             "review_wall_seconds": phase_seconds["review"],
             "evaluation_wall_seconds": phase_seconds["evaluation"],
         },
@@ -2057,6 +2119,9 @@ def _task12_receipt(
             _task12_command_evidence(attempt, protocol) for attempt in attempts
         ],
         "changed_files": copy.deepcopy(sealed["changed_files"]),
+        "changed_scope_tree_digests": copy.deepcopy(
+            sealed["changed_scope_tree_digests"]
+        ),
         "final_candidate_tree_sha256": candidate,
         "loop": _task12_default_loop(run, receipt_status, writer),
         "external_evaluator": {
@@ -2705,6 +2770,10 @@ def test_task12_verify_receipt_cli_uses_the_required_ledger(tmp_path: Path) -> N
             str(ledger),
             "--receipt",
             str(receipt_path),
+            "--contract",
+            str(tmp_path / "evidence-contract.json"),
+            "--workspace-root",
+            str(tmp_path / "workspace"),
         ],
         cwd=REPO_ROOT,
         check=False,
@@ -3526,13 +3595,31 @@ def test_completion_and_reservation_share_one_cross_process_transaction_lock(
 
 
 def _run_task13_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    resolved = list(arguments)
+    if (
+        resolved
+        and resolved[0] == "verify-receipt"
+        and "--protocol" in resolved
+        and "--ledger" in resolved
+        and "--contract" not in resolved
+    ):
+        protocol_path = Path(resolved[resolved.index("--protocol") + 1])
+        ledger_path = Path(resolved[resolved.index("--ledger") + 1])
+        resolved.extend(
+            [
+                "--contract",
+                str(protocol_path.parent / "evidence-contract.json"),
+                "--workspace-root",
+                str(ledger_path.parent / "workspace"),
+            ]
+        )
     return subprocess.run(
         [
             "uv",
             "run",
             "python",
             "scripts/ai_sdlc_v2_benefit_benchmark.py",
-            *arguments,
+            *resolved,
         ],
         cwd=REPO_ROOT,
         check=False,
@@ -3661,6 +3748,21 @@ def test_task13_cli_round_trips_writer_expert_retry_and_rereview_fields(
         assert result.stderr == ""
         return json.loads(result.stdout)
 
+    invoke("start-run", "--run-id", "A11:requirement-contract-ambiguity")
+    invoke(
+        "transition-phase",
+        "--run-id",
+        "A11:requirement-contract-ambiguity",
+        "--next-phase",
+        "framework_init",
+    )
+    invoke(
+        "transition-phase",
+        "--run-id",
+        "A11:requirement-contract-ambiguity",
+        "--next-phase",
+        "provider",
+    )
     writer = invoke(
         "reserve-attempt",
         "--run-id",
@@ -3764,6 +3866,21 @@ def test_task13_cli_round_trips_writer_expert_retry_and_rereview_fields(
         _digest("f"),
     )
 
+    invoke("start-run", "--run-id", "P:frontend-recovery-delivery")
+    invoke(
+        "transition-phase",
+        "--run-id",
+        "P:frontend-recovery-delivery",
+        "--next-phase",
+        "framework_init",
+    )
+    invoke(
+        "transition-phase",
+        "--run-id",
+        "P:frontend-recovery-delivery",
+        "--next-phase",
+        "provider",
+    )
     failed_writer = invoke(
         "reserve-attempt",
         "--run-id",
@@ -3864,7 +3981,9 @@ def test_task13_cli_round_trips_writer_expert_retry_and_rereview_fields(
     }
 
 
-@pytest.mark.parametrize("missing_flag", ["--protocol", "--ledger"])
+@pytest.mark.parametrize(
+    "missing_flag", ["--protocol", "--ledger", "--contract", "--workspace-root"]
+)
 def test_task13_verify_receipt_requires_protocol_and_ledger_as_json_usage_error(
     tmp_path: Path, missing_flag: str
 ) -> None:
@@ -3880,11 +3999,27 @@ def test_task13_verify_receipt_requires_protocol_and_ledger_as_json_usage_error(
         str(protocol),
         "--ledger",
         str(ledger),
+        "--contract",
+        str(tmp_path / "evidence-contract.json"),
+        "--workspace-root",
+        str(tmp_path / "workspace"),
     ]
     flag_index = arguments.index(missing_flag)
     del arguments[flag_index : flag_index + 2]
 
-    result = _run_task13_cli(*arguments)
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/ai_sdlc_v2_benefit_benchmark.py",
+            *arguments,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
     _assert_task13_json_error(result, "cli.usage")
 
@@ -5161,6 +5296,22 @@ def test_release_gate_cli_atomically_snapshots_real_run_evidence(
         artifact.parent.mkdir(parents=True, exist_ok=True)
         artifact.write_bytes(payload)
 
+    for next_phase in ("post_provider", "review", "evaluation"):
+        transitioned = _run_task13_cli(
+            "transition-phase",
+            "--protocol",
+            str(protocol_path),
+            "--ledger",
+            str(ledger),
+            "--contract",
+            str(tmp_path / "evidence-contract.json"),
+            "--run-id",
+            run_id,
+            "--next-phase",
+            next_phase,
+        )
+        assert transitioned.returncode == 0, transitioned.stdout
+
     result = _run_task13_cli(
         "seal-run-evidence",
         "--protocol",
@@ -5424,13 +5575,12 @@ def test_release_gate_round2_seal_rejects_late_events_and_retry(
         lambda: record_provider_completion(
             ledger, protocol, _completion(writer.attempt_id, "failed", False)
         ),
-        lambda: record_phase_event(
+        lambda: transition_run_phase(
             ledger,
             protocol,
             tmp_path / "evidence-contract.json",
             run_id=run_id,
-            phase="evaluation",
-            action="start",
+            next_phase="post_provider",
         ),
         lambda: start_service_transaction(
             ledger,
@@ -5552,15 +5702,6 @@ def test_release_gate_round2_core_records_controller_phase_and_actual_file_evide
         protocol,
         _completion(writer.attempt_id, "completed", True, candidate_digest=_digest("b")),
     )
-    for action in ("start", "end"):
-        record_phase_event(
-            ledger,
-            protocol,
-            tmp_path / "evidence-contract.json",
-            run_id=run_id,
-            phase="evaluation",
-            action=action,
-        )
     workspace = _round2_workspace(tmp_path)
     seal_run_evidence(
         ledger,
@@ -5576,7 +5717,10 @@ def test_release_gate_round2_core_records_controller_phase_and_actual_file_evide
     assert [
         sealed["phase_evidence"]["evaluation"][key]
         for key in ("started_at", "ended_at")
-    ] == [event["recorded_at"] for event in run["phase_events"]]
+    ] == [
+        run["phase_events"][-1]["started_at"],
+        run["phase_events"][-1]["ended_at"],
+    ]
     assert sealed["artifact_inventory"][2]["sha256"] == sha256(
         (workspace / "benchmark-task" / "result.txt").read_bytes()
     ).hexdigest()
@@ -5687,3 +5831,291 @@ def test_release_gate_round2_service_transaction_identity_is_global(
         )
 
     assert ledger.read_bytes() == before
+
+
+def test_release_gate_round3_rejects_resigned_contract_authority_tamper(
+    tmp_path: Path,
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    sealed = raw["runs"][receipt["run_id"]]["sealed_evidence"]
+    sealed["artifact_inventory"][0]["required"] = False
+    sealed["seal_binding_sha256"] = benchmark_core._seal_binding_digest(sealed)
+    ledger.write_text(json.dumps(raw), encoding="utf-8")
+    receipt["artifact_inventory"][0]["required"] = False
+
+    assert verify_receipt(receipt, protocol, ledger)
+
+
+def test_release_gate_round3_rejects_artifact_drift_after_seal(tmp_path: Path) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    (tmp_path / "workspace" / "benchmark-task" / "result.txt").write_text(
+        "mutated-after-seal", encoding="utf-8"
+    )
+
+    assert verify_receipt(receipt, protocol, ledger)
+
+
+def test_release_gate_round3_requires_atomic_phase_state_machine_api() -> None:
+    assert hasattr(benchmark_core, "start_run")
+    assert hasattr(benchmark_core, "transition_run_phase")
+    assert not hasattr(benchmark_core, "record_phase_event")
+
+
+@pytest.mark.parametrize("missing", ["contract", "workspace"])
+def test_release_gate_round3_verify_requires_external_authority_inputs(
+    tmp_path: Path, missing: str
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    contract = tmp_path / "evidence-contract.json"
+    workspace = tmp_path / "workspace"
+    target = contract if missing == "contract" else workspace
+    if target.is_file():
+        target.unlink()
+    else:
+        target.rename(tmp_path / "workspace-away")
+
+    issues = _verify_receipt(receipt, protocol, ledger, contract, workspace)
+
+    assert issues
+    assert any(
+        issue.code in {"receipt.evidence-contract", "receipt.workspace-evidence"}
+        for issue in issues
+    )
+
+
+@pytest.mark.parametrize("relative", ["baseline/result.txt", "benchmark-task/result.txt"])
+def test_release_gate_round3_recomputes_changed_scope_tree_digests(
+    tmp_path: Path, relative: str
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    (tmp_path / "workspace" / relative).write_text("root-drift", encoding="utf-8")
+
+    issues = verify_receipt(receipt, protocol, ledger)
+
+    assert any(issue.code == "receipt.workspace-evidence" for issue in issues)
+
+
+@pytest.mark.parametrize("case", ["skip", "prestart", "after-provider"])
+def test_release_gate_round3_phase_machine_rejects_illegal_writer_order(
+    tmp_path: Path, case: str
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    contract = tmp_path / "evidence-contract.json"
+    run_id = "P:requirement-contract-ambiguity"
+    if case == "prestart":
+        before = None
+        action = lambda: _reserve_provider_attempt(  # noqa: E731
+            ledger, protocol, AttemptRequest(run_id, "writer"), contract
+        )
+    else:
+        start_run(ledger, protocol, contract, run_id=run_id)
+        if case == "skip":
+            before = ledger.read_bytes()
+            action = lambda: transition_run_phase(  # noqa: E731
+                ledger, protocol, contract, run_id=run_id, next_phase="provider"
+            )
+        else:
+            transition_run_phase(
+                ledger,
+                protocol,
+                contract,
+                run_id=run_id,
+                next_phase="framework_init",
+            )
+            transition_run_phase(
+                ledger,
+                protocol,
+                contract,
+                run_id=run_id,
+                next_phase="provider",
+            )
+            writer = _reserve_provider_attempt(
+                ledger, protocol, AttemptRequest(run_id, "writer"), contract
+            )
+            _record_provider_completion(
+                ledger,
+                protocol,
+                _completion(
+                    writer.attempt_id,
+                    "completed",
+                    True,
+                    candidate_digest=_digest("b"),
+                ),
+                contract,
+            )
+            transition_run_phase(
+                ledger,
+                protocol,
+                contract,
+                run_id=run_id,
+                next_phase="post_provider",
+            )
+            before = ledger.read_bytes()
+            action = lambda: _reserve_provider_attempt(  # noqa: E731
+                ledger, protocol, AttemptRequest(run_id, "writer"), contract
+            )
+
+    with pytest.raises(ValueError):
+        action()
+    assert (ledger.read_bytes() if ledger.exists() else None) == before
+
+
+@pytest.mark.parametrize("case", ["future", "gap", "orphan"])
+def test_release_gate_round3_rejects_poisoned_phase_ledger_without_rewrite(
+    tmp_path: Path, case: str
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    contract = tmp_path / "evidence-contract.json"
+    run_id = "P:requirement-contract-ambiguity"
+    writer = reserve_provider_attempt(ledger, protocol, AttemptRequest(run_id, "writer"))
+    raw = json.loads(ledger.read_text(encoding="utf-8"))
+    events = raw["runs"][run_id]["phase_events"]
+    if case == "future":
+        future = _task12_timestamp(datetime.now().astimezone() + timedelta(days=1))
+        events[-1]["started_at"] = future
+    elif case == "gap":
+        events[-1]["started_at"] = events[0]["started_at"]
+    else:
+        raw["runs"].pop(run_id)
+    ledger.write_text(json.dumps(raw), encoding="utf-8")
+    before = ledger.read_bytes()
+
+    with pytest.raises(ValueError):
+        _record_provider_completion(
+            ledger,
+            protocol,
+            _completion(writer.attempt_id, "failed", False),
+            contract,
+        )
+
+    assert ledger.read_bytes() == before
+
+
+def test_release_gate_round3_sealed_ledger_contains_no_private_workspace_root(
+    tmp_path: Path,
+) -> None:
+    _protocol, ledger, _receipt = _task12_completed_p_run(tmp_path)
+
+    assert str(tmp_path) not in ledger.read_text(encoding="utf-8")
+
+
+def test_release_gate_round3_cli_full_state_machine_seal_and_verify(
+    tmp_path: Path,
+) -> None:
+    protocol_path = _bound_protocol_path(tmp_path)
+    protocol = load_protocol(protocol_path)
+    ledger = tmp_path / "ledger.json"
+    contract = tmp_path / "evidence-contract.json"
+    run_id = "P:requirement-contract-ambiguity"
+
+    def invoke(command: str, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return _run_task13_cli(
+            command,
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol_path),
+            "--contract",
+            str(contract),
+            *arguments,
+        )
+
+    assert invoke("start-run", "--run-id", run_id).returncode == 0
+    for next_phase in ("framework_init", "provider"):
+        assert (
+            invoke(
+                "transition-phase",
+                "--run-id",
+                run_id,
+                "--next-phase",
+                next_phase,
+            ).returncode
+            == 0
+        )
+    reserved = invoke("reserve-attempt", "--run-id", run_id, "--kind", "writer")
+    attempt_id = json.loads(reserved.stdout)["attempt_id"]
+    completed = invoke(
+        "complete-attempt",
+        *_task13_terminal_cli_arguments(attempt_id),
+        "--candidate-digest",
+        _digest("b"),
+    )
+    assert completed.returncode == 0, completed.stdout
+    for next_phase in ("post_provider", "review", "evaluation"):
+        assert (
+            invoke(
+                "transition-phase",
+                "--run-id",
+                run_id,
+                "--next-phase",
+                next_phase,
+            ).returncode
+            == 0
+        )
+    workspace = tmp_path / "workspace"
+    for relative, payload in (
+        ("benchmark-task/.evidence/setup.json", b"a"),
+        ("benchmark-task/.evidence/governance.json", b"bb"),
+        ("benchmark-task/result.txt", b"ccc"),
+        ("baseline/result.txt", b"old"),
+    ):
+        target = workspace.joinpath(*relative.split("/"))
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(payload)
+    sealed = invoke(
+        "seal-run-evidence",
+        "--run-id",
+        run_id,
+        "--workspace-root",
+        str(workspace),
+    )
+    assert sealed.returncode == 0, sealed.stdout
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(
+        json.dumps(_task12_receipt(protocol, ledger, seal=False)), encoding="utf-8"
+    )
+
+    verified = _run_task13_cli(
+        "verify-receipt",
+        "--receipt",
+        str(receipt_path),
+        "--protocol",
+        str(protocol_path),
+        "--ledger",
+        str(ledger),
+        "--contract",
+        str(contract),
+        "--workspace-root",
+        str(workspace),
+    )
+
+    assert verified.returncode == 0, verified.stdout
+    assert json.loads(verified.stdout) == {"issues": []}
+
+
+@pytest.mark.parametrize("command", ["start-run", "transition-phase"])
+def test_release_gate_round3_pending_protocol_phase_cli_does_not_write(
+    tmp_path: Path, command: str
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    arguments = [
+        command,
+        "--ledger",
+        str(ledger),
+        "--protocol",
+        str(PROTOCOL_PATH),
+        "--contract",
+        str(tmp_path / "missing-contract.json"),
+        "--run-id",
+        "P:requirement-contract-ambiguity",
+    ]
+    if command == "transition-phase":
+        arguments.extend(["--next-phase", "framework_init"])
+
+    result = _run_task13_cli(*arguments)
+
+    _assert_task13_json_error(result, "cli.input")
+    assert not ledger.exists()

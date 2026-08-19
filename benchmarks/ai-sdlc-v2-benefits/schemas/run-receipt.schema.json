@@ -3,7 +3,7 @@
   "$id": "ai-sdlc-v2-benefit-run-receipt/v5",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "protocol_sha256", "run_id", "arm", "fixture", "order", "status", "failure_classification", "identity", "digests", "timestamps", "provider_cwd", "provider_attempts", "timings", "phase_evidence", "token_usage", "measurements", "artifact_inventory", "human_events", "automated_events", "command_evidence", "changed_files", "final_candidate_tree_sha256", "loop", "external_evaluator"],
+  "required": ["schema", "protocol_sha256", "run_id", "arm", "fixture", "order", "status", "failure_classification", "identity", "digests", "timestamps", "provider_cwd", "provider_attempts", "timings", "phase_evidence", "token_usage", "measurements", "artifact_inventory", "human_events", "automated_events", "command_evidence", "changed_files", "changed_scope_tree_digests", "final_candidate_tree_sha256", "loop", "external_evaluator"],
   "properties": {
     "schema": {"type": "string", "const": "ai-sdlc-v2-benefit-run-receipt/v5"},
     "protocol_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
@@ -76,12 +76,12 @@
     "phase_evidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["setup", "framework_init", "provider", "governance", "review", "evaluation"],
+      "required": ["setup", "framework_init", "provider", "post_provider", "review", "evaluation"],
       "properties": {
         "setup": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
         "framework_init": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
         "provider": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
-        "governance": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
+        "post_provider": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
         "review": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
         "evaluation": {"type": "object", "additionalProperties": false, "required": ["started_at", "ended_at", "evidence_sha256"], "properties": {"started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}
       }
@@ -93,6 +93,7 @@
     "automated_events": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["type", "started_at", "ended_at", "latency_ms", "evidence_sha256"], "properties": {"type": {"type": "string", "enum": ["intent_service_event", "clarification_request_event", "approval_service_event"]}, "started_at": {"type": "string", "minLength": 1}, "ended_at": {"type": "string", "minLength": 1}, "latency_ms": {"type": "number", "minimum": 0}, "evidence_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
     "command_evidence": {"type": "array", "minItems": 1, "items": {"type": "object", "additionalProperties": false, "required": ["evidence_id", "attempt_id", "argv", "exit_code", "stdout_sha256", "stderr_sha256", "raw_provider_output_sha256"], "properties": {"evidence_id": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "attempt_id": {"type": "string", "pattern": "^attempt-[0-9]{3}$"}, "argv": {"type": "array", "minItems": 2, "items": {"type": "string", "minLength": 1}}, "exit_code": {"type": "integer"}, "stdout_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "stderr_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "raw_provider_output_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}}},
     "changed_files": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "changed_scope_tree_digests": {"type": "object", "additionalProperties": false, "required": ["baseline_sha256", "candidate_sha256"], "properties": {"baseline_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "candidate_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"}}},
     "final_candidate_tree_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
     "loop": {
       "type": "object",
