@@ -160,7 +160,7 @@ def test_loop_e2e_release_gate_covers_browser_probe_runner_changes() -> None:
     assert "scripts/frontend_browser_gate_probe_runner.mjs" in workflow
 
 
-def test_loop_e2e_stages_windows_provider_runtime_artifacts_for_local_review(
+def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
     tmp_path: Path,
 ) -> None:
     script = runpy.run_path(_REPO_ROOT / "scripts" / "loop_e2e_release_gate.py")
@@ -173,21 +173,48 @@ def test_loop_e2e_stages_windows_provider_runtime_artifacts_for_local_review(
         capture_output=True,
         text=True,
     )
+    subprocess.run(
+        ["git", "config", "user.email", "loop-e2e@example.com"],
+        cwd=project_root,
+        check=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Loop E2E"],
+        cwd=project_root,
+        check=True,
+    )
+    (project_root / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+    subprocess.run(["git", "add", ".gitignore"], cwd=project_root, check=True)
+    subprocess.run(
+        ["git", "commit", "-m", "initialize fixture"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
     candidate_paths = (
         "specs/demo-loop-e2e/requirements.md",
         "src/app.py",
         "tests/test_app.py",
     )
-    provider_paths = tuple(script["_WINDOWS_PROVIDER_RUNTIME_ADAPTER_PATHS"])
-    for relative_path in (*candidate_paths, *provider_paths):
+    delivery_roots = tuple(script["_WINDOWS_FRONTEND_DELIVERY_ROOTS"])
+    generated_paths = tuple(
+        path
+        for root in delivery_roots
+        for path in (f"{root}/fixture.yaml", f"{root}/nested/fixture.yaml")
+    )
+    for relative_path in (*candidate_paths, *generated_paths):
         path = project_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"fixture: {relative_path}\n", encoding="utf-8")
+    ignored_noise = project_root / "managed" / "frontend" / "node_modules" / "noise"
+    ignored_noise.parent.mkdir(parents=True, exist_ok=True)
+    ignored_noise.write_text("ignored\n", encoding="utf-8")
 
     script["_stage_local_pr_candidate"](
         project_root,
-        include_windows_provider_runtime_adapter=True,
+        include_windows_frontend_delivery=True,
     )
 
     staged = set(
@@ -200,7 +227,11 @@ def test_loop_e2e_stages_windows_provider_runtime_artifacts_for_local_review(
         ).stdout.splitlines()
     )
     assert set(candidate_paths).issubset(staged)
-    assert set(provider_paths).issubset(staged)
+    staged_governance = {
+        path for path in staged if path.startswith("governance/frontend/")
+    }
+    assert staged_governance == set(generated_paths)
+    assert "managed/frontend/node_modules/noise" not in staged
 
     unexpected = project_root / "governance" / "frontend" / "unreviewed.yaml"
     unexpected.parent.mkdir(parents=True, exist_ok=True)
@@ -208,7 +239,7 @@ def test_loop_e2e_stages_windows_provider_runtime_artifacts_for_local_review(
     with pytest.raises(AssertionError, match="unreviewed candidate paths"):
         script["_stage_local_pr_candidate"](
             project_root,
-            include_windows_provider_runtime_adapter=True,
+            include_windows_frontend_delivery=True,
         )
 
 

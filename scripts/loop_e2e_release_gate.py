@@ -33,13 +33,10 @@ _LOCAL_PR_CANDIDATE_PATHS = (
     "src/app.py",
     "tests/test_app.py",
 )
-_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT = "governance/frontend/provider-runtime-adapter"
-_WINDOWS_PROVIDER_RUNTIME_ADAPTER_PATHS = (
-    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/adapter-targets.yaml",
-    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/handoff.schema.yaml",
-    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/provider-runtime-adapter.manifest.yaml",
-    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/providers/public-primevue/adapter-scaffold.yaml",
-    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/providers/public-primevue/runtime-boundary-receipt.yaml",
+_WINDOWS_FRONTEND_DELIVERY_ROOTS = (
+    "governance/frontend/solution",
+    "governance/frontend/quality-platform",
+    "governance/frontend/provider-runtime-adapter",
 )
 
 
@@ -965,7 +962,7 @@ def run_scenario(
     )
     _stage_local_pr_candidate(
         h.project_root,
-        include_windows_provider_runtime_adapter=(
+        include_windows_frontend_delivery=(
             include_windows_playwright_provider_e2e
             and platform.system().lower() == "windows"
         ),
@@ -2022,21 +2019,35 @@ def _git(cwd: Path, *args: str) -> str:
 def _stage_local_pr_candidate(
     project_root: Path,
     *,
-    include_windows_provider_runtime_adapter: bool,
+    include_windows_frontend_delivery: bool,
 ) -> None:
     candidate_paths = list(_LOCAL_PR_CANDIDATE_PATHS)
     required_paths: tuple[str, ...] = ()
-    if include_windows_provider_runtime_adapter:
-        required_paths = _WINDOWS_PROVIDER_RUNTIME_ADAPTER_PATHS
-        missing_paths = [
-            path for path in required_paths if not (project_root / path).is_file()
-        ]
-        if missing_paths:
-            raise AssertionError(
-                "Windows provider-runtime candidate artifacts are missing: "
-                + ", ".join(missing_paths)
+    if include_windows_frontend_delivery:
+        generated_paths: list[str] = []
+        missing_roots: list[str] = []
+        for relative_root in _WINDOWS_FRONTEND_DELIVERY_ROOTS:
+            artifact_root = project_root / relative_root
+            root_paths = (
+                [
+                    path.relative_to(project_root).as_posix()
+                    for path in sorted(artifact_root.rglob("*"))
+                    if path.is_file() or path.is_symlink()
+                ]
+                if artifact_root.is_dir()
+                else []
             )
-        candidate_paths.append(_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT)
+            if not root_paths:
+                missing_roots.append(relative_root)
+                continue
+            generated_paths.extend(root_paths)
+        if missing_roots:
+            raise AssertionError(
+                "Windows frontend delivery roots are missing or empty: "
+                + ", ".join(missing_roots)
+            )
+        required_paths = tuple(generated_paths)
+        candidate_paths.extend(_WINDOWS_FRONTEND_DELIVERY_ROOTS)
 
     _git(project_root, "add", *candidate_paths)
     staged_paths = set(
@@ -2045,7 +2056,7 @@ def _stage_local_pr_candidate(
     missing_staged_paths = sorted(set(required_paths) - staged_paths)
     if missing_staged_paths:
         raise AssertionError(
-            "Windows provider-runtime candidate artifacts were not staged: "
+            "Windows frontend delivery artifacts were not staged: "
             + ", ".join(missing_staged_paths)
         )
 
