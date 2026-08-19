@@ -28,6 +28,20 @@ from typing import Any
 import yaml
 from rich.console import Console
 
+_LOCAL_PR_CANDIDATE_PATHS = (
+    "specs/demo-loop-e2e",
+    "src/app.py",
+    "tests/test_app.py",
+)
+_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT = "governance/frontend/provider-runtime-adapter"
+_WINDOWS_PROVIDER_RUNTIME_ADAPTER_PATHS = (
+    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/adapter-targets.yaml",
+    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/handoff.schema.yaml",
+    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/provider-runtime-adapter.manifest.yaml",
+    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/providers/public-primevue/adapter-scaffold.yaml",
+    f"{_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT}/providers/public-primevue/runtime-boundary-receipt.yaml",
+)
+
 
 @dataclass
 class StepResult:
@@ -949,12 +963,15 @@ def run_scenario(
     h.result.key_artifacts["loop_evidence_commit"] = _git(
         h.project_root, "rev-parse", "HEAD"
     )
-    _git(
+    _stage_local_pr_candidate(
         h.project_root,
-        "add",
-        "specs/demo-loop-e2e",
-        "src/app.py",
-        "tests/test_app.py",
+        include_windows_provider_runtime_adapter=(
+            include_windows_playwright_provider_e2e
+            and platform.system().lower() == "windows"
+        ),
+    )
+    h.result.assertions.append(
+        "Every generated delivery file is staged before Local PR Review"
     )
     h.result.key_artifacts["initial_reviewed_tree"] = _git(h.project_root, "write-tree")
 
@@ -2000,6 +2017,51 @@ def _git(cwd: Path, *args: str) -> str:
     if completed.returncode != 0:
         raise AssertionError(f"git {' '.join(args)} failed: {completed.stderr.strip()}")
     return completed.stdout.strip()
+
+
+def _stage_local_pr_candidate(
+    project_root: Path,
+    *,
+    include_windows_provider_runtime_adapter: bool,
+) -> None:
+    candidate_paths = list(_LOCAL_PR_CANDIDATE_PATHS)
+    required_paths: tuple[str, ...] = ()
+    if include_windows_provider_runtime_adapter:
+        required_paths = _WINDOWS_PROVIDER_RUNTIME_ADAPTER_PATHS
+        missing_paths = [
+            path for path in required_paths if not (project_root / path).is_file()
+        ]
+        if missing_paths:
+            raise AssertionError(
+                "Windows provider-runtime candidate artifacts are missing: "
+                + ", ".join(missing_paths)
+            )
+        candidate_paths.append(_WINDOWS_PROVIDER_RUNTIME_ADAPTER_ROOT)
+
+    _git(project_root, "add", *candidate_paths)
+    staged_paths = set(
+        _git(project_root, "diff", "--cached", "--name-only").splitlines()
+    )
+    missing_staged_paths = sorted(set(required_paths) - staged_paths)
+    if missing_staged_paths:
+        raise AssertionError(
+            "Windows provider-runtime candidate artifacts were not staged: "
+            + ", ".join(missing_staged_paths)
+        )
+
+    unstaged_paths = _git(project_root, "diff", "--name-only").splitlines()
+    untracked_paths = _git(
+        project_root,
+        "ls-files",
+        "--others",
+        "--exclude-standard",
+    ).splitlines()
+    unreviewed_paths = sorted(set(unstaged_paths) | set(untracked_paths))
+    if unreviewed_paths:
+        raise AssertionError(
+            "Local PR candidate has unreviewed candidate paths: "
+            + ", ".join(unreviewed_paths[:10])
+        )
 
 
 def _write_file(path: Path, content: str) -> None:

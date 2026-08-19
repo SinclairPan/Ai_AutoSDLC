@@ -160,6 +160,58 @@ def test_loop_e2e_release_gate_covers_browser_probe_runner_changes() -> None:
     assert "scripts/frontend_browser_gate_probe_runner.mjs" in workflow
 
 
+def test_loop_e2e_stages_windows_provider_runtime_artifacts_for_local_review(
+    tmp_path: Path,
+) -> None:
+    script = runpy.run_path(_REPO_ROOT / "scripts" / "loop_e2e_release_gate.py")
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    subprocess.run(
+        ["git", "init", "--initial-branch=main"],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    candidate_paths = (
+        "specs/demo-loop-e2e/requirements.md",
+        "src/app.py",
+        "tests/test_app.py",
+    )
+    provider_paths = tuple(script["_WINDOWS_PROVIDER_RUNTIME_ADAPTER_PATHS"])
+    for relative_path in (*candidate_paths, *provider_paths):
+        path = project_root / relative_path
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(f"fixture: {relative_path}\n", encoding="utf-8")
+
+    script["_stage_local_pr_candidate"](
+        project_root,
+        include_windows_provider_runtime_adapter=True,
+    )
+
+    staged = set(
+        subprocess.run(
+            ["git", "diff", "--cached", "--name-only"],
+            cwd=project_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.splitlines()
+    )
+    assert set(candidate_paths).issubset(staged)
+    assert set(provider_paths).issubset(staged)
+
+    unexpected = project_root / "governance" / "frontend" / "unreviewed.yaml"
+    unexpected.parent.mkdir(parents=True, exist_ok=True)
+    unexpected.write_text("unreviewed: true\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="unreviewed candidate paths"):
+        script["_stage_local_pr_candidate"](
+            project_root,
+            include_windows_provider_runtime_adapter=True,
+        )
+
+
 def test_loop_e2e_advisory_frontend_evidence_close_allows_warnings(
     tmp_path: Path,
 ) -> None:
