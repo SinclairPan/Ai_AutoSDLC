@@ -16,7 +16,7 @@
     "identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["ai_sdlc_version", "ai_sdlc_commit", "source_tree_sha", "superpowers_commit", "benchmark_commit", "fixture_tree_sha256", "codex_version", "model", "reasoning_effort", "runner_script_sha256", "writer_timeout_seconds", "expert_timeout_seconds", "fixture_commitment"],
+      "required": ["ai_sdlc_version", "ai_sdlc_commit", "source_tree_sha", "superpowers_commit", "benchmark_commit", "fixture_tree_sha256", "codex_version", "model", "reasoning_effort", "runner_script_sha256", "writer_timeout_seconds", "expert_timeout_seconds", "fixture_commitment", "evidence_contract_sha256", "evidence_contract_commitment"],
       "properties": {
         "ai_sdlc_version": {"type": "string", "minLength": 1},
         "ai_sdlc_commit": {"type": "string", "pattern": "^[a-f0-9]{40}$"},
@@ -30,7 +30,9 @@
         "runner_script_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
         "writer_timeout_seconds": {"type": "integer", "minimum": 1},
         "expert_timeout_seconds": {"type": "integer", "minimum": 1},
-        "fixture_commitment": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
+        "fixture_commitment": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "evidence_contract_sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "evidence_contract_commitment": {"type": "string", "pattern": "^[a-f0-9]{64}$"}
       }
     },
     "digests": {

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -22,6 +23,34 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
     raw = json.loads(source_protocol.read_text(encoding="utf-8"))
     raw["execution_lock"]["fixture_tree_sha256"] = "f" * 64
     raw["execution_lock"]["fixture_commitment"] = "f" * 64
+    contract = {
+        "schema": "ai-sdlc-v2-benefit-evidence-contract/v1",
+        "runs": [
+            {
+                "run_id": row["run_id"],
+                "artifact_slots": [
+                    {
+                        "path": "benchmark-task/result.txt",
+                        "category": "delivery",
+                        "required": True,
+                        "applicable": True,
+                    }
+                ],
+                "changed_files_scope": {
+                    "baseline_root": "baseline",
+                    "candidate_root": "benchmark-task",
+                    "include_paths": ["result.txt"],
+                },
+                "allowed_automated_event_types": [],
+            }
+            for row in raw["run_matrix"]
+        ],
+    }
+    contract_path = tmp_path / "evidence-contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    contract_digest = sha256(contract_path.read_bytes()).hexdigest()
+    raw["execution_lock"]["evidence_contract_sha256"] = contract_digest
+    raw["execution_lock"]["evidence_contract_commitment"] = contract_digest
     protocol = tmp_path / "protocol.json"
     protocol.write_text(json.dumps(raw), encoding="utf-8")
     ledger = tmp_path / "ledger.json"
@@ -38,6 +67,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(ledger),
             "--protocol",
             str(protocol),
+            "--contract",
+            str(contract_path),
             "--run-id",
             "P:requirement-contract-ambiguity",
             "--kind",
@@ -62,6 +93,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(ledger),
             "--protocol",
             str(protocol),
+            "--contract",
+            str(contract_path),
             "--attempt-id",
             "attempt-001",
             "--status",
@@ -88,6 +121,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(ledger),
             "--protocol",
             str(protocol),
+            "--contract",
+            str(contract_path),
             "--attempt-id",
             "attempt-001",
             "--status",

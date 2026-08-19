@@ -65,6 +65,8 @@ class ExecutionLock:
     writer_timeout_seconds: int
     expert_timeout_seconds: int
     fixture_commitment: str
+    evidence_contract_sha256: str
+    evidence_contract_commitment: str
 
 
 @dataclass(frozen=True)
@@ -105,29 +107,6 @@ class AttemptCompletion:
     raw_provider_output_sha256: str | None = None
 
 
-@dataclass(frozen=True)
-class ArtifactRequirement:
-    """One frozen artifact applicability rule evaluated against a real workspace."""
-
-    path: str
-    category: str
-    required: bool = True
-    applicable: bool = True
-
-
-@dataclass(frozen=True)
-class RunEvidenceRequest:
-    """Runner-owned evidence persisted independently from the public receipt."""
-
-    run_id: str
-    workspace_root: Path
-    phase_evidence: Mapping[str, Mapping[str, str]]
-    artifacts: tuple[ArtifactRequirement, ...]
-    changed_files: tuple[str, ...]
-    automated_events: tuple[Mapping[str, object], ...] = ()
-    human_events: tuple[Mapping[str, object], ...] = ()
-
-
 _PROTOCOL_KEYS = {
     "schema",
     "arms",
@@ -151,6 +130,8 @@ _LOCK_KEYS = {
     "writer_timeout_seconds",
     "expert_timeout_seconds",
     "fixture_commitment",
+    "evidence_contract_sha256",
+    "evidence_contract_commitment",
 }
 _EXPECTED_LOCK = {
     "ai_sdlc_version": "2.0.0",
@@ -200,13 +181,13 @@ _SCHEDULE = (
     ("P", _FIXTURES[2], 4),
     ("A00", _FIXTURES[2], 5),
 )
-_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v5"
+_LEDGER_SCHEMA = "ai-sdlc-v2-benefit-attempt-ledger/v6"
 _LEDGER_KEYS = {
     "schema",
     "protocol_sha256",
     "attempts_started",
     "attempts",
-    "run_evidence",
+    "runs",
 }
 _ATTEMPT_KEYS = {
     "attempt_id",
@@ -232,6 +213,7 @@ _ATTEMPT_KEYS = {
     "token_usage",
     "raw_provider_output_sha256",
     "history",
+    "service_events",
 }
 _EVENT_KEYS = {
     "sequence",
@@ -340,22 +322,53 @@ def reserve_provider_attempt(
     ledger_path: Path,
     protocol: BenchmarkProtocol,
     request: AttemptRequest,
+    evidence_contract_path: Path,
 ) -> AttemptReservation:
     """Atomically reserve an allowed logical Provider attempt before it starts."""
     protocol_digest = _require_executable_protocol(protocol)
+    _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
-        ledger = _load_ledger(ledger_path, protocol_digest, protocol.attempt_budget)
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        _validate_reservation_request(ledger["attempts"], request)
+        runs = ledger["runs"]
+        if not isinstance(runs, dict):
+            raise ValueError("attempt ledger has invalid run registry")
+        run = runs.get(request.run_id)
+        if run is None:
+            if request.kind != "writer":
+                raise ValueError("run must begin with a writer reservation")
+            now = _now_rfc3339()
+            run = {
+                "run_id": request.run_id,
+                "run_started_at": now,
+                "phase_events": [],
+                "sealed_evidence": None,
+            }
+            runs[request.run_id] = run
+        elif not isinstance(run, Mapping) or run.get("sealed_evidence") is not None:
+            raise ValueError("sealed run rejects late attempts and events")
         if ledger["attempts_started"] >= protocol.attempt_budget.limit:
             raise ValueError(
                 f"Provider attempt budget of {protocol.attempt_budget.limit} is exhausted"
             )
-        _validate_reservation_request(ledger["attempts"], request)
         attempts_started = ledger["attempts_started"] + 1
         attempt_id = f"attempt-{attempts_started:03d}"
         ledger["attempts_started"] = attempts_started
-        ledger["attempts"].append(_new_attempt(attempt_id, request, ledger["attempts"]))
+        new_attempt = _new_attempt(attempt_id, request, ledger["attempts"])
+        _require_public_ledger_value(new_attempt, "Provider reservation")
+        ledger["attempts"].append(new_attempt)
         _validate_attempt_ledger_invariants(
             ledger["attempts"], protocol.attempt_budget
+        )
+        _validate_run_registry(
+            runs,
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
         )
         _atomic_write_json(ledger_path, ledger)
         return AttemptReservation(attempt_id, attempts_started, request)
@@ -365,53 +378,291 @@ def record_provider_completion(
     ledger_path: Path,
     protocol: BenchmarkProtocol,
     completion: AttemptCompletion,
+    evidence_contract_path: Path,
 ) -> None:
     """Atomically record one allowed Provider attempt state transition."""
     protocol_digest = _require_executable_protocol(protocol)
+    _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
-        ledger = _load_ledger(ledger_path, protocol_digest, protocol.attempt_budget)
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
         for attempt in ledger["attempts"]:
             if attempt["attempt_id"] == completion.attempt_id:
+                _active_run_record(ledger, str(attempt["run_id"]))
                 _apply_attempt_transition(ledger["attempts"], attempt, completion)
+                _validate_persisted_attempt(attempt, completion.attempt_id)
                 _validate_attempt_ledger_invariants(
                     ledger["attempts"], protocol.attempt_budget
+                )
+                _validate_run_registry(
+                    ledger["runs"],
+                    ledger["attempts"],
+                    evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
                 )
                 _atomic_write_json(ledger_path, ledger)
                 return
         raise ValueError("Provider completion requires a prior reservation")
 
 
-def record_run_evidence(
+def record_phase_event(
     ledger_path: Path,
     protocol: BenchmarkProtocol,
-    request: RunEvidenceRequest,
+    evidence_contract_path: Path,
+    *,
+    run_id: str,
+    phase: str,
+    action: str,
 ) -> None:
-    """Atomically snapshot runner-owned timing, event and real-file evidence.
-
-    Receipt authors cannot supply these observations.  The runner provides the
-    frozen applicability rules and phase event timestamps; this function reads
-    artifact bytes/stat data itself and persists one immutable projection under
-    the same cross-process ledger lock used for Provider attempts.
-    """
+    """Record a controller phase event using only the core clock."""
     protocol_digest = _require_executable_protocol(protocol)
+    _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
-        ledger = _load_ledger(ledger_path, protocol_digest, protocol.attempt_budget)
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        run = _active_run_record(ledger, run_id)
+        if phase == "provider" or phase not in {
+            "setup",
+            "framework_init",
+            "governance",
+            "review",
+            "evaluation",
+        } or action not in {"start", "end"}:
+            raise ValueError("controller phase event is invalid")
+        events = run["phase_events"]
+        if not isinstance(events, list):
+            raise ValueError("attempt ledger phase events are invalid")
+        event = {"phase": phase, "action": action, "recorded_at": _now_rfc3339()}
+        _validate_new_phase_event(events, event)
+        _require_public_ledger_value(event, "controller phase event")
+        events.append(event)
+        _validate_run_registry(
+            ledger["runs"],
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
+        )
+        _atomic_write_json(ledger_path, ledger)
+
+
+def start_service_transaction(
+    ledger_path: Path,
+    protocol: BenchmarkProtocol,
+    evidence_contract_path: Path,
+    *,
+    attempt_id: str,
+    event_type: str,
+    transaction_id: str,
+) -> None:
+    """Start one service transaction using only the core clock."""
+    protocol_digest = _require_executable_protocol(protocol)
+    contract = _load_evidence_contract(evidence_contract_path, protocol)
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        attempt = _attempt_by_id(ledger["attempts"], attempt_id)
+        if attempt is None or attempt.get("terminal") is True:
+            raise ValueError("service transaction requires an active attempt")
+        run = _active_run_record(ledger, str(attempt.get("run_id")))
+        allowed = _contract_run(contract, str(attempt.get("run_id")))[
+            "allowed_automated_event_types"
+        ]
+        if event_type not in allowed:
+            raise ValueError("service transaction type is not allowed by contract")
+        service_events = attempt.get("service_events")
+        if not isinstance(service_events, list) or any(
+            isinstance(item, Mapping)
+            and item.get("transaction_id") == transaction_id
+            for item in service_events
+        ):
+            raise ValueError("service transaction identity is duplicated")
+        started_at = _now_rfc3339()
+        event = {
+            "type": event_type,
+            "transaction_id": transaction_id,
+            "attempt_id": attempt_id,
+            "status": "started",
+            "started_at": started_at,
+            "ended_at": None,
+            "latency_ms": None,
+            "service_evidence_sha256": None,
+            "evidence_sha256": None,
+        }
+        _validate_service_event(event)
+        _require_public_ledger_value(event, "service transaction")
+        service_events.append(event)
+        _validate_attempt_ledger_invariants(
+            ledger["attempts"], protocol.attempt_budget
+        )
+        _validate_run_registry(
+            ledger["runs"],
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
+        )
+        # Referencing the run here makes the active/sealed guard explicit.
+        _ = run
+        _atomic_write_json(ledger_path, ledger)
+
+
+def record_service_transaction(
+    ledger_path: Path,
+    protocol: BenchmarkProtocol,
+    evidence_contract_path: Path,
+    *,
+    attempt_id: str,
+    event_type: str,
+    transaction_id: str,
+    evidence: Mapping[str, object],
+) -> None:
+    """Close one started service transaction using only the core clock."""
+    protocol_digest = _require_executable_protocol(protocol)
+    contract = _load_evidence_contract(evidence_contract_path, protocol)
+    privacy_issues: list[BenchmarkIssue] = []
+    _scan_public_value(evidence, "$", privacy_issues)
+    if (
+        privacy_issues
+        or not transaction_id
+        or not isinstance(evidence, Mapping)
+        or not evidence
+        or not _is_closed_json_value(evidence)
+    ):
+        raise ValueError("service transaction evidence is not public and closed")
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        attempt = _attempt_by_id(ledger["attempts"], attempt_id)
+        if attempt is None or attempt.get("terminal") is True:
+            raise ValueError("service transaction requires an active attempt")
+        _active_run_record(ledger, str(attempt.get("run_id")))
+        allowed = _contract_run(contract, str(attempt.get("run_id")))[
+            "allowed_automated_event_types"
+        ]
+        if event_type not in allowed:
+            raise ValueError("service transaction type is not allowed by contract")
+        service_events = attempt.get("service_events")
+        matches = [
+            (index, event)
+            for index, event in enumerate(service_events)
+            if isinstance(event, Mapping)
+            and event.get("transaction_id") == transaction_id
+        ] if isinstance(service_events, list) else []
+        if len(matches) != 1:
+            raise ValueError("service transaction requires one prior start")
+        event_index, started_event = matches[0]
+        if (
+            started_event.get("status") != "started"
+            or started_event.get("type") != event_type
+            or started_event.get("attempt_id") != attempt_id
+        ):
+            raise ValueError("service transaction start binding is invalid")
+        started_at = started_event.get("started_at")
+        ended_at = _now_rfc3339()
+        started = _parse_rfc3339(started_at)
+        ended = _parse_rfc3339(ended_at)
+        if started is None or ended is None or ended < started:
+            raise ValueError("service transaction clock is invalid")
+        latency_ms = (ended - started).total_seconds() * 1000
+        public_event = {
+            "type": event_type,
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "latency_ms": latency_ms,
+        }
+        event = {
+            "type": event_type,
+            "transaction_id": transaction_id,
+            "attempt_id": attempt_id,
+            "status": "completed",
+            "started_at": started_at,
+            "ended_at": ended_at,
+            "latency_ms": latency_ms,
+            "service_evidence_sha256": sha256(
+                json.dumps(
+                    evidence,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "evidence_sha256": sha256(
+                json.dumps(
+                    public_event,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+        }
+        _validate_service_event(event)
+        _require_public_ledger_value(event, "service transaction")
+        service_events[event_index] = event
+        _validate_attempt_ledger_invariants(
+            ledger["attempts"], protocol.attempt_budget
+        )
+        _validate_run_registry(
+            ledger["runs"],
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
+        )
+        _atomic_write_json(ledger_path, ledger)
+
+
+def seal_run_evidence(
+    ledger_path: Path,
+    protocol: BenchmarkProtocol,
+    evidence_contract_path: Path,
+    *,
+    run_id: str,
+    workspace_root: Path,
+) -> None:
+    """Seal one immutable run from contract, ledger clocks and actual files."""
+    protocol_digest = _require_executable_protocol(protocol)
+    contract = _load_evidence_contract(evidence_contract_path, protocol)
+    with _ledger_lock(ledger_path):
+        ledger = _load_ledger(
+            ledger_path,
+            protocol_digest,
+            protocol.attempt_budget,
+            protocol.execution_lock.evidence_contract_sha256,
+        )
+        run = _active_run_record(ledger, run_id)
         attempts = [
             item
             for item in ledger["attempts"]
-            if isinstance(item, Mapping) and item.get("run_id") == request.run_id
+            if isinstance(item, Mapping) and item.get("run_id") == run_id
         ]
         if not attempts or any(item.get("terminal") is not True for item in attempts):
             raise ValueError("run evidence requires every started run attempt terminal")
-        snapshot = _build_run_evidence_snapshot(request)
-        run_evidence = ledger["run_evidence"]
-        if not isinstance(run_evidence, dict):
-            raise ValueError("attempt ledger has invalid run evidence")
-        existing = run_evidence.get(request.run_id)
-        if existing is not None and existing != snapshot:
-            raise ValueError("run evidence is immutable once recorded")
-        run_evidence[request.run_id] = snapshot
-        _validate_run_evidence_registry(run_evidence)
+        recorded_at = _now_rfc3339()
+        snapshot = _build_sealed_run_evidence(
+            run_id=run_id,
+            run=run,
+            attempts=attempts,
+            contract=contract,
+            workspace_root=workspace_root,
+            recorded_at=recorded_at,
+            contract_sha256=sha256(contract["canonical_bytes"]).hexdigest(),
+        )
+        run["sealed_evidence"] = snapshot
+        _validate_run_registry(
+            ledger["runs"],
+            ledger["attempts"],
+            evidence_contract_sha256=protocol.execution_lock.evidence_contract_sha256,
+        )
         _atomic_write_json(ledger_path, ledger)
 
 
@@ -654,7 +905,7 @@ def _validate_receipt_ledger_binding(
     ledger_path: Path,
     issues: list[BenchmarkIssue],
 ) -> None:
-    """Bind receipt attempts and runner evidence to the validated persisted v5 ledger."""
+    """Bind receipt attempts and runner evidence to the validated persisted v6 ledger."""
     if not ledger_path.is_file():
         issues.append(BenchmarkIssue("receipt.ledger", "attempt ledger is missing"))
         return
@@ -664,6 +915,7 @@ def _validate_receipt_ledger_binding(
                 ledger_path,
                 canonical_protocol_digest(protocol),
                 protocol.attempt_budget,
+                protocol.execution_lock.evidence_contract_sha256,
             )
     except (OSError, ValueError, json.JSONDecodeError) as error:
         issues.append(
@@ -672,10 +924,15 @@ def _validate_receipt_ledger_binding(
         return
 
     run_id = receipt.get("run_id")
-    evidence_registry = ledger.get("run_evidence")
+    run_registry = ledger.get("runs")
+    run_record = (
+        run_registry.get(run_id)
+        if isinstance(run_registry, Mapping) and isinstance(run_id, str)
+        else None
+    )
     authoritative_evidence = (
-        evidence_registry.get(run_id)
-        if isinstance(evidence_registry, Mapping) and isinstance(run_id, str)
+        run_record.get("sealed_evidence")
+        if isinstance(run_record, Mapping)
         else None
     )
     if not isinstance(authoritative_evidence, Mapping):
@@ -686,6 +943,16 @@ def _validate_receipt_ledger_binding(
             )
         )
         return
+    if (
+        authoritative_evidence.get("evidence_contract_sha256")
+        != protocol.execution_lock.evidence_contract_sha256
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.ledger-evidence",
+                "sealed evidence contract does not match protocol",
+            )
+        )
     _validate_receipt_run_evidence_projection(
         receipt, authoritative_evidence, issues
     )
@@ -1567,6 +1834,124 @@ def load_protocol(path: Path) -> BenchmarkProtocol:
     return _parse_protocol_bytes(path.read_bytes())
 
 
+def _load_evidence_contract(
+    path: Path, protocol: BenchmarkProtocol
+) -> dict[str, object]:
+    canonical_bytes = path.read_bytes()
+    digest = sha256(canonical_bytes).hexdigest()
+    lock = protocol.execution_lock
+    if (
+        digest != lock.evidence_contract_sha256
+        or digest != lock.evidence_contract_commitment
+        or not _is_non_placeholder_digest(digest)
+    ):
+        raise ValueError("evidence contract bytes do not match protocol commitment")
+    raw = json.loads(canonical_bytes)
+    if not isinstance(raw, dict) or set(raw) != {"schema", "runs"}:
+        raise ValueError("evidence contract surface is invalid")
+    if raw.get("schema") != "ai-sdlc-v2-benefit-evidence-contract/v1":
+        raise ValueError("evidence contract schema is invalid")
+    runs = raw.get("runs")
+    if not isinstance(runs, list) or len(runs) != len(protocol.run_matrix):
+        raise ValueError("evidence contract run matrix is invalid")
+    expected_ids = [run.run_id for run in protocol.run_matrix]
+    actual_ids: list[object] = []
+    for run in runs:
+        _validate_contract_run(run)
+        actual_ids.append(run["run_id"])
+    if actual_ids != expected_ids or len(set(actual_ids)) != len(actual_ids):
+        raise ValueError("evidence contract run order must match protocol")
+    privacy_issues: list[BenchmarkIssue] = []
+    _scan_public_value(raw, "$", privacy_issues)
+    if privacy_issues:
+        raise ValueError("evidence contract contains non-public values")
+    return {**raw, "canonical_bytes": canonical_bytes}
+
+
+def _validate_contract_run(value: object) -> None:
+    if not isinstance(value, Mapping) or set(value) != {
+        "run_id",
+        "artifact_slots",
+        "changed_files_scope",
+        "allowed_automated_event_types",
+    }:
+        raise ValueError("evidence contract run is invalid")
+    run_id = value.get("run_id")
+    if run_id not in {f"{arm}:{fixture}" for arm, fixture, _ in _SCHEDULE}:
+        raise ValueError("evidence contract run id is invalid")
+    slots = value.get("artifact_slots")
+    if not isinstance(slots, list) or not slots:
+        raise ValueError("evidence contract artifact slots are invalid")
+    paths: list[object] = []
+    for slot in slots:
+        if not isinstance(slot, Mapping) or set(slot) != {
+            "path",
+            "category",
+            "required",
+            "applicable",
+        }:
+            raise ValueError("evidence contract artifact slot is invalid")
+        if (
+            not _is_safe_relative_path(slot.get("path"))
+            or slot.get("category") not in {"setup", "governance", "delivery"}
+            or not isinstance(slot.get("required"), bool)
+            or not isinstance(slot.get("applicable"), bool)
+            or (slot.get("required") and not slot.get("applicable"))
+        ):
+            raise ValueError("evidence contract artifact slot is invalid")
+        paths.append(slot.get("path"))
+    if len(paths) != len(set(paths)):
+        raise ValueError("evidence contract artifact paths must be unique")
+    scope = value.get("changed_files_scope")
+    if not isinstance(scope, Mapping) or set(scope) != {
+        "baseline_root",
+        "candidate_root",
+        "include_paths",
+    }:
+        raise ValueError("evidence contract changed-files scope is invalid")
+    include = scope.get("include_paths")
+    if (
+        not _is_safe_relative_path(scope.get("baseline_root"))
+        or not _is_safe_relative_path(scope.get("candidate_root"))
+        or not isinstance(include, list)
+        or not include
+        or any(not _is_safe_relative_path(item) for item in include)
+        or len(include) != len(set(include))
+    ):
+        raise ValueError("evidence contract changed-files scope is invalid")
+    allowed = value.get("allowed_automated_event_types")
+    if (
+        not isinstance(allowed, list)
+        or len(allowed) != len(set(allowed))
+        or not set(allowed)
+        <= {
+            "intent_service_event",
+            "clarification_request_event",
+            "approval_service_event",
+        }
+    ):
+        raise ValueError("evidence contract automated event types are invalid")
+
+
+def _contract_run(
+    contract: Mapping[str, object], run_id: str
+) -> Mapping[str, object]:
+    runs = contract.get("runs")
+    if not isinstance(runs, list):
+        raise ValueError("evidence contract run matrix is invalid")
+    match = next(
+        (
+            run
+            for run in runs
+            if isinstance(run, Mapping) and run.get("run_id") == run_id
+        ),
+        None,
+    )
+    if not isinstance(match, Mapping):
+        raise ValueError("evidence contract does not cover run")
+    return match
+
+
 def _parse_protocol_bytes(canonical_bytes: bytes) -> BenchmarkProtocol:
     raw = json.loads(canonical_bytes)
     if not isinstance(raw, dict):
@@ -1675,6 +2060,26 @@ def validate_protocol(
                 "fixture tree and commitment must be the same SHA-256 digest",
             )
         )
+    evidence_sha = protocol.execution_lock.evidence_contract_sha256
+    evidence_commitment = protocol.execution_lock.evidence_contract_commitment
+    if evidence_sha == evidence_commitment == "pending-unbound":
+        issues.append(
+            BenchmarkIssue(
+                "protocol.evidence-contract-pending",
+                "evidence contract commitment is pending Task 2",
+            )
+        )
+    elif (
+        evidence_sha != evidence_commitment
+        or not _is_non_placeholder_digest(evidence_sha)
+        or not _is_non_placeholder_digest(evidence_commitment)
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "protocol.lock",
+                "evidence contract and commitment must be the same SHA-256 digest",
+            )
+        )
     return issues
 
 
@@ -1693,7 +2098,10 @@ def _require_executable_protocol(protocol: BenchmarkProtocol) -> str:
 
 
 def _load_ledger(
-    path: Path, protocol_digest: str, attempt_budget: AttemptBudget
+    path: Path,
+    protocol_digest: str,
+    attempt_budget: AttemptBudget,
+    evidence_contract_sha256: str,
 ) -> dict[str, object]:
     if not path.exists():
         return {
@@ -1701,7 +2109,7 @@ def _load_ledger(
             "protocol_sha256": protocol_digest,
             "attempts_started": 0,
             "attempts": [],
-            "run_evidence": {},
+            "runs": {},
         }
     raw = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
@@ -1720,8 +2128,8 @@ def _load_ledger(
         raise ValueError("attempt ledger has invalid attempts_started")
     if not isinstance(raw["attempts"], list):
         raise ValueError("attempt ledger has invalid attempts")
-    if not isinstance(raw["run_evidence"], dict):
-        raise ValueError("attempt ledger has invalid run evidence")
+    if not isinstance(raw["runs"], dict):
+        raise ValueError("attempt ledger has invalid run registry")
     attempts = raw["attempts"]
     if raw["attempts_started"] != len(attempts):
         raise ValueError("attempt ledger count does not match attempts")
@@ -1731,46 +2139,45 @@ def _load_ledger(
             raise ValueError("attempt ledger attempt must be an object")
         _validate_persisted_attempt(item, expected)
     _validate_attempt_ledger_invariants(attempts, attempt_budget)
-    _validate_run_evidence_registry(raw["run_evidence"])
+    _validate_run_registry(
+        raw["runs"], attempts, evidence_contract_sha256=evidence_contract_sha256
+    )
     return raw
 
 
-def _build_run_evidence_snapshot(request: RunEvidenceRequest) -> dict[str, object]:
-    registry = {f"{arm}:{fixture}" for arm, fixture, _position in _SCHEDULE}
-    if request.run_id not in registry:
-        raise ValueError("run evidence has an invalid run")
-    workspace_root = request.workspace_root.resolve()
+def _build_sealed_run_evidence(
+    *,
+    run_id: str,
+    run: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    contract: Mapping[str, object],
+    workspace_root: Path,
+    recorded_at: str,
+    contract_sha256: str,
+) -> dict[str, object]:
+    workspace_root = workspace_root.resolve()
     if not workspace_root.is_dir():
         raise ValueError("run evidence workspace root is unavailable")
-    phases = _canonical_phase_evidence(request.phase_evidence)
+    rule = _contract_run(contract, run_id)
     artifacts: list[dict[str, object]] = []
-    seen_paths: set[str] = set()
-    for requirement in request.artifacts:
-        path = requirement.path
-        if not _is_safe_relative_path(path) or path in seen_paths:
-            raise ValueError("run evidence artifact paths must be unique and relative")
-        if requirement.category not in {"setup", "governance", "delivery"}:
-            raise ValueError("run evidence artifact category is invalid")
-        if not isinstance(requirement.required, bool) or not isinstance(
-            requirement.applicable, bool
-        ):
-            raise ValueError("run evidence artifact applicability is invalid")
-        if requirement.required and not requirement.applicable:
-            raise ValueError("a required artifact must be applicable")
-        seen_paths.add(path)
+    for slot in rule["artifact_slots"]:
+        path = slot["path"]
         artifact_path = workspace_root.joinpath(*path.split("/"))
         try:
             resolved = artifact_path.resolve(strict=False)
             resolved.relative_to(workspace_root)
         except (OSError, ValueError) as error:
             raise ValueError("run evidence artifact escapes the workspace") from error
-        observed = requirement.applicable and artifact_path.is_file()
+        observed = slot["applicable"] and artifact_path.is_file()
         digest: str | None = None
         size = 0
         if observed:
-            payload = artifact_path.read_bytes()
+            with artifact_path.open("rb") as handle:
+                payload = handle.read()
+                size = os.fstat(handle.fileno()).st_size
+            if size != len(payload):
+                raise ValueError("run evidence artifact changed while being read")
             digest = sha256(payload).hexdigest()
-            size = len(payload)
             if size == 0:
                 raise ValueError("observed run evidence artifacts cannot be empty")
         artifacts.append(
@@ -1778,43 +2185,55 @@ def _build_run_evidence_snapshot(request: RunEvidenceRequest) -> dict[str, objec
                 "path": path,
                 "sha256": digest,
                 "size_bytes": size,
-                "category": requirement.category,
-                "required": requirement.required,
-                "applicable": requirement.applicable,
+                "category": slot["category"],
+                "required": slot["required"],
+                "applicable": slot["applicable"],
                 "observed": observed,
             }
         )
-    changed_files = list(request.changed_files)
-    if (
-        any(not _is_safe_relative_path(path) for path in changed_files)
-        or len(changed_files) != len(set(changed_files))
-        or set(changed_files)
-        - {
-            item["path"]
-            for item in artifacts
-            if item["category"] == "delivery" and item["observed"] is True
+    changed_files, changed_file_evidence = _derive_changed_files(
+        workspace_root, rule["changed_files_scope"]
+    )
+    phase_evidence = _derive_authoritative_phases(run, attempts, recorded_at)
+    automated_events = [
+        {
+            key: event[key]
+            for key in (
+                "type",
+                "started_at",
+                "ended_at",
+                "latency_ms",
+                "evidence_sha256",
+            )
         }
-    ):
-        raise ValueError("run evidence changed files are not observed delivery artifacts")
-    automated = [
-        _canonical_automated_event(event) for event in request.automated_events
+        for attempt in attempts
+        for event in attempt["service_events"]
     ]
-    human = [dict(event) for event in request.human_events]
-    human_issues: list[BenchmarkIssue] = []
-    _validate_human_events(human, human_issues)
-    if human_issues:
-        raise ValueError("run evidence human events are invalid")
-    return {
-        "phase_evidence": phases,
+    attempt_ids = [str(attempt["attempt_id"]) for attempt in attempts]
+    terminal_sequence = max(int(attempt["sequence"]) for attempt in attempts)
+    attempt_binding = _attempt_binding_digest(attempts)
+    snapshot = {
+        "run_id": run_id,
+        "evidence_contract_sha256": contract_sha256,
+        "attempt_ids": attempt_ids,
+        "terminal_sequence": terminal_sequence,
+        "attempt_binding_sha256": attempt_binding,
+        "recorded_at": recorded_at,
+        "phase_evidence": phase_evidence,
         "artifact_inventory": artifacts,
         "changed_files": changed_files,
-        "automated_events": automated,
-        "human_events": human,
+        "changed_file_evidence": changed_file_evidence,
+        "automated_events": automated_events,
+        "human_events": [],
     }
+    snapshot["seal_binding_sha256"] = _seal_binding_digest(snapshot)
+    return snapshot
 
 
-def _canonical_phase_evidence(
-    supplied: Mapping[str, Mapping[str, str]],
+def _derive_authoritative_phases(
+    run: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    recorded_at: str,
 ) -> dict[str, object]:
     names = (
         "setup",
@@ -1824,22 +2243,61 @@ def _canonical_phase_evidence(
         "review",
         "evaluation",
     )
-    if set(supplied) != set(names):
-        raise ValueError("run evidence phase surface is incomplete")
-    result: dict[str, object] = {}
-    cursor: datetime | None = None
+    run_started = _parse_rfc3339(run.get("run_started_at"))
+    sealed_at = _parse_rfc3339(recorded_at)
+    reservation_times = [
+        _parse_rfc3339(attempt["history"][0].get("recorded_at"))
+        for attempt in attempts
+    ]
+    terminal_times = [
+        _parse_rfc3339(attempt["history"][-1].get("recorded_at"))
+        for attempt in attempts
+    ]
+    if (
+        run_started is None
+        or sealed_at is None
+        or any(value is None for value in reservation_times + terminal_times)
+    ):
+        raise ValueError("run evidence clock binding is invalid")
+    first_reservation = min(value for value in reservation_times if value is not None)
+    last_terminal = max(value for value in terminal_times if value is not None)
+    if not run_started <= first_reservation <= last_terminal <= sealed_at:
+        raise ValueError("run evidence clock ordering is invalid")
+    boundaries: dict[str, tuple[datetime, datetime]] = {
+        "setup": (run_started, first_reservation),
+        "framework_init": (first_reservation, first_reservation),
+        "provider": (first_reservation, last_terminal),
+        "governance": (last_terminal, last_terminal),
+        "review": (last_terminal, last_terminal),
+        "evaluation": (last_terminal, sealed_at),
+    }
+    controller_events = run.get("phase_events")
+    if not isinstance(controller_events, list):
+        raise ValueError("run evidence controller phase events are invalid")
     for name in names:
-        phase = supplied[name]
-        if set(phase) - {"started_at", "ended_at", "evidence_sha256"}:
-            raise ValueError("run evidence phase fields are invalid")
-        start_text = phase.get("started_at")
-        end_text = phase.get("ended_at")
-        started = _parse_rfc3339(start_text)
-        ended = _parse_rfc3339(end_text)
-        if started is None or ended is None or ended < started:
-            raise ValueError("run evidence phase timing is invalid")
-        if cursor is not None and started != cursor:
-            raise ValueError("run evidence phases must be adjacent")
+        if name == "provider":
+            continue
+        matching = [event for event in controller_events if event.get("phase") == name]
+        if matching:
+            if (
+                len(matching) != 2
+                or matching[0].get("action") != "start"
+                or matching[1].get("action") != "end"
+            ):
+                raise ValueError("run evidence controller phase is not closed")
+            phase_start = _parse_rfc3339(matching[0].get("recorded_at"))
+            phase_end = _parse_rfc3339(matching[1].get("recorded_at"))
+            if (
+                phase_start is None
+                or phase_end is None
+                or not run_started <= phase_start <= phase_end <= sealed_at
+            ):
+                raise ValueError("run evidence controller phase clock is invalid")
+            boundaries[name] = (phase_start, phase_end)
+    result: dict[str, object] = {}
+    for name in names:
+        start_text = _format_rfc3339(boundaries[name][0])
+        end_text = _format_rfc3339(boundaries[name][1])
         payload = {"phase": name, "started_at": start_text, "ended_at": end_text}
         result[name] = {
             "started_at": start_text,
@@ -1853,129 +2311,387 @@ def _canonical_phase_evidence(
                 ).encode("utf-8")
             ).hexdigest(),
         }
-        cursor = ended
     return result
 
 
-def _canonical_automated_event(event: Mapping[str, object]) -> dict[str, object]:
-    if set(event) - {"type", "started_at", "ended_at", "latency_ms", "evidence_sha256"}:
-        raise ValueError("run evidence automated event fields are invalid")
-    event_type = event.get("type")
-    if event_type not in {
-        "intent_service_event",
-        "clarification_request_event",
-        "approval_service_event",
-    }:
-        raise ValueError("run evidence automated event type is invalid")
-    started_text = event.get("started_at")
-    ended_text = event.get("ended_at")
-    started = _parse_rfc3339(started_text)
-    ended = _parse_rfc3339(ended_text)
-    if started is None or ended is None or ended < started:
-        raise ValueError("run evidence automated event timing is invalid")
-    latency_ms = (ended - started).total_seconds() * 1000
-    payload = {
-        "type": event_type,
-        "started_at": started_text,
-        "ended_at": ended_text,
-        "latency_ms": latency_ms,
-    }
-    return {
-        **payload,
-        "evidence_sha256": sha256(
-            json.dumps(
-                payload,
-                ensure_ascii=False,
-                sort_keys=True,
-                separators=(",", ":"),
-            ).encode("utf-8")
-        ).hexdigest(),
-    }
+def _format_rfc3339(value: datetime) -> str:
+    return value.isoformat(timespec="microseconds").replace("+00:00", "Z")
 
 
-def _validate_run_evidence_registry(value: Mapping[str, object]) -> None:
+def _validate_run_registry(
+    value: Mapping[str, object],
+    attempts: list[object],
+    *,
+    evidence_contract_sha256: str,
+) -> None:
     registry = {f"{arm}:{fixture}" for arm, fixture, _position in _SCHEDULE}
-    for run_id, snapshot in value.items():
-        if run_id not in registry or not isinstance(snapshot, Mapping):
-            raise ValueError("attempt ledger run evidence is invalid")
-        if set(snapshot) != {
-            "phase_evidence",
-            "artifact_inventory",
-            "changed_files",
-            "automated_events",
-            "human_events",
+    now = datetime.now(UTC)
+    attempt_run_ids = {
+        item.get("run_id") for item in attempts if isinstance(item, Mapping)
+    }
+    if set(value) != attempt_run_ids:
+        raise ValueError("attempt ledger run registry does not close over attempts")
+    for run_id, run in value.items():
+        if run_id not in registry or not isinstance(run, Mapping) or set(run) != {
+            "run_id",
+            "run_started_at",
+            "phase_events",
+            "sealed_evidence",
         }:
-            raise ValueError("attempt ledger run evidence surface is invalid")
-        # Re-validate all persisted primitive shapes without touching the workspace.
-        canonical_phases = _canonical_phase_evidence(
-            _mapping(snapshot.get("phase_evidence"))
-        )
-        if canonical_phases != snapshot.get("phase_evidence"):
-            raise ValueError("attempt ledger phase evidence is invalid")
-        inventory = snapshot.get("artifact_inventory")
-        if not isinstance(inventory, list) or not inventory:
-            raise ValueError("attempt ledger artifact inventory is invalid")
-        paths: list[object] = []
-        for artifact in inventory:
-            if not isinstance(artifact, Mapping) or set(artifact) != {
-                "path",
-                "sha256",
-                "size_bytes",
-                "category",
-                "required",
-                "applicable",
-                "observed",
-            }:
-                raise ValueError("attempt ledger artifact inventory is invalid")
-            path = artifact.get("path")
-            observed = artifact.get("observed")
-            applicable = artifact.get("applicable")
-            required = artifact.get("required")
-            digest = artifact.get("sha256")
-            size = artifact.get("size_bytes")
-            if (
-                not isinstance(path, str)
-                or not _is_safe_relative_path(path)
-                or artifact.get("category") not in {"setup", "governance", "delivery"}
-                or not isinstance(required, bool)
-                or not isinstance(applicable, bool)
-                or not isinstance(observed, bool)
-                or (required and not applicable)
-                or (observed and (not applicable or not _is_non_placeholder_digest(digest) or not _non_bool_int(size) or size < 1))
-                or (not observed and (digest is not None or size != 0))
-            ):
-                raise ValueError("attempt ledger artifact inventory is invalid")
-            paths.append(path)
-        if len(paths) != len(set(paths)):
-            raise ValueError("attempt ledger artifact paths must be unique")
-        changed = snapshot.get("changed_files")
-        if (
-            not isinstance(changed, list)
-            or any(
-                not isinstance(path, str) or not _is_safe_relative_path(path)
-                for path in changed
+            raise ValueError("attempt ledger run record is invalid")
+        started = _parse_rfc3339(run.get("run_started_at"))
+        if run.get("run_id") != run_id or started is None or started > now:
+            raise ValueError("attempt ledger run start is invalid")
+        phase_events = run.get("phase_events")
+        if not isinstance(phase_events, list):
+            raise ValueError("attempt ledger phase events are invalid")
+        previous_events: list[Mapping[str, object]] = []
+        for event in phase_events:
+            if not isinstance(event, Mapping):
+                raise ValueError("attempt ledger phase event is invalid")
+            _validate_new_phase_event(previous_events, event)
+            event_at = _parse_rfc3339(event.get("recorded_at"))
+            if event_at is None or event_at < started or event_at > now:
+                raise ValueError("attempt ledger phase event time is invalid")
+            previous_events.append(event)
+        run_attempts = [
+            item
+            for item in attempts
+            if isinstance(item, Mapping) and item.get("run_id") == run_id
+        ]
+        if not run_attempts:
+            raise ValueError("attempt ledger contains an orphan run record")
+        if _parse_rfc3339(run_attempts[0]["history"][0].get("recorded_at")) < started:
+            raise ValueError("attempt ledger run starts after its first reservation")
+        for attempt in run_attempts:
+            for attempt_event in attempt.get("history", []):
+                attempt_at = _parse_rfc3339(attempt_event.get("recorded_at"))
+                if attempt_at is None or attempt_at < started or attempt_at > now:
+                    raise ValueError("attempt ledger attempt event time is invalid")
+            for service_event in attempt.get("service_events", []):
+                service_start = _parse_rfc3339(service_event.get("started_at"))
+                service_end = _parse_rfc3339(service_event.get("ended_at"))
+                if (
+                    service_start is None
+                    or service_start < started
+                    or service_start > now
+                    or (
+                        service_event.get("status") == "completed"
+                        and (service_end is None or service_end > now)
+                    )
+                ):
+                    raise ValueError("attempt ledger service event time is invalid")
+        sealed = run.get("sealed_evidence")
+        if sealed is not None:
+            _validate_sealed_run_evidence(
+                run,
+                sealed,
+                run_attempts,
+                now,
+                evidence_contract_sha256=evidence_contract_sha256,
             )
-            or len(changed) != len(set(changed))
-        ):
-            raise ValueError("attempt ledger changed files are invalid")
-        observed_delivery = {
-            artifact.get("path")
-            for artifact in inventory
-            if isinstance(artifact, Mapping)
-            and artifact.get("category") == "delivery"
-            and artifact.get("observed") is True
+        _require_public_ledger_value(run, "run registry")
+
+
+def _validate_sealed_run_evidence(
+    run: Mapping[str, object],
+    sealed: object,
+    attempts: list[Mapping[str, object]],
+    now: datetime,
+    *,
+    evidence_contract_sha256: str,
+) -> None:
+    run_id = str(run.get("run_id"))
+    keys = {
+        "run_id",
+        "evidence_contract_sha256",
+        "attempt_ids",
+        "terminal_sequence",
+        "attempt_binding_sha256",
+        "seal_binding_sha256",
+        "recorded_at",
+        "phase_evidence",
+        "artifact_inventory",
+        "changed_files",
+        "changed_file_evidence",
+        "automated_events",
+        "human_events",
+    }
+    if not isinstance(sealed, Mapping) or set(sealed) != keys or not attempts:
+        raise ValueError("attempt ledger sealed run evidence is invalid")
+    recorded = _parse_rfc3339(sealed.get("recorded_at"))
+    attempt_ids = [attempt.get("attempt_id") for attempt in attempts]
+    if (
+        sealed.get("run_id") != run_id
+        or sealed.get("evidence_contract_sha256") != evidence_contract_sha256
+        or sealed.get("attempt_ids") != attempt_ids
+        or any(attempt.get("terminal") is not True for attempt in attempts)
+        or sealed.get("terminal_sequence")
+        != max(attempt.get("sequence") for attempt in attempts)
+        or sealed.get("attempt_binding_sha256") != _attempt_binding_digest(attempts)
+        or sealed.get("seal_binding_sha256") != _seal_binding_digest(sealed)
+        or recorded is None
+        or recorded > now
+        or any(
+            (terminal_at := _parse_rfc3339(attempt["history"][-1].get("recorded_at")))
+            is None
+            or terminal_at > recorded
+            for attempt in attempts
+        )
+        or sealed.get("human_events") != []
+    ):
+        raise ValueError("attempt ledger sealed run binding is invalid")
+    expected_phases = _derive_authoritative_phases(
+        run, attempts, str(sealed.get("recorded_at"))
+    )
+    if sealed.get("phase_evidence") != expected_phases:
+        raise ValueError("attempt ledger sealed phase evidence is invalid")
+    _validate_sealed_artifact_inventory(sealed.get("artifact_inventory"))
+    _validate_sealed_changed_files(
+        sealed.get("changed_files"), sealed.get("changed_file_evidence")
+    )
+    expected_events = [
+        {
+            key: event[key]
+            for key in (
+                "type",
+                "started_at",
+                "ended_at",
+                "latency_ms",
+                "evidence_sha256",
+            )
         }
-        if set(changed) - observed_delivery:
-            raise ValueError("attempt ledger changed files lack observed artifacts")
-        automated = snapshot.get("automated_events")
-        if not isinstance(automated, list) or any(
-            _canonical_automated_event(_mapping(event)) != event for event in automated
+        for attempt in attempts
+        for event in attempt.get("service_events", [])
+    ]
+    if sealed.get("automated_events") != expected_events:
+        raise ValueError("attempt ledger sealed service events are invalid")
+    for attempt in attempts:
+        for event in attempt.get("service_events", []):
+            event_end = _parse_rfc3339(event.get("ended_at"))
+            if event_end is None or event_end > recorded:
+                raise ValueError("attempt ledger service event is after seal")
+
+
+def _validate_sealed_artifact_inventory(value: object) -> None:
+    if not isinstance(value, list) or not value:
+        raise ValueError("attempt ledger sealed artifact inventory is invalid")
+    paths: list[object] = []
+    keys = {
+        "path",
+        "sha256",
+        "size_bytes",
+        "category",
+        "required",
+        "applicable",
+        "observed",
+    }
+    for item in value:
+        if not isinstance(item, Mapping) or set(item) != keys:
+            raise ValueError("attempt ledger sealed artifact inventory is invalid")
+        observed = item.get("observed")
+        applicable = item.get("applicable")
+        required = item.get("required")
+        size = item.get("size_bytes")
+        digest = item.get("sha256")
+        if (
+            not _is_safe_relative_path(item.get("path"))
+            or item.get("category") not in {"setup", "governance", "delivery"}
+            or not isinstance(required, bool)
+            or not isinstance(applicable, bool)
+            or not isinstance(observed, bool)
+            or not _non_bool_int(size)
+            or size < 0
+            or (required and not applicable)
+            or (observed and not applicable)
+            or (observed and (size == 0 or not _is_non_placeholder_digest(digest)))
+            or (not observed and (size != 0 or digest is not None))
         ):
-            raise ValueError("attempt ledger automated events are invalid")
-        human_issues: list[BenchmarkIssue] = []
-        _validate_human_events(snapshot.get("human_events"), human_issues)
-        if human_issues:
-            raise ValueError("attempt ledger human events are invalid")
+            raise ValueError("attempt ledger sealed artifact inventory is invalid")
+        paths.append(item.get("path"))
+    if len(paths) != len(set(paths)):
+        raise ValueError("attempt ledger sealed artifact paths are duplicated")
+
+
+def _validate_sealed_changed_files(files: object, evidence: object) -> None:
+    if (
+        not isinstance(files, list)
+        or not isinstance(evidence, list)
+        or len(files) != len(evidence)
+        or any(not _is_safe_relative_path(path) for path in files)
+        or len(files) != len(set(files))
+    ):
+        raise ValueError("attempt ledger sealed changed files are invalid")
+    for path, item in zip(files, evidence, strict=True):
+        if not isinstance(item, Mapping) or set(item) != {
+            "path",
+            "baseline_sha256",
+            "candidate_sha256",
+        }:
+            raise ValueError("attempt ledger sealed changed-file evidence is invalid")
+        baseline = item.get("baseline_sha256")
+        candidate = item.get("candidate_sha256")
+        if (
+            item.get("path") != path
+            or (baseline is not None and not _is_non_placeholder_digest(baseline))
+            or (candidate is not None and not _is_non_placeholder_digest(candidate))
+            or baseline == candidate
+        ):
+            raise ValueError("attempt ledger sealed changed-file evidence is invalid")
+
+
+def _attempt_binding_digest(attempts: list[Mapping[str, object]]) -> str:
+    return sha256(
+        json.dumps(
+            attempts, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _seal_binding_digest(sealed: Mapping[str, object]) -> str:
+    payload = {key: value for key, value in sealed.items() if key != "seal_binding_sha256"}
+    return sha256(
+        json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _derive_changed_files(
+    workspace_root: Path, scope: Mapping[str, object]
+) -> tuple[list[str], list[dict[str, object]]]:
+    baseline_root = scope["baseline_root"]
+    candidate_root = scope["candidate_root"]
+    include_paths = scope["include_paths"]
+    changed: list[str] = []
+    evidence: list[dict[str, object]] = []
+    for relative in include_paths:
+        baseline_bytes = _read_scoped_workspace_file(
+            workspace_root, f"{baseline_root}/{relative}"
+        )
+        candidate_bytes = _read_scoped_workspace_file(
+            workspace_root, f"{candidate_root}/{relative}"
+        )
+        if baseline_bytes == candidate_bytes:
+            continue
+        receipt_path = f"{candidate_root.rstrip('/')}/{relative}"
+        changed.append(receipt_path)
+        evidence.append(
+            {
+                "path": receipt_path,
+                "baseline_sha256": sha256(baseline_bytes).hexdigest()
+                if baseline_bytes is not None
+                else None,
+                "candidate_sha256": sha256(candidate_bytes).hexdigest()
+                if candidate_bytes is not None
+                else None,
+            }
+        )
+    return changed, evidence
+
+
+def _read_scoped_workspace_file(workspace_root: Path, relative: str) -> bytes | None:
+    path = workspace_root.joinpath(*relative.split("/"))
+    try:
+        path.resolve(strict=False).relative_to(workspace_root)
+    except (OSError, ValueError) as error:
+        raise ValueError("changed-files scope escapes the workspace") from error
+    if not path.is_file():
+        return None
+    with path.open("rb") as handle:
+        payload = handle.read()
+        size = os.fstat(handle.fileno()).st_size
+    if size != len(payload):
+        raise ValueError("changed-files input changed while being read")
+    return payload
+
+
+def _validate_new_phase_event(
+    previous: list[Mapping[str, object]], event: Mapping[str, object]
+) -> None:
+    if set(event) != {"phase", "action", "recorded_at"}:
+        raise ValueError("controller phase event fields are invalid")
+    phase = event.get("phase")
+    action = event.get("action")
+    if phase not in {
+        "setup",
+        "framework_init",
+        "governance",
+        "review",
+        "evaluation",
+    } or action not in {"start", "end"} or _parse_rfc3339(event.get("recorded_at")) is None:
+        raise ValueError("controller phase event is invalid")
+    matching = [item for item in previous if item.get("phase") == phase]
+    expected = "start" if not matching else "end" if len(matching) == 1 else None
+    if action != expected:
+        raise ValueError("controller phase event order is invalid")
+
+
+def _validate_service_event(event: Mapping[str, object]) -> None:
+    if set(event) != {
+        "type",
+        "transaction_id",
+        "attempt_id",
+        "status",
+        "started_at",
+        "ended_at",
+        "latency_ms",
+        "service_evidence_sha256",
+        "evidence_sha256",
+    }:
+        raise ValueError("service transaction event fields are invalid")
+    started = _parse_rfc3339(event.get("started_at"))
+    if (
+        event.get("type")
+        not in {
+            "intent_service_event",
+            "clarification_request_event",
+            "approval_service_event",
+        }
+        or not isinstance(event.get("transaction_id"), str)
+        or not event.get("transaction_id")
+        or not isinstance(event.get("attempt_id"), str)
+        or started is None
+        or event.get("status") not in {"started", "completed"}
+    ):
+        raise ValueError("service transaction event is invalid")
+    if event.get("status") == "started":
+        if any(
+            event.get(key) is not None
+            for key in (
+                "ended_at",
+                "latency_ms",
+                "service_evidence_sha256",
+                "evidence_sha256",
+            )
+        ):
+            raise ValueError("started service transaction must remain open")
+        return
+    ended = _parse_rfc3339(event.get("ended_at"))
+    if (
+        ended is None
+        or ended < started
+        or not _finite_number(event.get("latency_ms"))
+        or not math.isclose(
+            event["latency_ms"],
+            (ended - started).total_seconds() * 1000,
+            rel_tol=0,
+            abs_tol=1e-6,
+        )
+        or not _is_non_placeholder_digest(event.get("evidence_sha256"))
+        or not _is_non_placeholder_digest(event.get("service_evidence_sha256"))
+    ):
+        raise ValueError("service transaction event is invalid")
+
+
+def _active_run_record(ledger: Mapping[str, object], run_id: str) -> dict[str, object]:
+    runs = ledger.get("runs")
+    run = runs.get(run_id) if isinstance(runs, Mapping) else None
+    if not isinstance(run, dict):
+        raise ValueError("run must be established before recording evidence")
+    if run.get("sealed_evidence") is not None:
+        raise ValueError("sealed run rejects late attempts and events")
+    return run
 
 
 def _is_safe_relative_path(value: object) -> bool:
@@ -2062,11 +2778,13 @@ def _new_attempt(
         "child_session": None,
         "token_usage": None,
         "raw_provider_output_sha256": None,
+        "service_events": [],
         "history": [reserved],
     }
 
 
 def _validate_persisted_attempt(attempt: dict[str, object], expected_id: str) -> None:
+    _require_public_ledger_value(attempt, "Provider attempt")
     _reject_unknown(attempt, _ATTEMPT_KEYS, "attempt ledger attempt")
     _require_keys(attempt, _ATTEMPT_KEYS, "attempt ledger attempt")
     if attempt["attempt_id"] != expected_id:
@@ -2128,6 +2846,23 @@ def _validate_persisted_attempt(attempt: dict[str, object], expected_id: str) ->
         previous = event
     if any(attempt[key] != history[-1][key] for key in _EVENT_KEYS):
         raise ValueError("attempt ledger attempt state does not match its history")
+    service_events = attempt["service_events"]
+    if not isinstance(service_events, list):
+        raise ValueError("attempt ledger service events are invalid")
+    transaction_ids: list[object] = []
+    for service_event in service_events:
+        if not isinstance(service_event, Mapping):
+            raise ValueError("attempt ledger service event is invalid")
+        _validate_service_event(service_event)
+        if service_event.get("attempt_id") != attempt["attempt_id"]:
+            raise ValueError("attempt ledger service event attempt binding is invalid")
+        transaction_ids.append(service_event.get("transaction_id"))
+    if len(transaction_ids) != len(set(transaction_ids)):
+        raise ValueError("attempt ledger service transaction is duplicated")
+    if attempt["terminal"] is True and any(
+        event.get("status") != "completed" for event in service_events
+    ):
+        raise ValueError("terminal attempt has an open service transaction")
     _validate_kind_shape(attempt, history[0])
 
 
@@ -2356,6 +3091,17 @@ def _validate_attempt_ledger_invariants(
         raise ValueError(
             "attempt ledger invariant: child session must be globally unique"
         )
+    transaction_ids = [
+        event.get("transaction_id")
+        for attempt in attempts
+        if isinstance(attempt, Mapping)
+        for event in attempt.get("service_events", [])
+        if isinstance(event, Mapping)
+    ]
+    if len(transaction_ids) != len(set(transaction_ids)):
+        raise ValueError(
+            "attempt ledger invariant: service transaction must be globally unique"
+        )
     kind_limits = {
         "writer": 15,
         "primary_expert": 3,
@@ -2405,11 +3151,12 @@ def _validate_attempt_ledger_invariants(
         key=lambda event: event["sequence"],
     )
     previous_at: datetime | None = None
+    current_time = datetime.now(UTC)
     for event in event_timeline:
         recorded_at = _parse_rfc3339(event.get("recorded_at"))
         if recorded_at is None or (
             previous_at is not None and recorded_at < previous_at
-        ):
+        ) or recorded_at > current_time:
             raise ValueError("attempt ledger invariant: event time moved backwards")
         previous_at = recorded_at
     reservation_sequences = [
@@ -3088,6 +3835,7 @@ def _apply_attempt_transition(
     if not isinstance(history, list) or not history:
         raise ValueError("attempt ledger attempt has invalid history")
     _validate_event(attempt["effective_kind"], attempt["run_id"], history[-1], event)
+    _require_public_ledger_value(event, "Provider completion")
     history.append(event)
     for key in _EVENT_KEYS:
         attempt[key] = event[key]
@@ -3538,6 +4286,21 @@ def _is_finite_json_value(value: object) -> bool:
     return True
 
 
+def _is_closed_json_value(value: object) -> bool:
+    if value is None or isinstance(value, (str, bool, int)):
+        return True
+    if isinstance(value, float):
+        return math.isfinite(value)
+    if isinstance(value, Mapping):
+        return all(
+            isinstance(key, str) and _is_closed_json_value(child)
+            for key, child in value.items()
+        )
+    if isinstance(value, list):
+        return all(_is_closed_json_value(child) for child in value)
+    return False
+
+
 def _canonical_json_value(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
@@ -3592,6 +4355,13 @@ def _scan_public_value(value: object, path: str, issues: list[BenchmarkIssue]) -
             issues.append(
                 BenchmarkIssue("receipt.secret", f"{path} contains a secret-like value")
             )
+
+
+def _require_public_ledger_value(value: object, label: str) -> None:
+    issues: list[BenchmarkIssue] = []
+    _scan_public_value(value, "$", issues)
+    if issues:
+        raise ValueError(f"{label} contains non-public data")
 
 
 def _scan_non_placeholder_digests(
@@ -3715,7 +4485,7 @@ def _contains_secret_value(value: str) -> bool:
     normalized = re.sub(
         r"(['\"])REDACTED\1", "REDACTED", value, flags=re.IGNORECASE
     )
-    if _SECRET_TOKEN.search(normalized):
+    if _decoded_has_secret_token(normalized):
         return True
     for candidate in _HTTP_URI.findall(normalized):
         parsed = _strict_public_http(candidate)
@@ -3741,19 +4511,23 @@ def _uri_has_secret_parameter(*parts: str) -> bool:
             key, separator, value = component.partition("=")
             if not separator:
                 key, separator, value = component.partition(":")
-            if (
-                separator
-                and _is_secret_field_name(key)
-                and value.strip("\"'").upper() != "REDACTED"
+            if separator and value.strip("\"'").upper() != "REDACTED" and (
+                _is_secret_field_name(key) or _decoded_has_secret_token(value)
             ):
                 return True
     return False
 
 
+def _decoded_has_secret_token(value: str) -> bool:
+    """Classify a secret token after exactly one bounded percent decode."""
+    return bool(_SECRET_TOKEN.search(_percent_decode_once(value)))
+
+
 def _redact_secret_values(value: str) -> str:
     assignment = re.compile(
         r"(?<![A-Za-z0-9_.%-])"
-        r"(?P<key>[A-Za-z][A-Za-z0-9_%\-]*(?:(?:\[\])|(?:%5[bB]%5[dD]))*)"
+        r"(?P<key>(?:(?:[A-Za-z0-9_.\-])|(?:%[0-9A-Fa-f]{2}))+"
+        r"(?:(?:\[\])|(?:%5[bB]%5[dD]))*)"
         r"(?P<space>(?:\s|\+|%20)*)"
         r"(?P<separator>=|:|%3[dD]|%3[aA])"
         r"(?P<after>(?:\s|\+|%20)*(?:[\"']|%22|%27)?)"
@@ -3762,7 +4536,10 @@ def _redact_secret_values(value: str) -> str:
     )
 
     def replace(match: re.Match[str]) -> str:
-        if not _is_secret_field_name(match.group("key")):
+        if not (
+            _is_secret_field_name(match.group("key"))
+            or _decoded_has_secret_token(match.group("value"))
+        ):
             return match.group(0)
         return (
             f"{match.group('key')}{match.group('space')}"
@@ -3772,7 +4549,7 @@ def _redact_secret_values(value: str) -> str:
     value = _HTTP_URI.sub(
         lambda match: _redact_uri_parameters(match.group(0)), value
     )
-    return _SECRET_TOKEN.sub("REDACTED", assignment.sub(replace, value))
+    return _redact_encoded_secret_tokens(assignment.sub(replace, value))
 
 
 def _redact_uri_parameters(value: str) -> str:
@@ -3785,14 +4562,18 @@ def _redact_uri_parameters(value: str) -> str:
     prefix = value[:start]
     components = re.split(r"([&#;])", value[start:])
     assignment = re.compile(
-        r"^(?P<head>[?#]?)(?P<key>[A-Za-z][A-Za-z0-9_%\-]*(?:(?:\[\])|(?:%5[bB]%5[dD]))*)"
+        r"^(?P<head>[?#]?)(?P<key>(?:(?:[A-Za-z0-9_.\-])|(?:%[0-9A-Fa-f]{2}))+"
+        r"(?:(?:\[\])|(?:%5[bB]%5[dD]))*)"
         r"(?P<separator>=|:|%3[dD]|%3[aA])(?P<value>.*)$",
         re.I,
     )
     for index in range(0, len(components), 2):
         component = components[index]
         match = assignment.fullmatch(component)
-        if match is None or not _is_secret_field_name(match.group("key")):
+        if match is None or not (
+            _is_secret_field_name(match.group("key"))
+            or _decoded_has_secret_token(match.group("value"))
+        ):
             continue
         raw_value = match.group("value")
         quote = next(
@@ -3808,6 +4589,32 @@ def _redact_uri_parameters(value: str) -> str:
             f"{match.group('separator')}{quote}REDACTED"
         )
     return prefix + "".join(components)
+
+
+def _redact_encoded_secret_tokens(value: str) -> str:
+    """Redact decoded ASCII token spans while preserving unrelated raw bytes."""
+    decoded: list[str] = []
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while index < len(value):
+        if (
+            value[index] == "%"
+            and index + 2 < len(value)
+            and re.fullmatch(r"[0-9A-Fa-f]{2}", value[index + 1 : index + 3])
+        ):
+            decoded.append(chr(int(value[index + 1 : index + 3], 16)))
+            spans.append((index, index + 3))
+            index += 3
+        else:
+            decoded.append(value[index])
+            spans.append((index, index + 1))
+            index += 1
+    matches = list(_SECRET_TOKEN.finditer("".join(decoded)))
+    for match in reversed(matches):
+        raw_start = spans[match.start()][0]
+        raw_end = spans[match.end() - 1][1]
+        value = f"{value[:raw_start]}REDACTED{value[raw_end:]}"
+    return value
 
 
 def _encoded_prefix_for_decoded_offset(value: str, decoded_offset: int) -> int:

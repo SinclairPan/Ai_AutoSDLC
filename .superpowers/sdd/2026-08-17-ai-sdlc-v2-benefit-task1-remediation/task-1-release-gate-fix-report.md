@@ -83,3 +83,71 @@ Ruff：All checks passed
 ```
 
 正式实验调用仍为 0；fixture commitment 仍是 `pending-unbound`，执行继续 fail closed。
+
+## Fix Round 2：证据生产权与 ledger 封印
+
+### 冻结边界
+
+- 修复基线：`48cade5d048c8ab286d26a5503f387d085bfd95e`。
+- 只修改 protocol/receipt identity、benchmark core/CLI 与测试；未修改 fixture、网页、Task 2 或任何实验结果。
+- Provider、`codex exec` 与 benchmark experiment 调用均为 0。
+
+### Fresh RED
+
+在生产实现修改前新增 release-gate-round2 反例，得到 `7 failed`。反例覆盖：
+
+- protocol 尚未绑定 evidence contract；
+- bulk `RunEvidenceRequest` 仍允许 finalizer 声明 required/applicable、changed files、阶段和人工事件；
+- 本冻结矩阵可写入伪造 human event；
+- 全编码 key/`[]` 与全编码或部分编码 `Bearer`、`sk-`、`ghp_`、`AKIA` token 会从 CLI 公共错误面泄漏。
+
+随后补充 cross-run sealed transplant、封印后 attempt 变化、未来时间、evaluation end-after-seal、late technical retry/event、合同字节篡改、私密 service transaction 以及真实文件 hash/stat/diff 反例，统一纳入 GREEN 门禁。
+
+### 统一修复
+
+1. **Evidence contract 生产权**：protocol/receipt identity 增加成对的
+   `evidence_contract_sha256 / evidence_contract_commitment`。tracked protocol 保持
+   paired `pending-unbound`；execution-ready 时必须为相同、非全零 SHA-256。CLI/Core 在每次
+   Provider reserve/completion 以及 phase/service/seal 前都必须显式接收、读取并校验 exact
+   committed bytes。合同按 15-run 顺序冻结 artifact slot/category/required/applicable、
+   changed-files baseline/candidate scope 和允许的自动事件类型。
+2. **Ledger v6**：旧 v5 fail closed，不做隐式迁移。首个 writer reservation 由 core clock
+   建立 `run_started_at`；controller phase API 只接收 phase/action。service transaction 由
+   `start` 与 `complete` 两次 core-clock 事件包围真实事务，complete 只接收 closed evidence，
+   不接收任何 caller timestamp/duration；terminal attempt 不允许遗留 open transaction，且
+   closed event 同时绑定 service evidence digest 与可复算公开 timing digest。Provider phase
+   直接由真实 reservation/terminal history 推导；自动/澄清事件只能来自绑定 active attempt
+   的 closed service transaction；本矩阵没有 human event 写入入口，封印值恒为 `[]`。
+3. **不可变 run seal**：只有 run 内所有 attempt 终态后才能封印。core 从合同定位实际文件，
+   通过打开文件的 `fstat`、真实 bytes SHA-256 与 baseline/candidate 内容 diff 生成权威证据；
+   ledger 只保存相对路径和 digest，不保存 workspace absolute root。seal 绑定 run_id、ordered
+   attempt IDs、全量 attempt digest、terminal sequence、evidence-contract digest、完整 seal
+   binding digest 与 core `recorded_at`。封印后 reserve、completion、phase/service event 和技术
+   重试全部拒绝且 ledger bytes 不变。
+4. **Reload fail closed**：run registry 必须与 attempt run 集合精确闭合；拒绝 orphan、
+   cross-run sealed transplant、封印后 attempt 变化、未来 core timestamp、final phase end 超过
+   seal，以及 evidence-contract digest 漂移。
+5. **先校验再持久化**：reservation、completion、controller phase、service transaction 与
+   reload 均执行 closed schema、时序、拓扑和公共隐私校验；坏数据不会到达 immutable ledger。
+   failure classification 继续由 terminal writer、真实 expert 状态和 evaluator/evidence 状态
+   唯一推导。
+6. **单次 percent-decode 隐私边界**：Core 与 CLI 共享同一个 bounded single-decode
+   classifier。它支持首字符 `%xx`、全编码 secret key、`[]`、以及全编码/部分编码
+   `Bearer/sk-/ghp_/AKIA`；只替换匹配 value/raw token span，普通
+   `notoken/nosecret/mypassword/myapikey` 原字节保真。valid receipt、validation issue、
+   exception message 三个表面均有正反回归。
+
+### 验证
+
+```text
+benchmark + CLI 全回归：354 passed
+ledger/state/concurrency/release-gate 聚焦：111 passed, 233 deselected
+tracked protocol validate：structurally_valid=true, execution_ready=false
+  protocol.fixture-pending + protocol.evidence-contract-pending
+run-receipt / summary 两份 JSON schema：schemas-ok
+Ruff：All checks passed
+git diff --check：clean
+```
+
+Task 2 才能生成真实 fixture tree 与 evidence contract 并原子绑定 protocol；本提交没有生成
+占位合同或放宽 NO-GO。

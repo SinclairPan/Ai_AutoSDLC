@@ -8,16 +8,17 @@ from collections.abc import Mapping
 from pathlib import Path
 
 from ai_sdlc.benefit_benchmark import (
-    ArtifactRequirement,
     AttemptCompletion,
     AttemptRequest,
     BenchmarkIssue,
-    RunEvidenceRequest,
     load_protocol,
+    record_phase_event,
     record_provider_completion,
-    record_run_evidence,
+    record_service_transaction,
     redact_public_message,
     reserve_provider_attempt,
+    seal_run_evidence,
+    start_service_transaction,
     validate_protocol,
     verify_receipt,
     verify_summary,
@@ -73,72 +74,6 @@ def _protocol(path: Path):
         raise ValueError("protocol is not valid JSON") from error
 
 
-def _run_evidence_request(
-    manifest: Mapping[str, object], *, run_id: str, workspace_root: Path
-) -> RunEvidenceRequest:
-    expected = {
-        "phase_evidence",
-        "artifacts",
-        "changed_files",
-        "automated_events",
-        "human_events",
-    }
-    if set(manifest) != expected:
-        raise ValueError("run evidence manifest has invalid fields")
-    artifacts = manifest.get("artifacts")
-    changed_files = manifest.get("changed_files")
-    automated_events = manifest.get("automated_events")
-    human_events = manifest.get("human_events")
-    phases = manifest.get("phase_evidence")
-    if (
-        not isinstance(phases, Mapping)
-        or not isinstance(artifacts, list)
-        or not isinstance(changed_files, list)
-        or not all(isinstance(path, str) for path in changed_files)
-        or not isinstance(automated_events, list)
-        or not all(isinstance(event, Mapping) for event in automated_events)
-        or not isinstance(human_events, list)
-        or not all(isinstance(event, Mapping) for event in human_events)
-    ):
-        raise ValueError("run evidence manifest has invalid values")
-    requirements: list[ArtifactRequirement] = []
-    for artifact in artifacts:
-        if not isinstance(artifact, Mapping) or set(artifact) != {
-            "path",
-            "category",
-            "required",
-            "applicable",
-        }:
-            raise ValueError("run evidence artifact rule is invalid")
-        path = artifact.get("path")
-        category = artifact.get("category")
-        required = artifact.get("required")
-        applicable = artifact.get("applicable")
-        if (
-            not isinstance(path, str)
-            or not isinstance(category, str)
-            or not isinstance(required, bool)
-            or not isinstance(applicable, bool)
-        ):
-            raise ValueError("run evidence artifact rule is invalid")
-        requirements.append(
-            ArtifactRequirement(path, category, required, applicable)
-        )
-    return RunEvidenceRequest(
-        run_id=run_id,
-        workspace_root=workspace_root,
-        phase_evidence={
-            str(name): dict(value)
-            for name, value in phases.items()
-            if isinstance(value, Mapping)
-        },
-        artifacts=tuple(requirements),
-        changed_files=tuple(changed_files),
-        automated_events=tuple(dict(event) for event in automated_events),
-        human_events=tuple(dict(event) for event in human_events),
-    )
-
-
 def _emit(payload: Mapping[str, object]) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
@@ -155,6 +90,7 @@ def main() -> int:
     reserve = commands.add_parser("reserve-attempt")
     reserve.add_argument("--ledger", type=Path, required=True)
     reserve.add_argument("--protocol", type=Path, required=True)
+    reserve.add_argument("--contract", type=Path, required=True)
     reserve.add_argument("--run-id", required=True)
     reserve.add_argument("--kind", required=True)
     reserve.add_argument("--arm")
@@ -169,6 +105,7 @@ def main() -> int:
     complete = commands.add_parser("complete-attempt")
     complete.add_argument("--ledger", type=Path, required=True)
     complete.add_argument("--protocol", type=Path, required=True)
+    complete.add_argument("--contract", type=Path, required=True)
     complete.add_argument("--attempt-id", required=True)
     complete.add_argument("--status", required=True)
     complete.add_argument("--content-produced", action="store_true")
@@ -182,12 +119,34 @@ def main() -> int:
     complete.add_argument("--output-tokens", type=int)
     complete.add_argument("--reasoning-output-tokens", type=int)
     complete.add_argument("--raw-provider-output-sha256")
-    run_evidence = commands.add_parser("record-run-evidence")
-    run_evidence.add_argument("--ledger", type=Path, required=True)
-    run_evidence.add_argument("--protocol", type=Path, required=True)
-    run_evidence.add_argument("--run-id", required=True)
-    run_evidence.add_argument("--workspace-root", type=Path, required=True)
-    run_evidence.add_argument("--manifest", type=Path, required=True)
+    phase_event = commands.add_parser("record-phase-event")
+    phase_event.add_argument("--ledger", type=Path, required=True)
+    phase_event.add_argument("--protocol", type=Path, required=True)
+    phase_event.add_argument("--contract", type=Path, required=True)
+    phase_event.add_argument("--run-id", required=True)
+    phase_event.add_argument("--phase", required=True)
+    phase_event.add_argument("--action", required=True)
+    service_start = commands.add_parser("start-service-transaction")
+    service_start.add_argument("--ledger", type=Path, required=True)
+    service_start.add_argument("--protocol", type=Path, required=True)
+    service_start.add_argument("--contract", type=Path, required=True)
+    service_start.add_argument("--attempt-id", required=True)
+    service_start.add_argument("--event-type", required=True)
+    service_start.add_argument("--transaction-id", required=True)
+    service_event = commands.add_parser("complete-service-transaction")
+    service_event.add_argument("--ledger", type=Path, required=True)
+    service_event.add_argument("--protocol", type=Path, required=True)
+    service_event.add_argument("--contract", type=Path, required=True)
+    service_event.add_argument("--attempt-id", required=True)
+    service_event.add_argument("--event-type", required=True)
+    service_event.add_argument("--transaction-id", required=True)
+    service_event.add_argument("--evidence", type=Path, required=True)
+    seal_evidence = commands.add_parser("seal-run-evidence")
+    seal_evidence.add_argument("--ledger", type=Path, required=True)
+    seal_evidence.add_argument("--protocol", type=Path, required=True)
+    seal_evidence.add_argument("--contract", type=Path, required=True)
+    seal_evidence.add_argument("--run-id", required=True)
+    seal_evidence.add_argument("--workspace-root", type=Path, required=True)
     receipt = commands.add_parser("verify-receipt")
     receipt.add_argument("--receipt", type=Path, required=True)
     receipt.add_argument("--protocol", type=Path, required=True)
@@ -201,7 +160,13 @@ def main() -> int:
             protocol = _protocol(arguments.protocol)
             issues = validate_protocol(protocol, Path.cwd())
             structural_issues = [
-                issue for issue in issues if issue.code != "protocol.fixture-pending"
+                issue
+                for issue in issues
+                if issue.code
+                not in {
+                    "protocol.fixture-pending",
+                    "protocol.evidence-contract-pending",
+                }
             ]
             _emit(
                 {
@@ -228,6 +193,7 @@ def main() -> int:
                     finding_digest=arguments.finding_digest,
                     repair_digest=arguments.repair_digest,
                 ),
+                arguments.contract,
             )
             _emit(
                 {
@@ -259,20 +225,53 @@ def main() -> int:
                     token_usage=token_usage,
                     raw_provider_output_sha256=arguments.raw_provider_output_sha256,
                 ),
+                arguments.contract,
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
-        if arguments.command == "record-run-evidence":
-            record_run_evidence(
+        if arguments.command == "record-phase-event":
+            record_phase_event(
                 arguments.ledger,
                 _protocol(arguments.protocol),
-                _run_evidence_request(
-                    _json_object(arguments.manifest, "run evidence manifest"),
-                    run_id=arguments.run_id,
-                    workspace_root=arguments.workspace_root,
-                ),
+                arguments.contract,
+                run_id=arguments.run_id,
+                phase=arguments.phase,
+                action=arguments.action,
             )
             _emit({"recorded": True, "run_id": arguments.run_id})
+            return 0
+        if arguments.command == "start-service-transaction":
+            start_service_transaction(
+                arguments.ledger,
+                _protocol(arguments.protocol),
+                arguments.contract,
+                attempt_id=arguments.attempt_id,
+                event_type=arguments.event_type,
+                transaction_id=arguments.transaction_id,
+            )
+            _emit({"attempt_id": arguments.attempt_id, "started": True})
+            return 0
+        if arguments.command == "complete-service-transaction":
+            record_service_transaction(
+                arguments.ledger,
+                _protocol(arguments.protocol),
+                arguments.contract,
+                attempt_id=arguments.attempt_id,
+                event_type=arguments.event_type,
+                transaction_id=arguments.transaction_id,
+                evidence=_json_object(arguments.evidence, "service evidence"),
+            )
+            _emit({"attempt_id": arguments.attempt_id, "recorded": True})
+            return 0
+        if arguments.command == "seal-run-evidence":
+            seal_run_evidence(
+                arguments.ledger,
+                _protocol(arguments.protocol),
+                arguments.contract,
+                run_id=arguments.run_id,
+                workspace_root=arguments.workspace_root,
+            )
+            _emit({"run_id": arguments.run_id, "sealed": True})
             return 0
         if arguments.command == "verify-receipt":
             issues = verify_receipt(
