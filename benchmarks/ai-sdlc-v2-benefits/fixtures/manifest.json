@@ -1,0 +1,42 @@
+{
+  "schema": "ai-sdlc-v2-benefit-fixture-manifest/v1",
+  "fixture_ids": ["requirement-contract-ambiguity", "frontend-recovery-delivery", "multi-tenant-security-review"],
+  "fixtures": [
+    {
+      "fixture_id": "requirement-contract-ambiguity",
+      "public_root": "requirement-contract-ambiguity/public",
+      "public_tree_sha256": "18314e6eae34fb8877372036522f93352e859b01bc04643750f7658290a8fe55",
+      "input_contract_sha256": "9092d760a3c26a2d82f9dfb3e4e85921b14af83cc9c97b14444e8b154e6e65bf",
+      "provenance_commit": "7fc2366b8530265d58b1874e781b0b7274615d94",
+      "provenance_paths": ["docs/product-site/research/2026-08-17-ai-sdlc-v2-benefit-benchmark-spec.md#4.1"],
+      "visible_commands": [
+        {"command_id":"visible-structure","argv":["python","visible_check.py"],"cwd":"benchmark-task","expected_exit_code":0,"expected_signature":"VISIBLE_OK: frozen requirement input is structurally valid","signature_stream":"stdout"}
+      ]
+    },
+    {
+      "fixture_id": "frontend-recovery-delivery",
+      "public_root": "frontend-recovery-delivery/public",
+      "public_tree_sha256": "8038e0940566bb3b75e4595c49d7a610fc311a57ca2030e9560dd78e924d3bc4",
+      "input_contract_sha256": "b0c1c48355d3794d7175b553e356928c583740266539c7300447324c06bb37b7",
+      "provenance_commit": "9f430becd28d4dd6402e0f22b0c9bbed81c19b13",
+      "provenance_paths": ["fixtures/competition/topic1-release-risk-workbench/business-request.md", "fixtures/competition/topic1-release-risk-workbench/project"],
+      "visible_commands": [
+        {"command_id":"visible-red","argv":["npm","run","test:visible","--silent"],"cwd":"benchmark-task","expected_exit_code":1,"expected_signature":"VISIBLE_RED: recoverable failure state is absent","signature_stream":"stderr"},
+        {"command_id":"visible-quality","argv":["npm","run","quality:visible","--silent"],"cwd":"benchmark-task","expected_exit_code":0,"expected_signature":"QUALITY_OK: public project and solution target are valid","signature_stream":"stdout"}
+      ]
+    },
+    {
+      "fixture_id": "multi-tenant-security-review",
+      "public_root": "multi-tenant-security-review/public",
+      "public_tree_sha256": "2337d74182db829f9523869f7e748348b35386e4a4f82f3530b3c4677aade272",
+      "input_contract_sha256": "916431c7d616ed4f546dee075ef2a6c0f1f1caae13e900fac26440b6004b083a",
+      "provenance_commit": "d4c7722917c96af2dc346f2271a984f15bac89d9",
+      "provenance_paths": ["fixtures/competition/topic2-security-review/candidate_v1", "fixtures/competition/topic2-security-review/requirements.yaml", "fixtures/competition/topic2-security-review/design-contract.yaml"],
+      "visible_commands": [
+        {"command_id":"visible-weak-tests","argv":["python","-m","unittest","-q","test_access_control.py"],"cwd":"benchmark-task","expected_exit_code":0,"expected_signature":"OK","signature_stream":"stderr"}
+      ]
+    }
+  ],
+  "canonical_sha256": "9a2c106ae3ec258f4d1fa98fe86c2509838a817168e5b3e8ac49ac8abe3ce718",
+  "evidence_contract_template_sha256": "bc61562698649ab8df533f9d196c6357d09352416bc4f4cb96a75e2eb7d87519"
+}

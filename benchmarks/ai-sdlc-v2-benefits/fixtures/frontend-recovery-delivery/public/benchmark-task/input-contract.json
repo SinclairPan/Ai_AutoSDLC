@@ -1,0 +1,42 @@
+{
+  "schema": "ai-sdlc-v2-benefit-input-contract/v1",
+  "fixture_id": "frontend-recovery-delivery",
+  "target_stage": "implementation",
+  "canonical_pre_state": ["requirement", "design-contract"],
+  "solution_target": {
+    "frontend_stack": "vue3",
+    "provider_id": "public-primevue",
+    "style_pack_id": "modern-saas"
+  },
+  "semantics": {
+    "business_goal": "交付一个发布风险工作台，支持风险浏览、筛选、确认和数据源故障后的恢复。",
+    "requirement": {
+      "state": "frozen",
+      "acceptance_criteria": [
+        "AC-001 展示风险名称、服务、等级、负责人和处置状态",
+        "AC-002 支持全部、高、中、低四种风险筛选",
+        "AC-003 确认操作立即反馈且同一风险不可重复提交",
+        "AC-004 数据加载失败显示 role=alert 的可恢复错误态和 data-retry 操作",
+        "AC-005 主题仅从 theme.ts 进入并覆盖 primary、surface、highlight",
+        "AC-006 单元、构建、console、交互、视觉和基础可访问性证据可复算"
+      ]
+    },
+    "design_contract": {
+      "state": "closed",
+      "controller_api": ["state", "load", "retry", "confirm"],
+      "response_shape": "array of risk objects with id/name/service/level/owner/confirmed",
+      "stale_response_policy": "only the latest request may update visible state",
+      "submit_policy": "one in-flight confirmation per risk",
+      "error_policy": "malformed and failed responses are recoverable failures"
+    },
+    "deliverable": {
+      "root": "benchmark-task",
+      "visible_commands": ["npm run test:visible", "npm run quality:visible"]
+    },
+    "solution_target": {
+      "frontend_stack": "vue3",
+      "provider_id": "public-primevue",
+      "style_pack_id": "modern-saas"
+    }
+  }
+}

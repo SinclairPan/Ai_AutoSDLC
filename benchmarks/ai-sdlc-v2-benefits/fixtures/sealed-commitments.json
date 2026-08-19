@@ -1,0 +1,15 @@
+{
+  "schema": "ai-sdlc-v2-benefit-sealed-commitments/v1",
+  "lock_id": "v2-benefits-20260819",
+  "sealed_manifest_sha256": "4bb7886ba3e5df1b820cc71982eada0a5925a4c17f6b76a7aa22e3f8ebac5e43",
+  "fixture_tree_sha256": "9a2c106ae3ec258f4d1fa98fe86c2509838a817168e5b3e8ac49ac8abe3ce718",
+  "fixture_commitment": "9a2c106ae3ec258f4d1fa98fe86c2509838a817168e5b3e8ac49ac8abe3ce718",
+  "evidence_contract_template_sha256": "bc61562698649ab8df533f9d196c6357d09352416bc4f4cb96a75e2eb7d87519",
+  "evidence_contract_commitment": "bc61562698649ab8df533f9d196c6357d09352416bc4f4cb96a75e2eb7d87519",
+  "fixture_payloads": [
+    {"fixture_id":"requirement-contract-ambiguity","sha256":"a78f5fe2eba2b0133b1e97cfceb3e327c9f7d042f72b8192db21d33813c2e681"},
+    {"fixture_id":"frontend-recovery-delivery","sha256":"9f646585049d970a4542c39938c00eb9d61cb44a2fb6019a67cadfc43f131701"},
+    {"fixture_id":"multi-tenant-security-review","sha256":"0f8497da413f078886b2b3c45391b8878cb9d58685feb637fc7974e18b65c213"}
+  ],
+  "publication_state": "sealed-outside-provider-root"
+}

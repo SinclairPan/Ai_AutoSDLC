@@ -1,0 +1,19 @@
+{
+  "name": "ai-sdlc-v2-benefit-frontend-recovery",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "test:visible": "node tests/visible.mjs",
+    "quality:visible": "node tests/quality.mjs"
+  },
+  "benchmarkDependencies": {
+    "vue": "3.5.x",
+    "primevue": "4.5.x",
+    "@primeuix/themes": "2.0.x",
+    "primeicons": "7.0.x",
+    "vite": "7.0.x",
+    "typescript": "5.8.x",
+    "playwright": "1.55.x"
+  }
+}

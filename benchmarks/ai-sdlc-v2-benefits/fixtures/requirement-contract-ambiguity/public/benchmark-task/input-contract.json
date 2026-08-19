@@ -1,0 +1,36 @@
+{
+  "schema": "ai-sdlc-v2-benefit-input-contract/v1",
+  "fixture_id": "requirement-contract-ambiguity",
+  "target_stage": "design-contract",
+  "canonical_pre_state": ["requirement"],
+  "semantics": {
+    "business_goal": "为企业发布审批定义一个可验证的设计合同，使普通发布、紧急发布和撤回流程都有明确边界。",
+    "requirement": {
+      "state": "frozen",
+      "actors": ["release_requester", "release_approver", "service_owner"],
+      "capabilities": ["submit", "approve", "reject", "withdraw", "inspect_audit"],
+      "constraints": [
+        "同一请求只能存在一个终态",
+        "审批决定必须绑定请求版本",
+        "外部通知失败不能回滚已提交的审批事实",
+        "未解决的业务歧义必须显式阻断而不是猜测"
+      ]
+    },
+    "project_summary": {
+      "runtime": "Python 3.11 HTTP service",
+      "storage": "transactional relational database",
+      "integration": "asynchronous notification gateway",
+      "existing_endpoints": ["POST /requests", "POST /requests/{id}/decisions"]
+    },
+    "deliverable": {
+      "path": "design-contract.json",
+      "required_sections": ["decisions", "state_machine", "failure_policy", "verification", "open_questions"]
+    },
+    "question_taxonomy": [
+      "release.emergency-authority",
+      "release.withdraw-boundary",
+      "notification.delivery-semantics",
+      "audit.retention-window"
+    ]
+  }
+}

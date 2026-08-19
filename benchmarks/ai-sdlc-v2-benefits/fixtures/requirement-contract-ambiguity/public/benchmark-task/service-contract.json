@@ -1,0 +1,9 @@
+{
+  "schema": "ai-sdlc-v2-benefit-service-contract/v1",
+  "question_request": ["run_id", "question_id"],
+  "question_status": ["answered", "unresolved"],
+  "approval_request": ["run_id", "approval_type", "proposal_digest"],
+  "approval_status": ["approved", "revise"],
+  "events": ["intent_service_event", "approval_service_event"],
+  "human_events": false
+}

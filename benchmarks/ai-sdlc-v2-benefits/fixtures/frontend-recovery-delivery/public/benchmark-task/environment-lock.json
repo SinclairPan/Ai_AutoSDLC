@@ -1,0 +1,25 @@
+{
+  "schema": "ai-sdlc-v2-benefit-frontend-environment-lock/v1",
+  "platform": "darwin-arm64",
+  "node": {
+    "version": "24.11.1",
+    "binary_sha256": "4255a388254ca4319e2f95f1da375d5deaddf25baf9c7c85070b67f9543b15d0"
+  },
+  "npm": {"version": "11.6.2"},
+  "browser": {
+    "product": "Google Chrome",
+    "version": "151.0.7922.138",
+    "binary_sha256": "ee37661755341e9fc1babf9c20ec09d6a36e50aa8713ceb08082f8bbe2d8217d"
+  },
+  "dependency_snapshot": {
+    "vue": "3.5.41",
+    "primevue": "4.5.5",
+    "@primeuix/themes": "2.0.3",
+    "primeicons": "7.0.0",
+    "vite": "7.3.6",
+    "typescript": "5.9.3",
+    "playwright": "1.62.1"
+  },
+  "cache_preflight": "required-before-experiment",
+  "network_policy": "frozen-by-runner"
+}
