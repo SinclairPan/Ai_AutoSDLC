@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 from collections.abc import Mapping
 from pathlib import Path
 
@@ -19,19 +20,65 @@ from ai_sdlc.benefit_benchmark import (
 )
 
 
-def _json_object(path: Path) -> Mapping[str, object]:
-    data = json.loads(path.read_text(encoding="utf-8"))
+class _CliUsageError(ValueError):
+    """A command-line shape error that must be returned as JSON."""
+
+
+class _JsonArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        del message
+        raise _CliUsageError("invalid command arguments")
+
+
+_POSIX_PRIVATE_PATH = re.compile(r"(?<![A-Za-z0-9_])/(?:[^\s'\"/:]+/)*[^\s'\"/:]+")
+_WINDOWS_PRIVATE_PATH = re.compile(
+    r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|\\\\[^\s'\"]+)"
+)
+
+
+def _public_error_message(error: Exception) -> str:
+    if isinstance(error, OSError):
+        return "input or output file operation failed"
+    if isinstance(error, json.JSONDecodeError):
+        return "input is not valid JSON"
+    message = str(error) or "benchmark input was rejected"
+    message = _WINDOWS_PRIVATE_PATH.sub("<redacted-path>", message)
+    return _POSIX_PRIVATE_PATH.sub("<redacted-path>", message)
+
+
+def _json_object(path: Path, label: str) -> Mapping[str, object]:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as error:
+        raise ValueError(f"{label} could not be read") from error
+    try:
+        data = json.loads(text)
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError(f"{label} is not valid JSON") from error
     if not isinstance(data, dict):
-        raise ValueError(f"{path} must contain a JSON object")
+        raise ValueError(f"{label} must contain a JSON object")
     return data
+
+
+def _protocol(path: Path):
+    try:
+        return load_protocol(path)
+    except OSError as error:
+        raise ValueError("protocol could not be read") from error
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("protocol is not valid JSON") from error
 
 
 def _emit(payload: Mapping[str, object]) -> None:
     print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
 
 
+def _emit_error(code: str, message: str) -> None:
+    _emit({"error": {"code": code, "message": message}})
+
+
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = _JsonArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate")
     validate.add_argument("--protocol", type=Path, required=True)
@@ -72,17 +119,26 @@ def main() -> int:
     summary = commands.add_parser("verify-summary")
     summary.add_argument("--summary", type=Path, required=True)
     summary.add_argument("--protocol", type=Path, required=True)
-    arguments = parser.parse_args()
     try:
+        arguments = parser.parse_args()
         if arguments.command == "validate":
-            protocol = load_protocol(arguments.protocol)
+            protocol = _protocol(arguments.protocol)
             issues = validate_protocol(protocol, Path.cwd())
-            _emit({"issues": [issue.__dict__ for issue in issues]})
-            return 1 if any(issue.code != "protocol.fixture-pending" for issue in issues) else 0
+            structural_issues = [
+                issue for issue in issues if issue.code != "protocol.fixture-pending"
+            ]
+            _emit(
+                {
+                    "execution_ready": not issues,
+                    "issues": [issue.__dict__ for issue in issues],
+                    "structurally_valid": not structural_issues,
+                }
+            )
+            return 1 if structural_issues else 0
         if arguments.command == "reserve-attempt":
             reservation = reserve_provider_attempt(
                 arguments.ledger,
-                load_protocol(arguments.protocol),
+                _protocol(arguments.protocol),
                 AttemptRequest(
                     run_id=arguments.run_id,
                     kind=arguments.kind,
@@ -114,7 +170,7 @@ def main() -> int:
             token_usage = None if all(value is None for value in token_values.values()) else token_values
             record_provider_completion(
                 arguments.ledger,
-                load_protocol(arguments.protocol),
+                _protocol(arguments.protocol),
                 AttemptCompletion(
                     arguments.attempt_id,
                     arguments.status,
@@ -132,16 +188,22 @@ def main() -> int:
             return 0
         if arguments.command == "verify-receipt":
             issues = verify_receipt(
-                _json_object(arguments.receipt),
-                load_protocol(arguments.protocol),
+                _json_object(arguments.receipt, "receipt"),
+                _protocol(arguments.protocol),
                 arguments.ledger,
             )
         else:
-            issues = verify_summary(_json_object(arguments.summary), load_protocol(arguments.protocol))
+            issues = verify_summary(
+                _json_object(arguments.summary, "summary"),
+                _protocol(arguments.protocol),
+            )
         _emit({"issues": [issue.__dict__ for issue in issues]})
         return 1 if issues else 0
+    except _CliUsageError as error:
+        _emit_error("cli.usage", str(error))
+        return 2
     except (OSError, ValueError, json.JSONDecodeError) as error:
-        _emit({"error": str(error)})
+        _emit_error("cli.input", _public_error_message(error))
         return 2
 
 

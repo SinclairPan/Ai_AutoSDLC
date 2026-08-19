@@ -3364,3 +3364,473 @@ def test_completion_and_reservation_share_one_cross_process_transaction_lock(
     assert persisted["attempts_started"] == 2
     assert persisted["attempts"][0]["status"] == "failed"
     assert persisted["attempts"][1]["attempt_id"] == "attempt-002"
+
+
+def _run_task13_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/ai_sdlc_v2_benefit_benchmark.py",
+            *arguments,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+def _assert_task13_json_error(
+    result: subprocess.CompletedProcess[str], expected_code: str
+) -> None:
+    assert result.returncode == 2
+    assert result.stderr == ""
+    assert "Traceback" not in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["error"]["code"] == expected_code
+    assert set(payload["error"]) == {"code", "message"}
+
+
+@pytest.mark.parametrize("command", ["reserve-attempt", "complete-attempt"])
+def test_task13_attempt_commands_require_protocol_as_json_usage_error(
+    tmp_path: Path, command: str
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    arguments = [command, "--ledger", str(ledger)]
+    if command == "reserve-attempt":
+        arguments.extend(
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--kind",
+                "writer",
+            ]
+        )
+    else:
+        arguments.extend(
+            ["--attempt-id", "attempt-001", "--status", "failed"]
+        )
+
+    result = _run_task13_cli(*arguments)
+
+    _assert_task13_json_error(result, "cli.usage")
+    assert not ledger.exists()
+
+
+@pytest.mark.parametrize("command", ["reserve-attempt", "complete-attempt"])
+def test_task13_pending_protocol_blocks_attempt_without_ledger_mutation(
+    tmp_path: Path, command: str
+) -> None:
+    ledger = tmp_path / "ledger.json"
+    original = b'{"sentinel":"unchanged"}'
+    if command == "complete-attempt":
+        ledger.write_bytes(original)
+    arguments = [
+        command,
+        "--ledger",
+        str(ledger),
+        "--protocol",
+        str(PROTOCOL_PATH),
+    ]
+    if command == "reserve-attempt":
+        arguments.extend(
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--kind",
+                "writer",
+            ]
+        )
+    else:
+        arguments.extend(
+            ["--attempt-id", "attempt-001", "--status", "failed"]
+        )
+
+    result = _run_task13_cli(*arguments)
+
+    _assert_task13_json_error(result, "cli.input")
+    if command == "reserve-attempt":
+        assert not ledger.exists()
+    else:
+        assert ledger.read_bytes() == original
+
+
+def _task13_terminal_cli_arguments(attempt_id: str) -> list[str]:
+    return [
+        "--attempt-id",
+        attempt_id,
+        "--status",
+        "completed",
+        "--content-produced",
+        "--child-session",
+        f"session-{attempt_id}",
+        "--input-tokens",
+        "2",
+        "--cached-input-tokens",
+        "1",
+        "--output-tokens",
+        "3",
+        "--reasoning-output-tokens",
+        "1",
+        "--raw-provider-output-sha256",
+        _digest("9"),
+    ]
+
+
+def test_task13_cli_round_trips_writer_expert_retry_and_rereview_fields(
+    tmp_path: Path,
+) -> None:
+    protocol = _bound_protocol_path(tmp_path)
+    ledger = tmp_path / "ledger.json"
+
+    def invoke(command: str, *arguments: str) -> dict[str, object]:
+        result = _run_task13_cli(
+            command,
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol),
+            *arguments,
+        )
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert result.stderr == ""
+        return json.loads(result.stdout)
+
+    writer = invoke(
+        "reserve-attempt",
+        "--run-id",
+        "A11:requirement-contract-ambiguity",
+        "--kind",
+        "writer",
+        "--arm",
+        "A11",
+        "--parent-digest",
+        _digest("a"),
+    )["attempt_id"]
+    assert isinstance(writer, str)
+    for status in ("candidate_ready", "review_pending"):
+        invoke(
+            "complete-attempt",
+            "--attempt-id",
+            writer,
+            "--status",
+            status,
+            "--content-produced",
+            "--candidate-digest",
+            _digest("b"),
+        )
+    expert = invoke(
+        "reserve-attempt",
+        "--run-id",
+        "A11:requirement-contract-ambiguity",
+        "--kind",
+        "primary_expert",
+        "--arm",
+        "A11",
+        "--parent-attempt-id",
+        writer,
+        "--role",
+        "primary",
+        "--parent-digest",
+        _digest("a"),
+        "--candidate-digest",
+        _digest("b"),
+    )["attempt_id"]
+    assert isinstance(expert, str)
+    invoke(
+        "complete-attempt",
+        *_task13_terminal_cli_arguments(expert),
+        "--finding-digest",
+        _digest("d"),
+    )
+    invoke(
+        "complete-attempt",
+        "--attempt-id",
+        writer,
+        "--status",
+        "candidate_ready",
+        "--content-produced",
+        "--candidate-digest",
+        _digest("c"),
+        "--finding-digest",
+        _digest("d"),
+        "--repair-digest",
+        _digest("e"),
+    )
+    invoke(
+        "complete-attempt",
+        "--attempt-id",
+        writer,
+        "--status",
+        "review_pending",
+        "--content-produced",
+        "--candidate-digest",
+        _digest("c"),
+    )
+    rereview = invoke(
+        "reserve-attempt",
+        "--run-id",
+        "A11:requirement-contract-ambiguity",
+        "--kind",
+        "expert_rereview",
+        "--arm",
+        "A11",
+        "--parent-attempt-id",
+        expert,
+        "--role",
+        "primary",
+        "--parent-digest",
+        _digest("a"),
+        "--candidate-digest",
+        _digest("c"),
+        "--finding-digest",
+        _digest("d"),
+        "--repair-digest",
+        _digest("e"),
+    )["attempt_id"]
+    assert isinstance(rereview, str)
+    invoke("complete-attempt", *_task13_terminal_cli_arguments(rereview))
+    invoke(
+        "complete-attempt",
+        *_task13_terminal_cli_arguments(writer),
+        "--candidate-digest",
+        _digest("c"),
+        "--close-digest",
+        _digest("f"),
+    )
+
+    failed_writer = invoke(
+        "reserve-attempt",
+        "--run-id",
+        "P:frontend-recovery-delivery",
+        "--kind",
+        "writer",
+        "--arm",
+        "P",
+    )["attempt_id"]
+    assert isinstance(failed_writer, str)
+    invoke(
+        "complete-attempt",
+        "--attempt-id",
+        failed_writer,
+        "--status",
+        "technical_failure",
+        "--child-session",
+        f"session-{failed_writer}",
+        "--input-tokens",
+        "0",
+        "--cached-input-tokens",
+        "0",
+        "--output-tokens",
+        "0",
+        "--reasoning-output-tokens",
+        "0",
+        "--raw-provider-output-sha256",
+        _digest("8"),
+    )
+    retry = invoke(
+        "reserve-attempt",
+        "--run-id",
+        "P:frontend-recovery-delivery",
+        "--kind",
+        "technical_retry",
+        "--arm",
+        "P",
+        "--retry-reason",
+        "transport",
+        "--retry-of-attempt-id",
+        failed_writer,
+    )["attempt_id"]
+    assert isinstance(retry, str)
+    invoke(
+        "complete-attempt",
+        *_task13_terminal_cli_arguments(retry),
+        "--candidate-digest",
+        _digest("7"),
+    )
+
+    persisted = json.loads(ledger.read_text(encoding="utf-8"))
+    assert persisted["schema"] == "ai-sdlc-v2-benefit-attempt-ledger/v4"
+    attempts = {attempt["attempt_id"]: attempt for attempt in persisted["attempts"]}
+    assert attempts[writer]["arm"] == "A11"
+    assert attempts[writer]["parent_digest"] == _digest("a")
+    assert attempts[writer]["finding_digest"] == _digest("d")
+    assert attempts[writer]["repair_digest"] == _digest("e")
+    assert attempts[writer]["close_digest"] == _digest("f")
+    assert attempts[expert]["role"] == "primary"
+    assert attempts[expert]["parent_attempt_id"] == writer
+    assert attempts[expert]["candidate_digest"] == _digest("b")
+    assert attempts[expert]["finding_digest"] == _digest("d")
+    assert attempts[rereview]["parent_attempt_id"] == expert
+    assert attempts[rereview]["candidate_digest"] == _digest("c")
+    assert attempts[rereview]["finding_digest"] == _digest("d")
+    assert attempts[rereview]["repair_digest"] == _digest("e")
+    assert attempts[retry]["retry_reason"] == "transport"
+    assert attempts[retry]["retry_of_attempt_id"] == failed_writer
+    assert attempts[retry]["effective_kind"] == "writer"
+    assert attempts[retry]["token_usage"] == {
+        "input_tokens": 2,
+        "cached_input_tokens": 1,
+        "output_tokens": 3,
+        "reasoning_output_tokens": 1,
+    }
+
+
+@pytest.mark.parametrize("missing_flag", ["--protocol", "--ledger"])
+def test_task13_verify_receipt_requires_protocol_and_ledger_as_json_usage_error(
+    tmp_path: Path, missing_flag: str
+) -> None:
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+    protocol = _bound_protocol_path(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    arguments = [
+        "verify-receipt",
+        "--receipt",
+        str(receipt),
+        "--protocol",
+        str(protocol),
+        "--ledger",
+        str(ledger),
+    ]
+    flag_index = arguments.index(missing_flag)
+    del arguments[flag_index : flag_index + 2]
+
+    result = _run_task13_cli(*arguments)
+
+    _assert_task13_json_error(result, "cli.usage")
+
+
+@pytest.mark.parametrize("case", ["missing", "corrupt", "mismatched"])
+def test_task13_verify_receipt_actually_loads_ledger(
+    tmp_path: Path, case: str
+) -> None:
+    protocol, ledger, receipt = _task12_completed_p_run(tmp_path)
+    protocol_path = tmp_path / "protocol.json"
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+    if case == "missing":
+        ledger.unlink()
+    elif case == "corrupt":
+        ledger.write_text("not-json", encoding="utf-8")
+    else:
+        raw = json.loads(ledger.read_text(encoding="utf-8"))
+        raw["protocol_sha256"] = _digest("0")
+        ledger.write_text(json.dumps(raw), encoding="utf-8")
+
+    result = _run_task13_cli(
+        "verify-receipt",
+        "--receipt",
+        str(receipt_path),
+        "--protocol",
+        str(protocol_path),
+        "--ledger",
+        str(ledger),
+    )
+
+    assert result.returncode != 0
+    assert result.stderr == ""
+    assert "Traceback" not in result.stdout
+    payload = json.loads(result.stdout)
+    assert any(issue["code"] == "receipt.ledger" for issue in payload["issues"])
+    assert str(tmp_path) not in result.stdout
+
+
+def test_task13_verify_receipt_rejects_corrupt_protocol_without_private_path(
+    tmp_path: Path,
+) -> None:
+    protocol = tmp_path / "private-protocol.json"
+    protocol.write_text("not-json", encoding="utf-8")
+    receipt = tmp_path / "receipt.json"
+    receipt.write_text("{}", encoding="utf-8")
+
+    result = _run_task13_cli(
+        "verify-receipt",
+        "--receipt",
+        str(receipt),
+        "--protocol",
+        str(protocol),
+        "--ledger",
+        str(tmp_path / "ledger.json"),
+    )
+
+    _assert_task13_json_error(result, "cli.input")
+    assert str(tmp_path) not in result.stdout
+
+
+@pytest.mark.parametrize("case", ["empty_metrics", "false_protocol_digest"])
+def test_task13_verify_summary_rejects_empty_metrics_and_false_digest(
+    tmp_path: Path, case: str
+) -> None:
+    protocol_path = _bound_protocol_path(tmp_path)
+    protocol = load_protocol(protocol_path)
+    summary = _task12_summary(protocol)
+    if case == "empty_metrics":
+        summary["metrics"] = {}
+    else:
+        summary["protocol_sha256"] = _digest("0")
+    summary_path = tmp_path / "summary.json"
+    summary_path.write_text(json.dumps(summary), encoding="utf-8")
+
+    result = _run_task13_cli(
+        "verify-summary",
+        "--summary",
+        str(summary_path),
+        "--protocol",
+        str(protocol_path),
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    issues = json.loads(result.stdout)["issues"]
+    expected = "summary.schema" if case == "empty_metrics" else "summary.protocol-digest"
+    assert any(issue["code"] == expected for issue in issues)
+
+
+def test_task13_validate_reports_structural_validity_separately_from_execution_ready(
+    tmp_path: Path,
+) -> None:
+    pending = _run_task13_cli(
+        "validate", "--protocol", str(PROTOCOL_PATH)
+    )
+    assert pending.returncode == 0
+    assert pending.stderr == ""
+    pending_payload = json.loads(pending.stdout)
+    assert pending_payload["structurally_valid"] is True
+    assert pending_payload["execution_ready"] is False
+    assert any(
+        issue["code"] == "protocol.fixture-pending"
+        for issue in pending_payload["issues"]
+    )
+
+    bound = _run_task13_cli(
+        "validate", "--protocol", str(_bound_protocol_path(tmp_path))
+    )
+    assert bound.returncode == 0
+    bound_payload = json.loads(bound.stdout)
+    assert bound_payload == {
+        "execution_ready": True,
+        "issues": [],
+        "structurally_valid": True,
+    }
+
+    raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    raw["arms"] = ["P"]
+    invalid_path = tmp_path / "invalid-protocol.json"
+    invalid_path.write_text(json.dumps(raw), encoding="utf-8")
+    invalid = _run_task13_cli("validate", "--protocol", str(invalid_path))
+    assert invalid.returncode == 1
+    invalid_payload = json.loads(invalid.stdout)
+    assert invalid_payload["structurally_valid"] is False
+    assert invalid_payload["execution_ready"] is False
+
+
+def test_task13_cli_missing_private_file_error_is_json_and_path_redacted() -> None:
+    private_path = "/Users/private-owner/secret/protocol.json"
+    result = _run_task13_cli("validate", "--protocol", private_path)
+
+    _assert_task13_json_error(result, "cli.input")
+    assert private_path not in result.stdout
+    assert "/Users/private-owner" not in result.stdout
