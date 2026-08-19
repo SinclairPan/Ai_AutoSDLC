@@ -39,6 +39,35 @@ _WINDOWS_PRIVATE_PATH = re.compile(
 )
 _HTTP_URI = re.compile(r"https?://[^\s'\";,()]+", re.IGNORECASE)
 _HTTP_EMBEDDED_POSIX_PATH = re.compile(r"(?<=[?=&#])/(?!/)[^\s'\";,()]+")
+_ENCODED_KEY_JOINER = r"(?:_|-|%5[fF]|%2[dD])"
+_SECRET_KEY_NAME = (
+    rf"(?:api{_ENCODED_KEY_JOINER}?key|access{_ENCODED_KEY_JOINER}?token|"
+    rf"auth{_ENCODED_KEY_JOINER}?token|authorization|token|secret|password)"
+)
+_SECRET_ASSIGNMENT = re.compile(
+    rf"(?P<prefix>{_SECRET_KEY_NAME}(?:\s|\+|%20)*"
+    rf"(?:=|:|%3[dD]|%3[aA])(?:\s|\+|%20)*(?:[\"']|%22|%27)?)"
+    r"(?P<value>.+?)(?=(?:%22|%27|[\"'&#\s,;)]|$))",
+    re.IGNORECASE,
+)
+_BEARER_SECRET = re.compile(
+    r"\bBearer(?P<space>\s+|%20|\+)+[^&#\s,;)]+", re.IGNORECASE
+)
+_SECRET_TOKEN = re.compile(
+    r"(?:sk(?:-|%2[dD])[A-Za-z0-9_%.-]{8,}|"
+    r"gh[pousr](?:_|%5[fF])[A-Za-z0-9_%.-]{20,}|AKIA[0-9A-Z]{16})",
+    re.IGNORECASE,
+)
+
+
+def _redact_secret_values(message: str) -> str:
+    message = _SECRET_ASSIGNMENT.sub(
+        lambda match: f"{match.group('prefix')}REDACTED", message
+    )
+    message = _BEARER_SECRET.sub(
+        lambda match: f"Bearer{match.group('space')}REDACTED", message
+    )
+    return _SECRET_TOKEN.sub("REDACTED", message)
 
 
 def _strict_public_http_prefix(candidate: str) -> int | None:
@@ -82,6 +111,7 @@ def _public_message(message: str) -> str:
         public_uris.append(candidate[:safe_length])
         return marker + candidate[safe_length:]
 
+    message = _redact_secret_values(message)
     message = _HTTP_URI.sub(protect_public_uri, message)
     message = _WINDOWS_PRIVATE_PATH.sub("<redacted-path>", message)
     message = _POSIX_PRIVATE_PATH.sub("<redacted-path>", message)

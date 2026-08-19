@@ -4580,3 +4580,145 @@ def test_task13_cli_only_protects_strict_public_http_components(
     assert "private-owner" not in messages
     assert "private-server" not in messages
     assert "<redacted-path>" in messages
+
+
+@pytest.mark.parametrize("surface", ["validation", "exception"])
+@pytest.mark.parametrize("location", ["query", "fragment"])
+@pytest.mark.parametrize(
+    "secret_parameter",
+    [
+        "api_key=sk-privatecredential123456",
+        'token="ghp_123456789012345678901234"',
+        "access%5Ftoken%3Dsk%2Dprivatecredential123456",
+        "authorization=%27Bearer%20privatecredential123456%27",
+        "auth%5Ftoken%3D%22sk%2Dprivatecredential123456%22",
+    ],
+    ids=[
+        "api-key",
+        "quoted-token",
+        "encoded-access-token",
+        "authorization",
+        "encoded-quoted-auth-token",
+    ],
+)
+def test_task13_cli_redacts_secrets_inside_public_http_query_and_fragment(
+    tmp_path: Path, surface: str, location: str, secret_parameter: str
+) -> None:
+    public_uri = "https://example.test/public/result.json"
+    if location == "query":
+        composite = f"{public_uri}?keep=ok&{secret_parameter}&mode=fast#section"
+    else:
+        composite = f"{public_uri}?keep=ok#section&{secret_parameter}&visible=yes"
+    if surface == "validation":
+        _, ledger, receipt = _task12_completed_p_run(tmp_path)
+        receipt[composite] = "unexpected"
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(receipt_path),
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--ledger",
+            str(ledger),
+        )
+        assert result.returncode == 1
+        message = "\n".join(
+            issue["message"] for issue in json.loads(result.stdout)["issues"]
+        )
+    else:
+        raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+        raw[composite] = "unexpected"
+        protocol_path = tmp_path / "invalid-protocol.json"
+        protocol_path.write_text(json.dumps(raw), encoding="utf-8")
+        result = _run_task13_cli("validate", "--protocol", str(protocol_path))
+        _assert_task13_json_error(result, "cli.input")
+        message = json.loads(result.stdout)["error"]["message"]
+
+    assert result.stderr == ""
+    assert public_uri in message
+    assert "keep=ok" in message
+    assert "privatecredential" not in message
+    assert "ghp_123456789012345678901234" not in message
+    assert "REDACTED" in message
+    if location == "query":
+        assert "mode=fast#section" in message
+    else:
+        assert "section" in message
+        assert "visible=yes" in message
+
+
+@pytest.mark.parametrize("surface", ["validation", "exception"])
+def test_task13_cli_preserves_non_sensitive_http_query_and_fragment(
+    tmp_path: Path, surface: str
+) -> None:
+    public_uri = "https://example.test/public/result.json?keep=ok&mode=fast#section"
+    if surface == "validation":
+        _, ledger, receipt = _task12_completed_p_run(tmp_path)
+        receipt[public_uri] = "unexpected"
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(receipt_path),
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--ledger",
+            str(ledger),
+        )
+        assert result.returncode == 1
+        message = "\n".join(
+            issue["message"] for issue in json.loads(result.stdout)["issues"]
+        )
+    else:
+        raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+        raw[public_uri] = "unexpected"
+        protocol_path = tmp_path / "invalid-protocol.json"
+        protocol_path.write_text(json.dumps(raw), encoding="utf-8")
+        result = _run_task13_cli("validate", "--protocol", str(protocol_path))
+        _assert_task13_json_error(result, "cli.input")
+        message = json.loads(result.stdout)["error"]["message"]
+
+    assert result.stderr == ""
+    assert public_uri in message
+    assert "REDACTED" not in message
+
+
+@pytest.mark.parametrize(
+    "private_value",
+    [
+        "/Users/private-owner/secret/result.json",
+        r"C:\Users\private-owner\secret\result.json",
+        r"\\private-server\share\secret\result.json",
+        "file:///Users/private-owner/secret/result.json",
+    ],
+    ids=["posix", "windows", "unc", "file-uri"],
+)
+def test_task13_cli_surfaces_core_http_query_private_path_finding(
+    tmp_path: Path, private_value: str
+) -> None:
+    _, ledger, receipt = _task12_completed_p_run(tmp_path)
+    receipt["changed_files"] = [
+        f"https://example.test/public/result.json?next={private_value}"
+    ]
+    receipt_path = tmp_path / "receipt.json"
+    receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+
+    result = _run_task13_cli(
+        "verify-receipt",
+        "--receipt",
+        str(receipt_path),
+        "--protocol",
+        str(tmp_path / "protocol.json"),
+        "--ledger",
+        str(ledger),
+    )
+
+    assert result.returncode == 1
+    assert result.stderr == ""
+    assert any(
+        issue["code"] == "receipt.absolute-path"
+        for issue in json.loads(result.stdout)["issues"]
+    )
