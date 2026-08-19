@@ -218,7 +218,9 @@ def test_interactive_cli_prompts_for_update_on_each_command(tmp_path) -> None:
     assert "当前AI-SDLC版本是1.0.0，最新版本是1.0.1，是否升级？回复 y/n" in first.output
     assert "已跳过本次升级，继续执行当前命令" in first.output
     assert second.exit_code == 0
-    assert "当前AI-SDLC版本是1.0.0，最新版本是1.0.1，是否升级？回复 y/n" in second.output
+    assert (
+        "当前AI-SDLC版本是1.0.0，最新版本是1.0.1，是否升级？回复 y/n" in second.output
+    )
 
 
 def test_interactive_cli_confirmation_runs_self_update_and_stops_command(
@@ -237,7 +239,9 @@ def test_interactive_cli_confirmation_runs_self_update_and_stops_command(
 
     assert result.exit_code == 0
     assert calls == ["1.0.1"]
-    assert "当前AI-SDLC版本是1.0.0，最新版本是1.0.1，是否升级？回复 y/n" in result.output
+    assert (
+        "当前AI-SDLC版本是1.0.0，最新版本是1.0.1，是否升级？回复 y/n" in result.output
+    )
     assert "Project not initialized" not in result.output
 
 
@@ -245,10 +249,30 @@ def test_noninteractive_cli_prints_ai_conversation_update_prompt(tmp_path) -> No
     result = runner.invoke(app, ["status"], env=_env(tmp_path))
 
     assert result.exit_code == 0
-    assert "AI-SDLC Update" in result.output
-    assert "当前AI-SDLC版本是1.0.0，最新版本是1.0.1，是否升级？回复 y/n" in result.output
-    assert "请在对话中回复“确认升级”或“y”" in result.output
-    assert "ai-sdlc self-update check" in result.output
+    lines = [line for line in result.stderr.splitlines() if line.strip()]
+    notice_lines = [line for line in lines if line.startswith("AI_SDLC_UPDATE_NOTICE ")]
+    assert len(notice_lines) == 1
+    payload = json.loads(notice_lines[0].split(" ", 1)[1])
+    assert payload == {
+        "action": "ask_then_self_update_and_retry",
+        "current_version": "1.0.0",
+        "latest_version": "1.0.1",
+        "schema_version": 1,
+        "upgrade_command": "ai-sdlc self-update check",
+    }
+
+
+def test_json_command_keeps_stdout_parseable_and_notice_on_stderr(tmp_path) -> None:
+    result = runner.invoke(app, ["status", "--json"], env=_env(tmp_path))
+
+    assert result.exit_code == 0
+    json.loads(result.stdout)
+    notice_lines = [
+        line
+        for line in result.stderr.splitlines()
+        if line.startswith("AI_SDLC_UPDATE_NOTICE ")
+    ]
+    assert len(notice_lines) == 1
 
 
 def test_update_confirmation_requires_all_streams_tty(monkeypatch) -> None:
@@ -276,7 +300,9 @@ def test_update_confirmation_requires_all_streams_tty(monkeypatch) -> None:
     assert not self_update_cmd._can_prompt_for_update_confirmation()
 
 
-def test_self_update_install_completes_without_manual_followup(monkeypatch, tmp_path) -> None:
+def test_self_update_install_completes_without_manual_followup(
+    monkeypatch, tmp_path
+) -> None:
     calls: list[tuple[str, object]] = []
 
     def fake_download(asset_url, archive_path):
@@ -302,7 +328,9 @@ def test_self_update_install_completes_without_manual_followup(monkeypatch, tmp_
         self_update_cmd, "_install_bundle_into_current_runtime", fake_install
     )
     monkeypatch.setattr(self_update_cmd, "_read_installed_version", lambda: "1.0.1")
-    monkeypatch.setattr(self_update_cmd, "_verify_bare_cli_version", lambda version: version)
+    monkeypatch.setattr(
+        self_update_cmd, "_verify_bare_cli_version", lambda version: version
+    )
 
     result = runner.invoke(
         app,
@@ -411,9 +439,9 @@ def test_self_update_bare_cli_validation_repairs_windows_process_path_silently(
     version = self_update_cmd._verify_bare_cli_version("1.1.0")
 
     assert version == "1.1.0"
-    assert os.path.normcase(os.environ["PATH"].split(os.pathsep)[0]) == os.path.normcase(
-        str(new_dir)
-    )
+    assert os.path.normcase(
+        os.environ["PATH"].split(os.pathsep)[0]
+    ) == os.path.normcase(str(new_dir))
     assert os.path.normcase(str(old_dir)) in {
         os.path.normcase(entry) for entry in os.environ["PATH"].split(os.pathsep)
     }

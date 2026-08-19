@@ -42,6 +42,12 @@ self_update_app = typer.Typer(
 console = Console()
 notice_console = Console(stderr=True)
 
+_REPLAY_HANDOFF_ENV = "AI_SDLC_UPDATE_REPLAY_HANDOFF"
+_REPLAY_BYPASS_ENV = "AI_SDLC_UPDATE_REPLAY_BYPASS"
+_SELF_UPDATE_REEXEC_ENV = "AI_SDLC_SELF_UPDATE_REEXEC"
+_REPLAY_HANDOFF_SCHEMA_VERSION = 1
+_MAX_REPLAY_HANDOFF_BYTES = 24 * 1024
+
 
 class SelfUpdateError(RuntimeError):
     """Raised when the automatic self-update cannot complete safely."""
@@ -54,11 +60,19 @@ class PathCandidate:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class ReplayRequest:
+    """One-process-chain request to replay the business CLI after updating."""
+
+    executable: str
+    argv: tuple[str, ...]
+
+
 def _print_json(payload: dict[str, object]) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
 
-def maybe_render_update_notice() -> None:
+def maybe_render_update_notice(*, machine_output: bool) -> None:
     """Prompt installed CLI users and AI sessions when a newer release exists."""
     if not should_auto_render_notice():
         return
@@ -69,31 +83,108 @@ def maybe_render_update_notice() -> None:
     ):
         return
     current_version = evaluation.runtime_identity.installed_version or "unknown"
-    latest_version = evaluation.channel_latest_version or evaluation.upstream_latest_version
+    latest_version = (
+        evaluation.channel_latest_version or evaluation.upstream_latest_version
+    )
     if not latest_version:
         return
 
     prompt = _update_confirmation_prompt(current_version, latest_version)
-    if _can_prompt_for_update_confirmation():
+    if not machine_output and _can_prompt_for_update_confirmation():
         if not typer.confirm(prompt, default=False, err=True):
             notice_console.print("已跳过本次升级，继续执行当前命令。")
             return
-        self_update_install(version=latest_version)
+        _publish_replay_handoff(_capture_replay_request())
+        try:
+            self_update_install(version=latest_version)
+        finally:
+            os.environ.pop(_REPLAY_HANDOFF_ENV, None)
         raise typer.Exit(0)
 
-    notice_console.print(
-        Panel(
-            "\n".join(
-                [
-                    prompt,
-                    "请在对话中回复“确认升级”或“y”；AI 助手应执行：ai-sdlc self-update check",
-                    "If you approve the update in chat, the AI assistant should run: ai-sdlc self-update check",
-                ]
-            ),
-            title="AI-SDLC Update",
-            border_style="yellow",
-        )
+    payload = {
+        "schema_version": 1,
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "action": "ask_then_self_update_and_retry",
+        "upgrade_command": "ai-sdlc self-update check",
+    }
+    typer.echo(
+        "AI_SDLC_UPDATE_NOTICE "
+        + json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ),
+        err=True,
     )
+
+
+def consume_update_replay_bypass() -> bool:
+    """Consume the one-shot notice bypass before invoking a replayed handler."""
+
+    return os.environ.pop(_REPLAY_BYPASS_ENV, None) == "1"
+
+
+def _capture_replay_request() -> ReplayRequest:
+    executable = str(sys.argv[0]).strip()
+    if not executable:
+        raise SelfUpdateError("cannot replay an invocation without an executable")
+    return ReplayRequest(executable=executable, argv=tuple(sys.argv[1:]))
+
+
+def _publish_replay_handoff(request: ReplayRequest) -> None:
+    payload = json.dumps(
+        {
+            "schema_version": _REPLAY_HANDOFF_SCHEMA_VERSION,
+            "executable": request.executable,
+            "argv": list(request.argv),
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    if len(payload.encode("utf-8")) > _MAX_REPLAY_HANDOFF_BYTES:
+        raise SelfUpdateError("original command is too large for safe update replay")
+    os.environ[_REPLAY_HANDOFF_ENV] = payload
+
+
+def _consume_replay_handoff() -> ReplayRequest | None:
+    raw = os.environ.pop(_REPLAY_HANDOFF_ENV, None)
+    if raw is None:
+        return None
+    if len(raw.encode("utf-8")) > _MAX_REPLAY_HANDOFF_BYTES:
+        raise SelfUpdateError("update replay handoff is oversized")
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise SelfUpdateError("update replay handoff is malformed") from exc
+    if not isinstance(payload, dict) or set(payload) != {
+        "schema_version",
+        "executable",
+        "argv",
+    }:
+        raise SelfUpdateError("update replay handoff has unexpected fields")
+    if payload.get("schema_version") != _REPLAY_HANDOFF_SCHEMA_VERSION:
+        raise SelfUpdateError("update replay handoff has an unsupported schema")
+    executable = payload.get("executable")
+    argv = payload.get("argv")
+    if not isinstance(executable, str) or not executable.strip():
+        raise SelfUpdateError("update replay handoff is missing its executable")
+    if not isinstance(argv, list) or any(not isinstance(item, str) for item in argv):
+        raise SelfUpdateError("update replay handoff argv is invalid")
+    return ReplayRequest(executable=executable, argv=tuple(argv))
+
+
+def _replay_updated_command(request: ReplayRequest) -> None:
+    env = os.environ.copy()
+    env.pop(_REPLAY_HANDOFF_ENV, None)
+    env.pop(_SELF_UPDATE_REEXEC_ENV, None)
+    env[_REPLAY_BYPASS_ENV] = "1"
+    command = [request.executable, *request.argv]
+    try:
+        completed = subprocess.run(command, shell=False, env=env, check=False)
+    except OSError as exc:
+        notice_console.print(f"更新完成，但无法重新执行原命令：{exc}", markup=False)
+        raise typer.Exit(1) from exc
+    raise typer.Exit(completed.returncode)
 
 
 def _update_confirmation_prompt(current_version: str, latest_version: str) -> str:
@@ -122,7 +213,7 @@ def self_update_identity(
         False,
         "--json",
         help="Emit the helper machine contract as JSON.",
-    )
+    ),
 ) -> None:
     """Show the installed-runtime identity used by update advisor."""
     identity = detect_runtime_identity()
@@ -130,7 +221,11 @@ def self_update_identity(
     if json_output:
         _print_json(payload)
         return
-    console.print(Panel(json.dumps(payload, ensure_ascii=False, indent=2), title="Update Identity"))
+    console.print(
+        Panel(
+            json.dumps(payload, ensure_ascii=False, indent=2), title="Update Identity"
+        )
+    )
 
 
 @self_update_app.command("evaluate")
@@ -166,7 +261,7 @@ def self_update_check(
         False,
         "--json",
         help="Emit the helper machine contract as JSON.",
-    )
+    ),
 ) -> None:
     """User-facing update check for the current installed runtime."""
     evaluation = evaluate_update_advisor(
@@ -178,7 +273,9 @@ def self_update_check(
         _print_json(evaluation.to_machine_dict())
         return
 
-    target_version = evaluation.channel_latest_version or evaluation.upstream_latest_version
+    target_version = (
+        evaluation.channel_latest_version or evaluation.upstream_latest_version
+    )
     if evaluation.upgrade_command and target_version:
         console.print(
             Panel(
@@ -238,7 +335,9 @@ def self_update_check(
         "distribution_not_found",
     }:
         result_zh = "当前是源码/开发运行环境，不执行自动更新。"
-        result_en = "Current runtime is source/development mode; automatic update is skipped."
+        result_en = (
+            "Current runtime is source/development mode; automatic update is skipped."
+        )
     else:
         result_zh = f"当前已是最新可用版本：AI-SDLC {installed}。"
         result_en = f"Current AI-SDLC is already up to date: {installed}."
@@ -267,13 +366,17 @@ def self_update_install(
 ) -> None:
     """Download, install, and verify a GitHub release for the current runtime."""
     _reexec_windows_launcher_if_needed(version)
+    replay_request: ReplayRequest | None = None
     try:
+        replay_request = _consume_replay_handoff()
         release_version, _release_url, asset_url, hint = _release_asset_context(version)
         with tempfile.TemporaryDirectory(prefix="ai-sdlc-self-update-") as temp_root:
             temp_path = Path(temp_root)
             archive_path = temp_path / hint["filename"]
             _download_asset(asset_url, archive_path)
-            bundle_dir = _extract_release_asset(archive_path, temp_path / "bundle", hint)
+            bundle_dir = _extract_release_asset(
+                archive_path, temp_path / "bundle", hint
+            )
             _install_bundle_into_current_runtime(bundle_dir, release_version)
             installed_version = _read_installed_version()
             _repair_current_user_path_if_possible()
@@ -329,6 +432,8 @@ def self_update_install(
             border_style="green",
         )
     )
+    if replay_request is not None:
+        _replay_updated_command(replay_request)
 
 
 @self_update_app.command("ack-notice")
@@ -350,7 +455,9 @@ def self_update_ack_notice(
     if ack.ack_recorded:
         console.print("[green]Update notice acknowledgement recorded.[/green]")
     else:
-        console.print("[yellow]Update notice acknowledgement was not recorded.[/yellow]")
+        console.print(
+            "[yellow]Update notice acknowledgement was not recorded.[/yellow]"
+        )
 
 
 def _release_asset_context(
@@ -373,7 +480,7 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
     if not _should_reexec_windows_launcher():
         return
     env = os.environ.copy()
-    env["AI_SDLC_SELF_UPDATE_REEXEC"] = "1"
+    env[_SELF_UPDATE_REEXEC_ENV] = "1"
     command = [
         sys.executable,
         "-m",
@@ -395,7 +502,7 @@ def _should_reexec_windows_launcher(
     if platform_name != "win32":
         return False
     env_map = env or os.environ
-    if env_map.get("AI_SDLC_SELF_UPDATE_REEXEC") == "1":
+    if env_map.get(_SELF_UPDATE_REEXEC_ENV) == "1":
         return False
     launcher = PureWindowsPath(argv0).name.lower()
     return launcher in {"ai-sdlc.exe", "ai_sdlc.exe"}
@@ -465,7 +572,9 @@ def _safe_extract_zip(archive: zipfile.ZipFile, extract_root: Path) -> None:
     archive.extractall(extract_root)
 
 
-def _install_bundle_into_current_runtime(bundle_dir: Path, release_version: str) -> None:
+def _install_bundle_into_current_runtime(
+    bundle_dir: Path, release_version: str
+) -> None:
     wheels_dir = bundle_dir / "wheels"
     if not wheels_dir.is_dir():
         raise SelfUpdateError("release bundle is missing wheels/")
@@ -520,7 +629,9 @@ def _read_installed_version() -> str:
     except subprocess.TimeoutExpired as exc:
         raise SelfUpdateError("version verification timed out") from exc
     if result.returncode != 0:
-        detail = (result.stderr or result.stdout or "version verification failed").strip()
+        detail = (
+            result.stderr or result.stdout or "version verification failed"
+        ).strip()
         raise SelfUpdateError(_tail(detail))
     return result.stdout.strip()
 

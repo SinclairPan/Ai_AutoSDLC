@@ -6,7 +6,7 @@ AI-SDLC 会把项目规则、需求澄清、技术方案、任务执行、质量
 
 > 当前公开稳定版本为 `v2.0.0`。本指南只提供经过跨平台 smoke 与 GitHub Release 验证的公开安装路径；从 `v1.0.2` 升级请先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
 
-安装版 `ai-sdlc` 在执行普通人类可读命令时会检查新版本；版本真相每 24 小时至多联网刷新一次。发现更新时，CLI 会在正常结果前显示中英双语提示，只有用户明确确认后才升级。断网、超时或检查失败不会阻断当前命令；可设置 `AI_SDLC_DISABLE_UPDATE_CHECK=1` 关闭检查。
+安装版 `ai-sdlc` 在每次执行实际业务命令前读取更新缓存；缓存过期时才会进行一次短超时联网检查，同一成功缓存周期不会重复联网。TTY 终端发现更新时会询问是否先升级；确认后完成升级并精确重新执行原命令。非 TTY、Codex、Cursor、Claude Code 和 `--json` 路径只在 stderr 输出一行 `AI_SDLC_UPDATE_NOTICE` 结构化提示，不污染业务 stdout 或 JSON。拒绝、断网、超时或检查失败都不会阻断当前命令；可设置 `AI_SDLC_DISABLE_UPDATE_CHECK=1` 关闭检查。`self-update`、帮助、补全和源码/`uv run` 开发环境不会自动覆盖当前安装。
 
 本指南只包含两条完整路径：
 
@@ -262,6 +262,14 @@ Initialized AI-SDLC project
 ```
 
 新空项目中出现 open gates 是正常的：它表示需求、设计、任务或测试证据还没有补齐，不表示初始化失败。只要命令成功结束，并且 `下一步 / Next` 要求进入 AI 对话，就可以继续。
+
+之后的正常入口是：
+
+```text
+ai-sdlc run
+```
+
+它会直接显示当前 Result、Next、Blockers，并附带当前 Loop 最多两个 `Applicable Rules` 片段供 AI 使用。无需手动执行 `rules show` 或 `stage show`。`ai-sdlc status` 默认同样只显示 Result、Next、Blockers；排查时再使用 `ai-sdlc status --details`，机器诊断使用 `ai-sdlc status --json`。
 
 用刚才选择的 AI 工具打开同一个项目目录：
 

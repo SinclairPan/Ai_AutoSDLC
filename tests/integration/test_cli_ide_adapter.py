@@ -30,7 +30,7 @@ def _clear_ide_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 class TestCliIdeAdapterHook:
-    def test_status_installs_vscode_file_after_marker_added(
+    def test_status_default_remains_read_only_after_marker_added(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -38,7 +38,7 @@ class TestCliIdeAdapterHook:
         (tmp_path / ".vscode").mkdir()
         assert runner.invoke(app, ["status"]).exit_code == 0
         vs = tmp_path / ".github" / "copilot-instructions.md"
-        assert vs.is_file()
+        assert vs.exists() is False
 
     def test_status_json_does_not_install_vscode_file(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

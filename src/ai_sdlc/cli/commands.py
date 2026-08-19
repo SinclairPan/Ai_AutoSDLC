@@ -152,7 +152,9 @@ def _run_init_safe_rehearsal(root: Path) -> tuple[bool, list[str], bool]:
     if last_result is None:
         raise InitSafeRehearsalError("dry-run did not report a final gate result")
     verdict = str(getattr(last_result.verdict, "value", last_result.verdict)).upper()
-    init_verdict = str(getattr(init_result.verdict, "value", init_result.verdict)).upper()
+    init_verdict = str(
+        getattr(init_result.verdict, "value", init_result.verdict)
+    ).upper()
     return (
         verdict == "PASS",
         _failed_gate_messages_for_init(last_result),
@@ -189,7 +191,9 @@ def _ensure_init_checkpoint_completed(root: Path, *, init_gate_passed: bool) -> 
         return
 
     changed = False
-    if init_gate_passed and not any(stage.stage == "init" for stage in cp.completed_stages):
+    if init_gate_passed and not any(
+        stage.stage == "init" for stage in cp.completed_stages
+    ):
         cp.completed_stages.append(
             CompletedStage(stage="init", completed_at=utc_now_z())
         )
@@ -236,10 +240,7 @@ def _print_reconcile_guidance(
     status_word = "已暂停" if blocking else "检测到"
     console.print(
         Panel(
-            (
-                f"{status_word}已有产物与 checkpoint 可能不一致。\n"
-                f"{hint.reason}"
-            ),
+            (f"{status_word}已有产物与 checkpoint 可能不一致。\n{hint.reason}"),
             title=f"{current_command} 状态诊断",
             border_style="yellow",
         )
@@ -247,7 +248,9 @@ def _print_reconcile_guidance(
 
     table = _property_table("Existing Artifact Probe")
     table.add_row("Artifact Layout", hint.layout)
-    table.add_row("Detected Files", ", ".join(_dedupe_status_text_items(hint.detected_files)))
+    table.add_row(
+        "Detected Files", ", ".join(_dedupe_status_text_items(hint.detected_files))
+    )
     table.add_row("Checkpoint Stage", hint.checkpoint_stage)
     table.add_row("Checkpoint Feature", hint.checkpoint_feature_id)
     table.add_row("Suggested Stage", hint.current_stage)
@@ -463,7 +466,9 @@ def _add_branch_lifecycle_rows(
         detail_title="Branch Lifecycle Detail",
         detail=branch_lifecycle.get("detail", "-"),
     )
-    branch_lifecycle_next = str(branch_lifecycle.get("next_required_action", "")).strip()
+    branch_lifecycle_next = str(
+        branch_lifecycle.get("next_required_action", "")
+    ).strip()
     if branch_lifecycle_next:
         table.add_row("Branch Lifecycle Next", branch_lifecycle_next)
 
@@ -589,7 +594,9 @@ def _add_branch_context_rows(
 def _add_reconcile_rows(table: Table, hint: ReconcileHint) -> None:
     table.add_row("Reconciled Stage", hint.current_stage)
     table.add_row("Reconciled Spec Dir", hint.spec_dir)
-    table.add_row("Detected Files", ", ".join(_dedupe_status_text_items(hint.detected_files)))
+    table.add_row(
+        "Detected Files", ", ".join(_dedupe_status_text_items(hint.detected_files))
+    )
 
 
 def _add_working_set_snapshot_rows(table: Table, snapshot: Any) -> None:
@@ -765,7 +772,10 @@ def _add_active_work_item_status_rows(
         if runtime.last_updated:
             table.add_row("Runtime Updated", runtime.last_updated)
     if working_set is not None and working_set.active_files:
-        table.add_row("Active Files", ", ".join(_dedupe_status_text_items(working_set.active_files)))
+        table.add_row(
+            "Active Files",
+            ", ".join(_dedupe_status_text_items(working_set.active_files)),
+        )
     if latest_summary:
         table.add_row("Latest Summary", _latest_summary_preview(latest_summary))
     reviewer_decision = load_latest_reviewer_decision(root, active_work_item)
@@ -954,16 +964,51 @@ def status_command(
     as_json: bool = typer.Option(
         False,
         "--json",
-        help="Machine-readable bounded telemetry summary.",
+        help="Machine-readable detailed project status.",
+    ),
+    details: bool = typer.Option(
+        False,
+        "--details",
+        help="Show the legacy detailed diagnostic status surface.",
     ),
 ) -> None:
-    """Show current AI-SDLC pipeline status."""
+    """Show the current delivery Result, Next action and Blockers."""
     root = find_project_root()
     if root is None:
         console.print(
             "[red]Not inside an AI-SDLC project. Run 'ai-sdlc init' first.[/red]"
         )
         raise typer.Exit(code=1)
+
+    if as_json and details:
+        console.print("[red]--details cannot be combined with --json.[/red]")
+        raise typer.Exit(code=2)
+
+    if not as_json and not details:
+        state = load_project_state(root)
+        if state.status == ProjectStatus.UNINITIALIZED:
+            console.print("[yellow]Project found but not initialized.[/yellow]")
+            raise typer.Exit(code=1)
+        # Local imports avoid coupling the legacy diagnostic command module to
+        # CLI sub-app initialization while keeping the default path read-only.
+        from ai_sdlc.cli.loop_cmd import get_review_aware_loop_status
+        from ai_sdlc.core.loop_router import LoopRouteStatus, route_five_loops
+
+        route = route_five_loops(
+            root,
+            status_loader=get_review_aware_loop_status,
+        )
+        console.print(f"[bold]当前结果 / Result:[/bold] {route.result}")
+        console.print(f"[bold]下一步 / Next:[/bold] {route.next_action or 'None'}")
+        console.print("[bold]阻断项 / Blockers:[/bold]")
+        if route.blockers:
+            for blocker in route.blockers:
+                console.print(f"- {blocker}", markup=False)
+        else:
+            console.print("- None")
+        if route.status == LoopRouteStatus.BLOCKED:
+            raise typer.Exit(code=1)
+        raise typer.Exit(code=0)
 
     status_surface = build_status_json_surface(
         root,
@@ -1025,15 +1070,15 @@ def status_command(
         )
         work_item_id = _surface_work_item_id(cp)
         linked_active_wi = active_work_item_id(cp)
-        active_wi_id = linked_active_wi or (
-            (
-                active_workitem.strip()
-                if isinstance(active_workitem, str)
+        active_wi_id = (
+            linked_active_wi
+            or (
+                (active_workitem.strip() if isinstance(active_workitem, str) else "")
+                if show_active_binding
                 else ""
             )
-            if show_active_binding
-            else ""
-        ) or (checkpoint_workitem if show_active_binding else "")
+            or (checkpoint_workitem if show_active_binding else "")
+        )
         if active_wi_id:
             _add_active_work_item_status_rows(
                 table,
@@ -1283,7 +1328,9 @@ def scan_command(
         console.print(f"\n[yellow]Risks detected: {len(scan.risks)}[/yellow]")
         risk_lines: list[str] = []
         for risk in scan.risks:
-            rendered = f"[{risk.severity}] {risk.category}: {risk.path} — {risk.description}"
+            rendered = (
+                f"[{risk.severity}] {risk.category}: {risk.path} — {risk.description}"
+            )
             if rendered in risk_lines:
                 continue
             risk_lines.append(rendered)

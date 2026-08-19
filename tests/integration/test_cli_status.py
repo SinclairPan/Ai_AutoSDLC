@@ -129,7 +129,7 @@ def test_status_surfaces_continuity_handoff_state(tmp_path: Path) -> None:
     )
 
     with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0
     assert "Continuity Handoff" in result.output
@@ -406,10 +406,32 @@ class TestCliStatus:
     def test_status_initialized(self, tmp_path: Path) -> None:
         init_project(tmp_path)
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
             assert result.exit_code == 0
             assert "AI-SDLC Status" in result.output
             assert tmp_path.name in result.output
+
+    def test_status_defaults_to_result_next_and_blockers(self, tmp_path: Path) -> None:
+        init_project(tmp_path)
+
+        with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
+            result = runner.invoke(app, ["status"])
+
+        assert result.exit_code == 0, result.output
+        assert "Result:" in result.output
+        assert "Next:" in result.output
+        assert "Blockers:" in result.output
+        assert "AI-SDLC Status" not in result.output
+        assert "Version" not in result.output
+
+    def test_status_rejects_details_with_json(self, tmp_path: Path) -> None:
+        init_project(tmp_path)
+
+        with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
+            result = runner.invoke(app, ["status", "--details", "--json"])
+
+        assert result.exit_code != 0
+        assert "cannot be combined" in result.output
 
     def test_status_displays_adapter_target_and_activation_truth(
         self, tmp_path: Path
@@ -418,7 +440,7 @@ class TestCliStatus:
         acknowledge_adapter(tmp_path, agent_target="codex")
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0
         assert "Agent Target" in result.output
@@ -431,7 +453,7 @@ class TestCliStatus:
 
     def test_status_not_initialized(self) -> None:
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=None):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
             assert result.exit_code == 1
 
     def test_status_text_skips_full_truth_ledger_surface(
@@ -473,7 +495,7 @@ class TestCliStatus:
                 side_effect=_fake_status_surface,
             ),
         ):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0, result.output
         assert calls == [False]
@@ -497,7 +519,7 @@ class TestCliStatus:
             ),
         )
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0
         assert "recover --reconcile" in result.output
@@ -513,7 +535,7 @@ class TestCliStatus:
         checkpoint_path.write_text("", encoding="utf-8")
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0
         assert "recover --reconcile" in result.output
@@ -552,7 +574,7 @@ class TestCliStatus:
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
             recover_result = runner.invoke(app, ["recover", "--reconcile"])
-            status_result = runner.invoke(app, ["status"])
+            status_result = runner.invoke(app, ["status", "--details"])
 
         assert recover_result.exit_code == 0
         assert status_result.exit_code == 0
@@ -739,7 +761,7 @@ class TestCliStatus:
         )
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0
         assert "Resume Point" in result.output
@@ -791,7 +813,7 @@ class TestCliStatus:
         YamlStore.save(gov_path, state)
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0
         assert "Current Branch" in result.output
@@ -863,7 +885,7 @@ class TestCliStatus:
         )
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         assert result.exit_code == 0
         assert "Execution Plan" in result.output
@@ -913,7 +935,7 @@ class TestCliStatus:
         before_checkpoint = checkpoint_path.read_text(encoding="utf-8")
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            result = runner.invoke(app, ["status"])
+            result = runner.invoke(app, ["status", "--details"])
 
         after_checkpoint = checkpoint_path.read_text(encoding="utf-8")
         fresh_pack = load_resume_pack(tmp_path)
@@ -991,7 +1013,7 @@ checkpoint_path: .ai-sdlc/state/checkpoint.yml
     )
 
     with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0
     assert "rebuilding from checkpoint" in result.output.lower()
@@ -1469,7 +1491,7 @@ def test_status_text_surfaces_execute_authorization_state(
     )
 
     with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0
     assert "Execute Authorization" in result.output
@@ -1532,7 +1554,7 @@ def test_status_text_consumes_guard_summaries_from_status_surface(tmp_path: Path
             side_effect=_unexpected,
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Formal Artifact Target" in result.output
@@ -2414,7 +2436,7 @@ def test_status_text_surfaces_truth_ledger_guidance_summary(tmp_path: Path) -> N
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Truth Ledger Explain" in result.output
@@ -2498,7 +2520,7 @@ def test_status_text_surfaces_not_inherited_risk_summary(tmp_path: Path) -> None
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Truth Ledger Inheritance" in result.output
@@ -2561,7 +2583,7 @@ def test_status_text_falls_back_to_legacy_frontend_delivery_summary(
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Truth Ledger Frontend" in result.output
@@ -2627,7 +2649,7 @@ def test_status_text_surfaces_stale_apply_artifact_frontend_summary(
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Truth Ledger Frontend" in result.output
@@ -2694,7 +2716,7 @@ def test_status_text_surfaces_browser_gate_scope_linkage_invalid_frontend_summar
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Truth Ledger Frontend" in result.output
@@ -2734,7 +2756,7 @@ def test_status_text_surfaces_branch_lifecycle_next_action(tmp_path: Path) -> No
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Branch Lifecycle" in result.output
@@ -2802,7 +2824,7 @@ def test_status_text_surfaces_workitem_diagnostics_next_action(tmp_path: Path) -
             },
         ),
     ):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0, result.output
     assert "Workitem Diagnostics" in result.output
@@ -2856,7 +2878,7 @@ specs: []
     )
 
     with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0
     assert "Capability Closure" in result.output
@@ -2907,7 +2929,7 @@ specs: []
     )
 
     with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-        result = runner.invoke(app, ["status"])
+        result = runner.invoke(app, ["status", "--details"])
 
     assert result.exit_code == 0
     assert "Capability Closure Focus" in result.output

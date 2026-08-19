@@ -224,7 +224,7 @@ class TestApplyAdapter:
         assert canonical.read_text(encoding="utf-8") == "alternate content"
         assert str(alternate) in result.alternate_migrated
 
-    def test_all_ide_templates_point_to_init_then_troubleshooting_only(
+    def test_all_ide_templates_expose_the_compact_normal_path_contract(
         self, tmp_path: Path
     ) -> None:
         (tmp_path / AI_SDLC_DIR).mkdir(parents=True)
@@ -249,31 +249,22 @@ class TestApplyAdapter:
             )
             assert "ai-sdlc run --dry-run" in text
             assert "当前五 Loop 路由（只读）" in text
+            assert "Applicable Rules" in text
+            assert "不要求用户手动执行 `rules show` 或 `stage show`" in text
             assert "后续 agent 或人工需要维护" in text
             assert "维护契约" in text
             assert "docstring" in text
             assert "payload 字段映射" in text
-            assert "frontend_stack=vue3" in text
-            assert "provider_id=public-primevue" in text
-            assert "style_pack_id=modern-saas" in text
-            assert "PrimeVue + @primeuix/themes + primeicons" in text
-            assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in text
-            assert "Vite + TypeScript + UnoCSS + CSS Variables" in text
-            assert (
-                "Playwright + ESLint + Prettier + husky + lint-staged + commitlint"
-                in text
-            )
-            assert "企业后台" in text
-            assert "不得被当成 Vue2 信号" in text
-            assert "高级可选方案" in text
-            assert "data-console" in text
-            assert "high-clarity" in text
-            assert "macos-glass" in text
-            assert "program solution-confirm --dry-run --mode advanced" in text
-            assert "--frontend-stack" in text
-            assert "--provider-id" in text
-            assert "--style-pack-id" in text
-            assert "enterprise-vue2" in text
+            assert "基于项目已有技术栈、约束和交付目标" in text
+            assert "一个推荐方案" in text
+            assert "至少一个可选 / 自定义方案" in text
+            assert "规范正文" in text
+            assert "可选建议" in text
+            assert "已经落地" in text
+            assert "PrimeVue" not in text
+            assert "public-primevue" not in text
+            assert "enterprise-vue2" not in text
+            assert "stage show <阶段名>" not in text
             assert "五类结果的内置动态专家复核" in text
             assert (
                 "Requirement、Design Contract、Implementation、Frontend Evidence、Local PR Review"

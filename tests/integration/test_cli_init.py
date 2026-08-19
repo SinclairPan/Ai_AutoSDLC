@@ -178,7 +178,9 @@ class TestCliInit:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         (tmp_path / ".codex").mkdir()
-        monkeypatch.setattr("ai_sdlc.cli.commands._is_interactive_terminal", lambda: True)
+        monkeypatch.setattr(
+            "ai_sdlc.cli.commands._is_interactive_terminal", lambda: True
+        )
         monkeypatch.setattr(
             "ai_sdlc.cli.commands.interactive_select_agent_target",
             lambda _default: _default,
@@ -192,23 +194,14 @@ class TestCliInit:
         text = (tmp_path / "AGENTS.md").read_text(encoding="utf-8")
         assert "Project preferred shell is not configured yet" not in text
         assert "Project preferred shell: PowerShell." in text
-        assert "frontend_stack=vue3" in text
-        assert "provider_id=public-primevue" in text
-        assert "style_pack_id=modern-saas" in text
-        assert "PrimeVue + @primeuix/themes + primeicons" in text
-        assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in text
-        assert "Vite + TypeScript + UnoCSS + CSS Variables" in text
-        assert "Playwright + ESLint + Prettier + husky + lint-staged + commitlint" in text
-        assert "企业后台" in text
-        assert "不得被当成 Vue2 信号" in text
-        assert "高级可选方案" in text
-        assert "data-console" in text
-        assert "high-clarity" in text
-        assert "macos-glass" in text
-        assert "program solution-confirm --dry-run --mode advanced" in text
-        assert "--frontend-stack" in text
-        assert "--provider-id" in text
-        assert "--style-pack-id" in text
+        assert "基于项目已有技术栈、约束和交付目标" in text
+        assert "一个推荐方案" in text
+        assert "至少一个可选 / 自定义方案" in text
+        assert "等待用户明确确认" in text
+        assert "Applicable Rules" in text
+        assert "PrimeVue" not in text
+        assert "public-primevue" not in text
+        assert "enterprise-vue2" not in text
 
     def test_init_generic_hint_without_ide_dirs(self, tmp_path: Path) -> None:
         result = runner.invoke(app, ["init", str(tmp_path)])
@@ -219,7 +212,9 @@ class TestCliInit:
     def test_init_interactive_shell_selector_persists_user_choice(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("ai_sdlc.cli.commands._is_interactive_terminal", lambda: True)
+        monkeypatch.setattr(
+            "ai_sdlc.cli.commands._is_interactive_terminal", lambda: True
+        )
         monkeypatch.setattr(
             "ai_sdlc.cli.commands.interactive_select_agent_target",
             lambda _default: _default,
@@ -238,14 +233,18 @@ class TestCliInit:
     def test_init_explicit_shell_skips_interactive_shell_selector(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        monkeypatch.setattr("ai_sdlc.cli.commands._is_interactive_terminal", lambda: True)
+        monkeypatch.setattr(
+            "ai_sdlc.cli.commands._is_interactive_terminal", lambda: True
+        )
         monkeypatch.setattr(
             "ai_sdlc.cli.commands.interactive_select_agent_target",
             lambda _default: _default,
         )
         monkeypatch.setattr(
             "ai_sdlc.cli.commands.interactive_select_preferred_shell",
-            lambda _default: (_ for _ in ()).throw(AssertionError("selector should not run")),
+            lambda _default: (_ for _ in ()).throw(
+                AssertionError("selector should not run")
+            ),
         )
 
         result = runner.invoke(app, ["init", str(tmp_path), "--shell", "zsh"])

@@ -27,7 +27,11 @@ from ai_sdlc.cli.pr_review_cmd import pr_review_app
 from ai_sdlc.cli.program_cmd import program_app
 from ai_sdlc.cli.provenance_cmd import provenance_app
 from ai_sdlc.cli.run_cmd import run_command
-from ai_sdlc.cli.self_update_cmd import maybe_render_update_notice, self_update_app
+from ai_sdlc.cli.self_update_cmd import (
+    consume_update_replay_bypass,
+    maybe_render_update_notice,
+    self_update_app,
+)
 from ai_sdlc.cli.stage_cmd import stage_app
 from ai_sdlc.cli.sub_apps import gate_app, rules_app, studio_app
 from ai_sdlc.cli.telemetry_cmd import telemetry_app
@@ -54,6 +58,7 @@ _READ_ONLY_SUBCOMMANDS = (
     "status",
     "scan",
     "verify",
+    "rules",
     "provenance",
     "loop",
     "pr-review",
@@ -84,15 +89,23 @@ def _global_before_command(
     _ = version
     if ctx.invoked_subcommand is None:
         return
+    replay_bypass = consume_update_replay_bypass()
+    informational_invocation = any(
+        option in sys.argv
+        for option in (
+            "--help",
+            "-h",
+            "--install-completion",
+            "--show-completion",
+        )
+    )
+    if informational_invocation:
+        return
     if (
-        ctx.invoked_subcommand not in _UPDATE_NOTICE_BYPASS_SUBCOMMANDS
-        and "--json" not in sys.argv
-        and "--help" not in sys.argv
-        and "-h" not in sys.argv
-        and "--install-completion" not in sys.argv
-        and "--show-completion" not in sys.argv
+        not replay_bypass
+        and ctx.invoked_subcommand not in _UPDATE_NOTICE_BYPASS_SUBCOMMANDS
     ):
-        maybe_render_update_notice()
+        maybe_render_update_notice(machine_output="--json" in sys.argv)
     if ctx.invoked_subcommand == "workitem":
         # 子应用按参数校验与 clean-tree preflight 边界管理 adapter 副作用。
         ctx.meta[_WORKITEM_ADAPTER_HOOK_META_KEY] = run_ide_adapter_if_initialized
@@ -108,25 +121,25 @@ app.command(name="adopt")(adopt_command)
 app.command(name="doctor")(doctor_command)
 app.command(name="status")(status_command)
 app.command(name="recover")(recover_command)
-app.command(name="index")(index_command)
-app.command(name="scan")(scan_command)
-app.command(name="refresh")(refresh_command)
+app.command(name="index", hidden=True)(index_command)
+app.command(name="scan", hidden=True)(scan_command)
+app.command(name="refresh", hidden=True)(refresh_command)
 app.command(name="run")(run_command)
 app.add_typer(adapter_app, name="adapter")
-app.add_typer(agentops_app, name="agentops")
-app.add_typer(enterprise_app, name="enterprise")
-app.add_typer(gate_app, name="gate")
-app.add_typer(rules_app, name="rules")
-app.add_typer(studio_app, name="studio")
-app.add_typer(stage_app, name="stage")
-app.add_typer(program_app, name="program")
-app.add_typer(host_runtime_app, name="host-runtime")
-app.add_typer(handoff_app, name="handoff")
+app.add_typer(agentops_app, name="agentops", hidden=True)
+app.add_typer(enterprise_app, name="enterprise", hidden=True)
+app.add_typer(gate_app, name="gate", hidden=True)
+app.add_typer(rules_app, name="rules", hidden=True)
+app.add_typer(studio_app, name="studio", hidden=True)
+app.add_typer(stage_app, name="stage", hidden=True)
+app.add_typer(program_app, name="program", hidden=True)
+app.add_typer(host_runtime_app, name="host-runtime", hidden=True)
+app.add_typer(handoff_app, name="handoff", hidden=True)
 app.add_typer(workitem_app, name="workitem")
 app.add_typer(verify_app, name="verify")
-app.add_typer(telemetry_app, name="telemetry")
-app.add_typer(provenance_app, name="provenance")
-app.add_typer(trace_app, name="trace")
+app.add_typer(telemetry_app, name="telemetry", hidden=True)
+app.add_typer(provenance_app, name="provenance", hidden=True)
+app.add_typer(trace_app, name="trace", hidden=True)
 app.add_typer(loop_app, name="loop")
 app.add_typer(pr_review_app, name="pr-review")
 app.add_typer(self_update_app, name="self-update")

@@ -4,11 +4,24 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
 _RULES_DIR = Path(__file__).parent
+_NORMAL_PATH_START = "<!-- ai-sdlc:normal-path:start -->"
+_NORMAL_PATH_END = "<!-- ai-sdlc:normal-path:end -->"
+_MAX_EXCERPT_BYTES = 1200
+_MAX_CONTEXT_BYTES = 2400
+
+_LOOP_RULES: dict[str, tuple[str, str]] = {
+    "requirement": ("prd-guidance", "scenario-routing"),
+    "design-contract": ("prd-guidance", "quality-gate"),
+    "implementation": ("tdd", "verification"),
+    "frontend-evidence": ("verification", "quality-gate"),
+    "local-pr-review": ("code-review", "verification"),
+}
 
 _STAGE_HINTS: dict[str, list[str]] = {
     "pipeline": ["all"],
@@ -25,6 +38,26 @@ _STAGE_HINTS: dict[str, list[str]] = {
     "auto-decision": ["all"],
     "brownfield-corpus": ["init"],
 }
+
+
+class RuleContextError(ValueError):
+    """Raised when a built-in normal-path rule excerpt is unsafe to load."""
+
+
+@dataclass(frozen=True)
+class RuleExcerpt:
+    """A bounded rule excerpt safe to place in a normal Agent response."""
+
+    name: str
+    title: str
+    content: str
+
+
+@dataclass(frozen=True)
+class NormalPathRuleContext:
+    """Static rule context selected from current five-Loop truth."""
+
+    excerpts: tuple[RuleExcerpt, ...] = ()
 
 
 class RulesLoader:
@@ -92,3 +125,68 @@ class RulesLoader:
         content = self.load_rule(name)
         match = re.match(r"^#\s+(.*)", content)
         return match.group(1).strip() if match else name
+
+    def get_normal_path_context(
+        self,
+        loop_type: str,
+        *,
+        loop_status: str = "",
+    ) -> NormalPathRuleContext:
+        """Return at most two bounded excerpts for one current delivery Loop."""
+
+        normalized_loop = loop_type.strip().lower()
+        names = _LOOP_RULES.get(normalized_loop)
+        if names is None:
+            return NormalPathRuleContext()
+        if normalized_loop == "implementation" and loop_status.strip().lower() in {
+            "blocked",
+            "needs_fix",
+        }:
+            names = ("debugging", "verification")
+
+        excerpts: list[RuleExcerpt] = []
+        total_bytes = 0
+        for name in names:
+            content = self.load_rule(name)
+            excerpt = _extract_normal_path_excerpt(name, content)
+            excerpt_bytes = len(excerpt.encode("utf-8"))
+            if excerpt_bytes > _MAX_EXCERPT_BYTES:
+                raise RuleContextError(
+                    f"{name} normal-path excerpt exceeds its byte limit"
+                )
+            total_bytes += excerpt_bytes
+            if total_bytes > _MAX_CONTEXT_BYTES:
+                raise RuleContextError(
+                    "normal-path rule context exceeds its byte limit"
+                )
+            excerpts.append(
+                RuleExcerpt(
+                    name=name,
+                    title=self.get_rule_title(name),
+                    content=excerpt,
+                )
+            )
+        return NormalPathRuleContext(excerpts=tuple(excerpts))
+
+
+def _extract_normal_path_excerpt(name: str, content: str) -> str:
+    if content.count(_NORMAL_PATH_START) != 1 or content.count(_NORMAL_PATH_END) != 1:
+        raise RuleContextError(
+            f"{name} must contain exactly one normal-path markers pair"
+        )
+    before, remainder = content.split(_NORMAL_PATH_START, 1)
+    excerpt, after = remainder.split(_NORMAL_PATH_END, 1)
+    if _NORMAL_PATH_END in before or _NORMAL_PATH_START in after:
+        raise RuleContextError(f"{name} normal-path markers are out of order")
+    normalized = excerpt.strip()
+    if not normalized:
+        raise RuleContextError(f"{name} normal-path excerpt is empty")
+    return normalized
+
+
+__all__ = [
+    "NormalPathRuleContext",
+    "RuleContextError",
+    "RuleExcerpt",
+    "RulesLoader",
+]
