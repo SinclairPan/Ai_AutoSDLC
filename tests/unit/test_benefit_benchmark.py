@@ -3917,3 +3917,60 @@ def test_task13_cli_preserves_public_https_uri_while_sanitizing_input_error(
 
     _assert_task13_json_error(result, "cli.input")
     assert json.loads(result.stdout)["error"]["message"].endswith(public_uri)
+
+
+@pytest.mark.parametrize("surface", ["validation", "exception"])
+@pytest.mark.parametrize("context", ["comma", "semicolon", "parentheses", "query"])
+@pytest.mark.parametrize(
+    "private_value",
+    [
+        "/Users/private-owner/secret/result.json",
+        r"C:\Users\private-owner\secret\result.json",
+        r"\\private-server\share\secret\result.json",
+        "file:///Users/private-owner/secret/result.json",
+    ],
+    ids=["posix", "windows", "unc", "file-uri"],
+)
+def test_task13_cli_only_protects_strict_public_http_components(
+    tmp_path: Path, surface: str, context: str, private_value: str
+) -> None:
+    public_uri = "https://example.test/public"
+    composite = {
+        "comma": f"{public_uri},{private_value}",
+        "semicolon": f"{public_uri};{private_value}",
+        "parentheses": f"{public_uri}({private_value})",
+        "query": f"{public_uri}?next={private_value}",
+    }[context]
+    if surface == "validation":
+        _, ledger, receipt = _task12_completed_p_run(tmp_path)
+        receipt[composite] = "unexpected"
+        receipt_path = tmp_path / "receipt.json"
+        receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        result = _run_task13_cli(
+            "verify-receipt",
+            "--receipt",
+            str(receipt_path),
+            "--protocol",
+            str(tmp_path / "protocol.json"),
+            "--ledger",
+            str(ledger),
+        )
+        assert result.returncode == 1
+        messages = "\n".join(
+            issue["message"] for issue in json.loads(result.stdout)["issues"]
+        )
+    else:
+        raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+        raw[composite] = "unexpected"
+        protocol_path = tmp_path / "invalid-protocol.json"
+        protocol_path.write_text(json.dumps(raw), encoding="utf-8")
+        result = _run_task13_cli("validate", "--protocol", str(protocol_path))
+        _assert_task13_json_error(result, "cli.input")
+        messages = json.loads(result.stdout)["error"]["message"]
+
+    assert result.stderr == ""
+    assert public_uri in messages
+    assert private_value not in messages
+    assert "private-owner" not in messages
+    assert "private-server" not in messages
+    assert "<redacted-path>" in messages

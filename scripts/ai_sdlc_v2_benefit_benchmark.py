@@ -7,6 +7,7 @@ import json
 import re
 from collections.abc import Mapping
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ai_sdlc.benefit_benchmark import (
     AttemptCompletion,
@@ -33,24 +34,59 @@ class _JsonArgumentParser(argparse.ArgumentParser):
 
 _POSIX_PRIVATE_PATH = re.compile(r"(?<![A-Za-z0-9_])/(?:[^\s'\"/:]+/)*[^\s'\"/:]+")
 _WINDOWS_PRIVATE_PATH = re.compile(
-    r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|\\\\[^\s'\"]+)"
+    r"(?:file://[^\s'\"]+|[A-Za-z]:[\\/][^\s'\"]+|\\\\[^\s'\"]+)",
+    re.IGNORECASE,
 )
-_HTTP_URI = re.compile(r"https?://[^\s'\"]+", re.IGNORECASE)
+_HTTP_URI = re.compile(r"https?://[^\s'\";,()]+", re.IGNORECASE)
+_HTTP_EMBEDDED_POSIX_PATH = re.compile(r"(?<=[?=&#])/(?!/)[^\s'\";,()]+")
+
+
+def _strict_public_http_prefix(candidate: str) -> int | None:
+    try:
+        parsed = urlsplit(candidate)
+        _ = parsed.port
+    except ValueError:
+        return None
+    if (
+        parsed.scheme.lower() not in {"http", "https"}
+        or not parsed.hostname
+        or parsed.username is not None
+        or parsed.password is not None
+        or "\\" in parsed.netloc
+    ):
+        return None
+    query_or_fragment = min(
+        (offset for offset in (candidate.find("?"), candidate.find("#")) if offset >= 0),
+        default=len(candidate),
+    )
+    suffix = candidate[query_or_fragment:]
+    private_offsets = [
+        match.start()
+        for pattern in (_WINDOWS_PRIVATE_PATH, _HTTP_EMBEDDED_POSIX_PATH)
+        for match in pattern.finditer(suffix)
+    ]
+    if not private_offsets:
+        return len(candidate)
+    return query_or_fragment + min(private_offsets)
 
 
 def _public_message(message: str) -> str:
     public_uris: list[str] = []
 
     def protect_public_uri(match: re.Match[str]) -> str:
-        marker = f"__AI_SDLC_PUBLIC_URI_{len(public_uris)}__"
-        public_uris.append(match.group(0))
-        return marker
+        candidate = match.group(0)
+        safe_length = _strict_public_http_prefix(candidate)
+        if safe_length is None or safe_length == 0:
+            return candidate
+        marker = f"__AI_SDLC_PUBLIC_URI_{len(public_uris)}__::"
+        public_uris.append(candidate[:safe_length])
+        return marker + candidate[safe_length:]
 
     message = _HTTP_URI.sub(protect_public_uri, message)
     message = _WINDOWS_PRIVATE_PATH.sub("<redacted-path>", message)
     message = _POSIX_PRIVATE_PATH.sub("<redacted-path>", message)
     for index, uri in enumerate(public_uris):
-        message = message.replace(f"__AI_SDLC_PUBLIC_URI_{index}__", uri)
+        message = message.replace(f"__AI_SDLC_PUBLIC_URI_{index}__::", uri)
     return message
 
 
