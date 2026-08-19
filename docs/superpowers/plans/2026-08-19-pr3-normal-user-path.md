@@ -58,8 +58,9 @@ Implementation:
 - render a deterministic `AI_SDLC_UPDATE_NOTICE {compact-json}` line to stderr for non-TTY/JSON;
 - keep TTY confirmation on stderr; decline and discovery failure continue the original command;
 - freeze the original executable and argv before installation; on POSIX, replay them after the install
-  returns; on Windows, extend `_reexec_windows_launcher_if_needed` so its `ai-sdlc.exe`→module-updater
-  `os.execve` carries a one-shot process-environment handoff instead of discarding the business command;
+  returns; on Windows, extend `_reexec_windows_launcher_if_needed` so its `ai-sdlc.exe` synchronously
+  delegates to a module-updater child with a one-shot process-environment handoff, waits, and propagates
+  the child result instead of relying on in-process `exec` replacement;
 - make the module updater strictly parse and immediately remove that handoff, install, then run the
   updated original executable with exact argv and `shell=False`; the replay child receives a one-shot
   bypass marker that the root callback removes before invoking the business handler;
@@ -73,9 +74,11 @@ Implementation:
 
 Process-level tests must use separated stdout/stderr and a disposable installed-runtime fixture. A
 CliRunner-only assertion is insufficient for JSON cleanliness or replay behavior. Add a real Windows
-installed-launcher regression that traverses `.exe` re-exec: updater once, business handler once and
-only after install, exact argv, no recursion, exact child exit propagation, no business execution on
-install failure, and consumed handoff/bypass values. A POSIX spawn or platform mock cannot replace it.
+installed-launcher regression that traverses `.exe`→module-updater child delegation: updater once,
+business handler once and only after install, exact argv, no recursion, exact child exit propagation,
+no business execution on install failure, and consumed handoff/bypass values. It must perform a real
+local-wheel upgrade while the original launcher is still alive so file-lock behavior is evidence-based.
+A POSIX spawn or platform mock cannot replace it.
 
 Verify:
 

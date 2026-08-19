@@ -523,7 +523,17 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
         "--version",
         version,
     ]
-    os.execve(sys.executable, command, env)
+    try:
+        completed = subprocess.run(
+            command,
+            shell=False,
+            env=env,
+            check=False,
+        )
+    except OSError as exc:
+        notice_console.print(f"无法启动 Windows 更新进程：{exc}", markup=False)
+        raise typer.Exit(1) from exc
+    raise typer.Exit(completed.returncode)
 
 
 def _should_reexec_windows_launcher(

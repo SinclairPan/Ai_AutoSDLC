@@ -82,13 +82,14 @@ Program、Telemetry 和治理表。顶层帮助同时展示二十余个历史/�
 
 不得把原始 argv 写入缓存、日志或升级提示，避免泄漏业务参数与凭证。
 
-Windows console launcher 是同一 update→replay 状态机的一部分。现有 `ai-sdlc.exe` 会在安装前
-通过 `os.execve` 把进程替换成 `python -m ai_sdlc self-update install`，因此不能假设安装函数
-会返回原根回调。初始进程必须先冻结原 executable 与 argv，并通过一次性、仅进程链可见的
+Windows console launcher 是同一 update→replay 状态机的一部分。`ai-sdlc.exe` 必须在安装前
+同步启动 `python -m ai_sdlc self-update install` 子进程并等待完成，禁止依赖 Windows 不可靠的
+进程内 `exec` 替换。初始进程必须先冻结原 executable 与 argv，并通过一次性、仅进程链可见的
 环境 handoff 交给 module updater；不得写临时文件。updater 启动后立即严格解析并从
 `os.environ` 删除 handoff，再执行安装；安装成功后由 updater 调用更新后的原 executable 与
-exact argv。业务子进程只接收一次性 bypass 标记，根回调必须在调用业务 handler 前消费并删除
-该标记，因此 handoff/bypass 都不会出现在实际业务命令环境中。
+exact argv。module updater 的最终退出码必须由初始 launcher 原样传播。业务子进程只接收一次性
+bypass 标记，根回调必须在调用业务 handler 前消费并删除该标记，因此 handoff/bypass 都不会
+出现在实际业务命令环境中。
 
 显式 `self-update` 命令不创建 replay handoff。自动升级 handoff 缺失/损坏、安装失败或重跑
 启动失败都必须非零退出；安装失败时不得执行原业务命令，任何路径都不得把“升级完成”当作
