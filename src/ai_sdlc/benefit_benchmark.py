@@ -154,6 +154,11 @@ _FIXTURES = (
     "frontend-recovery-delivery",
     "multi-tenant-security-review",
 )
+_FIXTURE_LOOP_TYPES = {
+    "requirement-contract-ambiguity": "design-contract",
+    "frontend-recovery-delivery": "implementation",
+    "multi-tenant-security-review": "implementation",
+}
 _SCHEDULE = (
     ("P", _FIXTURES[0], 1),
     ("S", _FIXTURES[0], 2),
@@ -684,7 +689,7 @@ def _validate_receipt_ledger_binding(
                 "receipt.ledger", "receipt status must be derived from the terminal writer"
             )
         )
-    _validate_command_evidence(receipt, observed, issues)
+    _validate_command_evidence(receipt, protocol, observed, issues)
     _validate_receipt_verified_delivery_timing(receipt, expected, issues)
     close = _mapping(_mapping(receipt.get("loop")).get("close"))
     callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
@@ -705,10 +710,17 @@ def _validate_receipt_ledger_binding(
         issues.append(
             BenchmarkIssue("receipt.close", "Loop state does not match the run terminal state")
         )
+    loop_type, loop_id = _expected_loop_identity(receipt)
     if status == "completed" and (
         close.get("exit_code") != 0
-        or not _is_loop_argv(close.get("argv"), "close")
+        or not _is_loop_close_command(
+            close.get("argv"),
+            loop_type=loop_type,
+            loop_id=loop_id,
+            review_digest=close.get("review_digest"),
+        )
         or not _is_non_placeholder_digest(close.get("review_digest"))
+        or close.get("review_digest") != writer.get("candidate_digest")
         or close.get("close_digest") != writer.get("close_digest")
     ):
         issues.append(
@@ -724,6 +736,8 @@ def _validate_receipt_ledger_binding(
         _validate_a11_receipt_evidence(receipt, expected, writer, issues)
     elif arm == "A11" and status == "needs_operator":
         _validate_a11_conflict_evidence(receipt, expected, issues)
+    elif arm == "A11" and status in {"failed", "timeout", "budget_exhausted"}:
+        _validate_a11_terminal_failure_evidence(receipt, expected, issues)
 
 
 def _validate_a11_receipt_evidence(
@@ -758,9 +772,12 @@ def _validate_a11_receipt_evidence(
         )
         return
     close = _mapping(loop.get("close"))
-    close_argv = close.get("argv")
-    if not _is_loop_argv(close_argv, "close") or not _argv_has_options(
-        close_argv, "--expect-review-digest"
+    loop_type, loop_id = _expected_loop_identity(receipt)
+    if not _is_loop_close_command(
+        close.get("argv"),
+        loop_type=loop_type,
+        loop_id=loop_id,
+        review_digest=writer.get("candidate_digest"),
     ):
         issues.append(
             BenchmarkIssue(
@@ -824,8 +841,11 @@ def _validate_a11_receipt_evidence(
                 )
             )
         review_argv = callback.get("review_argv")
-        if not _is_loop_argv(review_argv, "review") or not _argv_has_options(
-            review_argv, "--expect-digest", "--read-path"
+        if not _is_loop_review_command(
+            review_argv,
+            loop_type=loop_type,
+            loop_id=loop_id,
+            expected_digest=callback.get("parent_digest"),
         ):
             issues.append(
                 BenchmarkIssue(
@@ -942,8 +962,11 @@ def _validate_a11_receipt_evidence(
             else None
         )
         rereview_argv = callback.get("rereview_argv")
-        if not _is_loop_argv(rereview_argv, "review") or not _argv_has_options(
-            rereview_argv, "--expect-digest", "--read-path"
+        if not _is_loop_review_command(
+            rereview_argv,
+            loop_type=loop_type,
+            loop_id=loop_id,
+            expected_digest=callback.get("rereview_digest"),
         ):
             issues.append(
                 BenchmarkIssue(
@@ -989,6 +1012,7 @@ def _validate_a11_receipt_evidence(
 
 def _validate_command_evidence(
     receipt: Mapping[str, object],
+    protocol: BenchmarkProtocol,
     attempts: list[Mapping[str, object]],
     issues: list[BenchmarkIssue],
 ) -> None:
@@ -1023,6 +1047,31 @@ def _validate_command_evidence(
         ):
             issues.append(
                 BenchmarkIssue("receipt.command", "command argv is not closed")
+            )
+        elif not _is_provider_command(
+            argv,
+            protocol=protocol,
+            provider_cwd=receipt.get("provider_cwd"),
+            effective_kind=attempt.get("effective_kind"),
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.command",
+                    "command argv does not match the frozen Provider execution contract",
+                )
+            )
+        expected_exit = 0 if attempt.get("status") == "completed" else None
+        exit_code = item.get("exit_code")
+        if (
+            not _non_bool_int(exit_code)
+            or (expected_exit == 0 and exit_code != 0)
+            or (expected_exit is None and exit_code == 0)
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.command",
+                    "command exit code does not match the terminal Provider status",
+                )
             )
         raw_digest = item.get("raw_provider_output_sha256")
         if (
@@ -1077,21 +1126,146 @@ def _command_evidence_id(value: Mapping[str, object]) -> str:
     return sha256(canonical).hexdigest()
 
 
-def _is_loop_argv(value: object, action: str) -> bool:
+def _is_provider_command(
+    value: list[str],
+    *,
+    protocol: BenchmarkProtocol,
+    provider_cwd: object,
+    effective_kind: object,
+) -> bool:
+    if not isinstance(provider_cwd, str) or effective_kind not in {
+        "writer",
+        "primary_expert",
+        "cross_risk_expert",
+        "expert_rereview",
+    }:
+        return False
+    expected_sandbox = (
+        "workspace-write" if effective_kind == "writer" else "read-only"
+    )
+    expected_config = f'model_reasoning_effort="{protocol.execution_lock.reasoning_effort}"'
+    return value == [
+        "codex",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--ignore-user-config",
+        "--strict-config",
+        "--model",
+        protocol.execution_lock.model,
+        "-c",
+        expected_config,
+        "--sandbox",
+        expected_sandbox,
+        "-C",
+        provider_cwd,
+    ]
+
+
+def _loop_prefix(value: object, *parts: str) -> int | None:
     if not isinstance(value, list) or any(
         not isinstance(argument, str) or not argument for argument in value
     ):
-        return False
+        return None
     prefixes = (
-        ["ai-sdlc", "loop", action],
-        ["python", "-m", "ai_sdlc", "loop", action],
-        ["uv", "run", "ai-sdlc", "loop", action],
+        ["ai-sdlc", "loop", *parts],
+        ["python", "-m", "ai_sdlc", "loop", *parts],
+        ["uv", "run", "ai-sdlc", "loop", *parts],
     )
-    return any(value[: len(prefix)] == prefix for prefix in prefixes)
+    return next(
+        (len(prefix) for prefix in prefixes if value[: len(prefix)] == prefix),
+        None,
+    )
 
 
-def _argv_has_options(value: object, *options: str) -> bool:
-    return isinstance(value, list) and all(option in value for option in options)
+def _parse_closed_options(
+    value: object,
+    start: int | None,
+    *,
+    valued: set[str],
+    flags: set[str],
+) -> dict[str, str | bool] | None:
+    if not isinstance(value, list) or start is None:
+        return None
+    parsed: dict[str, str | bool] = {}
+    index = start
+    while index < len(value):
+        option = value[index]
+        if option in parsed or option not in valued | flags:
+            return None
+        if option in flags:
+            parsed[option] = True
+            index += 1
+            continue
+        if index + 1 >= len(value):
+            return None
+        option_value = value[index + 1]
+        if not isinstance(option_value, str) or not option_value or option_value.startswith("--"):
+            return None
+        parsed[option] = option_value
+        index += 2
+    if set(parsed) != valued | flags:
+        return None
+    return parsed
+
+
+def _expected_loop_identity(receipt: Mapping[str, object]) -> tuple[str, str]:
+    fixture = receipt.get("fixture")
+    arm = receipt.get("arm")
+    loop_type = _FIXTURE_LOOP_TYPES.get(fixture, "")
+    loop_id = (
+        f"benefit-{arm.lower()}-{fixture}"
+        if isinstance(arm, str) and isinstance(fixture, str)
+        else ""
+    )
+    return loop_type, loop_id
+
+
+def _expected_loop_read_path(loop_type: str, loop_id: str) -> str:
+    return f".ai-sdlc/loops/{loop_type}/{loop_id}/{loop_type}-input.json"
+
+
+def _is_loop_review_command(
+    value: object,
+    *,
+    loop_type: str,
+    loop_id: str,
+    expected_digest: object,
+) -> bool:
+    parsed = _parse_closed_options(
+        value,
+        _loop_prefix(value, "review"),
+        valued={"--type", "--loop-id", "--expect-digest", "--read-path"},
+        flags={"--json"},
+    )
+    return parsed == {
+        "--type": loop_type,
+        "--loop-id": loop_id,
+        "--expect-digest": expected_digest,
+        "--read-path": _expected_loop_read_path(loop_type, loop_id),
+        "--json": True,
+    }
+
+
+def _is_loop_close_command(
+    value: object,
+    *,
+    loop_type: str,
+    loop_id: str,
+    review_digest: object,
+) -> bool:
+    parsed = _parse_closed_options(
+        value,
+        _loop_prefix(value, loop_type, "close"),
+        valued={"--loop-id", "--expect-review-digest"},
+        flags={"--yes", "--json"},
+    )
+    return parsed == {
+        "--loop-id": loop_id,
+        "--expect-review-digest": review_digest,
+        "--yes": True,
+        "--json": True,
+    }
 
 
 def _is_empty_loop_evidence(close: Mapping[str, object], state: str) -> bool:
@@ -1106,6 +1280,7 @@ def _validate_a11_conflict_evidence(
     attempts: list[Mapping[str, object]],
     issues: list[BenchmarkIssue],
 ) -> None:
+    loop_type, loop_id = _expected_loop_identity(receipt)
     callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
     if not isinstance(callbacks, list) or len(callbacks) < 2:
         issues.append(
@@ -1169,9 +1344,11 @@ def _validate_a11_conflict_evidence(
             or callback.get("finding_digest") != expert.get("finding_digest")
             or callback.get("raw_output_sha256")
             != provider.get("raw_provider_output_sha256")
-            or not _is_loop_argv(callback.get("review_argv"), "review")
-            or not _argv_has_options(
-                callback.get("review_argv"), "--expect-digest", "--read-path"
+            or not _is_loop_review_command(
+                callback.get("review_argv"),
+                loop_type=loop_type,
+                loop_id=loop_id,
+                expected_digest=callback.get("parent_digest"),
             )
             or callback.get("review_exit_code") != 0
             or any(
@@ -1206,30 +1383,232 @@ def _validate_a11_conflict_evidence(
             )
 
 
+def _validate_a11_terminal_failure_evidence(
+    receipt: Mapping[str, object],
+    attempts: list[Mapping[str, object]],
+    issues: list[BenchmarkIssue],
+) -> None:
+    callbacks = _mapping(receipt.get("loop")).get("expert_callbacks")
+    if not isinstance(callbacks, list):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.failure", "terminal A11 callbacks must be an array"
+            )
+        )
+        return
+    experts = {
+        attempt.get("attempt_id"): attempt
+        for attempt in attempts
+        if attempt.get("effective_kind")
+        in {"primary_expert", "cross_risk_expert"}
+        and attempt.get("status") == "completed"
+    }
+    callback_ids = [
+        callback.get("expert_attempt_id")
+        for callback in callbacks
+        if isinstance(callback, Mapping)
+    ]
+    if (
+        len(callback_ids) != len(callbacks)
+        or len(callback_ids) != len(set(callback_ids))
+        or set(callback_ids) != set(experts)
+    ):
+        issues.append(
+            BenchmarkIssue(
+                "receipt.a11.failure",
+                "terminal A11 callbacks must close over current-run completed experts exactly",
+            )
+        )
+        return
+    providers = {
+        attempt.get("attempt_id"): attempt
+        for attempt in receipt.get("provider_attempts", [])
+        if isinstance(attempt, Mapping)
+    }
+    loop_type, loop_id = _expected_loop_identity(receipt)
+    nullable_repair = (
+        "repair_digest",
+        "repaired_candidate_digest",
+        "rereview_attempt_id",
+        "rereview_digest",
+        "rereview_argv",
+        "rereview_exit_code",
+        "rereview_raw_output_sha256",
+    )
+    for callback in callbacks:
+        if not isinstance(callback, Mapping):
+            continue
+        expert = experts[callback.get("expert_attempt_id")]
+        provider = providers.get(expert.get("attempt_id"))
+        reason = callback.get("reason")
+        finding_count = callback.get("finding_count")
+        severe_count = callback.get("severe_finding_count")
+        proof_digests = (
+            "snapshot_sha256",
+            "input_sha256",
+            "raw_output_sha256",
+            "parent_tree_before_sha256",
+            "parent_tree_after_sha256",
+        )
+        if (
+            callback.get("status") not in {"pass", "fail"}
+            or not isinstance(reason, str)
+            or reason.strip().lower()
+            in {"", "tbd", "todo", "placeholder", "unknown", "not_applicable"}
+            or not isinstance(provider, Mapping)
+            or callback.get("role") != expert.get("role")
+            or callback.get("parent_digest") != expert.get("parent_digest")
+            or callback.get("candidate_digest") != expert.get("candidate_digest")
+            or callback.get("child_session") != provider.get("child_session")
+            or callback.get("raw_output_sha256")
+            != provider.get("raw_provider_output_sha256")
+            or callback.get("review_exit_code") != 0
+            or not _is_loop_review_command(
+                callback.get("review_argv"),
+                loop_type=loop_type,
+                loop_id=loop_id,
+                expected_digest=callback.get("parent_digest"),
+            )
+            or any(
+                not _is_non_placeholder_digest(callback.get(key))
+                for key in proof_digests
+            )
+            or callback.get("parent_tree_before_sha256")
+            != callback.get("parent_tree_after_sha256")
+            or not _non_bool_int(finding_count)
+            or not _non_bool_int(severe_count)
+            or severe_count > finding_count
+        ):
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.a11.failure",
+                    "terminal A11 callback does not bind its completed expert",
+                )
+            )
+            continue
+        ledger_finding = expert.get("finding_digest")
+        if ledger_finding is None:
+            if (
+                finding_count != 0
+                or severe_count != 0
+                or callback.get("finding_digest") is not None
+                or any(callback.get(key) is not None for key in nullable_repair)
+            ):
+                issues.append(
+                    BenchmarkIssue(
+                        "receipt.a11.failure",
+                        "no-finding terminal callback carries unbound repair evidence",
+                    )
+                )
+            continue
+        if finding_count < 1 or callback.get("finding_digest") != ledger_finding:
+            issues.append(
+                BenchmarkIssue(
+                    "receipt.a11.failure",
+                    "terminal callback Finding does not bind the expert ledger event",
+                )
+            )
+        if any(callback.get(key) is not None for key in nullable_repair):
+            if any(callback.get(key) is None for key in nullable_repair):
+                issues.append(
+                    BenchmarkIssue(
+                        "receipt.a11.failure",
+                        "terminal callback publishes partial repair/rereview evidence",
+                    )
+                )
+                continue
+            rereview = next(
+                (
+                    attempt
+                    for attempt in attempts
+                    if attempt.get("attempt_id")
+                    == callback.get("rereview_attempt_id")
+                    and attempt.get("effective_kind") == "expert_rereview"
+                    and attempt.get("status") == "completed"
+                ),
+                None,
+            )
+            rereview_provider = (
+                providers.get(rereview.get("attempt_id"))
+                if isinstance(rereview, Mapping)
+                else None
+            )
+            if (
+                not isinstance(rereview, Mapping)
+                or rereview.get("parent_attempt_id") != expert.get("attempt_id")
+                or rereview.get("finding_digest") != ledger_finding
+                or rereview.get("repair_digest") != callback.get("repair_digest")
+                or rereview.get("candidate_digest")
+                != callback.get("repaired_candidate_digest")
+                or callback.get("rereview_digest")
+                != rereview.get("candidate_digest")
+                or not isinstance(rereview_provider, Mapping)
+                or callback.get("rereview_raw_output_sha256")
+                != rereview_provider.get("raw_provider_output_sha256")
+                or callback.get("rereview_exit_code") != 0
+                or not _is_loop_review_command(
+                    callback.get("rereview_argv"),
+                    loop_type=loop_type,
+                    loop_id=loop_id,
+                    expected_digest=callback.get("rereview_digest"),
+                )
+            ):
+                issues.append(
+                    BenchmarkIssue(
+                        "receipt.a11.failure",
+                        "terminal callback rereview evidence is unbound",
+                    )
+                )
+
+
 def _validate_receipt_verified_delivery_timing(
     receipt: Mapping[str, object],
     attempts: list[Mapping[str, object]],
     issues: list[BenchmarkIssue],
 ) -> None:
-    reservations = []
+    reservations: list[datetime] = []
+    terminal_completions: list[datetime] = []
     for attempt in attempts:
         history = attempt.get("history")
         if isinstance(history, list) and history and isinstance(history[0], Mapping):
             reserved_at = _parse_rfc3339(history[0].get("recorded_at"))
             if reserved_at is not None:
                 reservations.append(reserved_at)
+            terminal = history[-1]
+            if isinstance(terminal, Mapping) and terminal.get("terminal") is True:
+                terminal_at = _parse_rfc3339(terminal.get("recorded_at"))
+                if terminal_at is not None:
+                    terminal_completions.append(terminal_at)
+    timestamps = _mapping(receipt.get("timestamps"))
+    started_at = _parse_rfc3339(timestamps.get("started_at"))
+    ended_at = _parse_rfc3339(timestamps.get("ended_at"))
     completed_at = _parse_rfc3339(
         _mapping(receipt.get("external_evaluator")).get("completed_at")
     )
-    if not reservations or completed_at is None or completed_at < min(reservations):
+    first_reservation = min(reservations) if reservations else None
+    last_terminal = max(terminal_completions) if terminal_completions else None
+    if (
+        started_at is None
+        or ended_at is None
+        or first_reservation is None
+        or last_terminal is None
+        or completed_at is None
+        or not (
+            started_at
+            <= first_reservation
+            <= last_terminal
+            <= completed_at
+            == ended_at
+        )
+    ):
         issues.append(
             BenchmarkIssue(
                 "receipt.timing",
-                "verified delivery timestamps do not bind reservation to evaluator",
+                "verified delivery timestamps do not bind start, reservation, terminal completion, and evaluator",
             )
         )
         return
-    expected = (completed_at - min(reservations)).total_seconds()
+    expected = (completed_at - first_reservation).total_seconds()
     actual = _mapping(receipt.get("timings")).get(
         "verified_delivery_wall_seconds"
     )
@@ -1651,6 +2030,8 @@ def _validate_event(
     previous_at = _parse_rfc3339(previous.get("recorded_at"))
     if previous_at is None or recorded_at < previous_at:
         raise ValueError("attempt ledger attempt event time is invalid")
+    if previous["content_produced"] is True and event["content_produced"] is not True:
+        raise ValueError("attempt ledger content_produced cannot regress")
     if sequence <= previous["sequence"]:
         raise ValueError("attempt ledger attempt event sequence is invalid")
     allowed = _TRANSITIONS.get(kind, {}).get(previous_status, set())
@@ -1853,6 +2234,24 @@ def _validate_attempt_ledger_invariants(
     ]
     if sorted(sequences) != list(range(1, len(sequences) + 1)):
         raise ValueError("attempt ledger invariant: event sequence is corrupt")
+    event_timeline = sorted(
+        (
+            event
+            for attempt in attempts
+            if isinstance(attempt, Mapping)
+            for event in attempt.get("history", [])
+            if isinstance(event, Mapping)
+        ),
+        key=lambda event: event["sequence"],
+    )
+    previous_at: datetime | None = None
+    for event in event_timeline:
+        recorded_at = _parse_rfc3339(event.get("recorded_at"))
+        if recorded_at is None or (
+            previous_at is not None and recorded_at < previous_at
+        ):
+            raise ValueError("attempt ledger invariant: event time moved backwards")
+        previous_at = recorded_at
     reservation_sequences = [
         attempt["history"][0]["sequence"]
         for attempt in attempts
