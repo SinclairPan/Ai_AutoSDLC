@@ -199,18 +199,38 @@ def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
         "tests/test_app.py",
     )
     delivery_roots = tuple(script["_WINDOWS_FRONTEND_DELIVERY_ROOTS"])
-    generated_paths = tuple(
+    assert delivery_roots[-1] == "managed/frontend"
+    governance_paths = tuple(
         path
-        for root in delivery_roots
+        for root in delivery_roots[:-1]
         for path in (f"{root}/fixture.yaml", f"{root}/nested/fixture.yaml")
     )
-    for relative_path in (*candidate_paths, *generated_paths):
+    managed_paths = (
+        "managed/frontend/index.html",
+        "managed/frontend/package.json",
+    )
+    generated_paths = (*governance_paths, *managed_paths)
+    for relative_path in (*candidate_paths, *governance_paths):
         path = project_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(f"fixture: {relative_path}\n", encoding="utf-8")
-    ignored_noise = project_root / "managed" / "frontend" / "node_modules" / "noise"
+    managed_root = project_root / "managed" / "frontend"
+    (managed_root / "index.html").parent.mkdir(parents=True, exist_ok=True)
+    (managed_root / "index.html").write_text("<main>review me</main>\n", encoding="utf-8")
+    (managed_root / "package.json").write_text('{"dependencies":{"temp":"1"}}\n', encoding="utf-8")
+    ignored_noise = managed_root / "node_modules" / "noise"
     ignored_noise.parent.mkdir(parents=True, exist_ok=True)
     ignored_noise.write_text("ignored\n", encoding="utf-8")
+    (managed_root / "package-lock.json").write_text("{}\n", encoding="utf-8")
+    (managed_root / "npm-shrinkwrap.json").write_text("{}\n", encoding="utf-8")
+    script["_cleanup_playwright_install_files"](managed_root)
+
+    assert not ignored_noise.exists()
+    assert not (managed_root / "package-lock.json").exists()
+    assert not (managed_root / "npm-shrinkwrap.json").exists()
+    assert (managed_root / "package.json").read_text(encoding="utf-8") == script[
+        "_frontend_package_json"
+    ]("frontend-loop-playwright-evidence-e2e")
 
     script["_stage_local_pr_candidate"](
         project_root,
@@ -227,15 +247,19 @@ def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
         ).stdout.splitlines()
     )
     assert set(candidate_paths).issubset(staged)
-    staged_governance = {
-        path for path in staged if path.startswith("governance/frontend/")
+    staged_delivery = {
+        path
+        for path in staged
+        if any(path.startswith(f"{root}/") for root in delivery_roots)
     }
-    assert staged_governance == set(generated_paths)
+    assert staged_delivery == set(generated_paths)
     assert "managed/frontend/node_modules/noise" not in staged
 
     unexpected = project_root / "governance" / "frontend" / "unreviewed.yaml"
     unexpected.parent.mkdir(parents=True, exist_ok=True)
     unexpected.write_text("unreviewed: true\n", encoding="utf-8")
+    managed_sibling = project_root / "managed" / "unreviewed.txt"
+    managed_sibling.write_text("unreviewed\n", encoding="utf-8")
     with pytest.raises(AssertionError, match="unreviewed candidate paths"):
         script["_stage_local_pr_candidate"](
             project_root,

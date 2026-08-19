@@ -37,6 +37,7 @@ _WINDOWS_FRONTEND_DELIVERY_ROOTS = (
     "governance/frontend/solution",
     "governance/frontend/quality-platform",
     "governance/frontend/provider-runtime-adapter",
+    "managed/frontend",
 )
 
 
