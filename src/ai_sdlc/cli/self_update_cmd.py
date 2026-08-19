@@ -47,6 +47,12 @@ _REPLAY_BYPASS_ENV = "AI_SDLC_UPDATE_REPLAY_BYPASS"
 _SELF_UPDATE_REEXEC_ENV = "AI_SDLC_SELF_UPDATE_REEXEC"
 _REPLAY_HANDOFF_SCHEMA_VERSION = 1
 _MAX_REPLAY_HANDOFF_BYTES = 24 * 1024
+_AUTO_REFRESH_FAILURES = {
+    REFRESH_BACKOFF,
+    REFRESH_NETWORK_ERROR,
+    REFRESH_PARSE_ERROR,
+    REFRESH_TIMEOUT,
+}
 
 
 class SelfUpdateError(RuntimeError):
@@ -77,6 +83,8 @@ def maybe_render_update_notice(*, machine_output: bool) -> None:
     if not should_auto_render_notice():
         return
     evaluation = evaluate_update_advisor()
+    if evaluation.refresh_result in _AUTO_REFRESH_FAILURES:
+        return
     if (
         NOTICE_ACTIONABLE not in evaluation.eligible_notice_classes
         or not evaluation.upgrade_command
@@ -124,10 +132,35 @@ def consume_update_replay_bypass() -> bool:
 
 
 def _capture_replay_request() -> ReplayRequest:
+    module_prefix = _module_replay_prefix()
+    if module_prefix is not None:
+        executable = str(sys.executable).strip()
+        if not executable:
+            raise SelfUpdateError(
+                "cannot replay a module invocation without the Python executable"
+            )
+        return ReplayRequest(
+            executable=executable,
+            argv=(*module_prefix, *tuple(sys.argv[1:])),
+        )
     executable = str(sys.argv[0]).strip()
     if not executable:
         raise SelfUpdateError("cannot replay an invocation without an executable")
     return ReplayRequest(executable=executable, argv=tuple(sys.argv[1:]))
+
+
+def _module_replay_prefix() -> tuple[str, ...] | None:
+    """Recover the Python option prefix for ``python -m ai_sdlc`` only."""
+
+    original = tuple(str(item) for item in getattr(sys, "orig_argv", ()))
+    business_arg_count = max(len(sys.argv) - 1, 0)
+    prefix_length = len(original) - business_arg_count
+    if prefix_length < 3:
+        return None
+    prefix = original[:prefix_length]
+    if prefix[-2:] != ("-m", "ai_sdlc"):
+        return None
+    return tuple(prefix[1:])
 
 
 def _publish_replay_handoff(request: ReplayRequest) -> None:

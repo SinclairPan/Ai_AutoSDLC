@@ -6,6 +6,7 @@ import json
 import os
 import subprocess
 import sys
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import click
@@ -55,6 +56,183 @@ def test_json_process_keeps_stdout_clean_and_emits_one_stderr_notice(
     ]
     assert len(notices) == 1
     assert json.loads(notices[0].split(" ", 1)[1])["latest_version"] == "2.0.0"
+
+
+def test_stale_update_cache_fails_open_after_refresh_error_and_backoff(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.core import update_advisor
+
+    init_project(tmp_path)
+    env = _update_env(tmp_path)
+    env.pop("AI_SDLC_UPDATE_ADVISOR_TEST_LATEST_VERSION")
+    env["AI_SDLC_UPDATE_ADVISOR_FORCE_TTY"] = "1"
+    hooks = tmp_path / "offline-hooks"
+    hooks.mkdir()
+    install_log = tmp_path / "unexpected-install.txt"
+    (hooks / "sitecustomize.py").write_text(
+        """
+import os
+import urllib.error
+from pathlib import Path
+
+import ai_sdlc.core.update_advisor as advisor
+import ai_sdlc.cli.self_update_cmd as updater
+
+def fail_fetch(_timeout):
+    raise urllib.error.URLError("offline")
+
+advisor.fetch_latest_github_release = fail_fetch
+
+def unexpected_install(*_args, **_kwargs):
+    Path(os.environ["AI_SDLC_UNEXPECTED_INSTALL_LOG"]).write_text("called")
+
+updater.self_update_install = unexpected_install
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env["AI_SDLC_UNEXPECTED_INSTALL_LOG"] = str(install_log)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(hooks), env.get("PYTHONPATH", "")) if part
+    )
+
+    for key in (
+        "AI_SDLC_UPDATE_ADVISOR_TEST_INSTALLED",
+        "AI_SDLC_UPDATE_ADVISOR_TEST_VERSION",
+        "AI_SDLC_UPDATE_ADVISOR_TEST_CHANNEL",
+        "AI_SDLC_UPDATE_ADVISOR_CACHE_DIR",
+    ):
+        monkeypatch.setenv(key, env[key])
+    identity = update_advisor.detect_runtime_identity()
+    stale_time = datetime.now(UTC) - timedelta(days=2)
+    update_advisor._save_cache(
+        identity,
+        update_advisor.UpdateCache(
+            runtime_identity=identity.runtime_identity,
+            installed_version="1.0.0",
+            install_channel="github-archive",
+            upstream_latest_version="2.0.0",
+            channel_latest_version="2.0.0",
+            last_checked_at=stale_time.isoformat(),
+            last_success_checked_at=stale_time.isoformat(),
+            last_check_status="success",
+        ),
+    )
+
+    results = [
+        subprocess.run(
+            [sys.executable, "-m", "ai_sdlc", "status"],
+            cwd=tmp_path,
+            env=env,
+            input="y\n",
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+        )
+        for _ in range(2)
+    ]
+
+    for result in results:
+        assert result.returncode == 0, result.stderr
+        assert "Result:" in result.stdout
+        assert "是否升级" not in result.stderr
+        assert "AI_SDLC_UPDATE_NOTICE" not in result.stderr
+    assert not install_log.exists()
+
+
+def test_module_invocation_update_replays_business_handler_once_and_exit_code(
+    tmp_path: Path,
+) -> None:
+    init_project(tmp_path)
+    hooks = tmp_path / "module-hooks"
+    hooks.mkdir()
+    process_log = tmp_path / "module-processes.jsonl"
+    (hooks / "sitecustomize.py").write_text(
+        """
+import functools
+import json
+import os
+import sys
+from pathlib import Path
+
+import typer
+import ai_sdlc.cli.doctor_cmd as doctor_module
+import ai_sdlc.cli.self_update_cmd as updater
+
+log = Path(os.environ["AI_SDLC_REPLAY_TEST_LOG"])
+
+def record(kind):
+    with log.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps({
+            "kind": kind,
+            "argv": sys.argv,
+            "orig_argv": sys.orig_argv,
+            "handoff": "AI_SDLC_UPDATE_REPLAY_HANDOFF" in os.environ,
+            "bypass": "AI_SDLC_UPDATE_REPLAY_BYPASS" in os.environ,
+        }) + "\\n")
+
+record("process")
+original_doctor = doctor_module.doctor_command
+
+@functools.wraps(original_doctor)
+def wrapped_doctor(*args, **kwargs):
+    record("handler")
+    original_doctor(*args, **kwargs)
+    raise typer.Exit(17)
+
+doctor_module.doctor_command = wrapped_doctor
+
+def fake_download(_url, archive_path):
+    archive_path.write_bytes(b"archive")
+
+def fake_extract(_archive_path, extract_root, _hint):
+    bundle = extract_root / "bundle"
+    (bundle / "wheels").mkdir(parents=True)
+    (bundle / "wheels" / "ai_sdlc-2.0.0-py3-none-any.whl").write_bytes(b"wheel")
+    return bundle
+
+updater._download_asset = fake_download
+updater._extract_release_asset = fake_extract
+updater._install_bundle_into_current_runtime = lambda *_args: None
+updater._read_installed_version = lambda: "2.0.0"
+updater._repair_current_user_path_if_possible = lambda: None
+updater._verify_bare_cli_version = lambda version: version
+""".lstrip(),
+        encoding="utf-8",
+    )
+    env = _update_env(tmp_path)
+    env["AI_SDLC_UPDATE_ADVISOR_FORCE_TTY"] = "1"
+    env["AI_SDLC_REPLAY_TEST_LOG"] = str(process_log)
+    env["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(hooks), env.get("PYTHONPATH", "")) if part
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "ai_sdlc", "doctor"],
+        cwd=tmp_path,
+        env=env,
+        input="y\n",
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
+
+    assert result.returncode == 17, result.stderr
+    records = [json.loads(line) for line in process_log.read_text().splitlines()]
+    processes = [record for record in records if record["kind"] == "process"]
+    handlers = [record for record in records if record["kind"] == "handler"]
+    assert len(processes) == 2
+    assert all(
+        record["orig_argv"][-3:] == ["-m", "ai_sdlc", "doctor"] for record in processes
+    )
+    assert len(handlers) == 1
+    assert handlers[0]["handoff"] is False
+    assert handlers[0]["bypass"] is False
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="real Windows console launcher")
@@ -188,6 +366,31 @@ def test_replay_uses_exact_argv_and_propagates_exit(
     assert kwargs["shell"] is False
     assert kwargs["env"]["AI_SDLC_UPDATE_REPLAY_BYPASS"] == "1"
     assert "AI_SDLC_UPDATE_REPLAY_HANDOFF" not in kwargs["env"]
+
+
+def test_capture_replay_request_preserves_python_module_prefix(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    monkeypatch.setattr(self_update_cmd.sys, "executable", "/runtime/python")
+    monkeypatch.setattr(
+        self_update_cmd.sys,
+        "orig_argv",
+        ["/runtime/python", "-I", "-m", "ai_sdlc", "loop", "status"],
+    )
+    monkeypatch.setattr(
+        self_update_cmd.sys,
+        "argv",
+        ["/site-packages/ai_sdlc/__main__.py", "loop", "status"],
+    )
+
+    request = self_update_cmd._capture_replay_request()
+
+    assert request == self_update_cmd.ReplayRequest(
+        executable="/runtime/python",
+        argv=("-I", "-m", "ai_sdlc", "loop", "status"),
+    )
 
 
 def test_windows_launcher_reexec_carries_the_process_only_handoff(
