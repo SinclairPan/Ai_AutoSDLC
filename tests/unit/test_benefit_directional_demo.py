@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -354,7 +355,203 @@ def test_forbidden_provider_surfaces_cover_authorities_and_wip(tmp_path: Path) -
         "control",
         "home-codex",
         "audit-wip",
+        "common-git",
+        "worktree-parent",
     } <= labels
+
+
+def test_cap_gated_launcher_records_complete_lifecycle(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = demo.load_directional_manifest()
+    session = manifest.sessions[0]
+    ledger = demo.initialize_attempt_ledger(tmp_path / "ledger.jsonl", manifest)
+    provider_cwd = tmp_path / "benchmark-task"
+    provider_cwd.mkdir()
+    command = (
+        "/frozen/codex",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+        "--model",
+        "gpt-5.6-sol",
+        "-c",
+        'model_reasoning_effort="high"',
+        "--sandbox",
+        "workspace-write",
+        "-C",
+        str(provider_cwd),
+        "-",
+    )
+    prepared = SimpleNamespace(
+        arm_id=session.arm_id,
+        fixture_id=session.fixture_id,
+        provider_cwd=provider_cwd,
+        codex=SimpleNamespace(
+            executable="/frozen/codex", resolved_executable="/frozen/native-codex"
+        ),
+    )
+    profile = SimpleNamespace(argv=command, run_root=provider_cwd)
+    launches: list[tuple[str, ...]] = []
+
+    monkeypatch.setattr(demo, "verify_prepared_directional_arm", lambda _value: None)
+
+    def fake_launch(
+        _profile: object, argv: tuple[str, ...]
+    ) -> subprocess.CompletedProcess[str]:
+        launches.append(tuple(argv))
+        return subprocess.CompletedProcess(list(argv), 0, "ok", "")
+
+    monkeypatch.setattr(demo, "run_provider_isolated", fake_launch)
+    result = demo.launch_directional_provider_session(
+        ledger, manifest, session.session_id, prepared, profile, command
+    )
+    assert result.returncode == 0
+    assert launches == [command]
+    rows = demo.read_attempt_ledger(ledger)
+    assert [row["kind"] for row in rows[-3:]] == [
+        "reservation",
+        "launch-started",
+        "launch-completed",
+    ]
+    assert rows[-2]["provider_launched"] is True
+    assert rows[-1]["provider_launched"] is True
+
+
+def test_cap_gated_launcher_records_failed_terminal_state(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = demo.load_directional_manifest()
+    session = manifest.sessions[0]
+    ledger = demo.initialize_attempt_ledger(tmp_path / "ledger.jsonl", manifest)
+    provider_cwd = tmp_path / "benchmark-task"
+    provider_cwd.mkdir()
+    command = (
+        "/frozen/codex",
+        "exec",
+        "--ephemeral",
+        "--json",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+        "--model",
+        "gpt-5.6-sol",
+        "-c",
+        'model_reasoning_effort="high"',
+        "--sandbox",
+        "workspace-write",
+        "-C",
+        str(provider_cwd),
+        "-",
+    )
+    prepared = SimpleNamespace(
+        arm_id=session.arm_id,
+        fixture_id=session.fixture_id,
+        provider_cwd=provider_cwd,
+        codex=SimpleNamespace(
+            executable="/frozen/codex", resolved_executable="/frozen/native-codex"
+        ),
+    )
+    profile = SimpleNamespace(argv=command, run_root=provider_cwd)
+    monkeypatch.setattr(demo, "verify_prepared_directional_arm", lambda _value: None)
+    monkeypatch.setattr(
+        demo,
+        "run_provider_isolated",
+        lambda _profile, argv: subprocess.CompletedProcess(list(argv), 7, "", "bad"),
+    )
+    result = demo.launch_directional_provider_session(
+        ledger, manifest, session.session_id, prepared, profile, command
+    )
+    assert result.returncode == 7
+    rows = demo.read_attempt_ledger(ledger)
+    assert rows[-1]["kind"] == "launch-failed"
+    assert rows[-1]["failure"] == "nonzero"
+    assert rows[-1]["returncode"] == 7
+
+
+def test_cap_gated_launcher_rejects_non_provider_command_before_append(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = demo.load_directional_manifest()
+    session = manifest.sessions[0]
+    ledger = demo.initialize_attempt_ledger(tmp_path / "ledger.jsonl", manifest)
+    before = ledger.read_bytes()
+    provider_cwd = tmp_path / "benchmark-task"
+    provider_cwd.mkdir()
+    prepared = SimpleNamespace(
+        arm_id=session.arm_id,
+        fixture_id=session.fixture_id,
+        provider_cwd=provider_cwd,
+        codex=SimpleNamespace(
+            executable="/frozen/codex", resolved_executable="/frozen/native-codex"
+        ),
+    )
+    command = ("/usr/bin/true",)
+    profile = SimpleNamespace(argv=command, run_root=provider_cwd)
+    launched = False
+
+    monkeypatch.setattr(demo, "verify_prepared_directional_arm", lambda _value: None)
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+        raise AssertionError("launch must not be reached")
+
+    monkeypatch.setattr(demo, "run_provider_isolated", forbidden)
+    with pytest.raises(ValueError, match="binding"):
+        demo.launch_directional_provider_session(
+            ledger, manifest, session.session_id, prepared, profile, command
+        )
+    assert launched is False
+    assert ledger.read_bytes() == before
+
+
+def test_cap_gated_launcher_rejects_reservation_only_bypass_and_attempt_20(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = demo.load_directional_manifest()
+    ledger = demo.initialize_attempt_ledger(tmp_path / "ledger.jsonl", manifest)
+    first = manifest.sessions[0]
+    demo.reserve_session(ledger, first.session_id)
+    before = ledger.read_bytes()
+    launched = False
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        nonlocal launched
+        launched = True
+        raise AssertionError("launch must not be reached")
+
+    monkeypatch.setattr(demo, "run_provider_isolated", forbidden)
+    with pytest.raises(ValueError, match="reservation-only"):
+        demo.launch_directional_provider_session(
+            ledger,
+            manifest,
+            first.session_id,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            ("/frozen/codex", "exec"),
+        )
+    assert launched is False
+    assert ledger.read_bytes() == before
+
+    full = demo.initialize_attempt_ledger(tmp_path / "full.jsonl", manifest)
+    for session in manifest.sessions:
+        demo.reserve_session(full, session.session_id)
+    full_before = full.read_bytes()
+    with pytest.raises(ValueError, match="session cap"):
+        demo.launch_directional_provider_session(
+            full,
+            manifest,
+            "session-attempt-20",
+            SimpleNamespace(),
+            SimpleNamespace(),
+            ("/frozen/codex", "exec"),
+        )
+    assert launched is False
+    assert full.read_bytes() == full_before
 
 
 def test_provider_environment_is_clean_and_inventory_bound(tmp_path: Path) -> None:

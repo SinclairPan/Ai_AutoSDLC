@@ -284,6 +284,9 @@ class ProviderIsolationProfile:
     preserve_environment: bool = False
     environment_sha256: str = ""
     launch_guard: Callable[[], None] | None = None
+    missing_protected_paths: tuple[Path, ...] = ()
+    deny_process_exec_paths: tuple[Path, ...] = ()
+    deny_network: bool = False
 
 
 @dataclass(frozen=True)
@@ -3836,6 +3839,9 @@ def build_provider_isolation_profile(
     protected_roots: Sequence[Path] = (),
     write_protected_roots: Sequence[Path] = (),
     missing_write_protected_paths: Sequence[Path] = (),
+    missing_protected_paths: Sequence[Path] = (),
+    deny_process_exec_paths: Sequence[Path] = (),
+    deny_network: bool = False,
     preserve_environment: bool = False,
     launch_guard: Callable[[], None] | None = None,
 ) -> ProviderIsolationProfile:
@@ -3867,6 +3873,36 @@ def build_provider_isolation_profile(
                 BenchmarkIssue("isolation.missing-write-root", f"missing-root-{index}")
             )
         missing_write_protected.append(candidate)
+    missing_protected: list[Path] = []
+    for index, path in enumerate(missing_protected_paths):
+        candidate = Path(os.path.abspath(path))
+        try:
+            parent = candidate.parent.resolve(strict=True)
+            if (
+                candidate.exists()
+                or candidate.is_symlink()
+                or parent != Path(os.path.abspath(candidate.parent))
+            ):
+                raise OSError("missing protected path is not canonical and absent")
+        except OSError:
+            issues.append(
+                BenchmarkIssue("isolation.missing-protected", f"missing-root-{index}")
+            )
+        missing_protected.append(candidate)
+    denied_exec_paths: list[Path] = []
+    for index, path in enumerate(deny_process_exec_paths):
+        candidate = Path(os.path.abspath(path))
+        try:
+            resolved = candidate.resolve(strict=True)
+            if not stat.S_ISREG(resolved.stat().st_mode):
+                raise OSError("denied executable is not a regular file")
+        except OSError:
+            issues.append(
+                BenchmarkIssue("isolation.process-exec", f"executable-{index}")
+            )
+            continue
+        denied_exec_paths.extend((candidate, resolved))
+    denied_exec_paths = list(dict.fromkeys(denied_exec_paths))
     for index, root in enumerate(write_protected):
         try:
             if not (
@@ -3934,9 +3970,22 @@ def build_provider_isolation_profile(
         )
         for path in missing_write_protected
     )
+    missing_deny_rules = "\n".join(
+        (
+            f'  (deny file-read* file-write* (literal "{_seatbelt_literal(path)}"))\n'
+            f'  (deny file-read* file-write* (subpath "{_seatbelt_literal(path)}"))'
+        )
+        for path in missing_protected
+    )
+    process_exec_deny_rules = "\n".join(
+        f'  (deny process-exec (literal "{_seatbelt_literal(path)}"))'
+        for path in denied_exec_paths
+    )
+    network_deny_rule = "  (deny network*)" if deny_network else ""
     sandbox_text = (
         f"(version 1)\n(allow default)\n{deny_rules}\n{write_deny_rules}\n"
-        f"{missing_write_deny_rules}\n"
+        f"{missing_write_deny_rules}\n{missing_deny_rules}\n"
+        f"{process_exec_deny_rules}\n{network_deny_rule}\n"
     )
     executable = sys.platform == "darwin" and not issues
     final_environment = (
@@ -3964,6 +4013,9 @@ def build_provider_isolation_profile(
         preserve_environment=preserve_environment,
         environment_sha256=environment_sha256,
         launch_guard=launch_guard,
+        missing_protected_paths=tuple(missing_protected),
+        deny_process_exec_paths=tuple(denied_exec_paths),
+        deny_network=deny_network,
     )
 
 
@@ -3994,6 +4046,9 @@ def run_provider_isolated(
         protected_roots=profile.protected_roots,
         write_protected_roots=profile.write_protected_roots,
         missing_write_protected_paths=profile.missing_write_protected_paths,
+        missing_protected_paths=profile.missing_protected_paths,
+        deny_process_exec_paths=profile.deny_process_exec_paths,
+        deny_network=profile.deny_network,
         other_run_roots=profile.other_run_roots,
         argv=argv,
         environment=requested_environment,

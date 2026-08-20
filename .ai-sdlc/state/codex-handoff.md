@@ -12,6 +12,8 @@ Deliver the lightweight 5-arm × 3-task directional benefit runner, fake-Provide
 - The append-only attempt ledger is read and appended through a locked, owner-bound pinned descriptor; short writes are completed and corrupt, duplicate, overwrite, and symlink cases fail before append.
 - Actual r2 authority remains `NO-GO`; the evaluator is labelled only `legacy-directional-evaluator`.
 - Preflight and budget request keep token and currency estimates null.
+- FixR1 makes the final directional Seatbelt profile refresh byte-identically, proves local-tool/candidate reads are allowed, and rejects common Git, all sibling worktrees, nested Provider binaries, and network access with actual Seatbelt denials.
+- The only directional Provider entry now writes reservation/start/terminal lifecycle rows under the locked hard cap; reservation-only and attempt-20 bypasses fail before launch.
 
 ## Changed files
 
@@ -36,6 +38,8 @@ Deliver the lightweight 5-arm × 3-task directional benefit runner, fake-Provide
 - Unit GREEN after expansion and final format: `49 passed`.
 - Directional unit + 15-workspace real preparation + isolation: `51 passed`; 15 workspaces, 19 sessions, Provider 0.
 - Exact macOS profile canary final system-outside: `1 passed / 0 skipped`.
+- FixR1 fresh RED: `3 unit failed` plus exact system-outside `/usr/bin/true = 126 / ISOLATION_REFUSED`.
+- FixR1 final lightweight system-outside gate: `55 passed`; shared fixture isolation regression: `13 passed / 3 existing system skips`.
 - Related benchmark/arms/directional suites: `504 passed / 1 existing skip`.
 - Full benefit suite system-outside: `718 passed / 2 skipped / 1 transient external Codex Git-ref race`; isolated rerun of that test: `1 passed`.
 - Ruff check, Ruff format check, and `git diff --check`: green.
@@ -49,6 +53,6 @@ Deliver the lightweight 5-arm × 3-task directional benefit runner, fake-Provide
 
 ## Next exact steps
 
-1. Review final diff and JSON contracts.
-2. Create the single scoped commit on the product branch.
+1. Run final Ruff/format/diff and immutable fingerprint checks.
+2. Create the single scoped FixR1 commit.
 3. Stop before any Provider call and return the budget confirmation fields.

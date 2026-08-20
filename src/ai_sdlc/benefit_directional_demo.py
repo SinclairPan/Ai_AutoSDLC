@@ -11,11 +11,12 @@ import json
 import os
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any
@@ -293,6 +294,8 @@ class FakeRehearsalResult:
 
 @dataclass(frozen=True)
 class DirectionalIsolationCanary:
+    baseline_exec_allowed: bool
+    candidate_input_read_allowed: bool
     direct_reads_denied: bool
     directory_lists_denied: bool
     parent_escape_denied: bool
@@ -302,12 +305,15 @@ class DirectionalIsolationCanary:
     output_create_denied: bool
     output_rename_denied: bool
     method_chmod_denied: bool
+    nested_provider_denied: bool
     residue_free: bool
 
     @property
     def passed(self) -> bool:
         return all(
             (
+                self.baseline_exec_allowed,
+                self.candidate_input_read_allowed,
                 self.direct_reads_denied,
                 self.directory_lists_denied,
                 self.parent_escape_denied,
@@ -317,6 +323,7 @@ class DirectionalIsolationCanary:
                 self.output_create_denied,
                 self.output_rename_denied,
                 self.method_chmod_denied,
+                self.nested_provider_denied,
                 self.residue_free,
             )
         )
@@ -593,6 +600,8 @@ def _ledger_rows_from_descriptor(descriptor: int) -> list[Mapping[str, Any]]:
     ):
         raise ValueError("ledger header is corrupt")
     reservations: list[str] = []
+    launches_started: set[str] = set()
+    launches_terminal: set[str] = set()
     expert_findings: set[str] = set()
     resumes: set[str] = set()
     for row in rows[1:]:
@@ -616,6 +625,81 @@ def _ledger_rows_from_descriptor(descriptor: int) -> list[Mapping[str, Any]]:
             ):
                 raise ValueError("ledger reservation is corrupt")
             reservations.append(session_id)
+        elif kind == "launch-started":
+            item = _closed(
+                row,
+                {
+                    "kind",
+                    "ordinal",
+                    "session_id",
+                    "command_sha256",
+                    "provider_launched",
+                },
+                "ledger launch started",
+            )
+            session_id = item["session_id"]
+            if (
+                not isinstance(session_id, str)
+                or session_id not in reservations
+                or session_id in launches_started
+                or item["ordinal"] != reservations.index(session_id) + 1
+                or not isinstance(item["command_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", item["command_sha256"])
+                or item["provider_launched"] is not True
+            ):
+                raise ValueError("ledger launch started is corrupt")
+            launches_started.add(session_id)
+        elif kind in {"launch-completed", "launch-failed"}:
+            item = _closed(
+                row,
+                {
+                    "kind",
+                    "session_id",
+                    "returncode",
+                    "failure",
+                    "stdout_sha256",
+                    "stderr_sha256",
+                    "provider_launched",
+                },
+                "ledger launch terminal",
+            )
+            session_id = item["session_id"]
+            returncode = item["returncode"]
+            failure = item["failure"]
+            if (
+                not isinstance(session_id, str)
+                or session_id not in launches_started
+                or session_id in launches_terminal
+                or item["provider_launched"] is not True
+                or not isinstance(item["stdout_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", item["stdout_sha256"])
+                or not isinstance(item["stderr_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", item["stderr_sha256"])
+                or (
+                    kind == "launch-completed"
+                    and (returncode != 0 or failure is not None)
+                )
+                or (
+                    kind == "launch-failed"
+                    and (
+                        failure not in {"nonzero", "timeout", "launch-error"}
+                        or (
+                            failure == "nonzero"
+                            and (
+                                isinstance(returncode, bool)
+                                or not isinstance(returncode, int)
+                                or returncode == 0
+                            )
+                        )
+                        or (
+                            failure in {"timeout", "launch-error"}
+                            and returncode is not None
+                        )
+                    )
+                )
+            ):
+                raise ValueError("ledger launch terminal is corrupt")
+            launches_terminal.add(session_id)
         elif kind == "expert-finding":
             item = _closed(
                 row,
@@ -687,6 +771,7 @@ def _ledger_rows_from_descriptor(descriptor: int) -> list[Mapping[str, Any]]:
 
 
 def reserve_session(path: Path, session_id: str, *, retry: bool = False) -> int:
+    """Reserve a fake-rehearsal slot without making it launchable."""
     if retry:
         raise ValueError("technical retry is forbidden")
     descriptor = os.open(path, os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
@@ -725,6 +810,233 @@ def reserve_session(path: Path, session_id: str, *, retry: bool = False) -> int:
         if fcntl is not None:
             fcntl.flock(descriptor, fcntl.LOCK_UN)
         os.close(descriptor)
+
+
+def _provider_command_digest(argv: Sequence[str]) -> str:
+    if not argv or any(not isinstance(item, str) or not item for item in argv):
+        raise ValueError("Provider command is invalid")
+    return sha256(_canonical_bytes(list(argv))).hexdigest()
+
+
+def _validate_directional_provider_launch(
+    manifest: DirectionalManifest,
+    session_id: str,
+    prepared: PreparedArm,
+    profile: ProviderIsolationProfile,
+    argv: Sequence[str],
+) -> None:
+    session = next(
+        (item for item in manifest.sessions if item.session_id == session_id), None
+    )
+    if session is None:
+        raise ValueError("Provider session is not predeclared")
+    verify_prepared_directional_arm(prepared)
+    command = tuple(argv)
+    required_flags = {
+        "--ephemeral",
+        "--json",
+        "--ignore-user-config",
+        "--ignore-rules",
+        "--strict-config",
+    }
+
+    def option_value(option: str) -> str | None:
+        if command.count(option) != 1:
+            return None
+        index = command.index(option)
+        return command[index + 1] if index + 1 < len(command) else None
+
+    if (
+        session.arm_id != prepared.arm_id
+        or session.fixture_id != prepared.fixture_id
+        or tuple(profile.argv) != command
+        or Path(profile.run_root) != prepared.provider_cwd
+        or len(command) < 2
+        or command[0] != prepared.codex.executable
+        or command[1] != "exec"
+        or not required_flags <= set(command)
+        or command[-1] != "-"
+        or option_value("--model") != "gpt-5.6-sol"
+        or option_value("-c") != 'model_reasoning_effort="high"'
+        or option_value("--sandbox")
+        != ("workspace-write" if session.kind == "writer" else "read-only")
+        or "--add-dir" in command
+        or any(item.startswith("--add-dir=") for item in command)
+    ):
+        raise ValueError("Provider launch binding is invalid")
+    if session.kind == "writer":
+        if command.count("-C") != 1:
+            raise ValueError("Provider writer cwd binding is invalid")
+        index = command.index("-C")
+        if index + 1 >= len(command) or command[index + 1] != str(
+            prepared.provider_cwd
+        ):
+            raise ValueError("Provider writer cwd binding is invalid")
+
+
+def _append_directional_launch_terminal(
+    path: Path,
+    session_id: str,
+    *,
+    returncode: int | None,
+    failure: str | None,
+    stdout: str,
+    stderr: str,
+) -> None:
+    descriptor = os.open(path, os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        rows = _ledger_rows_from_descriptor(descriptor)
+        started = {
+            str(row["session_id"])
+            for row in rows[1:]
+            if row.get("kind") == "launch-started"
+        }
+        terminal = {
+            str(row["session_id"])
+            for row in rows[1:]
+            if row.get("kind") in {"launch-completed", "launch-failed"}
+        }
+        if session_id not in started or session_id in terminal:
+            raise ValueError("Provider launch terminal state is invalid")
+        kind = (
+            "launch-completed"
+            if returncode == 0 and failure is None
+            else "launch-failed"
+        )
+        event = {
+            "kind": kind,
+            "session_id": session_id,
+            "returncode": returncode,
+            "failure": failure,
+            "stdout_sha256": sha256(stdout.encode()).hexdigest(),
+            "stderr_sha256": sha256(stderr.encode()).hexdigest(),
+            "provider_launched": True,
+        }
+        _write_all(descriptor, _canonical_bytes(event) + b"\n")
+        os.fsync(descriptor)
+    finally:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+
+def launch_directional_provider_session(
+    path: Path,
+    manifest: DirectionalManifest,
+    session_id: str,
+    prepared: PreparedArm,
+    profile: ProviderIsolationProfile,
+    argv: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    """The only cap-gated directional Provider launch path."""
+    descriptor = os.open(path, os.O_RDWR | os.O_APPEND | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+        rows = _ledger_rows_from_descriptor(descriptor)
+        header = rows[0]
+        order = header["execution_order"]
+        expected_order = [item.session_id for item in manifest.sessions]
+        if (
+            header["manifest_sha256"] != manifest.canonical_sha256
+            or order != expected_order
+        ):
+            raise ValueError("Provider ledger manifest binding changed")
+        reservations = [
+            str(row["session_id"])
+            for row in rows[1:]
+            if row.get("kind") == "reservation"
+        ]
+        started = {
+            str(row["session_id"])
+            for row in rows[1:]
+            if row.get("kind") == "launch-started"
+        }
+        terminal = {
+            str(row["session_id"])
+            for row in rows[1:]
+            if row.get("kind") in {"launch-completed", "launch-failed"}
+        }
+        if not isinstance(order, list) or session_id not in order:
+            if len(reservations) >= 19:
+                raise ValueError("Provider session cap rejects attempt 20")
+            raise ValueError("Provider session is not predeclared")
+        if any(item not in started for item in reservations):
+            raise ValueError("reservation-only ledger cannot launch a Provider")
+        if started != terminal:
+            raise ValueError("prior Provider launch is not terminal")
+        if session_id in reservations:
+            raise ValueError("Provider session was already launched")
+        ordinal = len(reservations) + 1
+        if ordinal > 19:
+            raise ValueError("Provider session cap rejects attempt 20")
+        if order[ordinal - 1] != session_id:
+            raise ValueError("Provider session launch order changed")
+        _validate_directional_provider_launch(
+            manifest, session_id, prepared, profile, argv
+        )
+        command_sha256 = _provider_command_digest(argv)
+        reservation = {
+            "kind": "reservation",
+            "ordinal": ordinal,
+            "session_id": session_id,
+            "provider_launched": False,
+        }
+        started_event = {
+            "kind": "launch-started",
+            "ordinal": ordinal,
+            "session_id": session_id,
+            "command_sha256": command_sha256,
+            "provider_launched": True,
+        }
+        _write_all(
+            descriptor,
+            _canonical_bytes(reservation)
+            + b"\n"
+            + _canonical_bytes(started_event)
+            + b"\n",
+        )
+        os.fsync(descriptor)
+    finally:
+        if fcntl is not None:
+            fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
+
+    try:
+        result = run_provider_isolated(profile, argv)
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout if isinstance(error.stdout, str) else ""
+        stderr = error.stderr if isinstance(error.stderr, str) else ""
+        _append_directional_launch_terminal(
+            path,
+            session_id,
+            returncode=None,
+            failure="timeout",
+            stdout=stdout,
+            stderr=stderr,
+        )
+        raise
+    except OSError:
+        _append_directional_launch_terminal(
+            path,
+            session_id,
+            returncode=None,
+            failure="launch-error",
+            stdout="",
+            stderr="",
+        )
+        raise
+    _append_directional_launch_terminal(
+        path,
+        session_id,
+        returncode=result.returncode,
+        failure=None if result.returncode == 0 else "nonzero",
+        stdout=result.stdout,
+        stderr=result.stderr,
+    )
+    return result
 
 
 def append_writer_resume_event(
@@ -1345,6 +1657,8 @@ def directional_protected_roots(base: Path | None = None) -> tuple[ProtectedRoot
             "control": base / "control",
             "home-codex": base / "home" / ".codex",
             "audit-wip": base / "audit-wip",
+            "common-git": base / "common-git",
+            "worktree-parent": base / "worktrees",
         }
     else:
         common_git = Path(
@@ -1368,8 +1682,39 @@ def directional_protected_roots(base: Path | None = None) -> tuple[ProtectedRoot
             "control": _REPO_ROOT,
             "home-codex": Path(pwd.getpwuid(os.getuid()).pw_dir) / ".codex",
             "audit-wip": common_git / "refs" / "heads" / "codex" / "benefit-audit-wip",
+            "common-git": common_git,
+            "worktree-parent": _REPO_ROOT.parent,
         }
     return tuple(ProtectedRoot(label, path) for label, path in paths.items())
+
+
+def _directional_provider_launch_paths(prepared: PreparedArm) -> tuple[Path, ...]:
+    names = (
+        "codex",
+        "claude",
+        "cursor-agent",
+        "copilot",
+        "gemini",
+        "aider",
+        "opencode",
+        "goose",
+        "amp",
+    )
+    candidates = [
+        Path(prepared.codex.executable),
+        Path(prepared.codex.resolved_executable),
+    ]
+    for name in names:
+        located = shutil.which(name, path=prepared.environment.environment["PATH"])
+        if located is not None:
+            candidates.append(Path(located))
+    paths: list[Path] = []
+    for candidate in candidates:
+        absolute = Path(os.path.abspath(candidate))
+        if not absolute.exists() or absolute.is_dir():
+            raise ValueError("directional Provider executable identity is unavailable")
+        paths.extend((absolute, absolute.resolve(strict=True)))
+    return tuple(dict.fromkeys(paths))
 
 
 def build_directional_provider_profile(
@@ -1394,6 +1739,8 @@ def build_directional_provider_profile(
         "control",
         "home-codex",
         "audit-wip",
+        "common-git",
+        "worktree-parent",
     }
     if set(roots) != required:
         raise ValueError("directional protected surface is not closed")
@@ -1407,6 +1754,8 @@ def build_directional_provider_profile(
         roots["rubric"],
         roots["home-codex"],
         roots["audit-wip"],
+        roots["common-git"],
+        roots["worktree-parent"],
         prepared.root / ".git",
     )
     unavailable = [
@@ -1455,6 +1804,9 @@ def build_directional_provider_profile(
         protected_roots=existing_protected,
         write_protected_roots=tuple(dict.fromkeys(write_protected)),
         missing_write_protected_paths=tuple(dict.fromkeys(missing_method_paths)),
+        missing_protected_paths=(roots["sealed-r3"], roots["results"]),
+        deny_process_exec_paths=_directional_provider_launch_paths(prepared),
+        deny_network=True,
         other_run_roots=other_run_roots,
         argv=argv,
         environment=prepared.environment.environment,
@@ -1464,17 +1816,7 @@ def build_directional_provider_profile(
     if profile.issues:
         joined = ",".join(issue.code for issue in profile.issues)
         raise ValueError(f"directional isolation profile is invalid: {joined}")
-    absent_rules = "\n".join(
-        (
-            f'  (deny file-read* file-write* (literal "{path}"))\n'
-            f'  (deny file-read* file-write* (subpath "{path}"))'
-        )
-        for path in (roots["sealed-r3"], roots["results"])
-    )
-    return replace(
-        profile,
-        sandbox_text=f"{profile.sandbox_text.rstrip()}\n{absent_rules}\n",
-    )
+    return profile
 
 
 def _representative_regular_file(root: Path) -> Path:
@@ -1497,7 +1839,47 @@ def _launch_denied(
     environment: Mapping[str, str] | None = None,
 ) -> bool:
     result = run_provider_isolated(profile, argv, environment=environment)
-    return result.returncode != 0
+    return (
+        result.returncode != 0
+        and "Operation not permitted" in result.stderr
+        and "ISOLATION_REFUSED" not in result.stderr
+    )
+
+
+def _launch_allowed(profile: ProviderIsolationProfile, argv: Sequence[str]) -> bool:
+    result = run_provider_isolated(profile, argv)
+    return (
+        result.returncode == 0
+        and "ISOLATION_REFUSED" not in result.stderr
+        and "Operation not permitted" not in result.stderr
+    )
+
+
+def _add_dir_preflight_rejected(profile: ProviderIsolationProfile) -> bool:
+    for argv in (
+        ("/usr/bin/true", "--add-dir"),
+        ("/usr/bin/true", "--add-dir=../protected"),
+    ):
+        refreshed = build_provider_isolation_profile(
+            run_root=profile.run_root,
+            sealed_root=profile.sealed_root,
+            control_root=profile.control_root,
+            raw_results_root=profile.raw_results_root,
+            protected_roots=profile.protected_roots,
+            write_protected_roots=profile.write_protected_roots,
+            missing_write_protected_paths=profile.missing_write_protected_paths,
+            missing_protected_paths=profile.missing_protected_paths,
+            deny_process_exec_paths=profile.deny_process_exec_paths,
+            deny_network=profile.deny_network,
+            other_run_roots=profile.other_run_roots,
+            argv=argv,
+            environment=profile.environment,
+            preserve_environment=profile.preserve_environment,
+            launch_guard=profile.launch_guard,
+        )
+        if {issue.code for issue in refreshed.issues} != {"isolation.add-dir"}:
+            return False
+    return True
 
 
 def run_directional_system_isolation_canary(
@@ -1508,6 +1890,11 @@ def run_directional_system_isolation_canary(
         raise RuntimeError("macOS Seatbelt is required")
     verify_prepared_directional_arm(prepared)
     roots = {item.label: item.path for item in directional_protected_roots()}
+    candidate_input = _representative_regular_file(prepared.provider_cwd)
+    baseline_exec_allowed = _launch_allowed(profile, ["/usr/bin/true"])
+    candidate_input_read_allowed = _launch_allowed(
+        profile, ["/bin/cat", str(candidate_input)]
+    )
     representatives = (
         _representative_regular_file(roots["sealed-r1"]),
         _representative_regular_file(roots["sealed-r2"]),
@@ -1516,6 +1903,8 @@ def run_directional_system_isolation_canary(
         _representative_regular_file(roots["control"]),
         _representative_regular_file(roots["home-codex"]),
         _representative_regular_file(roots["audit-wip"]),
+        _representative_regular_file(roots["common-git"]),
+        _representative_regular_file(roots["worktree-parent"]),
         _representative_regular_file(prepared.root / ".git"),
     )
     direct_reads = all(
@@ -1534,16 +1923,28 @@ def run_directional_system_isolation_canary(
     parent_escape = _launch_denied(
         profile, ["/bin/cat", str(prepared.provider_cwd / ".." / ".git" / "HEAD")]
     )
-    leaked_environment = dict(profile.environment)
-    leaked_environment["DIRECTIONAL_FORBIDDEN"] = str(representatives[0])
     environment = _launch_denied(
-        profile, ["/usr/bin/true"], environment=leaked_environment
+        profile,
+        [
+            "/usr/bin/env",
+            f"DIRECTIONAL_FORBIDDEN={representatives[0]}",
+            "/bin/sh",
+            "-c",
+            'cat "$DIRECTIONAL_FORBIDDEN"',
+        ],
     )
-    add_dir = all(
+    add_dir = _add_dir_preflight_rejected(profile)
+    nested_provider_denied = all(
         _launch_denied(profile, argv)
         for argv in (
-            ["/usr/bin/true", "--add-dir"],
-            ["/usr/bin/true", "--add-dir=../protected"],
+            [prepared.codex.executable, "--version"],
+            [
+                "/bin/sh",
+                "-c",
+                'exec "$1" --version',
+                "nested-provider",
+                prepared.codex.executable,
+            ],
         )
     )
     output_canary = profile.raw_results_root / ".directional-output-canary"
@@ -1601,6 +2002,8 @@ def run_directional_system_isolation_canary(
     residue_free = not any(path.exists() for path in (output_canary, created, renamed))
     verify_prepared_directional_arm(prepared)
     return DirectionalIsolationCanary(
+        baseline_exec_allowed=baseline_exec_allowed,
+        candidate_input_read_allowed=candidate_input_read_allowed,
         direct_reads_denied=direct_reads,
         directory_lists_denied=directory_lists,
         parent_escape_denied=parent_escape,
@@ -1610,6 +2013,7 @@ def run_directional_system_isolation_canary(
         output_create_denied=create_denied,
         output_rename_denied=rename_denied,
         method_chmod_denied=chmod_denied,
+        nested_provider_denied=nested_provider_denied,
         residue_free=residue_free,
     )
 

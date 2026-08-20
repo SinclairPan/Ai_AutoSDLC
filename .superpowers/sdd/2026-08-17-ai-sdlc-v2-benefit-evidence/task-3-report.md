@@ -207,3 +207,13 @@ git diff --check: clean
 actual fingerprints 保持 exact：r2 `403098441 / b5b2b362…615b`，r1 `402612600 / 9701e5fa…dc30`，legacy `400173643 / ee98e4d0…10c2`，source-r2 `403084506 / 56387824…9596`，disposition-r2 `403084461 / 52797356…15e`。tracked protocol 与 sealed commitments blob 分别保持 `f16afc65…aa3c` / `d2ef5e51…101c`，与 base 完全一致。
 
 本轮没有创建 formal authorization、formal ledger、formal results、r3 target/source/disposition，也没有运行 `codex exec` 或任何 Provider。fake rehearsal 的 token / currency cost 均为 `null`。正式矩阵仍为 **NO-GO**，等待用户对 `model=gpt-5.6-sol`、`effort=high`、`15 writer + 4 expert = 19`、`technical retries=0`、成本未知边界作一次最终预算确认。
+
+### 轻量方向性实验 FixR1：可执行隔离与唯一启动门
+
+- 修复 directional profile 的动态重建：absent read/write rules、冻结 Provider executable deny、network deny 均成为 typed profile 字段，refresh 后逐字节相同；不再通过 `replace(sandbox_text=...)` 制造必然 `ISOLATION_REFUSED` 的假隔离证明。
+- system-outside 实证 `/usr/bin/true` 和候选输入读取返回 `0`；所有 deny 只接受真实 Seatbelt `Operation not permitted`，不再把 `ISOLATION_REFUSED` 或任意 nonzero 当成成功。
+- protected roots 扩展为整个 main common Git 与 `.worktrees` 父面；control runner、所有 sibling worktree、common objects/refs/config 均不可读写。
+- frozen Codex entrypoint/native binary 与 PATH 中已存在的等价 Provider/agent launcher 全部 process-exec deny，同时 network surface deny；直接执行及 `/bin/sh` 间接执行均由系统拒绝，普通 `/usr/bin/true`、`cat` 等本地工具保持可用。
+- `launch_directional_provider_session` 是唯一 cap-gated Provider 入口：在同一 locked append 中写入 `reservation → launch-started`，执行后原子追加 `launch-completed` 或 `launch-failed`。reservation-only ledger、任意非冻结 Provider 命令、重复/乱序、未完成前序和第 20 次尝试均在 launch 前拒绝。
+
+验证结果：fresh RED 为 unit `3 failed / 48 deselected` 加 system-outside `1 failed`（精确复现 `/usr/bin/true = 126 / ISOLATION_REFUSED`）；最终轻量集合 system-outside `55 passed`，共享 fixture isolation 定向回归 `13 passed / 3 existing system skips`。Ruff 与 diff 门禁见本提交最终记录。全程 Provider、`codex exec`、formal authorization/result 与正式 experiment 仍为 `0`。
