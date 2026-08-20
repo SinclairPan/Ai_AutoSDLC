@@ -23,7 +23,7 @@ CURRENT_FRONTEND_EVIDENCE_PATH = (
     / "current-frontend-evidence.json"
 )
 DEFAULT_FRONTEND_BROWSER_GATE_ARTIFACT_PATH = (
-    Path(AI_SDLC_DIR) / "memory" / "frontend-browser-gate" / "latest.yaml"
+    Path(AI_SDLC_DIR) / "memory" / "frontend-delivery" / "browser" / "latest.yaml"
 )
 
 
@@ -109,9 +109,15 @@ class FrontendEvidenceSnapshot(LoopArtifactModel):
     browser_entry_ref: str = ""
     effective_provider: str = ""
     effective_style_pack: str = ""
+    visual_baseline_root: str = ""
+    visual_baseline_image_path: str = ""
+    visual_baseline_metadata_path: str = ""
+    visual_baseline_digest: str = ""
     required_probe_set: list[str] = Field(default_factory=list)
     receipts: list[FrontendEvidenceReceiptSnapshot] = Field(default_factory=list)
-    artifact_records: list[FrontendEvidenceArtifactSnapshot] = Field(default_factory=list)
+    artifact_records: list[FrontendEvidenceArtifactSnapshot] = Field(
+        default_factory=list
+    )
     screenshot_refs: list[str] = Field(default_factory=list)
     trace_refs: list[str] = Field(default_factory=list)
     blocking_reason_codes: list[str] = Field(default_factory=list)

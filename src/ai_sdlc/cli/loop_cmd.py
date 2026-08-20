@@ -26,6 +26,10 @@ from ai_sdlc.core.design_contract_loop import (
     check_design_contract_loop,
     close_design_contract_loop,
 )
+from ai_sdlc.core.frontend_delivery_service import (
+    FrontendDeliveryCommandResult,
+    FrontendDeliveryService,
+)
 from ai_sdlc.core.frontend_evidence_loop import (
     FrontendEvidenceCloseOptions,
     FrontendEvidenceCommandResult,
@@ -92,6 +96,23 @@ frontend_evidence_app = typer.Typer(
     no_args_is_help=True,
 )
 console = Console()
+
+
+def _emit_frontend_delivery_result(
+    result: FrontendDeliveryCommandResult,
+    *,
+    json_output: bool,
+) -> None:
+    if json_output:
+        typer.echo(json.dumps(result.to_dict(), ensure_ascii=False, sort_keys=True))
+        return
+    typer.echo(f"Result: {result.result}")
+    typer.echo(f"Next: {result.next_action}")
+    typer.echo(
+        "Blockers: " + (", ".join(result.blockers) if result.blockers else "none")
+    )
+    if result.artifact_path:
+        typer.echo(f"Artifact: {result.artifact_path}")
 
 
 def _run_project_writer_adapter(*, json_output: bool) -> None:
@@ -509,6 +530,132 @@ def implementation_close(
     )
     _emit_implementation_result(result, json_output=json_output)
     raise typer.Exit(0 if result.status == "ready" and result.closed else 1)
+
+
+@frontend_evidence_app.command(name="solution-confirm")
+def frontend_evidence_solution_confirm(
+    work_item: str = typer.Option(
+        "",
+        "--wi",
+        help="Work item directory, for example specs/123-name.",
+    ),
+    frontend_stack: str = typer.Option(
+        "",
+        "--frontend-stack",
+        help="Explicit frontend stack selected from project facts or a custom choice.",
+    ),
+    provider_id: str = typer.Option(
+        "",
+        "--provider-id",
+        help="Explicit component/provider choice.",
+    ),
+    style_pack_id: str = typer.Option(
+        "",
+        "--style-pack-id",
+        help="Explicit style pack or project-defined style choice.",
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--execute",
+        help="Preview or persist the confirmed solution snapshot.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Confirm execute mode."),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Preview or confirm one project-fact frontend solution."""
+
+    if not dry_run:
+        _run_project_writer_adapter(json_output=json_output)
+    root = _project_root_or_exit(json_output=json_output)
+    result = FrontendDeliveryService(root).confirm_solution(
+        frontend_stack=frontend_stack,
+        provider_id=provider_id,
+        style_pack_id=style_pack_id,
+        work_item=work_item,
+        dry_run=dry_run,
+        confirmed=yes,
+    )
+    _emit_frontend_delivery_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status in {"ready", "dry_run"} else 1)
+
+
+@frontend_evidence_app.command(name="apply")
+def frontend_evidence_apply(
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--execute",
+        help="Preview or execute the confirmed frontend delivery plan.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Confirm execute mode."),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Apply the confirmed frontend solution through the retained executor."""
+
+    if not dry_run:
+        _run_project_writer_adapter(json_output=json_output)
+    root = _project_root_or_exit(json_output=json_output)
+    result = FrontendDeliveryService(root).apply_solution(
+        dry_run=dry_run,
+        confirmed=yes,
+    )
+    _emit_frontend_delivery_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status in {"ready", "dry_run"} else 1)
+
+
+@frontend_evidence_app.command(name="capture")
+def frontend_evidence_capture(
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--execute",
+        help="Preview or execute browser, visual, and accessibility capture.",
+    ),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Capture browser, visual, and accessibility evidence."""
+
+    if not dry_run:
+        _run_project_writer_adapter(json_output=json_output)
+    root = _project_root_or_exit(json_output=json_output)
+    result = FrontendDeliveryService(root).capture_evidence(dry_run=dry_run)
+    _emit_frontend_delivery_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status in {"ready", "dry_run", "needs_recheck"} else 1)
+
+
+@frontend_evidence_app.command(name="baseline")
+def frontend_evidence_baseline(
+    artifact: str = typer.Option(
+        "",
+        "--artifact",
+        help="Optional project-local bootstrap browser artifact.",
+    ),
+    threshold: float = typer.Option(
+        0.03,
+        "--threshold",
+        min=0.0,
+        max=1.0,
+        help="Visual comparison threshold.",
+    ),
+    dry_run: bool = typer.Option(
+        True,
+        "--dry-run/--execute",
+        help="Preview or establish a visual comparison baseline.",
+    ),
+    yes: bool = typer.Option(False, "--yes", help="Confirm execute mode."),
+    json_output: bool = typer.Option(False, "--json", help="Print JSON output."),
+) -> None:
+    """Establish a baseline without promoting the bootstrap capture."""
+
+    if not dry_run:
+        _run_project_writer_adapter(json_output=json_output)
+    root = _project_root_or_exit(json_output=json_output)
+    result = FrontendDeliveryService(root).establish_baseline(
+        artifact=artifact,
+        threshold=threshold,
+        dry_run=dry_run,
+        confirmed=yes,
+    )
+    _emit_frontend_delivery_result(result, json_output=json_output)
+    raise typer.Exit(0 if result.status in {"ready", "dry_run"} else 1)
 
 
 @frontend_evidence_app.command(name="start")

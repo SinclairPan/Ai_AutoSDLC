@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from ai_sdlc.core.frontend_contract_verification import FRONTEND_CONTRACT_SOURCE_NAME
-from ai_sdlc.core.frontend_gate_verification import FRONTEND_GATE_SOURCE_NAME
 from ai_sdlc.core.frontend_inheritance_truth import (
     summarize_frontend_inheritance_status_for_display,
 )
@@ -22,6 +21,8 @@ from ai_sdlc.gates.task_ac_checks import (
 from ai_sdlc.models.gate import GateCheck, GateResult, GateVerdict
 from ai_sdlc.models.state import ExecutionStatus
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
+
+FRONTEND_GATE_SOURCE_NAME = "frontend gate verification"
 
 
 def _dedupe_text_items(values: list[Any]) -> list[str]:

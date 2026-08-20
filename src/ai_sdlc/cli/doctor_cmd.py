@@ -10,7 +10,8 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from ai_sdlc.telemetry.readiness import build_doctor_readiness_items
+from ai_sdlc.core.frontend_evidence_loop import doctor_frontend_evidence_provider
+from ai_sdlc.core.frontend_evidence_models import FrontendEvidenceDoctorOptions
 from ai_sdlc.utils.helpers import find_project_root
 
 console = Console()
@@ -42,47 +43,42 @@ def doctor_command() -> None:
         "[cyan]python -m ai_sdlc[/cyan] (same as [cyan]ai-sdlc[/cyan])."
     )
     console.print(
-        "[bold]Scope[/bold]: doctor checks environment, telemetry, and status surfaces. "
-        "It does not install component libraries or run browser verification."
-    )
-    console.print(
-        "[bold]Frontend scope[/bold]: frontend delivery rows here describe package "
-        "download/integration truth only. Separate inheritance rows describe whether "
-        "later code generation and frontend tests already bind that choice."
-    )
-    console.print(
-        "[bold]Inheritance risk[/bold]: if a row says "
-        "[cyan]not inherited yet (risk)[/cyan], continuing may generate against the "
-        "wrong component library or validate against the wrong standard."
-    )
-    console.print(
-        "[bold]Delivery follow-up[/bold]: use [cyan]program status[/cyan] to inspect "
-        "frontend delivery truth, "
-        "[cyan]python -m ai_sdlc program solution-confirm --execute --continue --yes[/cyan] "
-        "to continue managed delivery, and "
-        "[cyan]python -m ai_sdlc program browser-gate-probe --execute[/cyan] "
-        "to collect browser evidence."
+        "[bold]Scope[/bold]: doctor checks the installed command, project adapter, "
+        "and browser evidence capability. It does not install dependencies or mutate the project."
     )
 
-    readiness = build_doctor_readiness_items(find_project_root())
-    table = Table(title="Environment and Status Diagnostics")
+    table = Table(title="Environment Diagnostics")
     table.add_column("Check", style="cyan")
     table.add_column("State")
     table.add_column("Detail")
-    for item in readiness:
-        state = item["state"]
-        if state == "ok":
-            rendered = "[green]ok[/green]"
-        elif state == "warn":
-            rendered = "[yellow]warn[/yellow]"
-        elif state == "unavailable":
-            rendered = "[dim]unavailable[/dim]"
-        else:
-            rendered = "[red]error[/red]"
-        table.add_row(item["name"], rendered, item["detail"])
+    table.add_row(
+        "python",
+        "[green]ok[/green]" if Path(sys.executable).is_file() else "[red]error[/red]",
+        sys.executable,
+    )
+    table.add_row(
+        "ai-sdlc",
+        "[green]ok[/green]" if which else "[yellow]warn[/yellow]",
+        which or "use python -m ai_sdlc",
+    )
+    root = find_project_root()
+    browser_detail = "not inside an initialized project"
+    browser_state = "unavailable"
+    if root is not None:
+        browser = doctor_frontend_evidence_provider(
+            FrontendEvidenceDoctorOptions(root=root)
+        )
+        browser_state = str(browser.status)
+        browser_detail = browser.result
+    table.add_row(
+        "browser evidence",
+        "[green]ok[/green]" if browser_state == "ready" else "[yellow]warn[/yellow]",
+        browser_detail,
+    )
     console.print()
     console.print(table)
     console.print()
     console.print("[bold]Plain Diagnostics[/bold]")
-    for item in readiness:
-        typer.echo(f"{item['name']}: {item['state']} | {item['detail']}")
+    typer.echo(f"python: {'ok' if Path(sys.executable).is_file() else 'error'} | {sys.executable}")
+    typer.echo(f"ai-sdlc: {'ok' if which else 'warn'} | {which or 'python -m ai_sdlc'}")
+    typer.echo(f"browser evidence: {browser_state} | {browser_detail}")

@@ -8,7 +8,6 @@ from rich.console import Console
 from ai_sdlc import __version__
 from ai_sdlc.cli.adapter_cmd import adapter_app
 from ai_sdlc.cli.adopt_cmd import adopt_command
-from ai_sdlc.cli.agentops_cmd import agentops_app
 from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
 from ai_sdlc.cli.commands import (
     index_command,
@@ -19,23 +18,15 @@ from ai_sdlc.cli.commands import (
     status_command,
 )
 from ai_sdlc.cli.doctor_cmd import doctor_command
-from ai_sdlc.cli.enterprise_cmd import enterprise_app
 from ai_sdlc.cli.handoff_cmd import handoff_app
-from ai_sdlc.cli.host_runtime_cmd import host_runtime_app
 from ai_sdlc.cli.loop_cmd import loop_app
 from ai_sdlc.cli.pr_review_cmd import pr_review_app
-from ai_sdlc.cli.program_cmd import program_app
-from ai_sdlc.cli.provenance_cmd import provenance_app
 from ai_sdlc.cli.run_cmd import run_command
 from ai_sdlc.cli.self_update_cmd import (
     consume_update_replay_bypass,
     maybe_render_update_notice,
     self_update_app,
 )
-from ai_sdlc.cli.stage_cmd import stage_app
-from ai_sdlc.cli.sub_apps import gate_app, rules_app, studio_app
-from ai_sdlc.cli.telemetry_cmd import telemetry_app
-from ai_sdlc.cli.trace_cmd import trace_app
 from ai_sdlc.cli.verify_cmd import verify_app
 from ai_sdlc.cli.workitem_cmd import _WORKITEM_ADAPTER_HOOK_META_KEY, workitem_app
 
@@ -50,19 +41,13 @@ _READ_ONLY_SUBCOMMANDS = (
     "adapter",
     "init",
     "doctor",
-    "enterprise",
-    "agentops",
     "handoff",
-    "host-runtime",
     "run",
     "status",
     "scan",
     "verify",
-    "rules",
-    "provenance",
     "loop",
     "pr-review",
-    "program",
     "self-update",
 )
 _UPDATE_NOTICE_BYPASS_SUBCOMMANDS = ("self-update",)
@@ -126,20 +111,9 @@ app.command(name="scan", hidden=True)(scan_command)
 app.command(name="refresh", hidden=True)(refresh_command)
 app.command(name="run")(run_command)
 app.add_typer(adapter_app, name="adapter")
-app.add_typer(agentops_app, name="agentops", hidden=True)
-app.add_typer(enterprise_app, name="enterprise", hidden=True)
-app.add_typer(gate_app, name="gate", hidden=True)
-app.add_typer(rules_app, name="rules", hidden=True)
-app.add_typer(studio_app, name="studio", hidden=True)
-app.add_typer(stage_app, name="stage", hidden=True)
-app.add_typer(program_app, name="program", hidden=True)
-app.add_typer(host_runtime_app, name="host-runtime", hidden=True)
 app.add_typer(handoff_app, name="handoff", hidden=True)
 app.add_typer(workitem_app, name="workitem")
 app.add_typer(verify_app, name="verify")
-app.add_typer(telemetry_app, name="telemetry", hidden=True)
-app.add_typer(provenance_app, name="provenance", hidden=True)
-app.add_typer(trace_app, name="trace", hidden=True)
 app.add_typer(loop_app, name="loop")
 app.add_typer(pr_review_app, name="pr-review")
 app.add_typer(self_update_app, name="self-update")

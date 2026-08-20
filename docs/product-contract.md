@@ -49,7 +49,7 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 
 正常用户入口 `ai-sdlc run` 只读取当前五 Loop 真值，并返回 Result、Next、Blockers 和当前 Loop 最多两个内置规则片段。选择只依赖结构化 Loop 类型与状态，不扫描需求关键词、不联网、不写项目状态，也不建立规则平台。通用规则不得硬编码具体前端框架、组件库、provider 或 style pack；前端实现前只要求根据项目事实给出推荐方案、可选方案并等待用户确认。
 
-`ai-sdlc status` 默认只显示 Result、Next、Blockers；旧详细人类诊断保留在 `--details`，详细机器合同保留在 `--json`。顶层帮助只展示正常用户入口，历史/高级命令保持可直接调用但不占用默认命令列表。
+`ai-sdlc status` 默认只显示 Result、Next、Blockers；详细人类诊断保留在 `--details`，详细机器合同保留在 `--json`。顶层帮助只展示正常用户入口；已经退役的平行 Program、Telemetry、Provenance、AgentOps、Studio 和 Host Runtime 命令不再注册，显式调用返回未知命令。
 
 ### 质量治理
 
@@ -61,9 +61,8 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 
 ### 运行集成
 
-- AgentOps outbox、状态诊断与重试；
-- 企业端点、策略和凭据环境变量名配置；
-- 结构化遥测、provenance 和 trace 命令；
+- 本地 Continuity handoff 与五 Loop 状态恢复；
+- 安装版命令前升级提示、离线升级与失败恢复；
 - Windows、macOS、Linux 离线交付。
 
 ## 非目标

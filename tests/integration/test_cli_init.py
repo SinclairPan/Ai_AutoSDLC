@@ -9,7 +9,7 @@ from typer.testing import CliRunner
 
 from ai_sdlc.cli import commands
 from ai_sdlc.cli.main import app
-from ai_sdlc.context.state import load_checkpoint, load_resume_pack, save_checkpoint
+from ai_sdlc.context.state import load_checkpoint, save_checkpoint
 from ai_sdlc.core.config import load_project_config
 from ai_sdlc.integrations.agent_target import PreferredShell
 from ai_sdlc.models.state import Checkpoint, CompletedStage, FeatureInfo
@@ -43,9 +43,8 @@ class TestCliInit:
         assert "当前结果 / Result" in result.output
         assert "初始化完成" in result.output
         assert "Initialization complete" in result.output
-        assert "安全预演已自动执行" in result.output
-        assert "Safe rehearsal ran automatically" in result.output
         assert "ai-sdlc adapter select" in result.output
+        assert "Safe rehearsal passed automatically" in result.output
         assert "如果当前 AI 入口不是你正在使用的聊天工具" in result.output
         assert "current AI entry" in result.output
         assert "ai-sdlc adapter status" not in result.output
@@ -53,30 +52,16 @@ class TestCliInit:
         assert "ai-sdlc adapter activate" not in result.output
         cfg = load_project_config(tmp_path)
         assert cfg.preferred_shell != ""
-        cp = load_checkpoint(tmp_path)
-        assert cp is not None
-        assert cp.current_stage == "init"
-        assert "init" in {stage.stage for stage in cp.completed_stages}
-        resume_pack = load_resume_pack(tmp_path)
-        assert resume_pack.current_stage == "init"
+        assert load_checkpoint(tmp_path) is None
+        assert not (tmp_path / ".ai-sdlc" / "telemetry").exists()
 
-    def test_init_fails_when_automatic_dry_run_crashes(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        def crash_dry_run(*_args: object, **_kwargs: object) -> None:
-            raise RuntimeError("runtime exploded")
-
-        monkeypatch.setattr(commands.SDLCRunner, "run", crash_dry_run)
+    def test_init_does_not_load_the_retired_runner(self, tmp_path: Path) -> None:
+        assert not hasattr(commands, "SDLCRunner")
 
         result = runner.invoke(app, ["init", str(tmp_path)])
 
-        assert result.exit_code == 1
-        assert "初始化未完成" in result.output
-        assert "Initialization is not complete" in result.output
-        assert "ai-sdlc doctor" in result.output
-        assert "runtime exploded" in result.output
-        assert "初始化完成" not in result.output
-        assert "Initialization complete" not in result.output
+        assert result.exit_code == 0, result.output
+        assert "Initialization complete" in result.output
 
     def test_init_already_initialized(self, initialized_project_dir: Path) -> None:
         result = runner.invoke(app, ["init", str(initialized_project_dir)])
@@ -95,10 +80,7 @@ class TestCliInit:
         assert "unverified" not in result.output
         assert "python -m ai_sdlc run --dry-run" not in result.output
         assert "ai-sdlc adapter activate" not in result.output
-        cp = load_checkpoint(initialized_project_dir)
-        assert cp is not None
-        assert cp.current_stage == "init"
-        assert "init" in {stage.stage for stage in cp.completed_stages}
+        assert load_checkpoint(initialized_project_dir) is None
 
     def test_init_does_not_mark_init_complete_when_rehearsal_init_gate_is_open(
         self, initialized_project_dir: Path, monkeypatch: pytest.MonkeyPatch

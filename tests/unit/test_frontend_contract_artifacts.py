@@ -10,7 +10,7 @@ import ai_sdlc.generators.frontend_contract_artifacts as frontend_contract_artif
 from ai_sdlc.generators.frontend_contract_artifacts import (
     materialize_frontend_contract_artifacts,
 )
-from ai_sdlc.models import (
+from ai_sdlc.models.frontend_contracts import (
     ContractLegacyContext,
     ContractRuleBundle,
     FrontendContractSet,

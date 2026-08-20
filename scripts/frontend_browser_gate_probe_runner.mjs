@@ -627,15 +627,10 @@ function resolveVisualRegressionPaths(payload) {
   if (!matrixId) {
     return null;
   }
+  const configuredRoot = String(payload.visual_regression_baseline_root || "").trim();
   const baselineRoot = path.resolve(
     process.cwd(),
-    "governance",
-    "frontend",
-    "quality-platform",
-    "evidence",
-    "visual-regression",
-    "baselines",
-    matrixId,
+    configuredRoot || path.join(".ai-sdlc", "memory", "frontend-delivery", "visual-baselines", matrixId),
   );
   return {
     matrixId,
@@ -1657,7 +1652,7 @@ async function main() {
         transientResult(
           payload,
           "playwright_runtime_unavailable",
-          "Playwright runtime is not available on this host. Install Playwright and its browsers for this frontend host, then re-run `uv run ai-sdlc program browser-gate-probe --execute`.",
+          "Playwright runtime is not available on this host. Install Playwright and its browsers for this frontend host, then re-run `uv run ai-sdlc loop frontend-evidence capture --execute`.",
         ),
       )}\n`,
     );
@@ -1683,12 +1678,12 @@ async function main() {
           payload,
           diagnosticCode,
           diagnosticCode === "browser_entry_unavailable"
-            ? "The managed frontend target did not resolve to a loadable browser entry. Materialize a browser entry such as `index.html`, or point the apply artifact at a navigable URL, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+            ? "The managed frontend target did not resolve to a loadable browser entry. Materialize a browser entry such as `index.html`, or point the apply artifact at a navigable URL, then re-run `uv run ai-sdlc loop frontend-evidence capture --execute`."
             : diagnosticCode === "navigation_failed"
-            ? "Browser navigation failed before the probe could complete. Confirm the browser entry exists and is loadable, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+            ? "Browser navigation failed before the probe could complete. Confirm the browser entry exists and is loadable, then re-run `uv run ai-sdlc loop frontend-evidence capture --execute`."
             : diagnosticCode === "vite_dev_server_unavailable"
-            ? "The generated Vue3 frontend dev server did not become ready. Confirm Vite dependencies are installed in managed/frontend, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
-            : "Browser launch failed before the probe could complete. Restore the frontend browser runtime, then re-run `uv run ai-sdlc program browser-gate-probe --execute`.",
+            ? "The generated Vue3 frontend dev server did not become ready. Confirm Vite dependencies are installed in managed/frontend, then re-run `uv run ai-sdlc loop frontend-evidence capture --execute`."
+            : "Browser launch failed before the probe could complete. Restore the frontend browser runtime, then re-run `uv run ai-sdlc loop frontend-evidence capture --execute`.",
         ),
       )}\n`,
     );

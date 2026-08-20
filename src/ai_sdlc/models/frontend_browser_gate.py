@@ -38,6 +38,7 @@ class BrowserQualityGateExecutionContext(FrontendBrowserGateModel):
     page_schema_ids: list[str] = Field(default_factory=list)
     visual_regression_matrix_id: str = ""
     visual_regression_viewport_id: str = ""
+    visual_regression_baseline_root: str = ""
     required_probe_set: list[str] = Field(default_factory=list)
     browser_entry_ref: str
     source_linkage_refs: dict[str, str] = Field(default_factory=dict)

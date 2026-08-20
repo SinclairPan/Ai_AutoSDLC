@@ -63,11 +63,15 @@ def _context() -> BrowserQualityGateExecutionContext:
             "interaction_anti_pattern_checks",
         ],
         browser_entry_ref="managed/frontend/index.html",
-        source_linkage_refs={"apply_result_status": "apply_succeeded_pending_browser_gate"},
+        source_linkage_refs={
+            "apply_result_status": "apply_succeeded_pending_browser_gate"
+        },
     )
 
 
-def test_browser_gate_quality_capture_keeps_absent_optional_telemetry_nullable() -> None:
+def test_browser_gate_quality_capture_keeps_absent_optional_telemetry_nullable() -> (
+    None
+):
     capture = BrowserGateQualityCapture.model_validate(
         {
             "gate_run_id": "gate-run-001",
@@ -113,7 +117,9 @@ def _visual_a11y_pass_artifact():
     )
 
 
-def test_build_browser_quality_gate_execution_context_derives_index_html_entry_ref() -> None:
+def test_build_browser_quality_gate_execution_context_derives_index_html_entry_ref() -> (
+    None
+):
     context = build_browser_quality_gate_execution_context(
         apply_payload={
             "result_status": "apply_succeeded_pending_browser_gate",
@@ -154,16 +160,22 @@ def test_build_browser_quality_gate_execution_context_derives_index_html_entry_r
     assert context.package_manager == "pnpm"
     assert context.component_library_packages == ["primevue", "@primeuix/themes"]
     assert context.provider_theme_adapter_id == "public-primevue-theme-bridge"
-    assert context.provider_runtime_adapter_carrier_mode == "target-project-adapter-layer"
+    assert (
+        context.provider_runtime_adapter_carrier_mode == "target-project-adapter-layer"
+    )
     assert context.provider_runtime_adapter_delivery_state == "scaffolded"
     assert context.provider_runtime_adapter_evidence_state == "missing"
     assert context.page_schema_ids == ["dashboard-workspace", "search-list-workspace"]
-    assert context.visual_regression_matrix_id == "dashboard-modern-saas-desktop-chromium"
+    assert (
+        context.visual_regression_matrix_id == "dashboard-modern-saas-desktop-chromium"
+    )
     assert context.visual_regression_viewport_id == "desktop-1440"
     assert "visual_regression" in context.required_probe_set
 
 
-def test_build_browser_quality_gate_execution_context_skips_visual_regression_without_matrix() -> None:
+def test_build_browser_quality_gate_execution_context_skips_visual_regression_without_matrix() -> (
+    None
+):
     context = build_browser_quality_gate_execution_context(
         apply_payload={
             "result_status": "apply_succeeded_pending_browser_gate",
@@ -255,9 +267,13 @@ def test_materialize_browser_gate_probe_runtime_executes_real_runner_and_capture
 
     assert session.status == "incomplete"
     assert bundle.overall_gate_status == "incomplete"
-    smoke_receipt = next(item for item in receipts if item.check_name == "playwright_smoke")
+    smoke_receipt = next(
+        item for item in receipts if item.check_name == "playwright_smoke"
+    )
     interaction_receipt = next(
-        item for item in receipts if item.check_name == "interaction_anti_pattern_checks"
+        item
+        for item in receipts
+        if item.check_name == "interaction_anti_pattern_checks"
     )
     visual_regression_receipt = next(
         item for item in receipts if item.check_name == "visual_regression"
@@ -270,7 +286,9 @@ def test_materialize_browser_gate_probe_runtime_executes_real_runner_and_capture
     assert bundle.delivery_entry_id == "vue3-public-primevue"
     assert bundle.component_library_packages == ["primevue", "@primeuix/themes"]
     assert bundle.provider_theme_adapter_id == "public-primevue-theme-bridge"
-    assert bundle.provider_runtime_adapter_carrier_mode == "target-project-adapter-layer"
+    assert (
+        bundle.provider_runtime_adapter_carrier_mode == "target-project-adapter-layer"
+    )
     assert bundle.provider_runtime_adapter_delivery_state == "scaffolded"
     assert bundle.provider_runtime_adapter_evidence_state == "missing"
     assert bundle.page_schema_ids == ["dashboard-workspace", "search-list-workspace"]
@@ -340,7 +358,9 @@ def test_materialize_browser_gate_probe_runtime_blocks_smoke_on_console_errors(
         execute_probe=True,
     )
 
-    smoke_receipt = next(item for item in receipts if item.check_name == "playwright_smoke")
+    smoke_receipt = next(
+        item for item in receipts if item.check_name == "playwright_smoke"
+    )
     assert smoke_receipt.classification_candidate == "actual_quality_blocker"
     assert smoke_receipt.blocking_reason_codes == ["browser_console_error"]
     assert bundle.overall_gate_status == "blocked"
@@ -408,7 +428,9 @@ def test_materialize_browser_gate_probe_runtime_can_pass_without_visual_regressi
     assert session.status == "completed"
     assert bundle.overall_gate_status == "passed"
     assert bundle.visual_verdict == "pass"
-    assert {receipt.check_name for receipt in receipts} == set(context.required_probe_set)
+    assert {receipt.check_name for receipt in receipts} == set(
+        context.required_probe_set
+    )
     assert not any(record.check_name == "visual_regression" for record in records)
 
 
@@ -453,7 +475,9 @@ def test_materialize_browser_gate_probe_runtime_prefers_visual_regression_verdic
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -546,7 +570,9 @@ def test_materialize_browser_gate_probe_runtime_fails_closed_when_visual_diff_mi
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -594,8 +620,12 @@ def test_materialize_browser_gate_probe_runtime_fails_closed_when_visual_diff_mi
         execute_probe=True,
     )
 
-    visual_record = next(record for record in records if record.check_name == "visual_regression")
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_regression")
+    visual_record = next(
+        record for record in records if record.check_name == "visual_regression"
+    )
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_regression"
+    )
     assert visual_record.capture_status == "missing"
     assert visual_receipt.classification_candidate == "evidence_missing"
     assert visual_receipt.recheck_required is True
@@ -624,7 +654,9 @@ def test_materialize_browser_gate_probe_runtime_marks_visual_transient_as_failed
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -672,7 +704,9 @@ def test_materialize_browser_gate_probe_runtime_marks_visual_transient_as_failed
         execute_probe=True,
     )
 
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_regression")
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_regression"
+    )
     assert visual_receipt.runtime_status == "failed_transient"
     assert visual_receipt.classification_candidate == "transient_run_failure"
     assert "visual_regression_transient_failure" in visual_receipt.blocking_reason_codes
@@ -704,7 +738,9 @@ def test_materialize_browser_gate_probe_runtime_normalizes_artifact_prefixed_vis
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -750,8 +786,12 @@ def test_materialize_browser_gate_probe_runtime_normalizes_artifact_prefixed_vis
         execute_probe=True,
     )
 
-    visual_record = next(record for record in records if record.check_name == "visual_regression")
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_regression")
+    visual_record = next(
+        record for record in records if record.check_name == "visual_regression"
+    )
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_regression"
+    )
     assert (
         visual_record.artifact_ref
         == ".ai-sdlc/artifacts/frontend-browser-gate/gate-run-001/visual-regression/diff.png"
@@ -874,9 +914,9 @@ def test_materialize_browser_gate_probe_runtime_marks_missing_runner_artifact_as
             shared_capture=BrowserGateSharedRuntimeCapture(
                 gate_run_id=execution_context.gate_run_id,
                 trace_artifact_ref=str(
-                    (artifact_root / "shared-runtime" / "playwright-trace.zip").relative_to(
-                        tmp_path
-                    )
+                    (
+                        artifact_root / "shared-runtime" / "playwright-trace.zip"
+                    ).relative_to(tmp_path)
                 ),
                 navigation_screenshot_ref=str(screenshot_path.relative_to(tmp_path)),
                 capture_status="captured",
@@ -907,7 +947,9 @@ def test_materialize_browser_gate_probe_runtime_marks_missing_runner_artifact_as
         execute_probe=True,
     )
 
-    smoke_receipt = next(item for item in receipts if item.check_name == "playwright_smoke")
+    smoke_receipt = next(
+        item for item in receipts if item.check_name == "playwright_smoke"
+    )
     assert smoke_receipt.classification_candidate == "evidence_missing"
     assert bundle.overall_gate_status == "incomplete"
 
@@ -957,7 +999,10 @@ def test_materialize_browser_gate_probe_runtime_deduplicates_context_lists_and_w
                 capture_status="captured",
                 classification_candidate="pass",
                 blocking_reason_codes=[],
-                anchor_refs=["interaction:primary-action", "interaction:primary-action"],
+                anchor_refs=[
+                    "interaction:primary-action",
+                    "interaction:primary-action",
+                ],
             ),
             diagnostic_codes=[],
             warnings=["runner warning", "runner warning"],
@@ -1043,18 +1088,31 @@ def test_run_default_browser_gate_probe_uses_packaged_runner_when_project_script
         def poll(self):
             return self.returncode
 
-    monkeypatch.setattr(runtime_module.importlib_resources, "files", lambda _pkg: _FakeResource())
+    monkeypatch.setattr(
+        runtime_module.importlib_resources, "files", lambda _pkg: _FakeResource()
+    )
     monkeypatch.setattr(runtime_module.importlib_resources, "as_file", _as_file)
     monkeypatch.setattr(runtime_module.subprocess, "Popen", _FakeProcess)
     monkeypatch.setattr(
         runtime_module,
         "__file__",
-        str(tmp_path / "pkg" / "src" / "ai_sdlc" / "core" / "frontend_browser_gate_runtime.py"),
+        str(
+            tmp_path
+            / "pkg"
+            / "src"
+            / "ai_sdlc"
+            / "core"
+            / "frontend_browser_gate_runtime.py"
+        ),
     )
 
     result = run_default_browser_gate_probe(
         root=tmp_path,
-        artifact_root=tmp_path / ".ai-sdlc" / "artifacts" / "frontend-browser-gate" / "gate-run-001",
+        artifact_root=tmp_path
+        / ".ai-sdlc"
+        / "artifacts"
+        / "frontend-browser-gate"
+        / "gate-run-001",
         execution_context=_context(),
         generated_at="2026-04-24T10:00:00Z",
     )
@@ -1100,7 +1158,11 @@ def test_run_default_browser_gate_probe_kills_process_tree_on_timeout(
 
     result = run_default_browser_gate_probe(
         root=tmp_path,
-        artifact_root=tmp_path / ".ai-sdlc" / "artifacts" / "frontend-browser-gate" / "gate-run-001",
+        artifact_root=tmp_path
+        / ".ai-sdlc"
+        / "artifacts"
+        / "frontend-browser-gate"
+        / "gate-run-001",
         execution_context=_context(),
         generated_at="2026-04-24T10:00:00Z",
     )
@@ -1130,7 +1192,9 @@ def test_materialize_browser_gate_probe_runtime_auto_materializes_visual_a11y_ev
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -1190,7 +1254,9 @@ def test_materialize_browser_gate_probe_runtime_auto_materializes_visual_a11y_ev
         tmp_path / "specs" / "001-auth" / "frontend-visual-a11y-evidence.json"
     )
     assert evidence_path.is_file()
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_expectation")
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_expectation"
+    )
     a11y_receipt = next(item for item in receipts if item.check_name == "basic_a11y")
     visual_regression_receipt = next(
         item for item in receipts if item.check_name == "visual_regression"
@@ -1246,7 +1312,9 @@ def test_materialize_browser_gate_probe_runtime_records_viewport_visual_evidence
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -1356,13 +1424,17 @@ def test_materialize_browser_gate_probe_runtime_records_viewport_visual_evidence
     viewport_records = [
         record for record in records if record.artifact_type == "viewport_screenshot"
     ]
-    assert [record.source_linkage_refs["viewport_id"] for record in viewport_records] == [
+    assert [
+        record.source_linkage_refs["viewport_id"] for record in viewport_records
+    ] == [
         "desktop-1440",
         "mobile-390",
     ]
     assert any("desktop-1440-screenshot.png" in ref for ref in bundle.screenshot_refs)
     assert any("mobile-390-screenshot.png" in ref for ref in bundle.screenshot_refs)
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_expectation")
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_expectation"
+    )
     assert visual_receipt.classification_candidate == "advisory_only"
     assert visual_receipt.advisory_reason_codes == ["visual_horizontal_overflow"]
 
@@ -1430,7 +1502,9 @@ def test_materialize_browser_gate_probe_runtime_records_interaction_a11y_warning
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -1485,7 +1559,9 @@ def test_materialize_browser_gate_probe_runtime_records_interaction_a11y_warning
     assert session.status == "completed"
     assert bundle.overall_gate_status == "passed_with_advisories"
     interaction_receipt = next(
-        item for item in receipts if item.check_name == "interaction_anti_pattern_checks"
+        item
+        for item in receipts
+        if item.check_name == "interaction_anti_pattern_checks"
     )
     a11y_receipt = next(item for item in receipts if item.check_name == "basic_a11y")
     assert interaction_receipt.classification_candidate == "advisory_only"
@@ -1495,7 +1571,9 @@ def test_materialize_browser_gate_probe_runtime_records_interaction_a11y_warning
         "a11y_focus_visible_missing",
         "interaction_dialog_focus_return_unverified",
     ]
-    assert a11y_receipt.advisory_reason_codes == interaction_receipt.advisory_reason_codes
+    assert (
+        a11y_receipt.advisory_reason_codes == interaction_receipt.advisory_reason_codes
+    )
     assert bundle.interaction_anti_pattern_verdict == "advisory_only"
     assert bundle.a11y_verdict == "advisory_only"
     assert any(
@@ -1617,7 +1695,9 @@ def test_materialize_browser_gate_probe_runtime_regenerates_invalid_auto_visual_
                 "shared_capture": {
                     "gate_run_id": execution_context.gate_run_id,
                     "trace_artifact_ref": str(trace_path.relative_to(tmp_path)),
-                    "navigation_screenshot_ref": str(screenshot_path.relative_to(tmp_path)),
+                    "navigation_screenshot_ref": str(
+                        screenshot_path.relative_to(tmp_path)
+                    ),
                     "capture_status": "captured",
                     "final_url": "http://localhost:4173/",
                     "anchor_refs": ["page:landing"],
@@ -1682,7 +1762,9 @@ def test_materialize_browser_gate_probe_runtime_regenerates_invalid_auto_visual_
         item.evaluation_id == "auto-a11y-focus-visible" and item.outcome == "pass"
         for item in regenerated_artifact.evaluations
     )
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_expectation")
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_expectation"
+    )
     a11y_receipt = next(item for item in receipts if item.check_name == "basic_a11y")
     assert visual_receipt.classification_candidate == "pass"
     assert a11y_receipt.classification_candidate == "pass"
@@ -1900,7 +1982,9 @@ def test_materialize_visual_and_a11y_receipts_deduplicates_remediation_lists(
         execute_probe=True,
     )
 
-    visual_receipt = next(item for item in receipts if item.check_name == "visual_expectation")
+    visual_receipt = next(
+        item for item in receipts if item.check_name == "visual_expectation"
+    )
     a11y_receipt = next(item for item in receipts if item.check_name == "basic_a11y")
     assert visual_receipt.remediation_hints == [
         "review frontend visual / a11y issue findings"
@@ -1915,12 +1999,16 @@ def test_frontend_browser_gate_probe_runner_maps_goto_failure_to_navigation_fail
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -1982,7 +2070,9 @@ export const chromium = {
     assert result["runtime_status"] == "failed_transient"
     assert result["diagnostic_codes"] == ["navigation_failed"]
     assert result["shared_capture"]["diagnostic_codes"] == ["navigation_failed"]
-    assert result["interaction_capture"]["blocking_reason_codes"] == ["navigation_failed"]
+    assert result["interaction_capture"]["blocking_reason_codes"] == [
+        "navigation_failed"
+    ]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node runtime unavailable")
@@ -1990,12 +2080,16 @@ def test_frontend_browser_gate_probe_runner_persists_delivery_context_in_interac
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -2106,7 +2200,9 @@ export const chromium = {
         interaction_snapshot["provider_runtime_adapter_carrier_mode"]
         == "target-project-adapter-layer"
     )
-    assert interaction_snapshot["provider_runtime_adapter_delivery_state"] == "scaffolded"
+    assert (
+        interaction_snapshot["provider_runtime_adapter_delivery_state"] == "scaffolded"
+    )
     assert interaction_snapshot["provider_runtime_adapter_evidence_state"] == "missing"
     assert interaction_snapshot["page_schema_ids"] == [
         "dashboard-workspace",
@@ -2119,12 +2215,16 @@ def test_frontend_browser_gate_probe_runner_can_navigate_generated_index_html(
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -2305,12 +2405,16 @@ def test_frontend_browser_gate_probe_runner_starts_vite_for_generated_managed_fr
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_bin_dir = tmp_path / "fake-bin"
     fake_bin_dir.mkdir()
     fake_npm = fake_bin_dir / "npm"
@@ -2323,7 +2427,7 @@ def test_frontend_browser_gate_probe_runner_starts_vite_for_generated_managed_fr
     fake_npm.chmod(0o755)
     fake_npm_cmd = fake_bin_dir / "npm.cmd"
     fake_npm_cmd.write_text(
-        "@echo off\r\nnode \"%~dp0npm\" %*\r\n",
+        '@echo off\r\nnode "%~dp0npm" %*\r\n',
         encoding="utf-8",
     )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
@@ -2471,7 +2575,9 @@ export const chromium = {
         json.dumps({"scripts": {"dev": "vite"}}),
         encoding="utf-8",
     )
-    (managed_root / "src" / "main.ts").write_text("import './main.css';\n", encoding="utf-8")
+    (managed_root / "src" / "main.ts").write_text(
+        "import './main.css';\n", encoding="utf-8"
+    )
     (managed_root / "index.html").write_text(
         '<div id="app"></div><script type="module" src="/src/main.ts"></script>\n',
         encoding="utf-8",
@@ -2500,7 +2606,10 @@ export const chromium = {
         text=True,
         capture_output=True,
         check=True,
-        env={**os.environ, "PATH": f"{fake_bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"},
+        env={
+            **os.environ,
+            "PATH": f"{fake_bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+        },
     )
 
     result = json.loads(completed.stdout)
@@ -2526,12 +2635,16 @@ def test_frontend_browser_gate_probe_runner_blocks_when_rendered_delivery_contex
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -2664,13 +2777,18 @@ export const chromium = {
 
     result = json.loads(completed.stdout)
     assert result["runtime_status"] == "completed"
-    assert result["interaction_capture"]["classification_candidate"] == "actual_quality_blocker"
-    assert "component_library_package_render_mismatch" in result["interaction_capture"][
-        "blocking_reason_codes"
-    ]
-    assert "page_schema_render_mismatch" in result["interaction_capture"][
-        "blocking_reason_codes"
-    ]
+    assert (
+        result["interaction_capture"]["classification_candidate"]
+        == "actual_quality_blocker"
+    )
+    assert (
+        "component_library_package_render_mismatch"
+        in result["interaction_capture"]["blocking_reason_codes"]
+    )
+    assert (
+        "page_schema_render_mismatch"
+        in result["interaction_capture"]["blocking_reason_codes"]
+    )
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node runtime unavailable")
@@ -2678,12 +2796,16 @@ def test_frontend_browser_gate_probe_runner_reads_visual_baseline_metadata_as_ya
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -2794,12 +2916,10 @@ module.exports = {
     )
     baseline_root = (
         tmp_path
-        / "governance"
-        / "frontend"
-        / "quality-platform"
-        / "evidence"
-        / "visual-regression"
-        / "baselines"
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "visual-baselines"
         / "yaml-matrix"
     )
     baseline_root.mkdir(parents=True)
@@ -2827,6 +2947,7 @@ critical_regions:
         "page_schema_ids": ["dashboard-workspace", "search-list-workspace"],
         "visual_regression_matrix_id": "yaml-matrix",
         "visual_regression_viewport_id": "desktop-1440",
+        "visual_regression_baseline_root": str(baseline_root.relative_to(tmp_path)),
     }
 
     completed = subprocess.run(
@@ -2848,12 +2969,16 @@ def test_frontend_browser_gate_probe_runner_rejects_visual_threshold_above_one(
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -2916,12 +3041,10 @@ export const chromium = {
     )
     baseline_root = (
         tmp_path
-        / "governance"
-        / "frontend"
-        / "quality-platform"
-        / "evidence"
-        / "visual-regression"
-        / "baselines"
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "visual-baselines"
         / "unsafe-threshold-matrix"
     )
     baseline_root.mkdir(parents=True)
@@ -2946,6 +3069,7 @@ threshold: 1.01
         "page_schema_ids": ["dashboard-workspace", "search-list-workspace"],
         "visual_regression_matrix_id": "unsafe-threshold-matrix",
         "visual_regression_viewport_id": "desktop-1440",
+        "visual_regression_baseline_root": str(baseline_root.relative_to(tmp_path)),
     }
 
     completed = subprocess.run(
@@ -2959,7 +3083,10 @@ threshold: 1.01
 
     result = json.loads(completed.stdout)
     assert result["visual_regression_capture"]["capture_status"] == "capture_failed"
-    assert result["visual_regression_capture"]["change_summary"] == "baseline-threshold-invalid"
+    assert (
+        result["visual_regression_capture"]["change_summary"]
+        == "baseline-threshold-invalid"
+    )
     assert result["visual_regression_capture"]["verdict"] == "recheck"
 
 
@@ -2968,12 +3095,16 @@ def test_frontend_browser_gate_probe_runner_reports_visual_decode_failures(
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     fake_playwright_dir = tmp_path / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)
     (fake_playwright_dir / "package.json").write_text(
@@ -3061,12 +3192,10 @@ module.exports = { PNG };
     )
     baseline_root = (
         tmp_path
-        / "governance"
-        / "frontend"
-        / "quality-platform"
-        / "evidence"
-        / "visual-regression"
-        / "baselines"
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "visual-baselines"
         / "decode-failure-matrix"
     )
     baseline_root.mkdir(parents=True)
@@ -3088,6 +3217,7 @@ module.exports = { PNG };
         "page_schema_ids": ["dashboard-workspace", "search-list-workspace"],
         "visual_regression_matrix_id": "decode-failure-matrix",
         "visual_regression_viewport_id": "desktop-1440",
+        "visual_regression_baseline_root": str(baseline_root.relative_to(tmp_path)),
         "package_manager": "pnpm",
     }
 
@@ -3120,12 +3250,16 @@ def test_frontend_browser_gate_probe_runner_resolves_playwright_from_managed_fro
     tmp_path: Path,
 ) -> None:
     source_script_path = (
-        Path(__file__).resolve().parents[2] / "scripts" / "frontend_browser_gate_probe_runner.mjs"
+        Path(__file__).resolve().parents[2]
+        / "scripts"
+        / "frontend_browser_gate_probe_runner.mjs"
     )
     script_dir = tmp_path / "scripts"
     script_dir.mkdir()
     script_path = script_dir / "frontend_browser_gate_probe_runner.mjs"
-    script_path.write_text(source_script_path.read_text(encoding="utf-8"), encoding="utf-8")
+    script_path.write_text(
+        source_script_path.read_text(encoding="utf-8"), encoding="utf-8"
+    )
     managed_root = tmp_path / "managed" / "frontend"
     fake_playwright_dir = managed_root / "node_modules" / "playwright"
     fake_playwright_dir.mkdir(parents=True)

@@ -5,24 +5,12 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import yaml
 
-from ai_sdlc.core.frontend_contract_drift import PageImplementationObservation
 from ai_sdlc.core.frontend_contract_observation_provider import (
     FRONTEND_CONTRACT_OBSERVATION_ARTIFACT_STATUS_ATTACHED,
-)
-from ai_sdlc.core.frontend_contract_verification import (
-    FrontendContractVerificationReport,
-    build_frontend_contract_verification_report,
-)
-from ai_sdlc.core.frontend_visual_a11y_evidence_provider import (
-    FrontendVisualA11yEvidenceArtifact,
-)
-from ai_sdlc.generators.frontend_contract_artifacts import frontend_contracts_root
-from ai_sdlc.generators.frontend_gate_policy_artifacts import frontend_gate_policy_root
-from ai_sdlc.generators.frontend_generation_constraint_artifacts import (
-    frontend_generation_governance_root,
 )
 from ai_sdlc.models.frontend_browser_gate import (
     BrowserProbeExecutionReceipt,
@@ -30,6 +18,15 @@ from ai_sdlc.models.frontend_browser_gate import (
     BrowserQualityGateExecutionContext,
 )
 from ai_sdlc.models.gate import GateCheck, GateResult, GateVerdict
+
+if TYPE_CHECKING:
+    from ai_sdlc.core.frontend_contract_drift import PageImplementationObservation
+    from ai_sdlc.core.frontend_contract_verification import (
+        FrontendContractVerificationReport,
+    )
+    from ai_sdlc.core.frontend_visual_a11y_evidence_provider import (
+        FrontendVisualA11yEvidenceArtifact,
+    )
 
 FRONTEND_GATE_SOURCE_NAME = "frontend gate verification"
 FRONTEND_GATE_VISUAL_A11Y_CHECK_OBJECT = "frontend_visual_a11y_policy_artifacts"
@@ -164,6 +161,18 @@ class FrontendGateExecuteDecision:
         )
 
 
+def build_frontend_contract_verification_report(
+    *args: object, **kwargs: object
+) -> FrontendContractVerificationReport:
+    """Load the legacy contract projector only when this legacy report is requested."""
+
+    from ai_sdlc.core.frontend_contract_verification import (
+        build_frontend_contract_verification_report as build_report,
+    )
+
+    return build_report(*args, **kwargs)
+
+
 def build_frontend_gate_verification_report(
     root: Path,
     observations: list[PageImplementationObservation],
@@ -178,6 +187,14 @@ def build_frontend_gate_verification_report(
     visual_a11y_evidence_artifact: FrontendVisualA11yEvidenceArtifact | None = None,
 ) -> FrontendGateVerificationReport:
     """Translate artifact presence and contract prerequisite into gate summary fields."""
+
+    from ai_sdlc.generators.frontend_contract_artifacts import frontend_contracts_root
+    from ai_sdlc.generators.frontend_gate_policy_artifacts import (
+        frontend_gate_policy_root,
+    )
+    from ai_sdlc.generators.frontend_generation_constraint_artifacts import (
+        frontend_generation_governance_root,
+    )
 
     gate_root = frontend_gate_policy_root(root)
     generation_root = frontend_generation_governance_root(root)

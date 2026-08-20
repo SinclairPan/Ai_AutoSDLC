@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 
 from windows_clean_user_e2e_support import (
-    ADVANCED_SOLUTION_TOKENS,
     CUSTOM_SOLUTION_TOKENS,
     DEFAULT_SOLUTION_TOKENS,
     _business_hashes,
@@ -345,7 +344,6 @@ def _verify_interactive_init(
     )
     forbidden_agent_tokens = (
         "进入实现前必须先给出技术栈 / 组件库建议",
-        "program solution-confirm --dry-run --mode advanced",
         "public-primevue",
         "enterprise-vue2",
         "modern-saas",
@@ -485,43 +483,45 @@ def _run_default_solution(
 ) -> None:
     simple_output = _run_cli(
         cli_path,
-        ["program", "solution-confirm", "--dry-run"],
+        [
+            "loop",
+            "frontend-evidence",
+            "solution-confirm",
+            "--wi",
+            "specs/001-customer-approval-dashboard",
+            "--dry-run",
+            "--json",
+        ],
         cwd=project_root,
         evidence_path=evidence_root / "solution-simple.txt",
     )
     _assert_contains(simple_output, *DEFAULT_SOLUTION_TOKENS)
 
 
-def _run_advanced_solutions(
+def _run_custom_solution(
     cli_path: str,
     project_root: Path,
     evidence_root: Path,
 ) -> None:
-    advanced_output = _run_cli(
-        cli_path,
-        ["program", "solution-confirm", "--dry-run", "--mode", "advanced"],
-        cwd=project_root,
-        evidence_path=evidence_root / "solution-advanced.txt",
-    )
-    _assert_contains(advanced_output, *ADVANCED_SOLUTION_TOKENS)
-
     custom_output = _run_cli(
         cli_path,
         [
-            "program",
+            "loop",
+            "frontend-evidence",
             "solution-confirm",
+            "--wi",
+            "specs/001-customer-approval-dashboard",
             "--dry-run",
-            "--mode",
-            "advanced",
             "--frontend-stack",
             "vue3",
             "--provider-id",
             "public-primevue",
             "--style-pack-id",
             "data-console",
+            "--json",
         ],
         cwd=project_root,
-        evidence_path=evidence_root / "solution-advanced-custom.txt",
+        evidence_path=evidence_root / "solution-custom.txt",
     )
     _assert_contains(custom_output, *CUSTOM_SOLUTION_TOKENS)
 
@@ -531,11 +531,12 @@ def _verify_no_delivery_apply(project_root: Path) -> None:
         project_root
         / ".ai-sdlc"
         / "memory"
-        / "frontend-solution-confirmation"
+        / "frontend-delivery"
+        / "solution"
         / "latest.yaml"
     )
     managed_apply_root = (
-        project_root / ".ai-sdlc" / "memory" / "frontend-managed-delivery-apply"
+        project_root / ".ai-sdlc" / "memory" / "frontend-delivery" / "apply"
     )
     if solution_artifact.exists() or managed_apply_root.exists():
         raise AssertionError(
@@ -557,7 +558,7 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     _commit_current_state(project_root, "initialize AI-SDLC")
     _run_requirement_and_workitem_flow(cli_path, project_root, evidence_root)
     _run_default_solution(cli_path, project_root, evidence_root)
-    _run_advanced_solutions(cli_path, project_root, evidence_root)
+    _run_custom_solution(cli_path, project_root, evidence_root)
     _verify_no_delivery_apply(project_root)
     hashes_after_all = _business_hashes(project_root, business_files)
     _write_hashes(evidence_root / "business-hashes-after.json", hashes_after_all)

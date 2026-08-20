@@ -1959,7 +1959,12 @@ def test_loop_frontend_evidence_start_needs_fix_exits_nonzero(
         tmp_path, work_item_path="specs/demo-frontend"
     )
     artifact_path = (
-        tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+        tmp_path
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "browser"
+        / "latest.yaml"
     )
     payload = yaml.safe_load(artifact_path.read_text(encoding="utf-8"))
     payload["overall_gate_status"] = "incomplete"
@@ -2015,7 +2020,12 @@ def test_loop_frontend_evidence_close_uses_reviewed_state_across_aba(
         tmp_path, work_item_path="specs/demo-frontend"
     )
     artifact_path = (
-        tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+        tmp_path
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "browser"
+        / "latest.yaml"
     )
     gate_payload = yaml.safe_load(artifact_path.read_text(encoding="utf-8"))
     gate_payload["overall_gate_status"] = "incomplete"
@@ -2368,7 +2378,7 @@ def _write_frontend_browser_gate_artifact(
     screenshot_ref = f"{artifact_root}/shared-runtime/navigation-screenshot.png"
     trace_ref = f"{artifact_root}/shared-runtime/playwright-trace.zip"
     interaction_ref = f"{artifact_root}/interaction/interaction-snapshot.json"
-    source_artifact_ref = ".ai-sdlc/memory/frontend-managed-delivery-apply/latest.yaml"
+    source_artifact_ref = ".ai-sdlc/memory/frontend-delivery/apply/latest.yaml"
     required_probe_set = [
         "playwright_smoke",
         "visual_expectation",
@@ -2482,7 +2492,12 @@ def _write_frontend_browser_gate_artifact(
         "recommended_next_steps": [],
     }
     artifact_path = (
-        root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+        root
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "browser"
+        / "latest.yaml"
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(

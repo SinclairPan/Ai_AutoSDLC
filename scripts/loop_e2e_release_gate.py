@@ -270,7 +270,7 @@ class E2EHarness:
             "- Implementation loop: missing task evidence blocks close; recorded evidence closes.",
             "- Frontend-evidence loop: missing browser artifact blocks start; valid artifact closes.",
             "- Windows frontend provider path: no Codex/no local Playwright, doctor-recommended Playwright install, Chromium smoke.",
-            "- Windows Playwright evidence path: installed Playwright runs browser-gate-probe, handles first-run baseline when needed, materializes browser evidence, and closes frontend-evidence.",
+            "- Windows Playwright evidence path: installed Playwright runs frontend-evidence capture, handles first-run baseline when needed, materializes browser evidence, and closes frontend-evidence.",
             "- No-install frontend path: provider tooling unavailable, explicit skip records audit and waits for expert review.",
             "- Local PR review loop: mock adversarial finding forces fix/rerun; clean rerun closes and attests.",
             "",
@@ -1231,7 +1231,7 @@ def _write_browser_gate_artifact(root: Path, *, work_item_path: str) -> None:
     ]
     payload = {
         "generated_at": generated,
-        "apply_artifact_path": ".ai-sdlc/memory/frontend-managed-delivery-apply/latest.yaml",
+        "apply_artifact_path": ".ai-sdlc/memory/frontend-delivery/apply/latest.yaml",
         "probe_runtime_state": "completed",
         "gate_run_id": gate_run_id,
         "artifact_root": artifact_root,
@@ -1279,7 +1279,7 @@ def _write_browser_gate_artifact(root: Path, *, work_item_path: str) -> None:
             "spec_dir": work_item_path,
             "attachment_scope_ref": "scope:frontend",
             "managed_frontend_target": "managed/frontend",
-            "source_artifact_ref": ".ai-sdlc/memory/frontend-managed-delivery-apply/latest.yaml",
+            "source_artifact_ref": ".ai-sdlc/memory/frontend-delivery/apply/latest.yaml",
             "readiness_subject_id": "subject-e2e",
             "playwright_trace_refs": [trace_ref],
             "screenshot_refs": [screenshot_ref],
@@ -1304,7 +1304,12 @@ def _write_browser_gate_artifact(root: Path, *, work_item_path: str) -> None:
         "recommended_next_steps": [],
     }
     artifact_path = (
-        root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+        root
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "browser"
+        / "latest.yaml"
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(
@@ -1399,10 +1404,9 @@ def _run_frontend_evidence_ready_path(
 def _run_windows_playwright_generated_frontend_evidence_loop(h: E2EHarness) -> None:
     frontend_dir_rel = "managed/frontend"
     frontend_dir = h.project_root / frontend_dir_rel
-    _write_playwright_probe_truth(
-        h.project_root,
-        work_item_path="specs/demo-loop-e2e",
-        frontend_dir_rel=frontend_dir_rel,
+    _write_file(
+        frontend_dir / "package.json",
+        _frontend_package_json("frontend-loop-playwright-evidence-e2e"),
     )
     h.run_raw(
         "windows_playwright_evidence_absent_before_install",
@@ -1471,9 +1475,54 @@ def _run_windows_playwright_generated_frontend_evidence_loop(h: E2EHarness) -> N
         )
         is True,
     )
+    solution = h.run(
+        "frontend_solution_confirm_from_explicit_project_facts",
+        [
+            "loop",
+            "frontend-evidence",
+            "solution-confirm",
+            "--wi",
+            "specs/demo-loop-e2e",
+            "--frontend-stack",
+            "vue3",
+            "--provider-id",
+            "custom",
+            "--style-pack-id",
+            "project-defined",
+            "--execute",
+            "--yes",
+            "--json",
+        ],
+        parse_json=True,
+        note="Persist one explicit project-fact solution before managed apply.",
+    )
+    h.assert_true(
+        "Frontend solution is confirmed through the Loop namespace",
+        solution.parsed_json is not None
+        and solution.parsed_json.get("status") == "ready",
+    )
+    apply_result = h.run(
+        "frontend_managed_apply_from_confirmed_solution",
+        [
+            "loop",
+            "frontend-evidence",
+            "apply",
+            "--execute",
+            "--yes",
+            "--json",
+        ],
+        parse_json=True,
+        note="Apply the confirmed solution through the retained managed executor.",
+    )
+    h.assert_true(
+        "Frontend apply awaits browser evidence",
+        apply_result.parsed_json is not None
+        and apply_result.parsed_json.get("status") == "ready",
+    )
     probe = h.run(
         "frontend_browser_gate_probe_execute_after_playwright_install",
-        ["program", "browser-gate-probe", "--execute"],
+        ["loop", "frontend-evidence", "capture", "--execute", "--json"],
+        parse_json=True,
         note="Materialize browser evidence through the installed Playwright runtime.",
     )
     h.assert_true(
@@ -1481,36 +1530,53 @@ def _run_windows_playwright_generated_frontend_evidence_loop(h: E2EHarness) -> N
         probe.returncode == 0,
     )
     artifact_path = (
-        h.project_root / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+        h.project_root
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "browser"
+        / "latest.yaml"
     )
     payload = _load_browser_gate_payload(artifact_path)
     passed_statuses = {"passed", "passed_with_advisories"}
-    if payload.get("overall_gate_status") not in passed_statuses:
+    bundle_input = payload.get("bundle_input") or {}
+    if bundle_input.get("overall_gate_status") not in passed_statuses:
         h.assert_true(
             "First Playwright browser gate probe can request visual baseline",
-            payload.get("overall_gate_status") == "incomplete"
-            and payload.get("probe_runtime_state") == "incomplete",
+            probe.parsed_json is not None
+            and probe.parsed_json.get("status") == "needs_recheck"
+            and "visual_baseline_missing" in probe.parsed_json.get("blockers", []),
         )
         h.run(
             "frontend_browser_gate_baseline_execute_after_playwright_probe",
-            ["program", "browser-gate-baseline", "--execute", "--yes"],
-            note="Materialize the first-run visual regression baseline requested by browser-gate-probe.",
+            [
+                "loop",
+                "frontend-evidence",
+                "baseline",
+                "--execute",
+                "--yes",
+                "--json",
+            ],
+            parse_json=True,
+            note="Materialize the first-run visual regression baseline requested by capture.",
         )
         rerun_probe = h.run(
             "frontend_browser_gate_probe_rerun_after_visual_baseline",
-            ["program", "browser-gate-probe", "--execute"],
-            note="Re-run browser-gate-probe after baseline materialization.",
+            ["loop", "frontend-evidence", "capture", "--execute", "--json"],
+            parse_json=True,
+            note="Re-run capture after baseline materialization.",
         )
         h.assert_true(
             "Browser gate probe rerun exits successfully after baseline",
             rerun_probe.returncode == 0,
         )
         payload = _load_browser_gate_payload(artifact_path)
+        bundle_input = payload.get("bundle_input") or {}
     h.assert_true(
         "Playwright browser gate probe materializes frontend-ready evidence",
         isinstance(payload, dict)
         and payload.get("probe_runtime_state") == "completed"
-        and payload.get("overall_gate_status") in passed_statuses
+        and bundle_input.get("overall_gate_status") in passed_statuses
         and str(payload.get("artifact_root", "")).startswith(
             ".ai-sdlc/artifacts/frontend-browser-gate/"
         ),
@@ -1664,8 +1730,8 @@ def _write_playwright_probe_truth(
     apply_artifact.parent.mkdir(parents=True, exist_ok=True)
     apply_payload = {
         "generated_at": _now(),
-        "manifest_path": "program-manifest.yaml",
-        "request_source_path": ".ai-sdlc/memory/frontend-managed-delivery/apply-request-playwright-e2e.yaml",
+        "manifest_path": "specs/demo-loop-e2e/spec.md",
+        "request_source_path": ".ai-sdlc/memory/frontend-delivery/solution/latest.yaml",
         "apply_state": "ready_to_apply",
         "action_plan_id": "plan-loop-e2e-playwright",
         "plan_fingerprint": "fp-loop-e2e-playwright",
@@ -1685,7 +1751,9 @@ def _write_playwright_probe_truth(
         "remaining_blockers": [],
         "warnings": [],
         "plain_language_blockers": [],
-        "recommended_next_steps": ["Run ai-sdlc program browser-gate-probe --execute."],
+        "recommended_next_steps": [
+            "Run ai-sdlc loop frontend-evidence capture --execute."
+        ],
         "execution_view": {
             "action_plan_id": "plan-loop-e2e-playwright",
             "confirmation_surface_id": "surface-loop-e2e-playwright",
@@ -1732,9 +1800,9 @@ def _write_playwright_probe_truth(
             "created_at": _now(),
         },
         "source_linkage": {
-            "managed_delivery_apply_artifact_path": ".ai-sdlc/memory/frontend-managed-delivery-apply/latest.yaml",
+            "managed_delivery_apply_artifact_path": ".ai-sdlc/memory/frontend-delivery/apply/latest.yaml",
             "managed_delivery_apply_result_status": "apply_succeeded_pending_browser_gate",
-            "request_source_path": ".ai-sdlc/memory/frontend-managed-delivery/apply-request-playwright-e2e.yaml",
+            "request_source_path": ".ai-sdlc/memory/frontend-delivery/solution/latest.yaml",
         },
     }
     apply_artifact.write_text(

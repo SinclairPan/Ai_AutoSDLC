@@ -963,7 +963,6 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert "if token in agents_text" in init_contract
     for forbidden in (
         "进入实现前必须先给出技术栈 / 组件库建议",
-        "program solution-confirm --dry-run --mode advanced",
         "public-primevue",
         "enterprise-vue2",
         "modern-saas",
@@ -1050,7 +1049,7 @@ def test_windows_clean_user_e2e_installs_pull_request_head_on_pr_runs() -> None:
     assert 'os.environ.get("AI_SDLC_E2E_SOURCE_REVISION", "")' in contract
 
 
-def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choice() -> (
+def test_windows_clean_user_e2e_covers_project_fact_recommendation_and_custom_choice() -> (
     None
 ):
     driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
@@ -1062,25 +1061,24 @@ def test_windows_clean_user_e2e_covers_solution_recommendation_and_advanced_choi
     driver = driver_path.read_text(encoding="utf-8")
     contract = driver + support_path.read_text(encoding="utf-8")
 
-    assert '["program", "validate"]' not in driver
-    assert "program-validate.txt" not in driver
-    assert '"program", "solution-confirm", "--dry-run"' in driver
-    assert '"--mode", "advanced"' in driver
+    assert '"loop",' in driver
+    assert '"frontend-evidence",' in driver
+    assert '"solution-confirm",' in driver
+    assert '"--wi",' in driver
+    assert '"--json",' in driver
     assert '"--frontend-stack",' in driver
     assert '"vue3",' in driver
     assert '"--provider-id",' in driver
     assert '"public-primevue",' in driver
     assert '"--style-pack-id",' in driver
     assert '"data-console",' in driver
-    assert "PrimeVue + @primeuix/themes + primeicons" in contract
-    assert "definePreset(Aura) + #1770e6 + darkModeSelector=false" in contract
-    assert "enterprise-default" in contract
+    assert "recommended_option_source" in contract
+    assert "existing-project-facts" in contract
+    assert "custom_choice_supported" in contract
+    assert '"option_id": "custom"' in contract
     assert "data-console" in contract
-    assert "high-clarity" in contract
-    assert "macos-glass" in contract
-    assert "enterprise-vue2" in contract
     assert "--execute" not in driver
-    assert '["program", "managed-delivery-apply"' not in driver
+    assert '"program",' not in driver
 
 
 def test_windows_clean_user_e2e_uses_public_requirement_and_workitem_flow() -> None:

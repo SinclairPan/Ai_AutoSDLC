@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -12,6 +13,14 @@ from pathlib import Path
 import yaml  # type: ignore[import-untyped]
 
 from ai_sdlc.core.design_contract_store import resolve_work_item_dir
+from ai_sdlc.core.frontend_browser_gate_decision import (
+    FRONTEND_GATE_DECISION_REASON_ADVISORY_ONLY,
+    FRONTEND_GATE_EXECUTE_STATE_BLOCKED,
+    FRONTEND_GATE_EXECUTE_STATE_NEEDS_REMEDIATION,
+    FRONTEND_GATE_EXECUTE_STATE_READY,
+    FRONTEND_GATE_EXECUTE_STATE_RECHECK_REQUIRED,
+    build_frontend_browser_gate_execute_decision,
+)
 from ai_sdlc.core.frontend_evidence_models import (
     CURRENT_FRONTEND_EVIDENCE_PATH,
     DEFAULT_FRONTEND_BROWSER_GATE_ARTIFACT_PATH,
@@ -49,13 +58,8 @@ from ai_sdlc.core.frontend_evidence_store import (
     resolve_source_artifact_path,
     validate_explicit_loop_id,
 )
-from ai_sdlc.core.frontend_gate_verification import (
-    FRONTEND_GATE_DECISION_REASON_ADVISORY_ONLY,
-    FRONTEND_GATE_EXECUTE_STATE_BLOCKED,
-    FRONTEND_GATE_EXECUTE_STATE_NEEDS_REMEDIATION,
-    FRONTEND_GATE_EXECUTE_STATE_READY,
-    FRONTEND_GATE_EXECUTE_STATE_RECHECK_REQUIRED,
-    build_frontend_browser_gate_execute_decision,
+from ai_sdlc.core.frontend_visual_baseline import (
+    validate_frontend_visual_baseline_identity,
 )
 from ai_sdlc.core.implementation_models import ImplementationClose, ImplementationReport
 from ai_sdlc.core.implementation_store import (
@@ -588,6 +592,16 @@ def close_frontend_evidence_loop(
             next_action=loop_run.next_action or _local_pr_review_next_action(),
         )
         return result
+    baseline_blocker = _snapshot_visual_baseline_blocker(root, snapshot)
+    if baseline_blocker:
+        return _result_from_report(
+            report,
+            artifacts=artifacts.refs(root),
+            result="Frontend evidence loop cannot close with a stale visual baseline.",
+            status=FrontendEvidenceCommandStatus.NEEDS_FIX,
+            blocker=baseline_blocker,
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute again.",
+        )
     if report.blocker_count or report.status in {
         LoopStatus.BLOCKED,
         LoopStatus.NEEDS_FIX,
@@ -841,7 +855,7 @@ def _playwright_provider_check(
         else "",
         evidence=evidence,
         install_commands=install_commands,
-        run_commands=["ai-sdlc program browser-gate-probe --execute"]
+        run_commands=["ai-sdlc loop frontend-evidence capture --execute"]
         if available
         else [],
         alternatives=[
@@ -991,7 +1005,7 @@ def _doctor_next_action(
         ):
             return "Run ai-sdlc loop frontend-evidence start --wi specs/<work-item>."
         if recommended_provider == "playwright":
-            return "Run ai-sdlc program browser-gate-probe --execute."
+            return "Run ai-sdlc loop frontend-evidence capture --execute."
         if recommended_provider in {"codex-browser", "browser-mcp"}:
             return "Use the configured browser provider to produce a browser gate artifact, then run frontend-evidence start with --artifact-path."
         return "Run ai-sdlc loop frontend-evidence start --wi specs/<work-item> --artifact-path <browser-gate-artifact.yaml>."
@@ -1049,7 +1063,7 @@ def _doctor_guidance_command(
 ) -> str:
     if recommended_provider == "playwright":
         if status == FrontendEvidenceCommandStatus.READY:
-            return "ai-sdlc program browser-gate-probe --execute"
+            return "ai-sdlc loop frontend-evidence capture --execute"
         playwright = next(
             (
                 provider
@@ -1090,7 +1104,7 @@ def _browser_gate_freshness_blocker(
     if browser_generated_at < implementation_closed_at:
         return (
             "Frontend browser gate artifact is older than the closed "
-            "implementation loop; rerun ai-sdlc program browser-gate-probe "
+            "implementation loop; rerun ai-sdlc loop frontend-evidence capture "
             "--execute after implementation close."
         )
     return ""
@@ -1122,13 +1136,13 @@ def _build_snapshot(
         return _blocked_result(
             f"Frontend browser gate artifact is not readable YAML: {exc}",
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
     if not isinstance(payload, dict):
         return _blocked_result(
             "Frontend browser gate artifact is malformed: root must be a mapping.",
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
     try:
         execution_context = BrowserQualityGateExecutionContext.model_validate(
@@ -1148,7 +1162,7 @@ def _build_snapshot(
         return _blocked_result(
             f"Frontend browser gate artifact schema is invalid: {exc}",
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
     if execution_context.spec_dir != frontend_input.work_item_path:
         return _blocked_result(
@@ -1159,7 +1173,7 @@ def _build_snapshot(
             ),
             loop_id=frontend_input.loop_id,
             next_action=(
-                "Run ai-sdlc program browser-gate-probe --execute for the current "
+                "Run ai-sdlc loop frontend-evidence capture --execute for the current "
                 "work item, or pass --artifact-path to the matching local artifact."
             ),
         )
@@ -1168,8 +1182,40 @@ def _build_snapshot(
         return _blocked_result(
             freshness_blocker,
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
+    source_tree_blocker = _frontend_delivery_tree_blocker(
+        root,
+        execution_context,
+        payload,
+    )
+    if source_tree_blocker:
+        return _blocked_result(
+            source_tree_blocker,
+            loop_id=frontend_input.loop_id,
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
+        )
+    visual_baseline: dict[str, str] = {}
+    if payload.get("schema_version") == "frontend-browser-capture/v1":
+        baseline_payload = payload.get("visual_baseline")
+        baseline_required = any(
+            receipt.check_name == "visual_regression"
+            and receipt.classification_candidate in {"pass", "advisory_only"}
+            for receipt in bundle.check_receipts
+        )
+        if baseline_payload or baseline_required:
+            try:
+                visual_baseline = validate_frontend_visual_baseline_identity(
+                    root,
+                    baseline_payload,
+                    expected_root=execution_context.visual_regression_baseline_root,
+                )
+            except (OSError, ValueError) as exc:
+                return _blocked_result(
+                    str(exc),
+                    loop_id=frontend_input.loop_id,
+                    next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
+                )
     probe_runtime_state = str(payload.get("probe_runtime_state", "")).strip()
     namespace_blocker = _namespace_blocker(
         root,
@@ -1182,7 +1228,7 @@ def _build_snapshot(
         return _blocked_result(
             namespace_blocker,
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
     decision = build_frontend_browser_gate_execute_decision(
         execution_context=execution_context,
@@ -1200,7 +1246,7 @@ def _build_snapshot(
         return _blocked_result(
             ready_evidence_blocker,
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
     runtime_state_blocker = _runtime_state_blocker(
         runtime_session,
@@ -1211,7 +1257,7 @@ def _build_snapshot(
         return _blocked_result(
             runtime_state_blocker,
             loop_id=frontend_input.loop_id,
-            next_action="Run ai-sdlc program browser-gate-probe --execute.",
+            next_action="Run ai-sdlc loop frontend-evidence capture --execute.",
         )
     receipts = [
         FrontendEvidenceReceiptSnapshot(
@@ -1253,6 +1299,10 @@ def _build_snapshot(
         browser_entry_ref=execution_context.browser_entry_ref,
         effective_provider=execution_context.effective_provider,
         effective_style_pack=execution_context.effective_style_pack,
+        visual_baseline_root=visual_baseline.get("root", ""),
+        visual_baseline_image_path=visual_baseline.get("image_path", ""),
+        visual_baseline_metadata_path=visual_baseline.get("metadata_path", ""),
+        visual_baseline_digest=visual_baseline.get("digest", ""),
         required_probe_set=list(execution_context.required_probe_set),
         receipts=receipts,
         artifact_records=projected_artifacts,
@@ -1268,6 +1318,54 @@ def _build_snapshot(
             payload.get("recommended_next_steps", [])
         ),
     )
+
+
+def _frontend_delivery_tree_blocker(
+    root: Path,
+    execution_context: BrowserQualityGateExecutionContext,
+    payload: dict[str, object],
+) -> str:
+    if payload.get("schema_version") != "frontend-browser-capture/v1":
+        return ""
+    expected = str(payload.get("source_tree_digest", "")).strip()
+    if not expected:
+        return "Frontend browser capture source tree digest is missing."
+    target_ref = execution_context.managed_frontend_target.strip()
+    target = (root / target_ref).resolve()
+    if not _is_relative_to(target, root) or not target.is_dir():
+        return "Frontend browser capture managed target is missing or invalid."
+    digest = hashlib.sha256()
+    for path in sorted(item for item in target.rglob("*") if item.is_file()):
+        digest.update(path.relative_to(target).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    if digest.hexdigest() != expected:
+        return "Frontend browser capture is stale for the current implementation tree."
+    return ""
+
+
+def _snapshot_visual_baseline_blocker(
+    root: Path,
+    snapshot: FrontendEvidenceSnapshot,
+) -> str:
+    if not snapshot.visual_baseline_root:
+        return ""
+    identity = {
+        "root": snapshot.visual_baseline_root,
+        "image_path": snapshot.visual_baseline_image_path,
+        "metadata_path": snapshot.visual_baseline_metadata_path,
+        "digest": snapshot.visual_baseline_digest,
+    }
+    try:
+        validate_frontend_visual_baseline_identity(
+            root,
+            identity,
+            expected_root=snapshot.visual_baseline_root,
+        )
+    except (OSError, ValueError) as exc:
+        return str(exc)
+    return ""
 
 
 def _namespace_blocker(
@@ -1539,7 +1637,7 @@ def _next_action_for_status(
     if status == LoopStatus.NEEDS_USER:
         return f"Run ai-sdlc loop review --type frontend-evidence --loop-id {loop_id}."
     if status == LoopStatus.NEEDS_FIX:
-        return "Run ai-sdlc program browser-gate-probe --execute."
+        return "Run ai-sdlc loop frontend-evidence capture --execute."
     return f"Fix frontend evidence blockers, then run ai-sdlc loop frontend-evidence start --wi {work_item_path}."
 
 
@@ -1923,7 +2021,7 @@ def _next_guidance_for_result(
         )
     if report.status == LoopStatus.NEEDS_FIX:
         return FrontendEvidenceNextGuidance(
-            command="ai-sdlc program browser-gate-probe --execute",
+            command="ai-sdlc loop frontend-evidence capture --execute",
             reason="Browser gate evidence has blockers or requires a recheck before close.",
             requires_model=False,
             writes_artifacts=True,
