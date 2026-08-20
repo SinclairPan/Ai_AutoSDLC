@@ -1393,6 +1393,147 @@ def test_runtime_canary_creation_failure_cleans_inode_bound_partial_root(
     assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
 
 
+@pytest.mark.parametrize("failure", ("chmod", "first-lstat", "directory-open"))
+def test_runtime_canary_early_failure_leaves_no_residue(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    real_chmod = Path.chmod
+    real_lstat = Path.lstat
+    real_open = os.open
+    failed = False
+
+    def chmod(path: Path, mode: int) -> None:
+        nonlocal failed
+        if failure == "chmod" and path.name.startswith(".runtime-write-"):
+            failed = True
+            raise OSError("injected chmod failure")
+        real_chmod(path, mode)
+
+    def lstat(path: Path) -> os.stat_result:
+        nonlocal failed
+        if (
+            failure == "first-lstat"
+            and path.name.startswith(".runtime-write-")
+            and not failed
+        ):
+            failed = True
+            raise OSError("injected first lstat failure")
+        return real_lstat(path)
+
+    def open_file(path: object, flags: int, *args: object, **kwargs: object) -> int:
+        nonlocal failed
+        if (
+            failure == "directory-open"
+            and str(path).split("/")[-1].startswith(".runtime-write-")
+            and not failed
+        ):
+            failed = True
+            raise OSError("injected directory open failure")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "chmod", chmod)
+    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(materializer.os, "open", open_file)
+
+    with pytest.raises(MaterializationError):
+        materializer._create_runtime_write_canary(policy)
+
+    assert failed is True
+    assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
+
+
+def test_incomplete_canary_cleanup_refuses_replacement_without_deleting_it(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / ".runtime-write-replaced"
+    root.mkdir(mode=0o700)
+    original = root.lstat()
+    identity = (
+        original.st_dev,
+        original.st_ino,
+        original.st_uid,
+        stat.S_IMODE(original.st_mode),
+    )
+    moved = tmp_path / "original"
+    root.rename(moved)
+    root.mkdir(mode=0o700)
+    marker = root / "do-not-delete"
+    marker.write_text("replacement", encoding="utf-8")
+
+    with pytest.raises(OSError):
+        materializer._cleanup_incomplete_runtime_canary(root, identity)
+
+    assert marker.read_text(encoding="utf-8") == "replacement"
+
+
+@pytest.mark.parametrize("drift_at", ("probe", "cleanup"))
+def test_runtime_capsule_full_post_probe_equality_is_required(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, drift_at: str
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    policy.target.mkdir(mode=0o700)
+    runtime = fixture_module.evaluator_python_runtime_identity()
+    capsule = fixture_module.evaluator_runtime_capsule_v2_manifest(
+        Path(str(runtime["path"])), str(runtime["version"])
+    )
+    drifted_capsule = json.loads(json.dumps(capsule))
+    selected = next(
+        index
+        for index, entry in enumerate(drifted_capsule["entries"])
+        if entry["type"] == "file" and str(entry["path"]).endswith(".py")
+    )
+    other = next(
+        index
+        for index, entry in enumerate(drifted_capsule["entries"])
+        if index != selected
+        and entry["type"] == "file"
+        and str(entry["path"]).endswith(".py")
+    )
+    drifted_capsule["entries"][other]["sha256"] = "0" * 64
+    drifted = False
+
+    monkeypatch.setattr(
+        materializer,
+        "evaluator_python_runtime_identity",
+        lambda **_kwargs: runtime,
+    )
+    monkeypatch.setattr(
+        materializer,
+        "evaluator_runtime_capsule_v2_manifest",
+        lambda *_args, **_kwargs: drifted_capsule if drifted else capsule,
+    )
+    monkeypatch.setattr(
+        materializer,
+        "probe_provider_isolation",
+        lambda _profile: IsolationProbeResult(
+            True, True, True, True, True, True, True, ()
+        ),
+    )
+
+    def successful_probe(*_args: object, **_kwargs: object) -> object:
+        nonlocal drifted
+        if drift_at == "probe":
+            drifted = True
+        return _successful_runtime_probe()
+
+    monkeypatch.setattr(materializer, "_probe_runtime_capsule_access", successful_probe)
+    real_cleanup = materializer._cleanup_runtime_write_canary
+
+    def cleanup(canary: object) -> None:
+        nonlocal drifted
+        real_cleanup(canary)
+        if drift_at == "cleanup":
+            drifted = True
+
+    monkeypatch.setattr(materializer, "_cleanup_runtime_write_canary", cleanup)
+
+    with pytest.raises(MaterializationError, match="runtime-capsule-drift"):
+        REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="9" * 64)
+
+    assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
+
+
 def _default_policy_with_test_canary_roots(
     tmp_path: Path,
 ) -> MaterializerPolicy:

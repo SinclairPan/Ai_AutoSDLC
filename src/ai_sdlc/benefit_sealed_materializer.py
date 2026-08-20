@@ -1861,26 +1861,38 @@ def _assert_private_directory(path: Path, code: str) -> None:
 
 
 def _cleanup_incomplete_runtime_canary(
-    root: Path, root_identity: tuple[int, int, int, int]
+    root: Path,
+    root_identity: tuple[int, int, int, int],
+    parent_fd: int | None = None,
 ) -> None:
+    owned_parent_fd = parent_fd is None
+    if parent_fd is None:
+        parent_fd = os.open(
+            root.parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
     descriptor = -1
     try:
-        item = root.lstat()
+        item = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
         if (
             not stat.S_ISDIR(item.st_mode)
             or (
                 item.st_dev,
                 item.st_ino,
                 item.st_uid,
-                stat.S_IMODE(item.st_mode),
+                stat.S_IFMT(item.st_mode),
             )
             != root_identity
         ):
             raise OSError("runtime canary root changed during creation")
         descriptor = os.open(
-            root,
+            root.name,
             os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
         )
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != root_identity[:2]:
+            raise OSError("runtime canary root changed during cleanup")
         allowed = {"append", "chmod", "rename"}
         observed = set(os.listdir(descriptor))
         if not observed <= allowed:
@@ -1895,10 +1907,12 @@ def _cleanup_incomplete_runtime_canary(
                 raise OSError("runtime canary creation entry is unsafe")
             os.unlink(name, dir_fd=descriptor)
         os.fsync(descriptor)
+        os.rmdir(root.name, dir_fd=parent_fd)
     finally:
         if descriptor >= 0:
             os.close(descriptor)
-    root.rmdir()
+        if owned_parent_fd:
+            os.close(parent_fd)
 
 
 def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCanary:
@@ -1906,8 +1920,39 @@ def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCan
     _assert_private_directory(parent, "runtime-canary-root")
     root: Path | None = None
     root_identity: tuple[int, int, int, int] | None = None
+    parent_fd = os.open(
+        parent,
+        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+    )
     try:
+        parent_opened = os.fstat(parent_fd)
+        parent_current = parent.lstat()
+        if (parent_opened.st_dev, parent_opened.st_ino) != (
+            parent_current.st_dev,
+            parent_current.st_ino,
+        ):
+            raise MaterializationError("runtime-canary-root")
         root = Path(tempfile.mkdtemp(prefix=".runtime-write-", dir=parent))
+        initial = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        root_identity = (
+            initial.st_dev,
+            initial.st_ino,
+            initial.st_uid,
+            stat.S_IFMT(initial.st_mode),
+        )
+        if not stat.S_ISDIR(initial.st_mode) or initial.st_uid != os.geteuid():
+            raise MaterializationError("runtime-canary-root")
+        initial_fd = os.open(
+            root.name,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        try:
+            initial_opened = os.fstat(initial_fd)
+            if (initial_opened.st_dev, initial_opened.st_ino) != root_identity[:2]:
+                raise MaterializationError("runtime-canary-root")
+        finally:
+            os.close(initial_fd)
         root.chmod(0o700)
         root_stat = root.lstat()
         if (
@@ -1916,7 +1961,7 @@ def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCan
             or stat.S_IMODE(root_stat.st_mode) != 0o700
         ):
             raise MaterializationError("runtime-canary-root")
-        root_identity = (
+        full_root_identity = (
             root_stat.st_dev,
             root_stat.st_ino,
             root_stat.st_uid,
@@ -1953,18 +1998,20 @@ def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCan
             os.close(directory_fd)
         return _RuntimeWriteCanary(
             root=root,
-            root_identity=root_identity,
+            root_identity=full_root_identity,
             files=MappingProxyType(files),
         )
     except (MaterializationError, OSError) as error:
         if root is not None and root_identity is not None:
             try:
-                _cleanup_incomplete_runtime_canary(root, root_identity)
+                _cleanup_incomplete_runtime_canary(root, root_identity, parent_fd)
             except OSError as cleanup_error:
                 raise MaterializationError("runtime-canary-cleanup") from cleanup_error
         if isinstance(error, MaterializationError):
             raise
         raise MaterializationError("runtime-canary-root") from error
+    finally:
+        os.close(parent_fd)
 
 
 def _assert_runtime_canary_root(canary: _RuntimeWriteCanary) -> None:
@@ -2297,7 +2344,7 @@ def _run_final_isolation_canary_with_runtime_write_canary(
     pending_receipt_sha256: str,
     evaluator_python_runtime_sha256: str | None = None,
     expected_runtime_capsule_sha256: str | None = None,
-) -> bytes:
+) -> Mapping[str, object]:
     for root in (
         policy.canary_run_root,
         policy.raw_results_root,
@@ -2387,29 +2434,27 @@ def _run_final_isolation_canary_with_runtime_write_canary(
             }
         )
     )
-    return _canonical_json_bytes(
-        {
-            "schema": "ai-sdlc-v2-benefit-isolation-attestation/v2",
-            "state": "validated",
-            "pending_receipt_sha256": pending_receipt_sha256,
-            "evaluator_python_runtime_sha256": evaluator_python_runtime_sha256,
-            "evaluator_runtime_capsule_sha256": expected_runtime_capsule_sha256,
-            "profile_sha256": profile_sha256,
-            "checks": {
-                "direct": probe.direct,
-                "parent": probe.parent,
-                "symlink": probe.symlink,
-                "hardlink": probe.hardlink,
-                "environment": probe.environment,
-                "other_run": probe.other_run,
-                "add_dir": probe.add_dir,
-                "protected_roots": len(probe.protected_root_results),
-                "write_protected_roots": len(profile.write_protected_roots),
-                **runtime_checks,
-                "runtime_probe_transcript_sha256": runtime_probe.transcript_sha256,
-            },
-        }
-    )
+    return {
+        "schema": "ai-sdlc-v2-benefit-isolation-attestation/v2",
+        "state": "validated",
+        "pending_receipt_sha256": pending_receipt_sha256,
+        "evaluator_python_runtime_sha256": evaluator_python_runtime_sha256,
+        "evaluator_runtime_capsule_sha256": expected_runtime_capsule_sha256,
+        "profile_sha256": profile_sha256,
+        "checks": {
+            "direct": probe.direct,
+            "parent": probe.parent,
+            "symlink": probe.symlink,
+            "hardlink": probe.hardlink,
+            "environment": probe.environment,
+            "other_run": probe.other_run,
+            "add_dir": probe.add_dir,
+            "protected_roots": len(probe.protected_root_results),
+            "write_protected_roots": len(profile.write_protected_roots),
+            **runtime_checks,
+            "runtime_probe_transcript_sha256": runtime_probe.transcript_sha256,
+        },
+    }
 
 
 def _run_final_isolation_canary(
@@ -2419,17 +2464,63 @@ def _run_final_isolation_canary(
     evaluator_python_runtime_sha256: str | None = None,
     expected_runtime_capsule_sha256: str | None = None,
 ) -> bytes:
+    forbidden_runtime_roots = (
+        policy.repo_root,
+        policy.target,
+        policy.source_root,
+        *policy.prior_source_roots,
+        *(item.path for item in policy.immutable_roots),
+    )
+    try:
+        pre_runtime = evaluator_python_runtime_identity(
+            forbidden_roots=forbidden_runtime_roots
+        )
+        pre_runtime_sha256 = evaluator_runtime_identity_sha256(pre_runtime)
+        pre_capsule = evaluator_runtime_capsule_v2_manifest(
+            Path(str(pre_runtime["path"])), str(pre_runtime["version"])
+        )
+        pre_capsule_sha256 = evaluator_runtime_capsule_v2_sha256(pre_capsule)
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-identity") from error
+    if (
+        evaluator_python_runtime_sha256 is not None
+        and evaluator_python_runtime_sha256 != pre_runtime_sha256
+    ):
+        raise MaterializationError("runtime-identity")
+    if (
+        expected_runtime_capsule_sha256 is not None
+        and expected_runtime_capsule_sha256 != pre_capsule_sha256
+    ):
+        raise MaterializationError("runtime-capsule-drift")
     runtime_write_canary = _create_runtime_write_canary(policy)
     try:
-        return _run_final_isolation_canary_with_runtime_write_canary(
+        payload = _run_final_isolation_canary_with_runtime_write_canary(
             policy,
             runtime_write_canary,
             pending_receipt_sha256=pending_receipt_sha256,
-            evaluator_python_runtime_sha256=evaluator_python_runtime_sha256,
-            expected_runtime_capsule_sha256=expected_runtime_capsule_sha256,
+            evaluator_python_runtime_sha256=pre_runtime_sha256,
+            expected_runtime_capsule_sha256=pre_capsule_sha256,
         )
     finally:
         _cleanup_runtime_write_canary(runtime_write_canary)
+    try:
+        post_runtime = evaluator_python_runtime_identity(
+            runtime_path=Path(str(pre_runtime["path"])),
+            forbidden_roots=forbidden_runtime_roots,
+            expected_sha256=str(pre_runtime["sha256"]),
+        )
+        post_capsule = evaluator_runtime_capsule_v2_manifest(
+            Path(str(post_runtime["path"])),
+            str(post_runtime["version"]),
+            expected_sha256=pre_capsule_sha256,
+        )
+        if post_runtime != pre_runtime or post_capsule != pre_capsule:
+            raise MaterializationError("runtime-capsule-drift")
+    except MaterializationError:
+        raise
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-capsule-drift") from error
+    return _canonical_json_bytes(payload)
 
 
 def _write_final_attestation(
