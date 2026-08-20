@@ -740,36 +740,248 @@ def test_task2_red_intent_and_approval_service_is_deterministic_and_automated(
     assert all("human" not in json.dumps(event).lower() for event in events)
 
 
-def test_task2_red_commitment_pair_verifies_without_exposing_root(
+def _write_v3_commitment_authority(
     tmp_path: Path,
-) -> None:
-    sealed = _write_sealed_test_root(tmp_path / "unit-test-only")
-    sealed_manifest = json.loads((sealed / "sealed-manifest.json").read_text())
+) -> tuple[Path, Path, Path, Path]:
+    from ai_sdlc.benefit_sealed_materializer import fingerprint_tree
+
+    sealed = _write_sealed_test_root(tmp_path / "v2-benefits-20260819-r2")
+    manifest_path = sealed / "sealed-manifest.json"
+    sealed_manifest = json.loads(manifest_path.read_text())
+    sealed_manifest["lock_id"] = sealed.name
+    manifest_path.write_bytes(
+        json.dumps(
+            sealed_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode()
+    )
     fixture_digest = fixture_tree_digest(FIXTURE_ROOT)
+    fixture_manifest_digest = sha256(
+        (FIXTURE_ROOT / "manifest.json").read_bytes()
+    ).hexdigest()
     evidence_digest = sha256(
         (FIXTURE_ROOT / "evidence-contract.template.json").read_bytes()
     ).hexdigest()
+    source = tmp_path / "sealed-source-r2"
+    source.mkdir(mode=0o700)
+    source_bundle = source / "formal-source.json"
+    source_bundle.write_bytes(b'{"schema":"test-only-source/v1"}')
+    source_bundle.chmod(0o600)
+    source_bundle_digest = sha256(source_bundle.read_bytes()).hexdigest()
+    source_tree_digest = fingerprint_tree(source).sha256
+    candidate_path = sealed / "candidate-commitments.json"
+    candidate = json.loads(candidate_path.read_text())
+    payloads = [
+        {"fixture_id": item["fixture_id"], "sha256": item["sha256"]}
+        for item in sealed_manifest["entries"]
+    ]
+    candidate.update(
+        {
+            "lock_id": sealed.name,
+            "source_bundle_sha256": source_bundle_digest,
+            "fixture_manifest_sha256": fixture_manifest_digest,
+            "fixture_tree_sha256": fixture_digest,
+            "evidence_contract_sha256": evidence_digest,
+            "sealed_manifest_sha256": sha256(manifest_path.read_bytes()).hexdigest(),
+            "fixture_payloads": payloads,
+            "source_root_tree_sha256": source_tree_digest,
+        }
+    )
+    candidate_path.write_bytes(
+        json.dumps(candidate, sort_keys=True, separators=(",", ":")).encode()
+    )
+    candidate_digest = sha256(candidate_path.read_bytes()).hexdigest()
+    receipt = {
+        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v3",
+        "publication_state": "published-pending-isolation",
+        "isolation_probe_state": "pending",
+        "target_lock_id": sealed.name,
+        "source_head": candidate["source_head"],
+        "source_tree_sha": candidate["source_tree_sha"],
+        "materializer_sha256": candidate["materializer_sha256"],
+        "source_bundle_sha256": source_bundle_digest,
+        "fixture_manifest_sha256": fixture_manifest_digest,
+        "fixture_tree_sha256": fixture_digest,
+        "evidence_contract_sha256": evidence_digest,
+        "sealed_manifest_sha256": candidate["sealed_manifest_sha256"],
+        "intent_map_sha256": candidate["intent_map_sha256"],
+        "fixture_payloads": payloads,
+        "candidate_commitments_sha256": candidate_digest,
+        "source_root_tree_sha256": source_tree_digest,
+        "evaluator_python_runtime_sha256": candidate["evaluator_python_runtime_sha256"],
+        "evaluator_runtime_capsule_sha256": candidate[
+            "evaluator_runtime_capsule_sha256"
+        ],
+    }
+    receipt_path = sealed / "materialization-receipt.json"
+    receipt_path.write_bytes(
+        json.dumps(receipt, sort_keys=True, separators=(",", ":")).encode()
+    )
+    receipt_digest = sha256(receipt_path.read_bytes()).hexdigest()
+    attestation = {
+        "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
+        "state": "validated",
+        "pending_receipt_sha256": receipt_digest,
+        "evaluator_python_runtime_sha256": candidate["evaluator_python_runtime_sha256"],
+        "evaluator_runtime_capsule_sha256": candidate[
+            "evaluator_runtime_capsule_sha256"
+        ],
+        "profile_sha256": "8" * 64,
+        "checks": {
+            "direct": True,
+            "parent": True,
+            "symlink": True,
+            "hardlink": True,
+            "environment": True,
+            "other_run": True,
+            "add_dir": True,
+            "protected_roots": 1,
+            "write_protected_roots": 1,
+        },
+    }
+    attestation_path = sealed / "isolation-attestation.json"
+    attestation_path.write_bytes(
+        json.dumps(attestation, sort_keys=True, separators=(",", ":")).encode()
+    )
     commitments = {
-        "schema": "ai-sdlc-v2-benefit-sealed-commitments/v2",
-        "lock_id": "unit-test-only",
-        "sealed_manifest_sha256": sha256(
-            (sealed / "sealed-manifest.json").read_bytes()
-        ).hexdigest(),
+        "schema": "ai-sdlc-v2-benefit-sealed-commitments/v3",
+        "lock_id": sealed.name,
+        "sealed_manifest_sha256": candidate["sealed_manifest_sha256"],
         "fixture_tree_sha256": fixture_digest,
         "fixture_commitment": fixture_digest,
+        "fixture_manifest_sha256": fixture_manifest_digest,
         "evidence_contract_template_sha256": evidence_digest,
         "evidence_contract_commitment": evidence_digest,
-        "fixture_payloads": [
-            {"fixture_id": item["fixture_id"], "sha256": item["sha256"]}
-            for item in sealed_manifest["entries"]
-        ],
+        "fixture_payloads": payloads,
         "intent_map_sha256": sealed_manifest["intent_map"]["sha256"],
-        "publication_state": "sealed-outside-provider-root",
+        "candidate_commitments_sha256": candidate_digest,
+        "materialization_receipt_sha256": receipt_digest,
+        "isolation_attestation_sha256": sha256(
+            attestation_path.read_bytes()
+        ).hexdigest(),
+        "evaluator_python_runtime_sha256": candidate["evaluator_python_runtime_sha256"],
+        "evaluator_runtime_capsule_sha256": candidate[
+            "evaluator_runtime_capsule_sha256"
+        ],
+        "source_bundle_sha256": source_bundle_digest,
+        "source_root_tree_sha256": source_tree_digest,
+        "publication_state": "materialized-validated",
     }
     path = tmp_path / "sealed-commitments.json"
     path.write_text(json.dumps(commitments), encoding="utf-8")
+    protocol_path = tmp_path / "protocol.json"
+    protocol_path.write_text(
+        json.dumps(
+            {
+                "execution_lock": {
+                    "fixture_tree_sha256": fixture_digest,
+                    "fixture_commitment": fixture_digest,
+                    "evidence_contract_sha256": evidence_digest,
+                    "evidence_contract_commitment": evidence_digest,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path, sealed, source, protocol_path
 
-    assert validate_sealed_commitments(path, sealed, FIXTURE_ROOT) == []
+
+def test_task2_bound_commitment_authority_verifies_without_event_writes(
+    tmp_path: Path,
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    event_path = sealed.parent / ".intent-validation-events.jsonl"
+
+    assert (
+        validate_sealed_commitments(
+            path,
+            sealed,
+            FIXTURE_ROOT,
+            source_root=source,
+            protocol_path=protocol,
+        )
+        == []
+    )
+    assert not event_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("schema", "ai-sdlc-v2-benefit-sealed-commitments/v2"),
+        ("lock_id", "v2-benefits-20260819-r1"),
+        ("publication_state", "sealed-outside-provider-root"),
+    ],
+)
+def test_task2_bound_commitment_rejects_old_or_unvalidated_authority(
+    tmp_path: Path, field: str, value: str
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    authority = json.loads(path.read_text())
+    authority[field] = value
+    path.write_text(json.dumps(authority))
+
+    issues = validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+
+    assert [issue.code for issue in issues] == ["fixture.sealed-commitment"]
+
+
+def test_task2_bound_commitment_is_closed(tmp_path: Path) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    authority = json.loads(path.read_text())
+    authority["absolute_path"] = str(sealed)
+    path.write_text(json.dumps(authority))
+
+    assert validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+
+    authority = json.loads(path.read_text())
+    authority.pop("absolute_path")
+    authority.pop("candidate_commitments_sha256")
+    path.write_text(json.dumps(authority))
+    assert validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+
+
+def test_task2_tracked_authority_contains_only_opaque_commitments() -> None:
+    path = FIXTURE_ROOT / "sealed-commitments.json"
+    text = path.read_text(encoding="utf-8")
+    authority = json.loads(text)
+
+    assert set(authority) == fixture_module._SEALED_AUTHORITY_KEYS
+    assert authority["schema"] == "ai-sdlc-v2-benefit-sealed-commitments/v3"
+    assert authority["lock_id"] == "v2-benefits-20260819-r2"
+    assert authority["publication_state"] == "materialized-validated"
+    assert "/private/" not in text
+    assert "/Users/" not in text
+    assert '"answer"' not in text
+
+
+@pytest.mark.parametrize(
+    "surface",
+    ["manifest", "candidate", "receipt", "attestation", "source", "protocol"],
+)
+def test_task2_bound_commitment_rejects_mutated_authority_surface(
+    tmp_path: Path, surface: str
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    targets = {
+        "manifest": sealed / "sealed-manifest.json",
+        "candidate": sealed / "candidate-commitments.json",
+        "receipt": sealed / "materialization-receipt.json",
+        "attestation": sealed / "isolation-attestation.json",
+        "source": source / "formal-source.json",
+        "protocol": protocol,
+    }
+    target = targets[surface]
+    target.write_bytes(target.read_bytes() + b"x")
+
+    assert validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
 
 
 def test_task2_red_leak_scanner_catches_filename_digest_phrase_and_paths(

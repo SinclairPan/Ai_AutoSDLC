@@ -88,6 +88,67 @@ _RUNTIME_CAPSULE_ENTRY_KEYS = {
     "ctime_ns",
     "mtime_ns",
 }
+_SEALED_AUTHORITY_LOCK_ID = "v2-benefits-20260819-r2"
+_SEALED_AUTHORITY_KEYS = {
+    "schema",
+    "lock_id",
+    "sealed_manifest_sha256",
+    "fixture_manifest_sha256",
+    "fixture_tree_sha256",
+    "fixture_commitment",
+    "evidence_contract_template_sha256",
+    "evidence_contract_commitment",
+    "fixture_payloads",
+    "intent_map_sha256",
+    "candidate_commitments_sha256",
+    "materialization_receipt_sha256",
+    "isolation_attestation_sha256",
+    "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule_sha256",
+    "source_bundle_sha256",
+    "source_root_tree_sha256",
+    "publication_state",
+}
+_MATERIALIZATION_RECEIPT_KEYS = {
+    "schema",
+    "publication_state",
+    "target_lock_id",
+    "source_head",
+    "source_tree_sha",
+    "materializer_sha256",
+    "source_bundle_sha256",
+    "fixture_manifest_sha256",
+    "fixture_tree_sha256",
+    "evidence_contract_sha256",
+    "sealed_manifest_sha256",
+    "intent_map_sha256",
+    "fixture_payloads",
+    "candidate_commitments_sha256",
+    "isolation_probe_state",
+    "source_root_tree_sha256",
+    "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule_sha256",
+}
+_ISOLATION_ATTESTATION_KEYS = {
+    "schema",
+    "state",
+    "pending_receipt_sha256",
+    "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule_sha256",
+    "profile_sha256",
+    "checks",
+}
+_ISOLATION_CHECK_KEYS = {
+    "direct",
+    "parent",
+    "symlink",
+    "hardlink",
+    "environment",
+    "other_run",
+    "add_dir",
+    "protected_roots",
+    "write_protected_roots",
+}
 _SEALED_PHRASE_MARKERS = (
     "SEALED_RUBRIC_PHRASE",
     "consecutive-failure-recovery-answer",
@@ -2498,82 +2559,360 @@ def scan_candidate_for_sealed_leak(
     return issues
 
 
+def _identity_tree_sha256(root: Path) -> str:
+    """Recompute the materializer's canonical identity-tree digest read-only."""
+    metadata = root.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("identity tree root is invalid")
+    entries: list[dict[str, object]] = [
+        {
+            "path": ".",
+            "type": "directory",
+            "device": metadata.st_dev,
+            "inode": metadata.st_ino,
+            "uid": metadata.st_uid,
+            "gid": metadata.st_gid,
+            "mode": stat.S_IMODE(metadata.st_mode),
+            "nlink": metadata.st_nlink,
+            "size": metadata.st_size,
+        }
+    ]
+    for path in sorted(
+        root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+    ):
+        item = path.lstat()
+        record: dict[str, object] = {
+            "path": path.relative_to(root).as_posix(),
+            "device": item.st_dev,
+            "inode": item.st_ino,
+            "uid": item.st_uid,
+            "gid": item.st_gid,
+            "mode": stat.S_IMODE(item.st_mode),
+            "nlink": item.st_nlink,
+            "size": item.st_size,
+        }
+        if stat.S_ISREG(item.st_mode):
+            record.update({"type": "file", "sha256": _digest_file(path)})
+        elif stat.S_ISDIR(item.st_mode):
+            record.update({"type": "directory"})
+        elif stat.S_ISLNK(item.st_mode):
+            record.update({"type": "symlink", "target": os.readlink(path)})
+        else:
+            record.update({"type": "other"})
+        entries.append(record)
+    return sha256(_canonical_json_bytes(entries)).hexdigest()
+
+
+def _validate_source_authority(source_root: Path) -> tuple[str, str]:
+    metadata = source_root.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != os.geteuid()
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise ValueError("source authority root is invalid")
+    children = list(source_root.iterdir())
+    if len(children) != 1 or children[0].name != "formal-source.json":
+        raise ValueError("source authority coverage is invalid")
+    source = children[0]
+    source_stat = source.lstat()
+    if (
+        stat.S_ISLNK(source_stat.st_mode)
+        or not stat.S_ISREG(source_stat.st_mode)
+        or source_stat.st_uid != os.geteuid()
+        or stat.S_IMODE(source_stat.st_mode) != 0o600
+        or source_stat.st_nlink != 1
+    ):
+        raise ValueError("source bundle is invalid")
+    return _digest_file(source), _identity_tree_sha256(source_root)
+
+
+def _payload_commitments(value: object) -> list[Mapping[str, object]]:
+    if not isinstance(value, list) or len(value) != len(FIXTURE_IDS):
+        raise ValueError("payload commitment coverage is invalid")
+    payloads: list[Mapping[str, object]] = []
+    for expected_id, item in zip(FIXTURE_IDS, value, strict=True):
+        closed = _closed_object(item, {"fixture_id", "sha256"}, "payload commitment")
+        if closed["fixture_id"] != expected_id or not _DIGEST.fullmatch(
+            str(closed["sha256"])
+        ):
+            raise ValueError("payload commitment is invalid")
+        payloads.append(closed)
+    return payloads
+
+
 def validate_sealed_commitments(
-    commitments_path: Path, sealed_root: Path, fixture_root: Path | None = None
+    commitments_path: Path,
+    sealed_root: Path,
+    fixture_root: Path | None = None,
+    *,
+    source_root: Path,
+    protocol_path: Path,
 ) -> list[BenchmarkIssue]:
-    """Verify tracked digests against an evaluator root without returning plaintext."""
+    """Verify the unique r2 authority without emitting sealed data or events."""
     issues: list[BenchmarkIssue] = []
     try:
         commitments = _closed_object(
             json.loads(commitments_path.read_text(encoding="utf-8")),
-            {
-                "schema",
-                "lock_id",
-                "sealed_manifest_sha256",
-                "fixture_tree_sha256",
-                "fixture_commitment",
-                "evidence_contract_template_sha256",
-                "evidence_contract_commitment",
-                "fixture_payloads",
-                "intent_map_sha256",
-                "publication_state",
-            },
+            _SEALED_AUTHORITY_KEYS,
             "sealed commitments",
         )
-        if commitments["schema"] != "ai-sdlc-v2-benefit-sealed-commitments/v2":
-            raise ValueError("sealed commitment schema is invalid")
-        if commitments["lock_id"] != sealed_root.name:
-            raise ValueError("sealed root lock id is invalid")
+        if (
+            commitments["schema"] != "ai-sdlc-v2-benefit-sealed-commitments/v3"
+            or commitments["lock_id"] != _SEALED_AUTHORITY_LOCK_ID
+            or sealed_root.name != _SEALED_AUTHORITY_LOCK_ID
+            or commitments["publication_state"] != "materialized-validated"
+        ):
+            raise ValueError("sealed authority is invalid")
+        for key in _SEALED_AUTHORITY_KEYS - {
+            "schema",
+            "lock_id",
+            "fixture_payloads",
+            "publication_state",
+        }:
+            if not _DIGEST.fullmatch(str(commitments[key])):
+                raise ValueError("sealed authority digest is invalid")
+        authority_payloads = _payload_commitments(commitments["fixture_payloads"])
+
         public_root = fixture_root or commitments_path.parent
         fixture_digest = fixture_tree_digest(public_root)
+        fixture_manifest_digest = _digest_file(public_root / "manifest.json")
+        evidence_digest = _digest_file(public_root / "evidence-contract.template.json")
         if not (
             commitments["fixture_tree_sha256"]
             == commitments["fixture_commitment"]
             == fixture_digest
-        ):
-            raise ValueError("fixture commitment pair is invalid")
-        evidence_digest = _digest_file(public_root / "evidence-contract.template.json")
-        if not (
-            commitments["evidence_contract_template_sha256"]
+            and commitments["fixture_manifest_sha256"] == fixture_manifest_digest
+            and commitments["evidence_contract_template_sha256"]
             == commitments["evidence_contract_commitment"]
             == evidence_digest
         ):
-            raise ValueError("evidence contract commitment pair is invalid")
-        manifest = sealed_root / "sealed-manifest.json"
-        if _digest_file(manifest) != commitments["sealed_manifest_sha256"]:
-            raise ValueError("sealed manifest commitment is invalid")
-        manifest_raw = json.loads(manifest.read_text(encoding="utf-8"))
-        manifest_entries = {
-            item["fixture_id"]: item["sha256"] for item in manifest_raw["entries"]
-        }
-        payloads = commitments["fixture_payloads"]
-        if (
-            not isinstance(payloads, list)
-            or {
-                item.get("fixture_id"): item.get("sha256")
-                for item in payloads
-                if isinstance(item, Mapping)
-            }
-            != manifest_entries
-        ):
-            raise ValueError("sealed payload commitments are invalid")
-        intent = manifest_raw.get("intent_map")
-        if (
-            not isinstance(intent, Mapping)
-            or set(intent) != {"path", "sha256"}
-            or commitments["intent_map_sha256"] != intent["sha256"]
-        ):
-            raise ValueError("sealed intent-map commitment is invalid")
-        intent_path = sealed_root / _safe_relative(intent["path"])
-        if _digest_file(intent_path) != intent["sha256"]:
-            raise ValueError("sealed intent-map digest is invalid")
-        FrozenIntentApprovalService.from_sealed_root(
-            sealed_root, sealed_root.parent / ".intent-validation-events.jsonl"
+            raise ValueError("public commitment pair is invalid")
+
+        manifest_path = sealed_root / "sealed-manifest.json"
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = _closed_object(
+            json.loads(manifest_bytes),
+            {
+                "schema",
+                "lock_id",
+                "entries",
+                "intent_map",
+                "evaluator_python_runtime_sha256",
+                "evaluator_runtime_capsule_sha256",
+            },
+            "sealed manifest",
         )
+        if (
+            manifest["schema"] != "ai-sdlc-v2-benefit-sealed-manifest/v4"
+            or manifest["lock_id"] != commitments["lock_id"]
+            or sha256(manifest_bytes).hexdigest()
+            != commitments["sealed_manifest_sha256"]
+            or manifest["evaluator_python_runtime_sha256"]
+            != commitments["evaluator_python_runtime_sha256"]
+            or manifest["evaluator_runtime_capsule_sha256"]
+            != commitments["evaluator_runtime_capsule_sha256"]
+        ):
+            raise ValueError("sealed manifest authority is invalid")
+        manifest_entries = manifest["entries"]
+        if not isinstance(manifest_entries, list):
+            raise ValueError("sealed manifest coverage is invalid")
+        normalized_entries: list[Mapping[str, object]] = []
+        for expected_id, raw in zip(FIXTURE_IDS, manifest_entries, strict=True):
+            entry = _closed_object(
+                raw, {"fixture_id", "path", "sha256"}, "sealed manifest entry"
+            )
+            relative = Path(_safe_relative(entry["path"]))
+            if (
+                entry["fixture_id"] != expected_id
+                or relative.name != f"{expected_id}.sealed.json"
+                or relative.parent != Path(".")
+                or _digest_file(sealed_root / relative) != entry["sha256"]
+            ):
+                raise ValueError("sealed payload authority is invalid")
+            normalized_entries.append(
+                {"fixture_id": entry["fixture_id"], "sha256": entry["sha256"]}
+            )
+        if normalized_entries != authority_payloads:
+            raise ValueError("sealed payload authority mismatch")
+        intent = _closed_object(
+            manifest["intent_map"], {"path", "sha256"}, "sealed intent map"
+        )
+        intent_path = sealed_root / _safe_relative(intent["path"])
+        if (
+            intent["path"] != "intent-map.json"
+            or intent["sha256"] != commitments["intent_map_sha256"]
+            or _digest_file(intent_path) != intent["sha256"]
+        ):
+            raise ValueError("sealed intent authority is invalid")
+        FrozenIntentApprovalService(intent_path, Path(os.devnull))
+
+        candidate_path = sealed_root / "candidate-commitments.json"
+        candidate_bytes = candidate_path.read_bytes()
+        candidate = _closed_object(
+            json.loads(candidate_bytes), _RUNTIME_COMMITMENT_KEYS, "candidate authority"
+        )
+        if (
+            candidate["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v3"
+            or candidate["lock_id"] != commitments["lock_id"]
+            or sha256(candidate_bytes).hexdigest()
+            != commitments["candidate_commitments_sha256"]
+        ):
+            raise ValueError("candidate authority is invalid")
+        candidate_payloads = _payload_commitments(candidate["fixture_payloads"])
+
+        receipt_path = sealed_root / "materialization-receipt.json"
+        receipt_bytes = receipt_path.read_bytes()
+        receipt = _closed_object(
+            json.loads(receipt_bytes),
+            _MATERIALIZATION_RECEIPT_KEYS,
+            "materialization receipt",
+        )
+        if (
+            receipt["schema"] != "ai-sdlc-v2-benefit-materialization-receipt/v3"
+            or receipt["publication_state"] != "published-pending-isolation"
+            or receipt["isolation_probe_state"] != "pending"
+            or receipt["target_lock_id"] != commitments["lock_id"]
+            or sha256(receipt_bytes).hexdigest()
+            != commitments["materialization_receipt_sha256"]
+            or receipt["candidate_commitments_sha256"]
+            != commitments["candidate_commitments_sha256"]
+        ):
+            raise ValueError("materialization receipt authority is invalid")
+        receipt_payloads = _payload_commitments(receipt["fixture_payloads"])
+
+        attestation_path = sealed_root / "isolation-attestation.json"
+        attestation_bytes = attestation_path.read_bytes()
+        attestation = _closed_object(
+            json.loads(attestation_bytes),
+            _ISOLATION_ATTESTATION_KEYS,
+            "isolation attestation",
+        )
+        checks = _closed_object(
+            attestation["checks"], _ISOLATION_CHECK_KEYS, "isolation checks"
+        )
+        boolean_checks = _ISOLATION_CHECK_KEYS - {
+            "protected_roots",
+            "write_protected_roots",
+        }
+        if (
+            attestation["schema"] != "ai-sdlc-v2-benefit-isolation-attestation/v1"
+            or attestation["state"] != "validated"
+            or sha256(attestation_bytes).hexdigest()
+            != commitments["isolation_attestation_sha256"]
+            or attestation["pending_receipt_sha256"]
+            != commitments["materialization_receipt_sha256"]
+            or not all(checks[key] is True for key in boolean_checks)
+            or any(
+                isinstance(checks[key], bool)
+                or not isinstance(checks[key], int)
+                or checks[key] < 1
+                for key in ("protected_roots", "write_protected_roots")
+            )
+            or not _DIGEST.fullmatch(str(attestation["profile_sha256"]))
+        ):
+            raise ValueError("isolation attestation authority is invalid")
+
+        common = {
+            "fixture_manifest_sha256": commitments["fixture_manifest_sha256"],
+            "fixture_tree_sha256": commitments["fixture_tree_sha256"],
+            "evidence_contract_sha256": commitments[
+                "evidence_contract_template_sha256"
+            ],
+            "sealed_manifest_sha256": commitments["sealed_manifest_sha256"],
+            "intent_map_sha256": commitments["intent_map_sha256"],
+            "source_bundle_sha256": commitments["source_bundle_sha256"],
+            "source_root_tree_sha256": commitments["source_root_tree_sha256"],
+            "evaluator_python_runtime_sha256": commitments[
+                "evaluator_python_runtime_sha256"
+            ],
+            "evaluator_runtime_capsule_sha256": commitments[
+                "evaluator_runtime_capsule_sha256"
+            ],
+        }
+        if (
+            any(candidate[key] != value for key, value in common.items())
+            or any(receipt[key] != value for key, value in common.items())
+            or candidate_payloads != authority_payloads
+            or receipt_payloads != authority_payloads
+            or any(
+                receipt[key] != candidate[key]
+                for key in ("source_head", "source_tree_sha", "materializer_sha256")
+            )
+            or attestation["evaluator_python_runtime_sha256"]
+            != commitments["evaluator_python_runtime_sha256"]
+            or attestation["evaluator_runtime_capsule_sha256"]
+            != commitments["evaluator_runtime_capsule_sha256"]
+        ):
+            raise ValueError("sealed authority closure is invalid")
+
+        identity = _closed_object(
+            candidate["evaluator_python_runtime"],
+            _RUNTIME_IDENTITY_KEYS,
+            "runtime identity",
+        )
+        identity_digest = evaluator_runtime_identity_sha256(identity)
+        capsule = _closed_object(
+            candidate["evaluator_runtime_capsule"],
+            _RUNTIME_CAPSULE_KEYS,
+            "runtime capsule",
+        )
+        capsule_digest = evaluator_runtime_capsule_sha256(capsule)
+        runtime_path = Path(str(identity["path"]))
+        current_identity = evaluator_python_runtime_identity(
+            runtime_path=runtime_path,
+            forbidden_roots=(sealed_root, public_root, source_root),
+            expected_sha256=str(identity["sha256"]),
+        )
+        current_capsule = evaluator_runtime_capsule_manifest(
+            runtime_path,
+            str(identity["version"]),
+            expected_sha256=capsule_digest,
+        )
+        if (
+            identity_digest != commitments["evaluator_python_runtime_sha256"]
+            or capsule_digest != commitments["evaluator_runtime_capsule_sha256"]
+            or current_identity != identity
+            or current_capsule != capsule
+        ):
+            raise ValueError("runtime authority is invalid")
+
+        source_bundle_digest, source_tree_digest = _validate_source_authority(
+            source_root
+        )
+        if (
+            source_bundle_digest != commitments["source_bundle_sha256"]
+            or source_tree_digest != commitments["source_root_tree_sha256"]
+        ):
+            raise ValueError("source authority is invalid")
+        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+        execution_lock = protocol.get("execution_lock")
+        if not isinstance(execution_lock, Mapping) or any(
+            execution_lock.get(key) != expected
+            for key, expected in {
+                "fixture_tree_sha256": commitments["fixture_tree_sha256"],
+                "fixture_commitment": commitments["fixture_commitment"],
+                "evidence_contract_sha256": commitments[
+                    "evidence_contract_template_sha256"
+                ],
+                "evidence_contract_commitment": commitments[
+                    "evidence_contract_commitment"
+                ],
+            }.items()
+        ):
+            raise ValueError("protocol authority is invalid")
         for fixture_id in FIXTURE_IDS:
             _load_sealed_payload(fixture_id, sealed_root)
-    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
-        issues.append(BenchmarkIssue("fixture.sealed-commitment", str(error)))
+    except (
+        EvaluatorNoGoError,
+        KeyError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ):
+        issues.append(BenchmarkIssue("fixture.sealed-commitment", "authority-invalid"))
     return issues
 
 

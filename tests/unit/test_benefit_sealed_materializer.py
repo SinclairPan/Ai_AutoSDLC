@@ -462,6 +462,16 @@ def _copy_repo_contract(root: Path) -> str:
         REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json",
         fixture_target.parent / "protocol.json",
     )
+    protocol_path = fixture_target.parent / "protocol.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    for field in (
+        "fixture_tree_sha256",
+        "fixture_commitment",
+        "evidence_contract_sha256",
+        "evidence_contract_commitment",
+    ):
+        protocol["execution_lock"][field] = "pending-unbound"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "--all"], cwd=root, check=True)
     subprocess.run(
@@ -1956,6 +1966,48 @@ def test_cli_fingerprint_is_read_only_and_materialize_help_is_closed() -> None:
         assert option in combined
     assert "--sealed-source " not in combined
     assert "--target" not in combined
+
+
+def test_task2_binding_cli_reports_narrow_authority_without_provider_permission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        benefit_evidence_cmd,
+        "validate_sealed_commitments",
+        lambda *_args, **_kwargs: [],
+        raising=False,
+    )
+
+    result = CliRunner().invoke(
+        benefit_evidence_cmd.benefit_evidence_app,
+        ["verify-sealed-commitments"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert json.loads(result.stdout) == {
+        "authority": "task2-commitment",
+        "experiment_authorized": False,
+        "provider_authorized": False,
+        "status": "bound",
+    }
+
+    monkeypatch.setattr(
+        benefit_evidence_cmd,
+        "validate_sealed_commitments",
+        lambda *_args, **_kwargs: [
+            fixture_module.BenchmarkIssue("test", "/private/test-only-secret")
+        ],
+    )
+    rejected = CliRunner().invoke(
+        benefit_evidence_cmd.benefit_evidence_app,
+        ["verify-sealed-commitments"],
+    )
+    assert rejected.exit_code == 1
+    assert json.loads(rejected.stderr) == {
+        "code": "sealed-commitments",
+        "status": "no-go",
+    }
+    assert "/private/test-only-secret" not in rejected.output
 
 
 def test_cli_redacts_unexpected_materializer_exception(

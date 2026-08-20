@@ -7,6 +7,7 @@ from typing import Annotated
 
 import typer
 
+from ai_sdlc.benefit_benchmark_fixtures import validate_sealed_commitments
 from ai_sdlc.benefit_sealed_materializer import (
     FINAL_LOCK_ID,
     MaterializationError,
@@ -19,6 +20,50 @@ benefit_evidence_app = typer.Typer(
     help="Trusted v2 benefit-evidence sealing operations.",
     no_args_is_help=True,
 )
+
+
+@benefit_evidence_app.command("verify-sealed-commitments")
+def verify_sealed_commitments_command() -> None:
+    """Verify the bound Task 2 authority without authorizing Provider execution."""
+    try:
+        policy = default_policy()
+        fixture_root = (
+            policy.repo_root / "benchmarks" / "ai-sdlc-v2-benefits" / "fixtures"
+        )
+        issues = validate_sealed_commitments(
+            fixture_root / "sealed-commitments.json",
+            policy.target,
+            fixture_root,
+            source_root=policy.source_root,
+            protocol_path=policy.repo_root
+            / "benchmarks"
+            / "ai-sdlc-v2-benefits"
+            / "protocol.json",
+        )
+    except Exception:
+        issues = [object()]
+    if issues:
+        typer.echo(
+            json.dumps(
+                {"status": "no-go", "code": "sealed-commitments"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    typer.echo(
+        json.dumps(
+            {
+                "status": "bound",
+                "authority": "task2-commitment",
+                "provider_authorized": False,
+                "experiment_authorized": False,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
 
 
 @benefit_evidence_app.command("fingerprint-old-root")

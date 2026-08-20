@@ -234,6 +234,20 @@ def _bound_protocol_path(tmp_path: Path, *, compact: bool = False) -> Path:
     return path
 
 
+def _pending_protocol_path(tmp_path: Path) -> Path:
+    raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
+    for field in (
+        "fixture_tree_sha256",
+        "fixture_commitment",
+        "evidence_contract_sha256",
+        "evidence_contract_commitment",
+    ):
+        raw["execution_lock"][field] = "pending-unbound"
+    path = tmp_path / "protocol-pending.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    return path
+
+
 def _bound_protocol(tmp_path: Path):
     return load_protocol(_bound_protocol_path(tmp_path))
 
@@ -250,10 +264,7 @@ def test_protocol_freezes_arms_fixtures_matrix_and_balanced_schedule() -> None:
     )
     assert len(protocol.run_matrix) == 15
     assert len({(run.arm, run.fixture) for run in protocol.run_matrix}) == 15
-    assert {issue.code for issue in validate_protocol(protocol, REPO_ROOT)} == {
-        "protocol.fixture-pending",
-        "protocol.evidence-contract-pending",
-    }
+    assert validate_protocol(protocol, REPO_ROOT) == []
 
     positions_by_arm: dict[str, list[int]] = {arm: [] for arm in protocol.arms}
     for run in protocol.run_matrix:
@@ -320,17 +331,18 @@ def test_pending_fixture_protocol_reaches_reservation_api_and_does_not_mutate_le
     tmp_path: Path,
 ) -> None:
     ledger = tmp_path / "ledger.json"
+    pending = load_protocol(_pending_protocol_path(tmp_path))
 
     with pytest.raises(ValueError, match="pending"):
         reserve_provider_attempt(
             ledger,
-            load_protocol(PROTOCOL_PATH),
+            pending,
             AttemptRequest("P:requirement-contract-ambiguity", "writer"),
         )
     with pytest.raises(ValueError, match="pending"):
         record_provider_completion(
             ledger,
-            load_protocol(PROTOCOL_PATH),
+            pending,
             _completion("attempt-001", "failed", False),
         )
 
@@ -3486,7 +3498,11 @@ def test_static_schemas_and_offline_cli_validation_are_available() -> None:
         text=True,
     )
     assert result.returncode == 0, result.stderr
-    assert '"protocol.fixture-pending"' in result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["execution_ready"] is True
+    assert payload["task2_commitment_bound"] is True
+    assert payload["provider_authorized"] is False
+    assert payload["experiment_authorized"] is False
 
 
 def test_fix_round_protocol_freezes_exact_rows_and_execution_locks() -> None:
@@ -3506,7 +3522,7 @@ def test_fix_round_protocol_freezes_exact_rows_and_execution_locks() -> None:
 def test_fix_round_two_rejects_pending_fixture_lock_before_reservation(
     tmp_path: Path,
 ) -> None:
-    protocol = load_protocol(PROTOCOL_PATH)
+    protocol = load_protocol(_pending_protocol_path(tmp_path))
     assert any(
         issue.code == "protocol.fixture-pending"
         for issue in validate_protocol(protocol, REPO_ROOT)
@@ -4114,13 +4130,16 @@ def test_task13_validate_reports_structural_validity_separately_from_execution_r
     tmp_path: Path,
 ) -> None:
     pending = _run_task13_cli(
-        "validate", "--protocol", str(PROTOCOL_PATH)
+        "validate", "--protocol", str(_pending_protocol_path(tmp_path))
     )
     assert pending.returncode == 0
     assert pending.stderr == ""
     pending_payload = json.loads(pending.stdout)
     assert pending_payload["structurally_valid"] is True
     assert pending_payload["execution_ready"] is False
+    assert pending_payload["task2_commitment_bound"] is False
+    assert pending_payload["provider_authorized"] is False
+    assert pending_payload["experiment_authorized"] is False
     assert any(
         issue["code"] == "protocol.fixture-pending"
         for issue in pending_payload["issues"]
@@ -4133,8 +4152,11 @@ def test_task13_validate_reports_structural_validity_separately_from_execution_r
     bound_payload = json.loads(bound.stdout)
     assert bound_payload == {
         "execution_ready": True,
+        "experiment_authorized": False,
         "issues": [],
+        "provider_authorized": False,
         "structurally_valid": True,
+        "task2_commitment_bound": True,
     }
 
     raw = json.loads(PROTOCOL_PATH.read_text(encoding="utf-8"))
@@ -5355,10 +5377,14 @@ def test_release_gate_cli_atomically_snapshots_real_run_evidence(
     assert ledger.read_bytes() == ledger_bytes
 
 
-def test_release_gate_round2_protocol_tracks_pending_evidence_contract() -> None:
-    assert "protocol.evidence-contract-pending" in {
-        issue.code for issue in validate_protocol(load_protocol(PROTOCOL_PATH), REPO_ROOT)
-    }
+def test_release_gate_round2_protocol_tracks_bound_evidence_contract() -> None:
+    protocol = load_protocol(PROTOCOL_PATH)
+    assert validate_protocol(protocol, REPO_ROOT) == []
+    assert (
+        protocol.execution_lock.evidence_contract_sha256
+        == protocol.execution_lock.evidence_contract_commitment
+        == "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c"
+    )
 
 
 def test_release_gate_round2_removes_bulk_self_attested_run_evidence_api() -> None:

@@ -395,3 +395,30 @@ git diff --check: clean
 ```
 
 完整 scratch 继续包含两次冻结 frontend baseline timeout，均按原合同 fail closed；六个 security Oracle 均经同一 capsule-bound 仓外 runtime 真实执行，无 `adapter_error`。本轮仍未准备或物化 r2，未触碰 invalid r1、任何 source、旧 root、stale canary 或 protocol；Provider、`codex exec`、experiment arm 调用保持 `0`。
+
+## Task 2 tracked binding：actual r2 唯一公开承诺
+
+### v3 authority 与协议边界
+
+- Binding 基线：`a646c0bc3277f617a3a0216ec3395579a788c52a`；actual r2 已完成三方独立复审并获 PASS 后才执行 tracked binding。
+- `sealed-commitments.json` 升级为 closed v3，仅保存 opaque SHA256 与状态：exact r2 lock、sealed manifest、三个 payload、intent map、public fixture manifest/tree pair、evidence-contract pair、candidate commitments、materialization receipt、isolation attestation、runtime identity/capsule、source bundle/root tree，以及派生状态 `materialized-validated`。公开文件不含 sealed plaintext、答案或绝对路径。
+- consumer 逐项重算 public fixture/evidence、actual r2 manifest/payload/intent、candidate/receipt/attestation、external source identity tree、runtime identity 与完整 capsule；同时校验 manifest/candidate/receipt/attestation 的 runtime、payload、source 与 receipt 链四向一致。缺字段、额外字段、schema v2、r1 lock、未验证状态或任何 authority surface 漂移均只返回 opaque `authority-invalid`，不创建 intent/approval event 文件。
+- protocol 只把四个 `pending-unbound` 字段绑定为 fixture pair `3a5a2a…4ff8a` 与 evidence pair `7b32d6…060c`；其余 execution lock、run matrix、预算与顶层结构 byte-semantically unchanged。
+- 新增只读 `benefit-evidence verify-sealed-commitments`。成功只报告 `authority=task2-commitment` 与 `status=bound`；离线 protocol validate 即使显示 `execution_ready=true`，也同时明确 `provider_authorized=false`、`experiment_authorized=false`。这里的 ready 仅表示 Task 2 commitment 已绑定，不授权 Task 3/4、Provider 或 experiment arms。
+
+### TDD 与门禁
+
+```text
+fresh binding RED: 12 failed
+binding focused: 13 passed
+fixture + materializer related: 136 passed, 11 skipped
+benefit + fixture + materializer + CLI related: 510 passed, 11 skipped
+actual r2 authority CLI: bound; Provider/experiment authorization false
+protocol offline validate: structurally valid; Task2 bound; Provider/experiment authorization false
+Ruff check: All checks passed
+git diff --check: clean
+```
+
+首次把 production protocol 绑定后，42 个旧 materializer 测试按生产 fail-closed 合同统一停在 `protocol-state`；这不是实现回归，而是测试 fixture 此前直接复制 production pending 状态。测试 helper 已改为显式构造 pre-binding pending protocol，materializer 的生产门禁没有放宽，随后统一回归全绿。
+
+binding 前后 external identity 完全一致：actual r2 inode `403098441` / tree `b5b2b362…8615b`，invalid r1 inode `402612600` / tree `9701e5fa…dc30`，r2 source inode `403084506` / tree `56387824…9596`，disposition inode `403084461` / tree `52797356…44ae`，runtime identity `4e52fbf6…87a2`，runtime capsule `ed26993a…caf5`。actual 八个 authority 文件分别重算并与 tracked v3 完全一致；Provider、`codex exec`、experiment arm 调用仍为 `0`，没有启动 Task 3/4 或实验。

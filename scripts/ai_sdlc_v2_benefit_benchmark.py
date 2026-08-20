@@ -178,8 +178,19 @@ def main() -> int:
             _emit(
                 {
                     "execution_ready": not issues,
+                    "experiment_authorized": False,
                     "issues": [_issue_payload(issue) for issue in issues],
+                    "provider_authorized": False,
                     "structurally_valid": not structural_issues,
+                    "task2_commitment_bound": not any(
+                        issue.code
+                        in {
+                            "protocol.fixture-pending",
+                            "protocol.evidence-contract-pending",
+                            "protocol.lock",
+                        }
+                        for issue in issues
+                    ),
                 }
             )
             return 1 if structural_issues else 0
@@ -235,7 +246,11 @@ def main() -> int:
                 "output_tokens": arguments.output_tokens,
                 "reasoning_output_tokens": arguments.reasoning_output_tokens,
             }
-            token_usage = None if all(value is None for value in token_values.values()) else token_values
+            token_usage = (
+                None
+                if all(value is None for value in token_values.values())
+                else token_values
+            )
             record_provider_completion(
                 arguments.ledger,
                 _protocol(arguments.protocol),
