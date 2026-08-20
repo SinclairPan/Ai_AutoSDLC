@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc-v2-directional-summary/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "labels", "publishable", "raw_receipts", "paired_deltas"],
+  "properties": {
+    "schema": {"const": "ai-sdlc-v2-directional-summary/v1"},
+    "labels": {"type": "array", "minItems": 6, "maxItems": 6},
+    "publishable": {"type": "boolean"},
+    "raw_receipts": {"type": "array", "minItems": 15, "maxItems": 15},
+    "paired_deltas": {"type": "array"}
+  }
+}

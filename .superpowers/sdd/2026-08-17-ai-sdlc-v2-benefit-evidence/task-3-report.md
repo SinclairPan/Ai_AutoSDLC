@@ -168,3 +168,42 @@ FixR3 removes the remaining path-resolution window from runtime canary creation.
 Fresh FixR3 RED was `8 failed / 105 deselected`; GREEN expanded to `16 passed / 98 deselected`, covering first dirfd stat/open failure, parent replacement before and after root acquisition, child rename/replacement, same-name symlink victim preservation, root identity at return and the retained full post-probe capsule equality. The exact system-outside final profile plus post-publication canary passed `2 passed / 0 skipped in 4.73s`. A first broad run inside the restricted app sandbox correctly failed for environmental reasons (local socket denied and the app's new standalone Codex path did not satisfy the frozen 0.147 npm layout); no product fix was made for that drift. Re-running the complete benefit suite system-outside with the already frozen Codex 0.147 path passed `670 passed / 2 skipped / 0 failed in 557.42s`; observed system Chrome fallbacks contained both `--use-mock-keychain` and `--password-store=basic`, with no keychain or popup signal.
 
 Ruff check, Ruff format check and `git diff --check` pass. Actual r2/r1/legacy/source-r2/disposition-r2 inode/tree fingerprints remain exact, tracked protocol and sealed commitments remain `4f402736…9572` and `e364aa7a…4ec9`, and r3 target/source/disposition remain absent. Provider, `codex exec`, formal authorization, ledger, results and experiment execution remain `0`; Task3 authority and Task4 remain **NO-GO** pending the separately reviewed r3 materialization/binding flow.
+
+## 2026-08-20 轻量方向性实验（替代正式审计矩阵）
+
+审计级 runtime-canary authority 的未完成 WIP 已完整封存在独立分支 `codex/benefit-audit-wip`，commit `fccdbb262b87529d10f5fc0eb461e86dd54df909`。该 commit 明确标记 incomplete / NO-GO；产品分支在 exact clean `b9bd1c31fd2b1aa405e234d6ecabe0eb7c7e2d96` 上重新开始本轮工作，没有丢弃或混入 WIP。
+
+本轮新增与正式 benchmark authority 完全分离的 `ai-sdlc-v2-directional-manifest/v1`：
+
+- exact 5 arms × 3 fixtures × 1 run = 15 个 opaque Writer run；三个 task block 使用不同臂顺序。
+- exact 19 Provider session table：15 Writer + A11 Primary × 3 + security Cross-risk × 1；第 20 次预约、技术重试、复审、额外专家、乱序和重复预约均在 append / launch 前拒绝。
+- A11 fake rehearsal 记录 4 个只读、Findings-only expert event 与 3 个 original-writer same-live-session resume event；不启动 expert、subagent 或 Provider。candidate write、child subprocess、retry 与 Finding 缺失均 fail closed。
+- 最小 attempt ledger 以 owner-bound、`0600`、`nlink=1` 的 pinned descriptor 读取和加锁追加；短写循环补齐，corrupt / duplicate / overwrite / symlink 均在新增 event 前拒绝。
+- 模型固定 `gpt-5.6-sol` / `high`，Writer / Expert 输出上限固定 1800 / 900；同 fixture Prompt 跨五臂相同。
+- 每个单元都真实准备为 fresh 0700 single-root Git；provider cwd 为 exact `benchmark-task`；HOME / CODEX_HOME / Git global / tool-plugin inventory 冻结且跨臂一致。
+- Provider deny-read / write surface覆盖 actual r1/r2/r3/source/rubric/results/control、用户 `.codex`、audit WIP ref、run `.git` 与其他 14 个 run root。系统外 exact Seatbelt canary 实证 direct/list/parent escape/environment/`--add-dir` 和 output append/create/rename、method chmod 全部被拒绝，residue 为 0。
+
+指标 schema 只接受外部交付、加权验收覆盖、严重缺陷逃逸、单调耗时、会话数，以及 Provider 权威 Token / currency cost；后两类缺失时必须为 `null`。模型级超时、非零和无效输出是单元终态并继续；Provider / network / rate-limit / host / isolation / ledger 异常中止全矩阵 incomplete。15 个 raw receipt 不完整时不发布完整结果或赢家。
+
+展示数据合同只将 P / S / A11 作为首页产品路径，A00 / A10 标记为 research controls；必须展示 raw paired values、losses 和 quality-cost frontier，禁止 winner cherry-pick。所有摘要携带 exact 六条限制：`directional engineering observation`、`n=3 per arm`、`single run per task`、`not statistically significant`、`not production SLA`、`no generalization`。
+
+### 本轮验证
+
+```text
+Fresh RED: 35 failed
+Focused unit GREEN: 49 passed
+Directional unit + 15-workspace rehearsal + isolation: 51 passed; prepared=15; simulated sessions=19; Provider=0
+System-outside exact Seatbelt final: 1 passed, 0 skipped
+Core benchmark/arms/directional: 504 passed, 1 existing nested-sandbox skip
+Full benefit suite (system-outside): 718 passed, 2 skipped, 1 transient external Git-ref race
+Transient failed test isolated rerun: 1 passed
+Ruff check: All checks passed
+Ruff format --check: clean
+git diff --check: clean
+```
+
+完整系统外集合唯一失败发生在扫描 Codex 自身短生命周期 `refs/codex/turn-diffs` 时，该 ref 被外部 Codex 进程并发删除；同一定点测试随后通过。它不在方向性 runner 或 candidate 范围内，没有为此扩大产品修改。浏览器 fallback 全程带 `--use-mock-keychain` 与 `--password-store=basic`，无钥匙串或弹窗信号。
+
+actual fingerprints 保持 exact：r2 `403098441 / b5b2b362…615b`，r1 `402612600 / 9701e5fa…dc30`，legacy `400173643 / ee98e4d0…10c2`，source-r2 `403084506 / 56387824…9596`，disposition-r2 `403084461 / 52797356…15e`。tracked protocol 与 sealed commitments blob 分别保持 `f16afc65…aa3c` / `d2ef5e51…101c`，与 base 完全一致。
+
+本轮没有创建 formal authorization、formal ledger、formal results、r3 target/source/disposition，也没有运行 `codex exec` 或任何 Provider。fake rehearsal 的 token / currency cost 均为 `null`。正式矩阵仍为 **NO-GO**，等待用户对 `model=gpt-5.6-sol`、`effort=high`、`15 writer + 4 expert = 19`、`technical retries=0`、成本未知边界作一次最终预算确认。

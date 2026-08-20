@@ -1,0 +1,24 @@
+{
+  "schema": "ai-sdlc-v2-directional-website-data/v1",
+  "status": "awaiting-real-complete-15",
+  "homepage_tracks": ["P", "S", "A11"],
+  "research_controls": ["A00", "A10"],
+  "comparisons": [
+    {"id":"pure-llm-vs-superpowers","left":"P","right":"S","purpose":"纯模型与方法型 Skill 的方向性差异"},
+    {"id":"superpowers-vs-ai-sdlc","left":"S","right":"A11","purpose":"通用开发 Skill 与完整 AI-SDLC 产品路径的方向性差异"},
+    {"id":"loop-effect","left":"A00","right":"A10","purpose":"保持 AI-SDLC 其余条件后，Loop 对交付结果的方向性影响"},
+    {"id":"expert-effect","left":"A10","right":"A11","purpose":"保持 Loop 后，动态专家质疑与对抗的方向性影响"}
+  ],
+  "raw_paired_values": [],
+  "losses": [],
+  "quality_cost_frontier": [],
+  "winner": null,
+  "labels": [
+    "directional engineering observation",
+    "n=3 per arm",
+    "single run per task",
+    "not statistically significant",
+    "not production SLA",
+    "no generalization"
+  ]
+}
