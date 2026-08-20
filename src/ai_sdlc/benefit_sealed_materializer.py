@@ -1651,19 +1651,20 @@ def _write_all(descriptor: int, value: bytes) -> None:
         offset += written
 
 
-def _mkdtemp_at(
-    parent_fd: int, *, prefix: str, expected_device: int
-) -> tuple[str, os.stat_result, int]:
-    for _attempt in range(64):
-        name = f"{prefix}{secrets.token_hex(16)}"
-        try:
-            os.mkdir(name, 0o700, dir_fd=parent_fd)
-        except FileExistsError:
-            continue
-        except OSError as error:
-            raise MaterializationError("staging-create") from error
-        try:
-            item = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+def _cleanup_new_empty_directory_at(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int] | None,
+    descriptor: int | None,
+    code: str,
+) -> None:
+    owned_descriptor = descriptor is None
+    try:
+        lexical = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(lexical.st_mode):
+            raise MaterializationError(code)
+        if descriptor is None:
             descriptor = os.open(
                 name,
                 os.O_RDONLY
@@ -1672,7 +1673,82 @@ def _mkdtemp_at(
                 | getattr(os, "O_NOFOLLOW", 0),
                 dir_fd=parent_fd,
             )
-            opened = os.fstat(descriptor)
+        opened = os.fstat(descriptor)
+        observed_identity = (opened.st_dev, opened.st_ino)
+        if (
+            (lexical.st_dev, lexical.st_ino) != observed_identity
+            or (
+                expected_identity is not None and observed_identity != expected_identity
+            )
+            or not stat.S_ISDIR(opened.st_mode)
+            or list(os.listdir(descriptor))
+        ):
+            raise MaterializationError(code)
+        os.fsync(descriptor)
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != observed_identity:
+            raise MaterializationError(code)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError(code) from error
+    finally:
+        if owned_descriptor and descriptor is not None:
+            os.close(descriptor)
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != observed_identity:
+            raise MaterializationError(code)
+        os.rmdir(name, dir_fd=parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError(code) from error
+
+
+def _mkdtemp_at(
+    parent_fd: int,
+    *,
+    prefix: str,
+    expected_device: int,
+    create_code: str = "staging-create",
+    security_code: str = "staging-security",
+    cleanup_code: str = "cleanup-failed",
+) -> tuple[str, os.stat_result, int]:
+    for _attempt in range(64):
+        name = f"{prefix}{secrets.token_hex(16)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise MaterializationError(create_code) from error
+        descriptor: int | None = None
+        item: os.stat_result | None = None
+        opened: os.stat_result | None = None
+        first_error: Exception | None = None
+        try:
+            try:
+                item = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError as error:
+                first_error = error
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | os.O_CLOEXEC
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                opened = os.fstat(descriptor)
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+            if first_error is not None:
+                raise first_error
+            if item is None or opened is None or descriptor is None:
+                raise MaterializationError(security_code)
             if (
                 (opened.st_dev, opened.st_ino) != (item.st_dev, item.st_ino)
                 or item.st_dev != expected_device
@@ -1680,18 +1756,30 @@ def _mkdtemp_at(
                 or stat.S_IMODE(item.st_mode) != 0o700
                 or not stat.S_ISDIR(item.st_mode)
             ):
-                os.close(descriptor)
-                raise MaterializationError("staging-security")
+                raise MaterializationError(security_code)
             return name, item, descriptor
         except Exception as error:
             try:
-                os.rmdir(name, dir_fd=parent_fd)
-            except OSError as cleanup_error:
-                raise MaterializationError("cleanup-failed") from cleanup_error
+                _cleanup_new_empty_directory_at(
+                    parent_fd,
+                    name,
+                    expected_identity=(item.st_dev, item.st_ino)
+                    if item is not None
+                    else (
+                        (opened.st_dev, opened.st_ino) if opened is not None else None
+                    ),
+                    descriptor=descriptor,
+                    code=cleanup_code,
+                )
+            except MaterializationError as cleanup_error:
+                raise cleanup_error from error
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
             if isinstance(error, MaterializationError):
                 raise
-            raise MaterializationError("staging-security") from error
-    raise MaterializationError("staging-create")
+            raise MaterializationError(security_code) from error
+    raise MaterializationError(create_code)
 
 
 def _remove_directory_contents(directory_fd: int) -> None:
@@ -1860,6 +1948,137 @@ def _assert_private_directory(path: Path, code: str) -> None:
         raise MaterializationError(code)
 
 
+def _open_runtime_canary_parent(
+    parent: Path,
+) -> tuple[int, int, os.stat_result]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    anchor_fd = -1
+    parent_fd = -1
+    try:
+        anchor_fd = os.open(parent.parent, flags)
+        anchor = os.fstat(anchor_fd)
+        if (
+            not stat.S_ISDIR(anchor.st_mode)
+            or anchor.st_uid != os.geteuid()
+            or stat.S_IMODE(anchor.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        parent_fd = os.open(parent.name, flags, dir_fd=anchor_fd)
+        opened = os.fstat(parent_fd)
+        lexical = os.stat(parent.name, dir_fd=anchor_fd, follow_symlinks=False)
+        if (
+            (opened.st_dev, opened.st_ino) != (lexical.st_dev, lexical.st_ino)
+            or not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        return anchor_fd, parent_fd, opened
+    except MaterializationError:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
+        raise
+    except OSError as error:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
+        raise MaterializationError("runtime-canary-root") from error
+
+
+def _assert_runtime_canary_creation_binding(
+    parent_anchor_fd: int,
+    parent_fd: int,
+    parent_name: str,
+    parent_identity: os.stat_result,
+    root_name: str,
+    root_fd: int,
+    root_identity: tuple[int, int, int, int],
+) -> None:
+    try:
+        parent_opened = os.fstat(parent_fd)
+        parent_lexical = os.stat(
+            parent_name, dir_fd=parent_anchor_fd, follow_symlinks=False
+        )
+        root_opened = os.fstat(root_fd)
+        root_lexical = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as error:
+        raise MaterializationError("runtime-canary-root") from error
+    expected_parent = (parent_identity.st_dev, parent_identity.st_ino)
+    expected_root = root_identity
+    if (
+        (parent_opened.st_dev, parent_opened.st_ino) != expected_parent
+        or (parent_lexical.st_dev, parent_lexical.st_ino) != expected_parent
+        or not stat.S_ISDIR(parent_opened.st_mode)
+        or parent_opened.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_opened.st_mode) != 0o700
+        or (
+            root_opened.st_dev,
+            root_opened.st_ino,
+            root_opened.st_uid,
+            stat.S_IFMT(root_opened.st_mode),
+        )
+        != expected_root
+        or (
+            root_lexical.st_dev,
+            root_lexical.st_ino,
+            root_lexical.st_uid,
+            stat.S_IFMT(root_lexical.st_mode),
+        )
+        != expected_root
+        or not stat.S_ISDIR(root_opened.st_mode)
+        or stat.S_IMODE(root_opened.st_mode) != 0o700
+        or stat.S_IMODE(root_lexical.st_mode) != 0o700
+    ):
+        raise MaterializationError("runtime-canary-root")
+
+
+def _cleanup_runtime_canary_creation(
+    parent_fd: int,
+    root_name: str,
+    root_fd: int,
+    root_identity: tuple[int, int, int, int],
+) -> None:
+    try:
+        opened = os.fstat(root_fd)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_uid,
+            stat.S_IFMT(opened.st_mode),
+        ) != root_identity:
+            raise MaterializationError("runtime-canary-cleanup")
+        allowed = {"append", "chmod", "rename"}
+        observed = set(os.listdir(root_fd))
+        if not observed <= allowed:
+            raise MaterializationError("runtime-canary-cleanup")
+        for name in observed:
+            child = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(child.st_mode)
+                or child.st_uid != os.geteuid()
+                or child.st_nlink != 1
+            ):
+                raise MaterializationError("runtime-canary-cleanup")
+            os.unlink(name, dir_fd=root_fd)
+        os.fsync(root_fd)
+        lexical = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            lexical.st_dev,
+            lexical.st_ino,
+            lexical.st_uid,
+            stat.S_IFMT(lexical.st_mode),
+        ) != root_identity:
+            raise MaterializationError("runtime-canary-cleanup")
+        os.rmdir(root_name, dir_fd=parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("runtime-canary-cleanup") from error
+
+
 def _cleanup_incomplete_runtime_canary(
     root: Path,
     root_identity: tuple[int, int, int, int],
@@ -1917,23 +2136,23 @@ def _cleanup_incomplete_runtime_canary(
 
 def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCanary:
     parent = policy.canary_run_root.parent
-    _assert_private_directory(parent, "runtime-canary-root")
+    parent_anchor_fd = -1
+    parent_fd = -1
+    root_fd = -1
+    root_name: str | None = None
     root: Path | None = None
     root_identity: tuple[int, int, int, int] | None = None
-    parent_fd = os.open(
-        parent,
-        os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
-    )
     try:
-        parent_opened = os.fstat(parent_fd)
-        parent_current = parent.lstat()
-        if (parent_opened.st_dev, parent_opened.st_ino) != (
-            parent_current.st_dev,
-            parent_current.st_ino,
-        ):
-            raise MaterializationError("runtime-canary-root")
-        root = Path(tempfile.mkdtemp(prefix=".runtime-write-", dir=parent))
-        initial = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        parent_anchor_fd, parent_fd, parent_opened = _open_runtime_canary_parent(parent)
+        root_name, initial, root_fd = _mkdtemp_at(
+            parent_fd,
+            prefix=".runtime-write-",
+            expected_device=parent_opened.st_dev,
+            create_code="runtime-canary-root",
+            security_code="runtime-canary-root",
+            cleanup_code="runtime-canary-cleanup",
+        )
+        root = parent / root_name
         root_identity = (
             initial.st_dev,
             initial.st_ino,
@@ -1942,76 +2161,119 @@ def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCan
         )
         if not stat.S_ISDIR(initial.st_mode) or initial.st_uid != os.geteuid():
             raise MaterializationError("runtime-canary-root")
-        initial_fd = os.open(
-            root.name,
-            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
-            dir_fd=parent_fd,
+        _assert_runtime_canary_creation_binding(
+            parent_anchor_fd,
+            parent_fd,
+            parent.name,
+            parent_opened,
+            root_name,
+            root_fd,
+            root_identity,
         )
-        try:
-            initial_opened = os.fstat(initial_fd)
-            if (initial_opened.st_dev, initial_opened.st_ino) != root_identity[:2]:
-                raise MaterializationError("runtime-canary-root")
-        finally:
-            os.close(initial_fd)
-        root.chmod(0o700)
-        root_stat = root.lstat()
+        _assert_runtime_canary_creation_binding(
+            parent_anchor_fd,
+            parent_fd,
+            parent.name,
+            parent_opened,
+            root_name,
+            root_fd,
+            root_identity,
+        )
+        os.fchmod(root_fd, 0o700)
+        root_stat = os.fstat(root_fd)
         if (
             not stat.S_ISDIR(root_stat.st_mode)
             or root_stat.st_uid != os.geteuid()
             or stat.S_IMODE(root_stat.st_mode) != 0o700
         ):
             raise MaterializationError("runtime-canary-root")
-        full_root_identity = (
-            root_stat.st_dev,
-            root_stat.st_ino,
-            root_stat.st_uid,
-            stat.S_IMODE(root_stat.st_mode),
-        )
         files: dict[str, tuple[int, int, bytes, int]] = {}
-        directory_fd = os.open(
-            root,
-            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
-        )
-        try:
-            for name in ("append", "chmod", "rename"):
-                payload = f"runtime-{name}-canary\n".encode()
-                descriptor = os.open(
-                    name,
-                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-                    0o600,
-                    dir_fd=directory_fd,
+        for name in ("append", "chmod", "rename"):
+            _assert_runtime_canary_creation_binding(
+                parent_anchor_fd,
+                parent_fd,
+                parent.name,
+                parent_opened,
+                root_name,
+                root_fd,
+                root_identity,
+            )
+            payload = f"runtime-{name}-canary\n".encode()
+            descriptor = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=root_fd,
+            )
+            try:
+                _write_all(descriptor, payload)
+                os.fsync(descriptor)
+                item = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(item.st_mode)
+                    or item.st_uid != os.geteuid()
+                    or item.st_nlink != 1
+                    or stat.S_IMODE(item.st_mode) != 0o600
+                ):
+                    raise MaterializationError("runtime-canary-root")
+                files[name] = (
+                    item.st_dev,
+                    item.st_ino,
+                    payload,
+                    stat.S_IMODE(item.st_mode),
                 )
-                try:
-                    _write_all(descriptor, payload)
-                    os.fsync(descriptor)
-                    item = os.fstat(descriptor)
-                    files[name] = (
-                        item.st_dev,
-                        item.st_ino,
-                        payload,
-                        stat.S_IMODE(item.st_mode),
-                    )
-                finally:
-                    os.close(descriptor)
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
+            finally:
+                os.close(descriptor)
+        os.fsync(root_fd)
+        _assert_runtime_canary_creation_binding(
+            parent_anchor_fd,
+            parent_fd,
+            parent.name,
+            parent_opened,
+            root_name,
+            root_fd,
+            root_identity,
+        )
+        final_root = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(final_root.st_mode)
+            or final_root.st_uid != os.geteuid()
+            or stat.S_IMODE(final_root.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        full_root_identity = (
+            final_root.st_dev,
+            final_root.st_ino,
+            final_root.st_uid,
+            stat.S_IMODE(final_root.st_mode),
+        )
         return _RuntimeWriteCanary(
             root=root,
             root_identity=full_root_identity,
             files=MappingProxyType(files),
         )
     except (MaterializationError, OSError) as error:
-        if root is not None and root_identity is not None:
+        if root_name is not None and root_identity is not None and root_fd >= 0:
             try:
-                _cleanup_incomplete_runtime_canary(root, root_identity, parent_fd)
-            except OSError as cleanup_error:
+                _cleanup_runtime_canary_creation(
+                    parent_fd, root_name, root_fd, root_identity
+                )
+            except MaterializationError as cleanup_error:
                 raise MaterializationError("runtime-canary-cleanup") from cleanup_error
         if isinstance(error, MaterializationError):
             raise
         raise MaterializationError("runtime-canary-root") from error
     finally:
-        os.close(parent_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if parent_anchor_fd >= 0:
+            os.close(parent_anchor_fd)
 
 
 def _assert_runtime_canary_root(canary: _RuntimeWriteCanary) -> None:

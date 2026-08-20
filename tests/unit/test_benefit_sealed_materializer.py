@@ -1393,47 +1393,49 @@ def test_runtime_canary_creation_failure_cleans_inode_bound_partial_root(
     assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
 
 
-@pytest.mark.parametrize("failure", ("chmod", "first-lstat", "directory-open"))
+@pytest.mark.parametrize("failure", ("fchmod", "first-dirfd-stat", "directory-open"))
 def test_runtime_canary_early_failure_leaves_no_residue(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
 ) -> None:
     policy, _head, _source = _policy(tmp_path)
-    real_chmod = Path.chmod
-    real_lstat = Path.lstat
+    real_fchmod = os.fchmod
+    real_stat = os.stat
     real_open = os.open
     failed = False
 
-    def chmod(path: Path, mode: int) -> None:
+    def fchmod(descriptor: int, mode: int) -> None:
         nonlocal failed
-        if failure == "chmod" and path.name.startswith(".runtime-write-"):
+        if failure == "fchmod" and not failed:
             failed = True
-            raise OSError("injected chmod failure")
-        real_chmod(path, mode)
+            raise OSError("injected fchmod failure")
+        real_fchmod(descriptor, mode)
 
-    def lstat(path: Path) -> os.stat_result:
+    def stat_file(path: object, *args: object, **kwargs: object) -> os.stat_result:
         nonlocal failed
         if (
-            failure == "first-lstat"
-            and path.name.startswith(".runtime-write-")
+            failure == "first-dirfd-stat"
+            and str(path).startswith(".runtime-write-")
+            and kwargs.get("dir_fd") is not None
             and not failed
         ):
             failed = True
-            raise OSError("injected first lstat failure")
-        return real_lstat(path)
+            raise OSError("injected first dirfd stat failure")
+        return real_stat(path, *args, **kwargs)
 
     def open_file(path: object, flags: int, *args: object, **kwargs: object) -> int:
         nonlocal failed
         if (
             failure == "directory-open"
-            and str(path).split("/")[-1].startswith(".runtime-write-")
+            and str(path).startswith(".runtime-write-")
+            and kwargs.get("dir_fd") is not None
             and not failed
         ):
             failed = True
             raise OSError("injected directory open failure")
         return real_open(path, flags, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "chmod", chmod)
-    monkeypatch.setattr(Path, "lstat", lstat)
+    monkeypatch.setattr(materializer.os, "fchmod", fchmod)
+    monkeypatch.setattr(materializer.os, "stat", stat_file)
     monkeypatch.setattr(materializer.os, "open", open_file)
 
     with pytest.raises(MaterializationError):
@@ -1465,6 +1467,282 @@ def test_incomplete_canary_cleanup_refuses_replacement_without_deleting_it(
         materializer._cleanup_incomplete_runtime_canary(root, identity)
 
     assert marker.read_text(encoding="utf-8") == "replacement"
+
+
+def test_runtime_canary_creation_uses_only_fd_relative_root_operations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    real_lstat = Path.lstat
+
+    monkeypatch.setattr(
+        materializer.tempfile,
+        "mkdtemp",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("path-based mkdtemp is forbidden")
+        ),
+    )
+    monkeypatch.setattr(
+        Path,
+        "chmod",
+        lambda path, _mode: (
+            (_ for _ in ()).throw(AssertionError("path-based chmod is forbidden"))
+            if path.name.startswith(".runtime-write-")
+            else None
+        ),
+    )
+
+    def reject_runtime_root_lstat(path: Path) -> os.stat_result:
+        if path.name.startswith(".runtime-write-"):
+            raise AssertionError("path-based lstat is forbidden")
+        return real_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", reject_runtime_root_lstat)
+
+    canary = materializer._create_runtime_write_canary(policy)
+    try:
+        parent_fd = os.open(canary.root.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            observed = os.stat(
+                canary.root.name,
+                dir_fd=parent_fd,
+                follow_symlinks=False,
+            )
+        finally:
+            os.close(parent_fd)
+        assert (observed.st_dev, observed.st_ino) == canary.root_identity[:2]
+    finally:
+        monkeypatch.setattr(Path, "lstat", real_lstat)
+        materializer._cleanup_runtime_write_canary(canary)
+
+
+@pytest.mark.parametrize("failure", ("first-dirfd-stat", "first-dirfd-open"))
+def test_runtime_canary_first_dirfd_failure_is_cleaned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    real_mkdtemp_at = materializer._mkdtemp_at
+    real_stat = os.stat
+    real_open = os.open
+    mkdtemp_at_called = False
+    failed = False
+
+    def spy_mkdtemp_at(*args: object, **kwargs: object) -> object:
+        nonlocal mkdtemp_at_called
+        mkdtemp_at_called = True
+        return real_mkdtemp_at(*args, **kwargs)
+
+    def fail_first_stat(
+        path: object, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        nonlocal failed
+        if (
+            failure == "first-dirfd-stat"
+            and str(path).startswith(".runtime-write-")
+            and kwargs.get("dir_fd") is not None
+            and not failed
+        ):
+            failed = True
+            raise OSError("injected first dirfd stat failure")
+        return real_stat(path, *args, **kwargs)
+
+    def fail_first_open(
+        path: object, flags: int, *args: object, **kwargs: object
+    ) -> int:
+        nonlocal failed
+        if (
+            failure == "first-dirfd-open"
+            and str(path).startswith(".runtime-write-")
+            and kwargs.get("dir_fd") is not None
+            and not failed
+        ):
+            failed = True
+            raise OSError("injected first dirfd open failure")
+        return real_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(materializer, "_mkdtemp_at", spy_mkdtemp_at)
+    monkeypatch.setattr(materializer.os, "stat", fail_first_stat)
+    monkeypatch.setattr(materializer.os, "open", fail_first_open)
+
+    with pytest.raises(MaterializationError):
+        materializer._create_runtime_write_canary(policy)
+
+    assert mkdtemp_at_called is True
+    assert failed is True
+    assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
+
+
+def test_runtime_canary_initial_identity_failure_never_deletes_symlink_victim(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    victim = tmp_path / "initial-victim"
+    victim.mkdir(mode=0o711)
+    marker = victim / "marker"
+    marker.write_bytes(b"initial-victim")
+    victim_mode = stat.S_IMODE(victim.lstat().st_mode)
+    real_stat = os.stat
+    replacement: Path | None = None
+    moved: Path | None = None
+
+    def replace_before_first_identity(
+        path: object, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        nonlocal replacement, moved
+        if (
+            str(path).startswith(".runtime-write-")
+            and kwargs.get("dir_fd") is not None
+            and replacement is None
+        ):
+            replacement = policy.canary_run_root.parent / str(path)
+            moved = replacement.with_name(f"{replacement.name}-moved")
+            replacement.rename(moved)
+            replacement.symlink_to(victim, target_is_directory=True)
+            raise OSError("injected first identity failure")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(materializer.os, "stat", replace_before_first_identity)
+
+    with pytest.raises(MaterializationError, match="runtime-canary-cleanup"):
+        materializer._create_runtime_write_canary(policy)
+
+    assert replacement is not None and replacement.is_symlink()
+    assert moved is not None and moved.is_dir()
+    assert marker.read_bytes() == b"initial-victim"
+    assert stat.S_IMODE(victim.lstat().st_mode) == victim_mode
+
+
+def test_runtime_canary_parent_swap_before_identity_is_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    parent = policy.canary_run_root.parent
+    moved = parent.with_name(f"{parent.name}-original")
+    real_stat = os.stat
+    swapped = False
+
+    def swap_before_identity(
+        path: object, *args: object, **kwargs: object
+    ) -> os.stat_result:
+        nonlocal swapped
+        if (
+            str(path) == parent.name
+            and kwargs.get("dir_fd") is not None
+            and not swapped
+        ):
+            swapped = True
+            parent.rename(moved)
+            parent.mkdir(mode=0o700)
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(materializer.os, "stat", swap_before_identity)
+
+    with pytest.raises(MaterializationError, match="runtime-canary-root"):
+        materializer._create_runtime_write_canary(policy)
+
+    assert swapped is True
+    assert not list(moved.glob(".runtime-write-*"))
+    assert not list(parent.glob(".runtime-write-*"))
+
+
+def test_runtime_canary_parent_swap_after_root_fd_is_rejected_and_cleaned(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    parent = policy.canary_run_root.parent
+    moved = parent.with_name(f"{parent.name}-original")
+    real_assert = materializer._assert_runtime_canary_creation_binding
+    calls = 0
+
+    def swap_then_assert(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            parent.rename(moved)
+            parent.mkdir(mode=0o700)
+        real_assert(*args, **kwargs)
+
+    monkeypatch.setattr(
+        materializer, "_assert_runtime_canary_creation_binding", swap_then_assert
+    )
+
+    with pytest.raises(MaterializationError, match="runtime-canary-root"):
+        materializer._create_runtime_write_canary(policy)
+
+    assert calls == 1
+    assert not list(moved.glob(".runtime-write-*"))
+    assert not list(parent.glob(".runtime-write-*"))
+
+
+@pytest.mark.parametrize("replacement", ("directory", "symlink"))
+def test_runtime_canary_child_replacement_before_fchmod_is_never_followed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    replacement: str,
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    real_assert = materializer._assert_runtime_canary_creation_binding
+    victim = tmp_path / "victim"
+    victim.mkdir(mode=0o711)
+    marker = victim / "marker"
+    marker.write_bytes(b"do-not-touch")
+    victim_mode = stat.S_IMODE(victim.lstat().st_mode)
+    moved: Path | None = None
+    calls = 0
+
+    def replace_then_assert(*args: object, **kwargs: object) -> None:
+        nonlocal calls, moved
+        calls += 1
+        if calls == 2:
+            root_name = str(args[4])
+            root = policy.canary_run_root.parent / root_name
+            moved = root.with_name(f"{root.name}-moved")
+            root.rename(moved)
+            if replacement == "directory":
+                root.mkdir(mode=0o700)
+                (root / "replacement").write_bytes(b"replacement")
+            else:
+                root.symlink_to(victim, target_is_directory=True)
+        real_assert(*args, **kwargs)
+
+    monkeypatch.setattr(
+        materializer, "_assert_runtime_canary_creation_binding", replace_then_assert
+    )
+
+    with pytest.raises(MaterializationError, match="runtime-canary-cleanup"):
+        materializer._create_runtime_write_canary(policy)
+
+    assert calls == 2
+    assert moved is not None
+    assert marker.read_bytes() == b"do-not-touch"
+    assert stat.S_IMODE(victim.lstat().st_mode) == victim_mode
+    replacement_root = policy.canary_run_root.parent / moved.name.removesuffix("-moved")
+    assert replacement_root.exists() or replacement_root.is_symlink()
+
+
+def test_runtime_canary_return_identity_is_current_parent_basename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    real_assert = materializer._assert_runtime_canary_creation_binding
+    calls = 0
+
+    def count_binding(*args: object, **kwargs: object) -> None:
+        nonlocal calls
+        calls += 1
+        real_assert(*args, **kwargs)
+
+    monkeypatch.setattr(
+        materializer, "_assert_runtime_canary_creation_binding", count_binding
+    )
+
+    canary = materializer._create_runtime_write_canary(policy)
+    try:
+        lexical = canary.root.lstat()
+        assert (lexical.st_dev, lexical.st_ino) == canary.root_identity[:2]
+        assert calls >= 6
+    finally:
+        materializer._cleanup_runtime_write_canary(canary)
 
 
 @pytest.mark.parametrize("drift_at", ("probe", "cleanup"))
