@@ -1359,21 +1359,13 @@ def _run_directional_one_shot_process(
     return subprocess.CompletedProcess(list(argv), child.returncode, stdout, stderr)
 
 
-def _launch_directional_one_shot(
+def _launch_directional_one_shot_after_gate(
     prepared: PreparedArm,
     profile: ProviderIsolationProfile,
     argv: Sequence[str],
-    *,
-    capability: object | None = None,
 ) -> OneShotLaunchResult:
     if not argv or argv[0] != prepared.codex.executable:
         raise ValueError("one-shot Provider command is not original-bound")
-    if (
-        len(argv) > 1
-        and argv[1] == "exec"
-        and capability is not _PROVIDER_LAUNCH_CAPABILITY
-    ):
-        raise ValueError("one-shot Provider launch is not cap-gated")
     one_shot = _create_directional_one_shot(prepared, profile.raw_results_root)
     launched = (
         str(one_shot.executable),
@@ -1392,6 +1384,31 @@ def _launch_directional_one_shot(
         one_shot_sha256=one_shot.one_shot_sha256,
         residue_free=residue_free,
     )
+
+
+def _launch_directional_one_shot(
+    prepared: PreparedArm,
+    profile: ProviderIsolationProfile,
+    argv: Sequence[str],
+    *,
+    capability: object | None = None,
+) -> OneShotLaunchResult:
+    if capability is not _PROVIDER_LAUNCH_CAPABILITY:
+        raise ValueError("one-shot Provider launch is not cap-gated")
+    return _launch_directional_one_shot_after_gate(prepared, profile, argv)
+
+
+def _launch_directional_version_canary(
+    prepared: PreparedArm,
+    profile: ProviderIsolationProfile,
+    *,
+    argv: Sequence[str] | None = None,
+) -> OneShotLaunchResult:
+    expected = (prepared.codex.executable, "--version")
+    actual = expected if argv is None else tuple(argv)
+    if actual != expected:
+        raise ValueError("directional version canary command changed")
+    return _launch_directional_one_shot_after_gate(prepared, profile, actual)
 
 
 def launch_directional_provider_session(
@@ -2380,9 +2397,7 @@ def _run_directional_two_layer_canary(
     python = "/usr/bin/python3"
     cleanup_results: list[bool] = []
 
-    outer_entry = _launch_directional_one_shot(
-        prepared, profile, (original, "--version")
-    )
+    outer_entry = _launch_directional_version_canary(prepared, profile)
     cleanup_results.append(outer_entry.residue_free)
     outer_entry_allowed = (
         outer_entry.completed.returncode == 0

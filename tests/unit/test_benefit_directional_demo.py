@@ -689,8 +689,26 @@ def test_attempt_20_and_reservation_only_fail_before_one_shot_copy(
     assert copied is False
 
 
-def test_low_level_one_shot_exec_rejects_missing_capability_before_copy(
+@pytest.mark.parametrize(
+    "argv",
+    [
+        (),
+        ("/frozen/codex",),
+        ("/frozen/codex", "--version"),
+        ("/frozen/codex", "e"),
+        ("/frozen/codex", "exec", "--json"),
+        ("/frozen/codex", "review"),
+        ("/frozen/codex", "resume", "thread-id"),
+        ("/frozen/codex", "fork", "thread-id"),
+        ("/frozen/codex", "cloud", "exec"),
+        ("/frozen/codex", "completion", "zsh"),
+        ("/frozen/codex", "arbitrary-command"),
+        ("/other/codex", "exec", "--json"),
+    ],
+)
+def test_low_level_one_shot_rejects_every_missing_capability_before_copy(
     monkeypatch: pytest.MonkeyPatch,
+    argv: tuple[str, ...],
 ) -> None:
     copied = False
 
@@ -702,12 +720,46 @@ def test_low_level_one_shot_exec_rejects_missing_capability_before_copy(
     monkeypatch.setattr(demo, "_create_directional_one_shot", forbidden)
     prepared = SimpleNamespace(codex=SimpleNamespace(executable="/frozen/codex"))
     with pytest.raises(ValueError, match="cap-gated"):
-        demo._launch_directional_one_shot(
-            prepared,
-            SimpleNamespace(),
-            ("/frozen/codex", "exec", "--json"),
-        )
+        demo._launch_directional_one_shot(prepared, SimpleNamespace(), argv)
     assert copied is False
+
+
+def test_private_version_canary_is_exact_and_separate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, ...]] = []
+
+    def fake_launch(
+        _prepared: object,
+        _profile: object,
+        argv: tuple[str, ...],
+    ) -> demo.OneShotLaunchResult:
+        calls.append(argv)
+        return demo.OneShotLaunchResult(
+            completed=subprocess.CompletedProcess(argv, 0, "codex-cli 0.147.0\n", ""),
+            original_sha256="1" * 64,
+            one_shot_sha256="1" * 64,
+            residue_free=True,
+        )
+
+    monkeypatch.setattr(demo, "_launch_directional_one_shot_after_gate", fake_launch)
+    prepared = SimpleNamespace(codex=SimpleNamespace(executable="/frozen/codex"))
+    result = demo._launch_directional_version_canary(prepared, SimpleNamespace())
+    assert result.completed.returncode == 0
+    assert calls == [("/frozen/codex", "--version")]
+
+    for argv in (
+        ("/frozen/codex",),
+        ("/frozen/codex", "exec"),
+        ("/other/codex", "--version"),
+    ):
+        with pytest.raises(ValueError, match="version canary"):
+            demo._launch_directional_version_canary(
+                prepared,
+                SimpleNamespace(),
+                argv=argv,
+            )
+    assert calls == [("/frozen/codex", "--version")]
 
 
 def test_provider_environment_is_clean_and_inventory_bound(tmp_path: Path) -> None:
