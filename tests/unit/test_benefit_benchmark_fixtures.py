@@ -381,7 +381,7 @@ def test_fix_round7_system_runtime_capsule_is_readable_but_not_writable(
     for path in (sealed, control, raw, run, other):
         path.mkdir(parents=True)
     launcher = _write_test_runtime_capsule(mirror)
-    before = fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3")
+    before = fixture_module.evaluator_runtime_capsule_v2_manifest(launcher, "3.14.3")
     target = mirror / "lib" / "python3.14" / "json.py"
     profile = build_provider_isolation_profile(
         run_root=run,
@@ -412,7 +412,8 @@ def test_fix_round7_system_runtime_capsule_is_readable_but_not_writable(
     assert readable.returncode == 0
     assert all(item.returncode != 0 for item in results)
     assert (
-        fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3") == before
+        fixture_module.evaluator_runtime_capsule_v2_manifest(launcher, "3.14.3")
+        == before
     )
 
 

@@ -10,6 +10,8 @@ import typer
 from ai_sdlc.benefit_benchmark_fixtures import validate_sealed_commitments
 from ai_sdlc.benefit_sealed_materializer import (
     FINAL_LOCK_ID,
+    R2_ROOT,
+    R2_TRUSTED_SOURCE_ROOT,
     MaterializationError,
     default_policy,
     fingerprint_tree,
@@ -32,9 +34,9 @@ def verify_sealed_commitments_command() -> None:
         )
         issues = validate_sealed_commitments(
             fixture_root / "sealed-commitments.json",
-            policy.target,
+            R2_ROOT,
             fixture_root,
-            source_root=policy.source_root,
+            source_root=R2_TRUSTED_SOURCE_ROOT,
             protocol_path=policy.repo_root
             / "benchmarks"
             / "ai-sdlc-v2-benefits"

@@ -1,5 +1,19 @@
 # Task 3：五臂环境、指令隔离与零 Provider 执行边界
 
+## runtime-capsule/v2 与 r3-ready 语义修复（2026-08-20）
+
+- 本批次基线为 `5820f39190dacab4537feef253f12d1ecbf0d8e4`，仅实现代码、closed schema 与 TDD；没有创建 r3 source、disposition、sealed root，也没有执行 Provider、`codex exec`、正式 authorization、ledger、results 或 experiment。
+- 新 `ai-sdlc-v2-benefit-runtime-capsule/v2` 将根目录 `.` 的稳定身份独立为 `root_identity`：持久化 canonical path、no-symlink、device/inode/uid/gid/mode/nlink/size，但不持久化根目录 `ctime_ns/mtime_ns`；其余 1648 个 runtime closure entry 继续完整绑定 path/type/device/inode/uid/gid/mode/nlink/size/ctime/mtime，regular file 继续绑定 SHA256。
+- 扫描以 canonical root 的 `O_DIRECTORY | O_NOFOLLOW` dirfd 为锚，比较 lstat-before、fstat-opened、两次完整 stdlib snapshot、fstat-after 与 lstat-after；临时 TOCTOU identity 包含根目录 ctime/mtime，任一扫描中变化立即 `runtime-capsule-drift`。volatile root times 不进入持久 manifest，避免出现“显示但未绑定”的字段。
+- r3 compiler 只接受 `sealed-source/v2`，生成 `sealed-manifest/v5`、`candidate-commitments/v4`、`materialization-receipt/v4`、`isolation-attestation/v2`，并绑定 exact clean Git HEAD/tree、完整 Python runtime identity 与 capsule/v2 digest。stale r2 schema、capsule/v1、缺失/额外字段与交叉版本 pair 均 fail-closed。
+- 旧 Task2 validator/loader 保持原语义，只接受 manifest/v4、candidate/v3、receipt/v3、attestation/v1 与 capsule/v1；Task2 CLI 和五臂 production-surface 显式固定 `R2_ROOT / R2_TRUSTED_SOURCE_ROOT / R2_DISPOSITION_ROOT`，不读取 r3 defaults，也不把旧 artifact 重解释为 v2。
+- production materializer 的 lock/target/source/disposition 单调预置为 r3；invalid r1、validated r2、r2 source 与 r2 disposition 全部作为 exact immutable predecessor 保留。新 disposition/v2 仅构造 r1 → r2 → r3 的 closed successor preview，不发布外部对象。
+- Fresh RED 为 `21 failed / 0 passed`；首批实现后 `21 passed`，扩展 root canonical/no-symlink、group/world write、全 dependency content/mode/rename、actual 1648-entry closure、r3 schema/stale authority 与 successor disposition 反例后继续全绿。
+- actual r2 仍使用 capsule/v1，expected `ed26993a…caf5`、current `2e5d0b51…2cd8`，明确保持 `runtime-capsule-drift`；本批次不能把 Task2 authority 或 Task4 表述为 bound/ready。
+- 最终 focused runtime/materializer/arms 回归为 `198 passed / 1 existing system-outside skip`；完整项目回归在 frozen headless shell 与 macOS Seatbelt 环境下为 `4320 passed / 5 skipped / 0 failed`。浏览器实际启动路径未出现 keychain/popup 信号，system Chrome fallback 的独立回归继续证明 `--use-mock-keychain` 与 `--password-store=basic` 均存在。
+
+**当前裁决：仍为 NO-GO。** 下一步必须在独立批次创建并复核 r3 source，再执行 r3 materialization、disposition 与 authority binding；本批次不得代替该流程。
+
 ## Fix Round 1 与浏览器启动器加固（2026-08-20）
 
 - 修复基线严格固定为 `86b8a66341bfc21b8cf3a44ef74a691d465c6e3b`；本轮只聚合关闭三方终审反例，Task 4 仍为 NO-GO。

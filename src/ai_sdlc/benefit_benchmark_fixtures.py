@@ -88,6 +88,20 @@ _RUNTIME_CAPSULE_ENTRY_KEYS = {
     "ctime_ns",
     "mtime_ns",
 }
+_RUNTIME_CAPSULE_V2_KEYS = _RUNTIME_CAPSULE_KEYS | {"root_identity"}
+_RUNTIME_CAPSULE_ROOT_IDENTITY_KEYS = {
+    "path",
+    "canonical_path",
+    "type",
+    "symlink",
+    "device",
+    "inode",
+    "uid",
+    "gid",
+    "mode",
+    "nlink",
+    "size",
+}
 _SEALED_AUTHORITY_LOCK_ID = "v2-benefits-20260819-r2"
 _SEALED_AUTHORITY_FILENAMES = frozenset(
     {
@@ -1213,6 +1227,277 @@ def evaluator_runtime_capsule_manifest(
         raise EvaluatorNoGoError("runtime-capsule-security") from error
 
 
+def _runtime_capsule_stat_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_ctime_ns,
+        metadata.st_mtime_ns,
+    )
+
+
+def _runtime_capsule_v2_root_identity(
+    root: Path, metadata: os.stat_result
+) -> Mapping[str, object]:
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid not in {0, os.geteuid()}
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+        or metadata.st_nlink < 1
+        or metadata.st_size < 0
+    ):
+        raise EvaluatorNoGoError("runtime-capsule-security")
+    return {
+        "path": ".",
+        "canonical_path": str(root),
+        "type": "directory",
+        "symlink": False,
+        "device": metadata.st_dev,
+        "inode": metadata.st_ino,
+        "uid": metadata.st_uid,
+        "gid": metadata.st_gid,
+        "mode": stat.S_IMODE(metadata.st_mode),
+        "nlink": metadata.st_nlink,
+        "size": metadata.st_size,
+    }
+
+
+def _runtime_capsule_v2_entry(root: Path, path: Path) -> Mapping[str, object]:
+    if path == root:
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    return _runtime_capsule_entry(root, path)
+
+
+def _runtime_capsule_v2_snapshot(
+    *,
+    root: Path,
+    runtime: Path,
+    libpython: Path,
+    stdlib: Path,
+    dynload: Path,
+) -> list[Mapping[str, object]]:
+    paths = {
+        runtime.parent,
+        runtime,
+        root / "lib",
+        libpython,
+        stdlib,
+        dynload,
+    }
+    for item in stdlib.rglob("*"):
+        paths.add(item)
+    return [
+        _runtime_capsule_v2_entry(root, item)
+        for item in sorted(paths, key=lambda value: value.relative_to(root).as_posix())
+    ]
+
+
+def _closed_runtime_capsule_integer(value: object) -> bool:
+    return not isinstance(value, bool) and isinstance(value, int) and value >= 0
+
+
+def _validate_runtime_capsule_v2_record(
+    record: Mapping[str, object], *, root: bool
+) -> str:
+    expected = (
+        _RUNTIME_CAPSULE_ROOT_IDENTITY_KEYS
+        if root
+        else _RUNTIME_CAPSULE_ENTRY_KEYS
+        | ({"sha256"} if record.get("type") == "file" else set())
+    )
+    if set(record) != expected:
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    path = record.get("path")
+    kind = record.get("type")
+    if not isinstance(path, str) or kind not in {"directory", "file"}:
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    if root:
+        if (
+            path != "."
+            or kind != "directory"
+            or not isinstance(record.get("canonical_path"), str)
+            or record.get("symlink") is not False
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+    else:
+        relative = Path(path)
+        if (
+            not path
+            or path == "."
+            or relative.is_absolute()
+            or ".." in relative.parts
+            or relative.as_posix() != path
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+    for key in ("device", "inode", "uid", "gid", "mode", "nlink", "size"):
+        if not _closed_runtime_capsule_integer(record.get(key)):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+    if not root:
+        for key in ("ctime_ns", "mtime_ns"):
+            if not _closed_runtime_capsule_integer(record.get(key)):
+                raise EvaluatorNoGoError("runtime-capsule-binding")
+    if (
+        record["uid"] not in {0, os.geteuid()}
+        or int(record["mode"]) & 0o022
+        or int(record["nlink"]) < 1
+    ):
+        raise EvaluatorNoGoError("runtime-capsule-security")
+    digest = record.get("sha256")
+    if kind == "file" and (
+        not isinstance(digest, str) or not _DIGEST.fullmatch(digest)
+    ):
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    return path
+
+
+def evaluator_runtime_capsule_v2_sha256(capsule: Mapping[str, object]) -> str:
+    """Validate and hash one closed runtime-capsule/v2 manifest."""
+    if (
+        set(capsule) != _RUNTIME_CAPSULE_V2_KEYS
+        or capsule.get("schema") != "ai-sdlc-v2-benefit-runtime-capsule/v2"
+    ):
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    root = capsule.get("root")
+    if (
+        not isinstance(root, str)
+        or not Path(root).is_absolute()
+        or Path(root).as_posix() != root
+    ):
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    root_identity = capsule.get("root_identity")
+    entries = capsule.get("entries")
+    if (
+        not isinstance(root_identity, Mapping)
+        or not isinstance(entries, list)
+        or not entries
+    ):
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    _validate_runtime_capsule_v2_record(root_identity, root=True)
+    if root_identity.get("canonical_path") != root:
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    paths: list[str] = []
+    kinds: dict[str, object] = {}
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        path = _validate_runtime_capsule_v2_record(entry, root=False)
+        paths.append(path)
+        kinds[path] = entry["type"]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    required = {
+        "launcher": "file",
+        "libpython": "file",
+        "stdlib": "directory",
+        "dynload": "directory",
+    }
+    for field, kind in required.items():
+        relative = capsule.get(field)
+        if (
+            not isinstance(relative, str)
+            or kinds.get(relative) != kind
+            or Path(relative).is_absolute()
+            or ".." in Path(relative).parts
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+    return sha256(_canonical_json_bytes(capsule)).hexdigest()
+
+
+def evaluator_runtime_capsule_v2_manifest(
+    runtime_path: Path,
+    python_version: str,
+    *,
+    expected_sha256: str | None = None,
+) -> Mapping[str, object]:
+    """Freeze a stable v2 manifest while retaining volatile root times for TOCTOU."""
+    descriptor = -1
+    try:
+        runtime = Path(os.path.abspath(runtime_path))
+        if runtime.resolve(strict=True) != runtime:
+            raise EvaluatorNoGoError("runtime-capsule-security")
+        version_parts = python_version.split(".")
+        if (
+            len(version_parts) < 2
+            or not version_parts[0].isdigit()
+            or not version_parts[1].isdigit()
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        abi = f"{version_parts[0]}.{version_parts[1]}"
+        root = runtime.parent.parent
+        if root.resolve(strict=True) != root:
+            raise EvaluatorNoGoError("runtime-capsule-security")
+        root_before = root.lstat()
+        descriptor = os.open(
+            root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        root_opened = os.fstat(descriptor)
+        if _runtime_capsule_stat_identity(root_before) != (
+            _runtime_capsule_stat_identity(root_opened)
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-drift")
+        root_identity = _runtime_capsule_v2_root_identity(root, root_opened)
+        libpython = root / "lib" / f"libpython{abi}.dylib"
+        stdlib = root / "lib" / f"python{abi}"
+        dynload = stdlib / "lib-dynload"
+        first = _runtime_capsule_v2_snapshot(
+            root=root,
+            runtime=runtime,
+            libpython=libpython,
+            stdlib=stdlib,
+            dynload=dynload,
+        )
+        second = _runtime_capsule_v2_snapshot(
+            root=root,
+            runtime=runtime,
+            libpython=libpython,
+            stdlib=stdlib,
+            dynload=dynload,
+        )
+        root_after_fd = os.fstat(descriptor)
+        root_after_path = root.lstat()
+        if (
+            first != second
+            or _runtime_capsule_stat_identity(root_opened)
+            != _runtime_capsule_stat_identity(root_after_fd)
+            or _runtime_capsule_stat_identity(root_opened)
+            != _runtime_capsule_stat_identity(root_after_path)
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-drift")
+        capsule: Mapping[str, object] = {
+            "schema": "ai-sdlc-v2-benefit-runtime-capsule/v2",
+            "root": str(root),
+            "root_identity": root_identity,
+            "launcher": runtime.relative_to(root).as_posix(),
+            "libpython": libpython.relative_to(root).as_posix(),
+            "stdlib": stdlib.relative_to(root).as_posix(),
+            "dynload": dynload.relative_to(root).as_posix(),
+            "entries": first,
+        }
+        digest = evaluator_runtime_capsule_v2_sha256(capsule)
+        if expected_sha256 is not None and (
+            not _DIGEST.fullmatch(expected_sha256) or digest != expected_sha256
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-drift")
+        return capsule
+    except EvaluatorNoGoError:
+        raise
+    except (OSError, TypeError, ValueError) as error:
+        raise EvaluatorNoGoError("runtime-capsule-security") from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
 def _tree_digest(root: Path) -> str:
     if not root.is_dir():
         raise ValueError("fixture tree root is unavailable")
@@ -1895,6 +2180,7 @@ def _load_sealed_payload(fixture_id: str, sealed_root: Path) -> Mapping[str, obj
         "ai-sdlc-v2-benefit-sealed-manifest/v2",
         "ai-sdlc-v2-benefit-sealed-manifest/v3",
         "ai-sdlc-v2-benefit-sealed-manifest/v4",
+        "ai-sdlc-v2-benefit-sealed-manifest/v5",
     }:
         raise ValueError("sealed manifest schema is invalid")
     entries = manifest["entries"]
@@ -2007,6 +2293,10 @@ def _load_bound_evaluator_runtime(
         manifest_bytes = manifest_path.read_bytes()
         manifest = json.loads(manifest_bytes)
         commitments = json.loads(commitments_path.read_bytes())
+        schema_pair = (
+            manifest.get("schema") if isinstance(manifest, Mapping) else None,
+            commitments.get("schema") if isinstance(commitments, Mapping) else None,
+        )
         if (
             not isinstance(manifest, Mapping)
             or set(manifest)
@@ -2018,11 +2308,19 @@ def _load_bound_evaluator_runtime(
                 "evaluator_python_runtime_sha256",
                 "evaluator_runtime_capsule_sha256",
             }
-            or manifest.get("schema") != "ai-sdlc-v2-benefit-sealed-manifest/v4"
             or not isinstance(commitments, Mapping)
             or set(commitments) != _RUNTIME_COMMITMENT_KEYS
-            or commitments.get("schema")
-            != "ai-sdlc-v2-benefit-candidate-commitments/v3"
+            or schema_pair
+            not in {
+                (
+                    "ai-sdlc-v2-benefit-sealed-manifest/v4",
+                    "ai-sdlc-v2-benefit-candidate-commitments/v3",
+                ),
+                (
+                    "ai-sdlc-v2-benefit-sealed-manifest/v5",
+                    "ai-sdlc-v2-benefit-candidate-commitments/v4",
+                ),
+            }
             or commitments.get("lock_id") != manifest.get("lock_id")
             or commitments.get("sealed_manifest_sha256")
             != sha256(manifest_bytes).hexdigest()
@@ -2039,7 +2337,12 @@ def _load_bound_evaluator_runtime(
         capsule = commitments.get("evaluator_runtime_capsule")
         if not isinstance(capsule, Mapping):
             raise EvaluatorNoGoError("runtime-capsule-binding")
-        capsule_commitment = evaluator_runtime_capsule_sha256(capsule)
+        capsule_v2 = schema_pair[0] == "ai-sdlc-v2-benefit-sealed-manifest/v5"
+        capsule_commitment = (
+            evaluator_runtime_capsule_v2_sha256(capsule)
+            if capsule_v2
+            else evaluator_runtime_capsule_sha256(capsule)
+        )
         if capsule_commitment != commitments.get(
             "evaluator_runtime_capsule_sha256"
         ) or capsule_commitment != manifest.get("evaluator_runtime_capsule_sha256"):
@@ -2059,10 +2362,18 @@ def _load_bound_evaluator_runtime(
         )
         if current != identity:
             raise EvaluatorNoGoError("runtime-identity")
-        current_capsule = evaluator_runtime_capsule_manifest(
-            Path(runtime_path),
-            str(identity.get("version")),
-            expected_sha256=capsule_commitment,
+        current_capsule = (
+            evaluator_runtime_capsule_v2_manifest(
+                Path(runtime_path),
+                str(identity.get("version")),
+                expected_sha256=capsule_commitment,
+            )
+            if capsule_v2
+            else evaluator_runtime_capsule_manifest(
+                Path(runtime_path),
+                str(identity.get("version")),
+                expected_sha256=capsule_commitment,
+            )
         )
         if current_capsule != capsule:
             raise EvaluatorNoGoError("runtime-capsule-drift")

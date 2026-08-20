@@ -32,8 +32,8 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     derive_repo_git_surfaces,
     evaluate_fixture,
     evaluator_python_runtime_identity,
-    evaluator_runtime_capsule_manifest,
-    evaluator_runtime_capsule_sha256,
+    evaluator_runtime_capsule_v2_manifest,
+    evaluator_runtime_capsule_v2_sha256,
     evaluator_runtime_identity_sha256,
     load_fixture_manifest,
     prepare_fixture,
@@ -43,8 +43,13 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     validate_frontend_browser_program,
 )
 
-FINAL_LOCK_ID = "v2-benefits-20260819-r2"
-FINAL_TARGET = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r2")
+FINAL_LOCK_ID = "v2-benefits-20260819-r3"
+FINAL_TARGET = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r3")
+R2_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r2")
+EXPECTED_R2_INODE = 403098441
+EXPECTED_R2_TREE_SHA256 = (
+    "b5b2b362952d00ab264f3fcef31312bdcd62c3775c047789a6a72f390be8615b"
+)
 INVALID_R1_ROOT = Path(
     "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1"
 )
@@ -56,8 +61,18 @@ LEGACY_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-202608
 TRUST_ANCHOR = Path("/private/tmp")
 TRUSTED_SOURCE_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-source")
 PRIOR_TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source"
-TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source-r2"
-DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit")
+R2_TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source-r2"
+EXPECTED_R2_SOURCE_INODE = 403084506
+EXPECTED_R2_SOURCE_TREE_SHA256 = (
+    "56387824d09679eaf2bca31e7afa62512cc3678dcb14d4add25eb4494afd9596"
+)
+TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source-r3"
+R2_DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit")
+EXPECTED_R2_DISPOSITION_INODE = 403084461
+EXPECTED_R2_DISPOSITION_TREE_SHA256 = (
+    "527973568de93b07c65c2ab08bcbca8709c98424eb1b033e546f35cde46544ae"
+)
+DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit-r3")
 FINAL_CANARY_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-isolation-canary")
 EXPECTED_LEGACY_INODE = 400173643
 
@@ -479,26 +494,43 @@ def _assert_immutable_roots(
 
 
 def build_disposition_record(policy: MaterializerPolicy) -> bytes:
-    """Build, but never publish, the closed review record for an invalid root."""
+    """Build, but never publish, the closed r2-to-r3 successor review record."""
     invalid = next(
         (item for item in policy.immutable_roots if item.label == "invalid-r1"), None
     )
-    if invalid is None:
+    predecessor = next(
+        (item for item in policy.immutable_roots if item.label == "validated-r2"),
+        None,
+    )
+    prior_disposition = next(
+        (item for item in policy.immutable_roots if item.label == "r2-disposition"),
+        None,
+    )
+    if invalid is None or predecessor is None or prior_disposition is None:
         raise MaterializationError("disposition-binding")
-    current = fingerprint_tree(invalid.path)
-    if current != TreeFingerprint(invalid.inode, invalid.tree_sha256):
-        raise MaterializationError("disposition-binding")
-    if _paths_overlap(policy.disposition_root, invalid.path) or _paths_overlap(
-        policy.disposition_root, policy.target
-    ):
+    current = {
+        binding.label: fingerprint_tree(binding.path)
+        for binding in (invalid, predecessor, prior_disposition)
+    }
+    for binding in (invalid, predecessor, prior_disposition):
+        if current[binding.label] != TreeFingerprint(
+            binding.inode, binding.tree_sha256
+        ):
+            raise MaterializationError("disposition-binding")
+        if _paths_overlap(policy.disposition_root, binding.path):
+            raise MaterializationError("disposition-overlap")
+    if _paths_overlap(policy.disposition_root, policy.target):
         raise MaterializationError("disposition-overlap")
     return _canonical_json_bytes(
         {
-            "schema": "ai-sdlc-v2-benefit-disposition-plan/v1",
+            "schema": "ai-sdlc-v2-benefit-disposition-plan/v2",
             "state": "requires-independent-review",
             "invalid_lock_id": invalid.path.name,
+            "invalid_root_tree_sha256": current[invalid.label].sha256,
+            "superseded_lock_id": predecessor.path.name,
+            "superseded_root_tree_sha256": current[predecessor.label].sha256,
+            "prior_disposition_tree_sha256": current[prior_disposition.label].sha256,
             "replacement_lock_id": policy.target.name,
-            "invalid_root_tree_sha256": current.sha256,
             "action": "preserve-in-place",
         }
     )
@@ -515,9 +547,12 @@ def default_policy() -> MaterializerPolicy:
         forbidden_roots=(
             _REPO_ROOT,
             _REPO_ROOT / ".git",
+            R2_ROOT,
             INVALID_R1_ROOT,
             LEGACY_ROOT,
             PRIOR_TRUSTED_SOURCE_ROOT,
+            R2_TRUSTED_SOURCE_ROOT,
+            R2_DISPOSITION_ROOT,
             benchmark / "results",
             benchmark / "runs",
             benchmark / "raw-results",
@@ -528,13 +563,31 @@ def default_policy() -> MaterializerPolicy:
         canary_run_root=FINAL_CANARY_BASE / "run",
         raw_results_root=FINAL_CANARY_BASE / "raw-results",
         other_run_roots=(FINAL_CANARY_BASE / "other-run",),
-        prior_source_roots=(PRIOR_TRUSTED_SOURCE_ROOT,),
+        prior_source_roots=(PRIOR_TRUSTED_SOURCE_ROOT, R2_TRUSTED_SOURCE_ROOT),
         immutable_roots=(
             ImmutableRoot(
                 INVALID_R1_ROOT,
                 EXPECTED_INVALID_R1_INODE,
                 EXPECTED_INVALID_R1_TREE_SHA256,
                 "invalid-r1",
+            ),
+            ImmutableRoot(
+                R2_ROOT,
+                EXPECTED_R2_INODE,
+                EXPECTED_R2_TREE_SHA256,
+                "validated-r2",
+            ),
+            ImmutableRoot(
+                R2_TRUSTED_SOURCE_ROOT,
+                EXPECTED_R2_SOURCE_INODE,
+                EXPECTED_R2_SOURCE_TREE_SHA256,
+                "r2-source",
+            ),
+            ImmutableRoot(
+                R2_DISPOSITION_ROOT,
+                EXPECTED_R2_DISPOSITION_INODE,
+                EXPECTED_R2_DISPOSITION_TREE_SHA256,
+                "r2-disposition",
             ),
         ),
         disposition_root=DISPOSITION_ROOT,
@@ -957,7 +1010,7 @@ def _validate_source_object_unchecked(
     except (UnicodeDecodeError, json.JSONDecodeError) as error:
         raise MaterializationError("source-schema") from error
     if (
-        raw["schema"] != "ai-sdlc-v2-benefit-sealed-source/v1"
+        raw["schema"] != "ai-sdlc-v2-benefit-sealed-source/v2"
         or raw["lock_id"] != policy.target.name
     ):
         raise MaterializationError("source-schema")
@@ -1176,10 +1229,10 @@ def compile_source_bundle(
             )
         )
         runtime_sha256 = evaluator_runtime_identity_sha256(runtime_identity)
-        runtime_capsule = evaluator_runtime_capsule_manifest(
+        runtime_capsule = evaluator_runtime_capsule_v2_manifest(
             Path(str(runtime_identity["path"])), str(runtime_identity["version"])
         )
-        runtime_capsule_sha256 = evaluator_runtime_capsule_sha256(runtime_capsule)
+        runtime_capsule_sha256 = evaluator_runtime_capsule_v2_sha256(runtime_capsule)
     except EvaluatorNoGoError as error:
         raise MaterializationError("runtime-identity") from error
     intent_bytes = _canonical_json_bytes(source["intent_map"])
@@ -1196,7 +1249,7 @@ def compile_source_bundle(
         payload_commitments.append({"fixture_id": fixture_id, "sha256": digest})
     intent_sha = _digest_bytes(intent_bytes)
     manifest = {
-        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v4",
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v5",
         "lock_id": policy.target.name,
         "entries": entries,
         "intent_map": {"path": "intent-map.json", "sha256": intent_sha},
@@ -1206,7 +1259,7 @@ def compile_source_bundle(
     manifest_bytes = _canonical_json_bytes(manifest)
     files["sealed-manifest.json"] = manifest_bytes
     commitments = {
-        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v3",
+        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v4",
         "lock_id": policy.target.name,
         "source_head": bindings.source_head,
         "source_tree_sha": bindings.source_tree_sha,
@@ -1227,7 +1280,7 @@ def compile_source_bundle(
     commitment_bytes = _canonical_json_bytes(commitments)
     files["candidate-commitments.json"] = commitment_bytes
     receipt = {
-        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v3",
+        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v4",
         "publication_state": "published-pending-isolation",
         "isolation_probe_state": "pending",
         "target_lock_id": policy.target.name,
@@ -1282,7 +1335,9 @@ def _validate_candidate_commitments(
             for fixture_id in FIXTURE_IDS
         ]
         if (
-            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v3"
+            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v4"
+            or manifest["schema"] != "ai-sdlc-v2-benefit-sealed-manifest/v5"
+            or receipt["schema"] != "ai-sdlc-v2-benefit-materialization-receipt/v4"
             or raw["lock_id"] != manifest["lock_id"]
             or raw["sealed_manifest_sha256"] != _digest_bytes(manifest_bytes)
             or raw["intent_map_sha256"] != _digest_file(root / "intent-map.json")
@@ -1300,7 +1355,7 @@ def _validate_candidate_commitments(
             != manifest["evaluator_python_runtime_sha256"]
             or receipt["evaluator_python_runtime_sha256"]
             != raw["evaluator_python_runtime_sha256"]
-            or evaluator_runtime_capsule_sha256(raw["evaluator_runtime_capsule"])
+            or evaluator_runtime_capsule_v2_sha256(raw["evaluator_runtime_capsule"])
             != raw["evaluator_runtime_capsule_sha256"]
             or raw["evaluator_runtime_capsule_sha256"]
             != manifest["evaluator_runtime_capsule_sha256"]
@@ -1742,7 +1797,7 @@ def _build_final_isolation_profile(
     runtime_identity = evaluator_python_runtime_identity(
         forbidden_roots=(policy.repo_root, policy.target)
     )
-    runtime_capsule = evaluator_runtime_capsule_manifest(
+    runtime_capsule = evaluator_runtime_capsule_v2_manifest(
         Path(str(runtime_identity["path"])), str(runtime_identity["version"])
     )
     protected_roots = (
@@ -1795,10 +1850,10 @@ def _run_final_isolation_canary(
             )
         )
         current_runtime_sha256 = evaluator_runtime_identity_sha256(current_runtime)
-        current_capsule = evaluator_runtime_capsule_manifest(
+        current_capsule = evaluator_runtime_capsule_v2_manifest(
             Path(str(current_runtime["path"])), str(current_runtime["version"])
         )
-        current_capsule_sha256 = evaluator_runtime_capsule_sha256(current_capsule)
+        current_capsule_sha256 = evaluator_runtime_capsule_v2_sha256(current_capsule)
         if evaluator_python_runtime_sha256 is None:
             evaluator_python_runtime_sha256 = current_runtime_sha256
         if current_runtime_sha256 != evaluator_python_runtime_sha256:
@@ -1838,7 +1893,7 @@ def _run_final_isolation_canary(
     )
     return _canonical_json_bytes(
         {
-            "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
+            "schema": "ai-sdlc-v2-benefit-isolation-attestation/v2",
             "state": "validated",
             "pending_receipt_sha256": pending_receipt_sha256,
             "evaluator_python_runtime_sha256": evaluator_python_runtime_sha256,

@@ -39,7 +39,7 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     probe_provider_isolation,
     run_provider_isolated,
 )
-from ai_sdlc.benefit_sealed_materializer import FINAL_TARGET
+from ai_sdlc.benefit_sealed_materializer import R2_ROOT
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_ROOT = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits"
@@ -423,7 +423,7 @@ def test_system_outside_seatbelt_denies_read_links_and_instruction_runtime_write
     tmp_path: Path,
     request: pytest.FixtureRequest,
 ) -> None:
-    commitments = json.loads((FINAL_TARGET / "candidate-commitments.json").read_text())
+    commitments = json.loads((R2_ROOT / "candidate-commitments.json").read_text())
     runtime_root = Path(commitments["evaluator_runtime_capsule"]["root"])
     runtime_canary = runtime_root / f".task3-seatbelt-{tmp_path.name}"
     runtime_renamed = runtime_canary.with_suffix(".renamed")

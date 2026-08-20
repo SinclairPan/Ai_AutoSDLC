@@ -628,12 +628,12 @@ def build_production_surface_contract(
 ) -> ProductionSurfaceContract:
     """Derive every protected path from Task 2 authority and a closed 15-run layout."""
     from ai_sdlc.benefit_sealed_materializer import (
-        DISPOSITION_ROOT,
-        FINAL_TARGET,
         INVALID_R1_ROOT,
         LEGACY_ROOT,
         PRIOR_TRUSTED_SOURCE_ROOT,
-        TRUSTED_SOURCE_ROOT,
+        R2_DISPOSITION_ROOT,
+        R2_ROOT,
+        R2_TRUSTED_SOURCE_ROOT,
     )
 
     expected_run_ids = {
@@ -655,15 +655,15 @@ def build_production_surface_contract(
     control_gitfile, control_gitdir, control_common = derive_repo_git_surfaces(
         _REPO_ROOT
     )
-    commitments = json.loads((FINAL_TARGET / "candidate-commitments.json").read_text())
+    commitments = json.loads((R2_ROOT / "candidate-commitments.json").read_text())
     runtime_capsule = Path(str(commitments["evaluator_runtime_capsule"]["root"]))
     named = {
-        "sealed_r2": _bound_surface("sealed-r2", FINAL_TARGET),
+        "sealed_r2": _bound_surface("sealed-r2", R2_ROOT),
         "sealed_r1": _bound_surface("sealed-r1", INVALID_R1_ROOT),
         "sealed_legacy": _bound_surface("sealed-legacy", LEGACY_ROOT),
-        "source_r2": _bound_surface("source-r2", TRUSTED_SOURCE_ROOT),
+        "source_r2": _bound_surface("source-r2", R2_TRUSTED_SOURCE_ROOT),
         "source_r1": _bound_surface("source-r1", PRIOR_TRUSTED_SOURCE_ROOT),
-        "disposition": _bound_surface("disposition", DISPOSITION_ROOT),
+        "disposition": _bound_surface("disposition", R2_DISPOSITION_ROOT),
         "control_repo": _bound_surface("control-repo", _REPO_ROOT),
         "control_gitfile": _bound_surface("control-gitfile", control_gitfile),
         "control_gitdir": _bound_surface("control-gitdir", control_gitdir),

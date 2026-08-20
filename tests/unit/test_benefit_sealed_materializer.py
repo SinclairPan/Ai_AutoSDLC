@@ -285,7 +285,7 @@ def _source_bundle(lock_id: str) -> dict[str, object]:
         _security_scenario(audit_mode="failing"),
     ]
     return {
-        "schema": "ai-sdlc-v2-benefit-sealed-source/v1",
+        "schema": "ai-sdlc-v2-benefit-sealed-source/v2",
         "lock_id": lock_id,
         "intent_map": {
             "schema": "ai-sdlc-v2-benefit-intent-map/v2",
@@ -574,14 +574,14 @@ def _stable_unit_isolation_attestation(
         "_run_final_isolation_canary",
         lambda _policy, *, pending_receipt_sha256, **_kwargs: _canonical(
             {
-                "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
+                "schema": "ai-sdlc-v2-benefit-isolation-attestation/v2",
                 "state": "validated",
                 "pending_receipt_sha256": pending_receipt_sha256,
                 "evaluator_python_runtime_sha256": fixture_module.evaluator_runtime_identity_sha256(
                     fixture_module.evaluator_python_runtime_identity()
                 ),
-                "evaluator_runtime_capsule_sha256": fixture_module.evaluator_runtime_capsule_sha256(
-                    fixture_module.evaluator_runtime_capsule_manifest(
+                "evaluator_runtime_capsule_sha256": fixture_module.evaluator_runtime_capsule_v2_sha256(
+                    fixture_module.evaluator_runtime_capsule_v2_manifest(
                         fixture_module.EVALUATOR_PYTHON,
                         str(
                             fixture_module.evaluator_python_runtime_identity()[
@@ -713,6 +713,21 @@ def test_compile_rejects_open_or_incomplete_source_schema(tmp_path: Path) -> Non
         compile_source_bundle(
             _canonical(bundle),
             expected_source_sha256=sha256(_canonical(bundle)).hexdigest(),
+            expected_head=head,
+            policy=policy,
+        )
+
+
+def test_r3_compiler_rejects_v1_source_schema(tmp_path: Path) -> None:
+    policy, head, _source = _policy(tmp_path)
+    bundle = _source_bundle(policy.target.name)
+    bundle["schema"] = "ai-sdlc-v2-benefit-sealed-source/v1"
+    encoded = _canonical(bundle)
+
+    with pytest.raises(MaterializationError, match="source-schema"):
+        compile_source_bundle(
+            encoded,
+            expected_source_sha256=sha256(encoded).hexdigest(),
             expected_head=head,
             policy=policy,
         )
@@ -1252,6 +1267,13 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
     commitments = json.loads(compiled.files["candidate-commitments.json"])
     manifest = json.loads(compiled.files["sealed-manifest.json"])
 
+    assert manifest["schema"] == "ai-sdlc-v2-benefit-sealed-manifest/v5"
+    assert commitments["schema"] == "ai-sdlc-v2-benefit-candidate-commitments/v4"
+    assert receipt["schema"] == "ai-sdlc-v2-benefit-materialization-receipt/v4"
+    assert (
+        commitments["evaluator_runtime_capsule"]["schema"]
+        == "ai-sdlc-v2-benefit-runtime-capsule/v2"
+    )
     assert set(manifest) == {
         "schema",
         "lock_id",
@@ -1297,7 +1319,7 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
     assert runtime_sha256 == manifest["evaluator_python_runtime_sha256"]
     assert runtime_sha256 == commitments["evaluator_python_runtime_sha256"]
     assert runtime_sha256 == receipt["evaluator_python_runtime_sha256"]
-    capsule_sha256 = fixture_module.evaluator_runtime_capsule_sha256(
+    capsule_sha256 = fixture_module.evaluator_runtime_capsule_v2_sha256(
         commitments["evaluator_runtime_capsule"]
     )
     assert capsule_sha256 == manifest["evaluator_runtime_capsule_sha256"]
@@ -1305,12 +1327,44 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
     assert capsule_sha256 == receipt["evaluator_runtime_capsule_sha256"]
 
 
+@pytest.mark.parametrize("mutation", ("r2-schema", "v1-capsule"))
+def test_r3_candidate_validation_rejects_stale_runtime_authority(
+    tmp_path: Path, mutation: str
+) -> None:
+    policy, head, source = _policy(tmp_path)
+    compiled = _compile_for_test(policy, head, source)
+    files = dict(compiled.files)
+    candidate = json.loads(files["candidate-commitments.json"])
+    if mutation == "r2-schema":
+        candidate["schema"] = "ai-sdlc-v2-benefit-candidate-commitments/v3"
+    else:
+        candidate["evaluator_runtime_capsule"]["schema"] = (
+            "ai-sdlc-v2-benefit-runtime-capsule/v1"
+        )
+    files["candidate-commitments.json"] = _canonical(candidate)
+    receipt = json.loads(files["materialization-receipt.json"])
+    receipt["candidate_commitments_sha256"] = sha256(
+        files["candidate-commitments.json"]
+    ).hexdigest()
+    files["materialization-receipt.json"] = _canonical(receipt)
+    stale = CompiledMaterialization(
+        files=files,
+        bindings=compiled.bindings,
+        source_bundle_sha256=compiled.source_bundle_sha256,
+    )
+    candidate_root = tmp_path / "stale-candidate"
+    materializer._write_plain_files(candidate_root, files)
+
+    with pytest.raises(MaterializationError, match="candidate-commitments"):
+        materializer._validate_candidate_commitments(candidate_root, stale)
+
+
 def test_fix_round7_final_profile_write_protects_runtime_capsule(
     tmp_path: Path,
 ) -> None:
     policy = _default_policy_with_test_canary_roots(tmp_path)
     profile = materializer._build_final_isolation_profile(policy)
-    capsule = fixture_module.evaluator_runtime_capsule_manifest(
+    capsule = fixture_module.evaluator_runtime_capsule_v2_manifest(
         fixture_module.EVALUATOR_PYTHON,
         str(fixture_module.evaluator_python_runtime_identity()["version"]),
     )
@@ -1322,26 +1376,47 @@ def test_fix_round7_final_profile_write_protects_runtime_capsule(
     )
 
 
-def test_fix_round6_production_target_is_monotonic_r2_and_refuses_r1() -> None:
+def test_r3_production_target_is_monotonic_and_refuses_predecessors() -> None:
     policy = materializer.default_policy()
 
-    assert materializer.FINAL_LOCK_ID == "v2-benefits-20260819-r2"
+    assert materializer.FINAL_LOCK_ID == "v2-benefits-20260819-r3"
     assert policy.target == Path(
-        "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r2"
+        "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r3"
     )
     assert (
         Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1")
         == materializer.INVALID_R1_ROOT
     )
     assert policy.target != materializer.INVALID_R1_ROOT
-    assert policy.source_root.name == "sealed-source-r2"
-    assert policy.prior_source_roots == (materializer.PRIOR_TRUSTED_SOURCE_ROOT,)
+    assert policy.source_root.name == "sealed-source-r3"
+    assert policy.prior_source_roots == (
+        materializer.PRIOR_TRUSTED_SOURCE_ROOT,
+        materializer.R2_TRUSTED_SOURCE_ROOT,
+    )
     assert policy.immutable_roots == (
         materializer.ImmutableRoot(
             materializer.INVALID_R1_ROOT,
             materializer.EXPECTED_INVALID_R1_INODE,
             materializer.EXPECTED_INVALID_R1_TREE_SHA256,
             "invalid-r1",
+        ),
+        materializer.ImmutableRoot(
+            materializer.R2_ROOT,
+            materializer.EXPECTED_R2_INODE,
+            materializer.EXPECTED_R2_TREE_SHA256,
+            "validated-r2",
+        ),
+        materializer.ImmutableRoot(
+            materializer.R2_TRUSTED_SOURCE_ROOT,
+            materializer.EXPECTED_R2_SOURCE_INODE,
+            materializer.EXPECTED_R2_SOURCE_TREE_SHA256,
+            "r2-source",
+        ),
+        materializer.ImmutableRoot(
+            materializer.R2_DISPOSITION_ROOT,
+            materializer.EXPECTED_R2_DISPOSITION_INODE,
+            materializer.EXPECTED_R2_DISPOSITION_TREE_SHA256,
+            "r2-disposition",
         ),
     )
     if materializer.INVALID_R1_ROOT.is_dir():
@@ -1359,21 +1434,55 @@ def test_fix_round6_production_target_is_monotonic_r2_and_refuses_r1() -> None:
             lock_id="v2-benefits-20260819-r1",
             expected_old_root_tree_sha256="0" * 64,
         )
+    with pytest.raises(MaterializationError, match="target-lock"):
+        materializer.materialize_sealed_bundle(
+            source_fd=-1,
+            expected_source_sha256="0" * 64,
+            expected_head="0" * 40,
+            lock_id="v2-benefits-20260819-r2",
+            expected_old_root_tree_sha256="0" * 64,
+        )
 
 
-def test_fix_round6_disposition_plan_is_closed_read_only_and_opaque(
+def test_r3_disposition_successor_plan_is_closed_read_only_and_opaque(
     tmp_path: Path,
 ) -> None:
     policy, _head, _source = _policy(tmp_path)
     invalid = tmp_path / "protected" / "invalid-r1"
+    predecessor = tmp_path / "protected" / "validated-r2"
+    prior_disposition = tmp_path / "protected" / "r2-disposition"
     invalid.mkdir(mode=0o700)
+    predecessor.mkdir(mode=0o700)
+    prior_disposition.mkdir(mode=0o700)
     (invalid / "receipt.json").write_text('{"invalid":true}', encoding="utf-8")
-    before = materializer.fingerprint_tree(invalid)
+    (predecessor / "receipt.json").write_text('{"runtime":"v1"}', encoding="utf-8")
+    (prior_disposition / "plan.json").write_text(
+        '{"replacement":"validated-r2"}', encoding="utf-8"
+    )
+    before = {
+        path: materializer.fingerprint_tree(path)
+        for path in (invalid, predecessor, prior_disposition)
+    }
     policy = replace(
         policy,
         immutable_roots=(
             materializer.ImmutableRoot(
-                invalid, before.inode, before.sha256, "invalid-r1"
+                invalid,
+                before[invalid].inode,
+                before[invalid].sha256,
+                "invalid-r1",
+            ),
+            materializer.ImmutableRoot(
+                predecessor,
+                before[predecessor].inode,
+                before[predecessor].sha256,
+                "validated-r2",
+            ),
+            materializer.ImmutableRoot(
+                prior_disposition,
+                before[prior_disposition].inode,
+                before[prior_disposition].sha256,
+                "r2-disposition",
             ),
         ),
         disposition_root=tmp_path / "protected-disposition-audit",
@@ -1385,15 +1494,26 @@ def test_fix_round6_disposition_plan_is_closed_read_only_and_opaque(
         "schema",
         "state",
         "invalid_lock_id",
-        "replacement_lock_id",
         "invalid_root_tree_sha256",
+        "superseded_lock_id",
+        "superseded_root_tree_sha256",
+        "prior_disposition_tree_sha256",
+        "replacement_lock_id",
         "action",
     }
+    assert record["schema"] == "ai-sdlc-v2-benefit-disposition-plan/v2"
+    assert record["invalid_lock_id"] == "invalid-r1"
+    assert record["superseded_lock_id"] == "validated-r2"
+    assert record["replacement_lock_id"] == policy.target.name
     assert record["state"] == "requires-independent-review"
     assert record["action"] == "preserve-in-place"
     assert not policy.disposition_root.exists()
-    assert materializer.fingerprint_tree(invalid) == before
+    assert {
+        path: materializer.fingerprint_tree(path)
+        for path in (invalid, predecessor, prior_disposition)
+    } == before
     assert '{"invalid":true}' not in json.dumps(record)
+    assert '{"runtime":"v1"}' not in json.dumps(record)
 
 
 def test_fix_round6_immutable_r1_drift_stops_before_r2_publication(
@@ -1986,10 +2106,17 @@ def test_cli_fingerprint_is_read_only_and_materialize_help_is_closed() -> None:
 def test_task2_binding_cli_reports_narrow_authority_without_provider_permission(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    captured: dict[str, object] = {}
+
+    def validate_r2(*args: object, **kwargs: object) -> list[object]:
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return []
+
     monkeypatch.setattr(
         benefit_evidence_cmd,
         "validate_sealed_commitments",
-        lambda *_args, **_kwargs: [],
+        validate_r2,
         raising=False,
     )
 
@@ -2005,6 +2132,8 @@ def test_task2_binding_cli_reports_narrow_authority_without_provider_permission(
         "provider_authorized": False,
         "status": "bound",
     }
+    assert captured["args"][1] == materializer.R2_ROOT
+    assert captured["kwargs"]["source_root"] == materializer.R2_TRUSTED_SOURCE_ROOT
 
     monkeypatch.setattr(
         benefit_evidence_cmd,
