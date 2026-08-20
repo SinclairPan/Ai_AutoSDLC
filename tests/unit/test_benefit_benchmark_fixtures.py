@@ -2027,6 +2027,144 @@ def test_fix_round1_frontend_is_locked_and_real_browser_e2e(tmp_path: Path) -> N
         )
 
 
+def _fake_system_chrome(tmp_path: Path) -> Path:
+    browser = (
+        tmp_path
+        / "Applications"
+        / "Google Chrome.app"
+        / "Contents"
+        / "MacOS"
+        / "Google Chrome"
+    )
+    browser.parent.mkdir(parents=True)
+    browser.write_bytes(b"fake-browser")
+    browser.chmod(0o755)
+    return browser
+
+
+def test_browser_launch_prefers_frozen_playwright_headless_shell(
+    tmp_path: Path,
+) -> None:
+    headless = tmp_path / "chromium_headless_shell-1234" / "chrome-headless-shell"
+    headless.parent.mkdir()
+    headless.write_bytes(b"frozen-headless-shell")
+    headless.chmod(0o755)
+    system_chrome = _fake_system_chrome(tmp_path)
+
+    command = fixture_module.build_frontend_browser_command(
+        url="http://127.0.0.1:1/test",
+        user_data_dir=tmp_path / "profile",
+        environment={
+            "AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL": str(headless),
+            "AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL_SHA256": sha256(
+                headless.read_bytes()
+            ).hexdigest(),
+            "AI_SDLC_BENCHMARK_BROWSER": str(system_chrome),
+        },
+    )
+
+    assert command[0] == str(headless)
+    assert "--use-mock-keychain" in command
+
+
+def test_system_chrome_fallback_uses_non_keychain_arguments(tmp_path: Path) -> None:
+    system_chrome = _fake_system_chrome(tmp_path)
+
+    command = fixture_module.build_frontend_browser_command(
+        url="http://127.0.0.1:1/test",
+        user_data_dir=tmp_path / "profile",
+        environment={
+            "AI_SDLC_BENCHMARK_BROWSER": str(system_chrome),
+            "AI_SDLC_BENCHMARK_BROWSER_SHA256": sha256(
+                system_chrome.read_bytes()
+            ).hexdigest(),
+        },
+    )
+
+    assert command[0] == str(system_chrome)
+    assert "--use-mock-keychain" in command
+    assert "--password-store=basic" in command
+
+
+def test_system_chrome_timeout_without_complete_result_remains_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = prepare_fixture("frontend-recovery-delivery", tmp_path / "frontend")
+    task = prepared.root / "benchmark-task"
+    system_chrome = _fake_system_chrome(tmp_path)
+    monkeypatch.setenv("AI_SDLC_BENCHMARK_BROWSER", str(system_chrome))
+    monkeypatch.setenv(
+        "AI_SDLC_BENCHMARK_BROWSER_SHA256",
+        sha256(system_chrome.read_bytes()).hexdigest(),
+    )
+    monkeypatch.delenv("AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL", raising=False)
+    monkeypatch.delenv("AI_SDLC_BENCHMARK_PLAYWRIGHT_MODULE", raising=False)
+
+    def timeout(command: list[str], **_kwargs: object) -> object:
+        assert command[0] == str(system_chrome)
+        assert "--use-mock-keychain" in command
+        raise subprocess.TimeoutExpired(
+            command, 30, output=b"<html><body>incomplete</body></html>", stderr=b""
+        )
+
+    monkeypatch.setattr(fixture_module.subprocess, "run", timeout)
+
+    with pytest.raises(RuntimeError, match="real-browser acceptance process failed"):
+        run_frontend_browser_e2e(task, _test_browser_program())
+
+
+def test_playwright_adapter_receives_the_same_closed_browser_arguments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    prepared = prepare_fixture("frontend-recovery-delivery", tmp_path / "frontend")
+    task = prepared.root / "benchmark-task"
+    headless = tmp_path / "chromium_headless_shell-1234" / "chrome-headless-shell"
+    headless.parent.mkdir()
+    headless.write_bytes(b"frozen-headless-shell")
+    headless.chmod(0o755)
+    module = tmp_path / "playwright.mjs"
+    module.write_text("export const chromium = {};\n", encoding="utf-8")
+    monkeypatch.setenv("AI_SDLC_BENCHMARK_PLAYWRIGHT_MODULE", str(module))
+    monkeypatch.setenv("AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL", str(headless))
+    monkeypatch.setenv(
+        "AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL_SHA256",
+        sha256(headless.read_bytes()).hexdigest(),
+    )
+    launches: list[list[str]] = []
+
+    def complete(
+        command: list[str], **_kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
+        launches.append(command)
+        return subprocess.CompletedProcess(
+            command,
+            0,
+            json.dumps(
+                [
+                    {
+                        "passed": True,
+                        "basic_accessibility": True,
+                        "console_errors": [],
+                        "behavior_checks": {
+                            "field_rendering": True,
+                            "filtering": True,
+                        },
+                    }
+                ]
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(fixture_module.subprocess, "run", complete)
+
+    result = run_frontend_browser_e2e(task, _test_browser_program())
+
+    assert result["executed_with_real_browser"] is True
+    assert len(launches) == 1 and launches[0][0] == "node"
+    assert "args:JSON.parse(rawSafetyArgs)" in launches[0][3]
+    assert "--use-mock-keychain" in json.loads(launches[0][-1])
+
+
 def test_fix_round1_frontend_held_out_harness_is_not_provider_readable(
     tmp_path: Path,
 ) -> None:

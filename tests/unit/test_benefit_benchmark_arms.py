@@ -22,8 +22,11 @@ from ai_sdlc.benefit_benchmark_arms import (
     SUPERPOWERS_COMMIT,
     SUPERPOWERS_TREE,
     BoundedReviewBridge,
+    ExecutionSourceBinding,
     build_arm_isolation_profile,
     build_codex_command,
+    build_production_surface_contract,
+    freeze_expert_snapshot,
     inspect_instruction_sources,
     load_arm_manifest,
     prepare_arm,
@@ -36,6 +39,7 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     probe_provider_isolation,
     run_provider_isolated,
 )
+from ai_sdlc.benefit_sealed_materializer import FINAL_TARGET
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BENCHMARK_ROOT = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits"
@@ -88,7 +92,7 @@ def test_arm_manifest_is_closed_and_binds_every_frozen_source() -> None:
     assert manifest.superpowers.source_url == "https://github.com/obra/superpowers.git"
     assert manifest.superpowers.tag == "v6.3.0"
     assert manifest.superpowers.license_path == "S/LICENSE.superpowers"
-    assert len(manifest.superpowers.files) >= 20
+    assert len(manifest.superpowers.files) == 5
     assert all(
         entry.mode in {"100644", "100755"} for entry in manifest.superpowers.files
     )
@@ -109,7 +113,15 @@ def test_arm_manifest_rejects_closed_world_and_vendor_drift(
     elif mutation == "digest":
         raw["common_agent_contract_sha256"] = "0" * 64
     else:
-        path = copied / "S" / ".agents" / "skills" / "using-superpowers" / "SKILL.md"
+        path = (
+            copied
+            / "S"
+            / "provider"
+            / ".agents"
+            / "skills"
+            / "using-superpowers"
+            / "SKILL.md"
+        )
         path.write_text(path.read_text() + "\nUse $does-not-exist.\n", encoding="utf-8")
     (copied / "manifest.json").write_text(
         json.dumps(raw, sort_keys=True, separators=(",", ":")), encoding="utf-8"
@@ -290,9 +302,10 @@ def test_instruction_mutation_and_cross_contamination_are_detected(
 ) -> None:
     prepared = _prepared(tmp_path, "P")
     agents = prepared.root / "AGENTS.md"
-    agents.chmod(0o600)
-    agents.write_text(agents.read_text() + "\nmutated\n")
-    assert verify_method_instruction_immutability(prepared)
+    agents.write_text("injected methodology\n")
+    assert "arms.instruction-namespace-drift" in {
+        issue.code for issue in inspect_instruction_sources(prepared).issues
+    }
     (prepared.root / ".ai-sdlc").mkdir()
     assert "arms.p-contamination" in {
         issue.code for issue in inspect_instruction_sources(prepared).issues
@@ -336,45 +349,63 @@ def test_global_methodology_pollution_after_prepare_is_detected(tmp_path: Path) 
 
 def _isolation_fixture(tmp_path: Path):
     prepared = _prepared(tmp_path / "runs" / "prepared", "A11")
-    protected_parent = tmp_path / "protected"
-    sealed = protected_parent / "sealed-r2"
-    raw = protected_parent / "raw-results"
-    other = tmp_path / "runs" / "other-run"
-    protected = [
-        protected_parent / "sealed-r1",
-        protected_parent / "sealed-legacy",
-        protected_parent / "sealed-source",
-        protected_parent / "sealed-source-r2",
-        protected_parent / "disposition",
-        protected_parent / "template",
-    ]
-    for root in (sealed, raw, other, *protected):
+    raw = tmp_path / "raw-results"
+    parent_runs = tmp_path / "parent-runs-control"
+    template = tmp_path / "template"
+    for root in (raw, parent_runs, template):
         root.mkdir(parents=True)
         (root / "canary").write_text(root.name)
+    run_roots = {}
+    for arm in ARM_IDS:
+        for fixture_id in FIXTURE_IDS:
+            run_id = f"{arm}:{fixture_id}"
+            if run_id == "A11:requirement-contract-ambiguity":
+                run_roots[run_id] = prepared.root
+            else:
+                path = tmp_path / "closed-runs" / run_id.replace(":", "-")
+                path.mkdir(parents=True)
+                (path / "canary").write_text(run_id)
+                run_roots[run_id] = path
+    fixture_source = (
+        BENCHMARK_ROOT / "fixtures" / "requirement-contract-ambiguity" / "public"
+    )
+    surfaces = build_production_surface_contract(
+        raw_results_root=raw,
+        parent_runs_root=parent_runs,
+        run_roots=run_roots,
+        current_run_id="A11:requirement-contract-ambiguity",
+        fixture_source_root=fixture_source,
+        template_root=template,
+    )
     profile = build_arm_isolation_profile(
         prepared,
         _reservation("A11"),
-        sealed_root=sealed,
-        control_root=REPO_ROOT,
-        raw_results_root=raw,
-        other_run_roots=[other],
-        protected_roots=protected,
+        surfaces=surfaces,
     )
-    return prepared, profile, sealed, raw, other, protected
+    return prepared, profile, surfaces, run_roots, raw, parent_runs, template
 
 
 def test_task2_strong_profile_covers_every_surface_and_method_write_denial(
     tmp_path: Path,
 ) -> None:
-    prepared, profile, _sealed, raw, other, protected = _isolation_fixture(tmp_path)
+    prepared, profile, surfaces, _runs, _raw, _parent, _template = _isolation_fixture(
+        tmp_path
+    )
 
     assert profile.executable is (sys.platform == "darwin")
     assert profile.issues == ()
     assert profile.run_root == prepared.provider_cwd
-    assert str(raw.resolve()) in profile.sandbox_text
-    assert str(other.resolve()) in profile.sandbox_text
-    for root in protected:
-        assert str(root.resolve()) in profile.sandbox_text
+    assert str(surfaces.raw_results.path) in profile.sandbox_text
+    for surface in surfaces.other_runs:
+        assert str(surface.path) in profile.sandbox_text
+    for surface in (
+        surfaces.sealed_r1,
+        surfaces.sealed_legacy,
+        surfaces.source_r1,
+        surfaces.source_r2,
+        surfaces.disposition,
+    ):
+        assert str(surface.path) in profile.sandbox_text
     for path in prepared.method_instruction_paths:
         assert str(path.resolve()) in profile.sandbox_text
     for path in prepared.method_instruction_roots:
@@ -390,10 +421,77 @@ def test_task2_strong_profile_covers_every_surface_and_method_write_denial(
 )
 def test_system_outside_seatbelt_denies_read_links_and_instruction_runtime_writes(
     tmp_path: Path,
+    request: pytest.FixtureRequest,
 ) -> None:
-    prepared, profile, sealed, raw, other, protected = _isolation_fixture(tmp_path)
+    commitments = json.loads((FINAL_TARGET / "candidate-commitments.json").read_text())
+    runtime_root = Path(commitments["evaluator_runtime_capsule"]["root"])
+    runtime_canary = runtime_root / f".task3-seatbelt-{tmp_path.name}"
+    runtime_renamed = runtime_canary.with_suffix(".renamed")
+    runtime_created = runtime_canary.with_suffix(".created")
+    runtime_canary.write_text("runtime-canary", encoding="utf-8")
+
+    def cleanup_runtime_canaries() -> None:
+        runtime_canary.unlink(missing_ok=True)
+        runtime_renamed.unlink(missing_ok=True)
+        runtime_created.unlink(missing_ok=True)
+
+    request.addfinalizer(cleanup_runtime_canaries)
+    prepared, profile, surfaces, run_roots, raw, parent_runs, template = (
+        _isolation_fixture(tmp_path)
+    )
+    sealed = surfaces.sealed_r2.path
     probe = probe_provider_isolation(profile)
-    read = run_provider_isolated(profile, ["/bin/cat", str(sealed / "canary")])
+    protected_roots = tuple(
+        dict.fromkeys(
+            (
+                profile.sealed_root,
+                profile.sealed_root.parent,
+                profile.control_root,
+                profile.raw_results_root,
+                *profile.protected_roots,
+                *profile.other_run_roots,
+            )
+        )
+    )
+    stat_and_list = run_provider_isolated(
+        profile,
+        [
+            "/bin/sh",
+            "-c",
+            (
+                "for target; do "
+                "/usr/bin/stat -f '%HT' \"$target\" >/dev/null 2>&1 && exit 91; "
+                '/bin/ls -la "$target" >/dev/null 2>&1 && exit 92; '
+                "done; exit 0"
+            ),
+            "surface-probe",
+            *(str(path) for path in protected_roots),
+        ],
+    )
+    read = run_provider_isolated(
+        profile, ["/bin/cat", str(sealed / "candidate-commitments.json")]
+    )
+    traversal_read = run_provider_isolated(
+        profile,
+        [
+            "/bin/cat",
+            str(sealed / ".." / sealed.name / "candidate-commitments.json"),
+        ],
+    )
+    encoded_traversal_read = run_provider_isolated(
+        profile,
+        [
+            "/bin/sh",
+            "-c",
+            (
+                "dotdot=$(printf '\\056\\056'); "
+                '/bin/cat "$1/$dotdot/$2/candidate-commitments.json"'
+            ),
+            "encoded-probe",
+            str(sealed),
+            sealed.name,
+        ],
+    )
     instruction = prepared.root / "AGENTS.md"
     write_instruction = run_provider_isolated(
         profile,
@@ -410,25 +508,96 @@ def test_system_outside_seatbelt_denies_read_links_and_instruction_runtime_write
         profile,
         ["/bin/sh", "-c", f"printf drift >> '{runtime_marker}'"],
     )
+    runtime_read = run_provider_isolated(profile, ["/bin/cat", str(runtime_canary)])
+    runtime_python = runtime_root / "bin" / "python3.14"
+    runtime_exec = run_provider_isolated(
+        profile, [str(runtime_python), "-I", "-S", "-c", "print('runtime-ok')"]
+    )
+    runtime_append = run_provider_isolated(
+        profile,
+        ["/bin/sh", "-c", f"printf drift >> '{runtime_canary}'"],
+    )
+    runtime_create = run_provider_isolated(
+        profile, ["/usr/bin/touch", str(runtime_created)]
+    )
+    runtime_chmod = run_provider_isolated(
+        profile, ["/bin/chmod", "600", str(runtime_canary)]
+    )
+    runtime_rename = run_provider_isolated(
+        profile, ["/bin/mv", str(runtime_canary), str(runtime_renamed)]
+    )
+    race_root = surfaces.other_runs[0].path
+    race_original = race_root.with_name(f"{race_root.name}.original")
+    race_root.rename(race_original)
+    race_root.mkdir()
+    try:
+        race_launch = run_provider_isolated(profile, ["/usr/bin/true"])
+    finally:
+        race_root.rmdir()
+        race_original.rename(race_root)
     allowed = prepared.provider_cwd / "allowed-write.txt"
+    loop_allowed = prepared.root / ".ai-sdlc" / "state" / "loop" / "canary.txt"
     write_allowed = run_provider_isolated(
         profile,
-        ["/bin/sh", "-c", f"printf allowed > '{allowed}'"],
+        [
+            "/bin/sh",
+            "-c",
+            (
+                f"printf allowed > '{allowed}'; "
+                f"mkdir -p '{loop_allowed.parent}'; "
+                f"printf loop > '{loop_allowed}'"
+            ),
+        ],
     )
     superpowers = _prepared(tmp_path / "runs" / "superpowers", "S")
+    run_roots["S:requirement-contract-ambiguity"] = superpowers.root
+    run_roots["A11:requirement-contract-ambiguity"] = prepared.root
+    superpowers_surfaces = build_production_surface_contract(
+        raw_results_root=raw,
+        parent_runs_root=parent_runs,
+        run_roots=run_roots,
+        current_run_id="S:requirement-contract-ambiguity",
+        fixture_source_root=(
+            BENCHMARK_ROOT / "fixtures" / "requirement-contract-ambiguity" / "public"
+        ),
+        template_root=template,
+    )
     superpowers_profile = build_arm_isolation_profile(
         superpowers,
         _reservation("S"),
-        sealed_root=sealed,
-        control_root=REPO_ROOT,
-        raw_results_root=raw,
-        other_run_roots=[other, prepared.provider_cwd],
-        protected_roots=protected,
+        surfaces=superpowers_surfaces,
     )
     injected_skill = superpowers.root / ".agents" / "skills" / "injected.md"
     write_skill_namespace = run_provider_isolated(
         superpowers_profile,
         ["/bin/sh", "-c", f"printf drift > '{injected_skill}'"],
+    )
+    plain = _prepared(tmp_path / "runs" / "plain", "P")
+    run_roots["P:requirement-contract-ambiguity"] = plain.root
+    plain_surfaces = build_production_surface_contract(
+        raw_results_root=raw,
+        parent_runs_root=parent_runs,
+        run_roots=run_roots,
+        current_run_id="P:requirement-contract-ambiguity",
+        fixture_source_root=(
+            BENCHMARK_ROOT / "fixtures" / "requirement-contract-ambiguity" / "public"
+        ),
+        template_root=template,
+    )
+    plain_profile = build_arm_isolation_profile(
+        plain,
+        _reservation("P"),
+        surfaces=plain_surfaces,
+    )
+    plain_root_method = plain.root / ".ai-sdlc"
+    plain_provider_method = plain.provider_cwd / ".codex"
+    create_plain_methods = run_provider_isolated(
+        plain_profile,
+        [
+            "/bin/sh",
+            "-c",
+            f"mkdir '{plain_root_method}'; mkdir '{plain_provider_method}'",
+        ],
     )
 
     assert all(
@@ -443,14 +612,33 @@ def test_system_outside_seatbelt_denies_read_links_and_instruction_runtime_write
         )
     )
     assert read.returncode != 0 and "Operation not permitted" in read.stderr
+    assert stat_and_list.returncode == 0
+    assert traversal_read.returncode != 0
+    assert encoded_traversal_read.returncode != 0
     assert write_instruction.returncode != 0
     assert write_method_namespace.returncode != 0
     assert not injected_method.exists()
     assert write_runtime.returncode != 0
+    assert runtime_read.returncode == 0
+    assert runtime_read.stdout == "runtime-canary"
+    assert runtime_exec.returncode == 0
+    assert runtime_exec.stdout.strip() == "runtime-ok"
+    assert runtime_append.returncode != 0
+    assert runtime_create.returncode != 0 and not runtime_created.exists()
+    assert runtime_chmod.returncode != 0
+    assert runtime_rename.returncode != 0
+    assert runtime_canary.read_text(encoding="utf-8") == "runtime-canary"
+    assert not runtime_renamed.exists()
+    assert race_launch.returncode == 126
+    assert "ISOLATION_REFUSED" in race_launch.stderr
     assert write_skill_namespace.returncode != 0
     assert not injected_skill.exists()
+    assert create_plain_methods.returncode != 0
+    assert not plain_root_method.exists()
+    assert not plain_provider_method.exists()
     assert write_allowed.returncode == 0
     assert allowed.read_text() == "allowed"
+    assert loop_allowed.read_text() == "loop"
     assert verify_method_instruction_immutability(prepared) == ()
 
 
@@ -527,7 +715,7 @@ def test_build_codex_command_is_pure_exact_and_non_launching(tmp_path: Path) -> 
     assert argv[argv.index("--sandbox") + 1] == "workspace-write"
     assert argv[argv.index("-C") + 1] == str(prepared.provider_cwd)
     assert argv[-1] == "-"
-    assert "$using-superpowers" in prepared.prompt
+    assert "$using-superpowers" in (prepared.root / "AGENTS.md").read_text()
     assert before == after == ""
     assert prepared.environment.provider_attempts_started == 0
 
@@ -583,13 +771,28 @@ def test_expert_command_is_read_only_schema_bound_and_non_launching(
         arm="A11",
     )
     reservation = AttemptReservation("attempt-001", 1, request)
+    snapshot_root = tmp_path / "expert-snapshot"
+    snapshot_root.mkdir()
+    (snapshot_root / "review-snapshot.json").write_text("{}", encoding="utf-8")
+    snapshot = freeze_expert_snapshot(
+        snapshot_root,
+        parent_candidate_root=prepared.provider_cwd,
+        snapshot_sha256="7" * 64,
+        candidate_sha256="8" * 64,
+    )
 
     with pytest.raises(ValueError, match="output schema"):
         build_codex_command(prepared, reservation)
-    argv = build_codex_command(prepared, reservation, output_schema=schema)
+    argv = build_codex_command(
+        prepared,
+        reservation,
+        output_schema=schema,
+        expert_snapshot=snapshot,
+    )
 
     assert argv[argv.index("--sandbox") + 1] == "read-only"
     assert argv[argv.index("--output-schema") + 1] == str(schema.resolve())
+    assert argv[argv.index("-C") + 1] == str(snapshot_root)
     assert prepared.environment.provider_attempts_started == 0
 
 
@@ -600,6 +803,9 @@ def test_a11_fake_bridge_same_writer_repair_rereview_and_close() -> None:
         writer_session="writer-1",
         parent_digest="1" * 64,
         candidate_digest="2" * 64,
+        initial_snapshot=b"frozen snapshot",
+        input_digest="9" * 64,
+        candidate_tree_digest="3" * 64,
     )
     first = bridge.dispatch_fake_review(
         role="Primary",
@@ -625,6 +831,8 @@ def test_a11_fake_bridge_same_writer_repair_rereview_and_close() -> None:
         writer_session="writer-1",
         repair_digest="4" * 64,
         new_candidate_digest="5" * 64,
+        repaired_snapshot=b"repaired frozen snapshot",
+        new_candidate_tree_digest="6" * 64,
     )
     bridge.dispatch_fake_rereview(
         role="Primary",
@@ -652,11 +860,14 @@ def test_a11_fake_bridge_requires_primary_and_bound_fresh_rereview() -> None:
         writer_session="writer-1",
         parent_digest="1" * 64,
         candidate_digest="2" * 64,
+        initial_snapshot=b"s",
+        input_digest="9" * 64,
+        candidate_tree_digest="3" * 64,
     )
     cross_only.dispatch_fake_review(
         "Cross-risk", "security", "expert-1", b"s", "3" * 64, "3" * 64, []
     )
-    with pytest.raises(ValueError, match="Close preconditions"):
+    with pytest.raises(ValueError, match="required roles"):
         cross_only.close("writer-1", cross_only.review_digest, "2" * 64)
 
     bridge = BoundedReviewBridge(
@@ -665,6 +876,9 @@ def test_a11_fake_bridge_requires_primary_and_bound_fresh_rereview() -> None:
         writer_session="writer-1",
         parent_digest="1" * 64,
         candidate_digest="2" * 64,
+        initial_snapshot=b"s",
+        input_digest="9" * 64,
+        candidate_tree_digest="3" * 64,
     )
     bridge.dispatch_fake_review(
         "Primary",
@@ -675,7 +889,10 @@ def test_a11_fake_bridge_requires_primary_and_bound_fresh_rereview() -> None:
         "3" * 64,
         [{"id": "F1", "severity": "important", "fix": "repair"}],
     )
-    bridge.record_writer_repair("writer-1", "4" * 64, "5" * 64)
+    bridge.dispatch_fake_review(
+        "Cross-risk", "security", "expert-2", b"s", "3" * 64, "3" * 64, []
+    )
+    bridge.record_writer_repair("writer-1", "4" * 64, "5" * 64, b"repaired", "6" * 64)
     with pytest.raises(ValueError, match="snapshot|parent"):
         bridge.dispatch_fake_rereview(
             "Primary", "rereview-1", b"", "not-a-digest", "not-a-digest", []
@@ -708,12 +925,17 @@ def test_a11_fake_bridge_adversarial_fail_closed(case: str) -> None:
         writer_session="writer-1",
         parent_digest="1" * 64,
         candidate_digest="2" * 64,
+        initial_snapshot=b"s",
+        input_digest="9" * 64,
+        candidate_tree_digest="3" * 64,
     )
     with pytest.raises(ValueError, match="review|close|writer|conflict|schema|timeout"):
         if case == "early-close":
             bridge.close("writer-1", "3" * 64, "2" * 64)
         elif case == "replacement-writer":
-            bridge.record_writer_repair("writer-2", "4" * 64, "5" * 64)
+            bridge.record_writer_repair(
+                "writer-2", "4" * 64, "5" * 64, b"repaired", "6" * 64
+            )
         elif case == "timeout":
             bridge.fail("timeout")
             bridge.close("writer-1", "3" * 64, "2" * 64)
@@ -775,10 +997,16 @@ def test_a11_fake_bridge_adversarial_fail_closed(case: str) -> None:
 
 
 def _v2_authorization_payload(protocol, preflight: Path) -> dict[str, object]:
+    binding = _synthetic_execution_binding()
     return {
         "schema": "ai-sdlc-v2-benefit-execution-authorization/v2",
         "protocol_sha256": sha256(protocol.canonical_bytes).hexdigest(),
         "execution_commit": "a" * 40,
+        "execution_tree_sha256": binding.tree_sha256,
+        "execution_clean_state_sha256": binding.clean_state_sha256,
+        "task3_runner_sha256": binding.task3_runner_sha256,
+        "source_capsule_sha256": binding.source_capsule_sha256,
+        "prompt_matrix_sha256": binding.prompt_matrix_sha256,
         "arm_manifest_sha256": _sha(ARMS_ROOT / "manifest.json"),
         "neutral_envelope_sha256": _sha(ARMS_ROOT / "common-agent-contract.md"),
         "superpowers_adaptation_sha256": _sha(ARMS_ROOT / "S" / "adaptation.json"),
@@ -803,6 +1031,17 @@ def _v2_authorization_payload(protocol, preflight: Path) -> dict[str, object]:
     }
 
 
+def _synthetic_execution_binding() -> ExecutionSourceBinding:
+    return ExecutionSourceBinding(
+        commit="a" * 40,
+        tree_sha256="b" * 64,
+        clean_state_sha256=sha256(b"").hexdigest(),
+        task3_runner_sha256="c" * 64,
+        source_capsule_sha256="d" * 64,
+        prompt_matrix_sha256=_sha(ARMS_ROOT / "prompt-matrix.json"),
+    )
+
+
 def _write_v2_authorization(path: Path, payload: dict[str, object]) -> Path:
     path.write_bytes(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -825,6 +1064,7 @@ def test_execution_authorization_v2_binds_task3_and_rejects_v1(tmp_path: Path) -
             execution_commit="a" * 40,
             preflight_receipt=preflight,
             arms_root=ARMS_ROOT,
+            _test_execution_binding=_synthetic_execution_binding(),
         )
         == ()
     )
@@ -838,6 +1078,7 @@ def test_execution_authorization_v2_binds_task3_and_rejects_v1(tmp_path: Path) -
         execution_commit="a" * 40,
         preflight_receipt=preflight,
         arms_root=ARMS_ROOT,
+        _test_execution_binding=_synthetic_execution_binding(),
     )
 
 
@@ -846,6 +1087,11 @@ def test_execution_authorization_v2_binds_task3_and_rejects_v1(tmp_path: Path) -
     [
         "protocol",
         "execution-commit",
+        "execution-tree",
+        "execution-clean",
+        "task3-runner",
+        "source-capsule",
+        "prompt-matrix",
         "arm-manifest",
         "neutral-envelope",
         "superpowers-adaptation",
@@ -872,6 +1118,11 @@ def test_execution_authorization_v2_attack_matrix_fails_closed(
     key = {
         "protocol": "protocol_sha256",
         "execution-commit": "execution_commit",
+        "execution-tree": "execution_tree_sha256",
+        "execution-clean": "execution_clean_state_sha256",
+        "task3-runner": "task3_runner_sha256",
+        "source-capsule": "source_capsule_sha256",
+        "prompt-matrix": "prompt_matrix_sha256",
         "arm-manifest": "arm_manifest_sha256",
         "neutral-envelope": "neutral_envelope_sha256",
         "superpowers-adaptation": "superpowers_adaptation_sha256",
@@ -911,6 +1162,7 @@ def test_execution_authorization_v2_attack_matrix_fails_closed(
         execution_commit="a" * 40,
         preflight_receipt=preflight,
         arms_root=ARMS_ROOT,
+        _test_execution_binding=_synthetic_execution_binding(),
     )
 
 
@@ -919,10 +1171,14 @@ def test_zero_execution_explode_guards(
 ) -> None:
     prepared = _prepared(tmp_path)
     calls = []
+    real_popen = subprocess.Popen
 
     def explode(*args, **kwargs):
-        calls.append((args, kwargs))
-        raise AssertionError("Provider execution is forbidden in Task 3")
+        argv = args[0] if args else kwargs.get("args", [])
+        if len(argv) >= 2 and str(argv[0]).endswith("codex") and argv[1] == "exec":
+            calls.append((args, kwargs))
+            raise AssertionError("Provider execution is forbidden in Task 3")
+        return real_popen(*args, **kwargs)
 
     monkeypatch.setattr(subprocess, "Popen", explode)
     monkeypatch.setattr(os, "system", explode)

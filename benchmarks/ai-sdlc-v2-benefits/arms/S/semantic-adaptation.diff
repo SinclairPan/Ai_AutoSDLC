@@ -1,0 +1,99 @@
+diff -ruN upstream/skills/systematic-debugging/SKILL.md provider/.agents/skills/systematic-debugging/SKILL.md
+--- upstream/skills/systematic-debugging/SKILL.md	2026-08-12 12:53:21
++++ provider/.agents/skills/systematic-debugging/SKILL.md	2026-08-20 04:56:37
+@@ -174,7 +174,7 @@
+    - Automated test if possible
+    - One-off test script if no framework
+    - MUST have before fixing
+-   - Use the `superpowers:test-driven-development` skill for writing proper failing tests
++   - Use the `$test-driven-development` skill for writing proper failing tests
+ 
+ 2. **Implement Single Fix**
+    - Address the root cause identified
+@@ -186,7 +186,7 @@
+    - Test passes now?
+    - No other tests broken?
+    - Issue actually resolved?
+-   - Use the `superpowers:verification-before-completion` skill before claiming success
++   - Use the `$verification-before-completion` skill before claiming success
+ 
+ 4. **If Fix Doesn't Work**
+    - STOP
+diff -ruN upstream/skills/using-superpowers/SKILL.md provider/.agents/skills/using-superpowers/SKILL.md
+--- upstream/skills/using-superpowers/SKILL.md	2026-08-12 12:53:21
++++ provider/.agents/skills/using-superpowers/SKILL.md	2026-08-20 04:56:48
+@@ -1,63 +1,18 @@
+ ---
+ name: using-superpowers
+-description: Use when starting any conversation - establishes how to find and use skills, requiring skill invocation before ANY response including clarifying questions
++description: Frozen Superpowers 6.3.0 activation adapted for one writer session
+ ---
+ 
+-<SUBAGENT-STOP>
+-If you were dispatched as a subagent to execute a specific task, ignore this skill.
+-</SUBAGENT-STOP>
++# Single-session activation
+ 
+-<EXTREMELY-IMPORTANT>
+-If you think there is even a 1% chance a skill might apply to what you are doing, you ABSOLUTELY MUST invoke the skill.
++Choose the smallest applicable workflow skill before acting:
+ 
+-IF A SKILL APPLIES TO YOUR TASK, YOU DO NOT HAVE A CHOICE. YOU MUST USE IT.
++- use `$systematic-debugging` for a defect or failing behavior;
++- use `$test-driven-development` before implementation changes;
++- use `$verification-before-completion` before claiming completion.
+ 
+-This is not negotiable. You cannot rationalize your way out of this.
+-</EXTREMELY-IMPORTANT>
+-
+-## The Rule
+-
+-**Invoke relevant or requested skills BEFORE any response or action** — including clarifying questions, exploring the codebase, or checking files. If it turns out wrong for the situation, you don't have to use it.
+-
+-**Before entering plan mode:** if you haven't already brainstormed, invoke the brainstorming skill first.
+-
+-Then announce "Using [skill] to [purpose]" and follow the skill exactly. If it has a checklist, create a todo per item.
+-
+-## Skill Priority
+-
+-When multiple skills apply, process skills come first — they set the approach, then implementation skills (frontend-design, etc.) carry it out. Brainstorming and systematic-debugging are Superpowers' most common process skills, but the rule holds for any of them.
+-
+-- "Let's build X" → superpowers:brainstorming first, then implementation skills.
+-- "Fix this bug" → superpowers:systematic-debugging first, then domain skills.
+-
+-## Red Flags
+-
+-These thoughts mean STOP—you're rationalizing:
+-
+-| Thought | Reality |
+-|---------|---------|
+-| "This is just a simple question" | Questions are tasks. Check for skills. |
+-| "I need more context first" | Skill check comes BEFORE clarifying questions. |
+-| "Let me explore the codebase first" | Skills tell you HOW to explore. Check first. |
+-| "I can check git/files quickly" | Files lack conversation context. Check for skills. |
+-| "Let me gather information first" | Skills tell you HOW to gather information. |
+-| "This doesn't need a formal skill" | If a skill exists, use it. |
+-| "I remember this skill" | Skills evolve. Read current version. |
+-| "This doesn't count as a task" | Action = task. Check for skills. |
+-| "The skill is overkill" | Simple things become complex. Use it. |
+-| "I'll just do this one thing first" | Check BEFORE doing anything. |
+-| "This feels productive" | Undisciplined action wastes time. Skills prevent this. |
+-| "I know what that means" | Knowing the concept ≠ using the skill. Invoke it. |
+-
+-## Platform Adaptation
+-
+-If your harness appears here, read its reference file for special instructions:
+-
+-- Codex: `references/codex-tools.md`
+-- Pi: `references/pi-tools.md`
+-- Antigravity: `references/antigravity-tools.md`
+-- Hermes Agent: `references/hermes-tools.md`
+-
+-## User Instructions
+-
+-User instructions (CLAUDE.md, AGENTS.md, GEMINI.md, etc, direct requests) take precedence over skills, which in turn override default behavior. Only skip skill workflows or instructions when your human partner has explicitly told you to.
++Keep all planning, implementation, review response, and verification in the
++current writer session. Do not create another execution role. For the frontend
++fixture, submit the frozen proposal digest to the common approval service before
++changing source. The public task contract and evidence requirements remain
++authoritative.

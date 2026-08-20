@@ -11,7 +11,7 @@ import subprocess
 import sys
 import tempfile
 import threading
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from hashlib import sha256
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
@@ -260,12 +260,16 @@ class ProviderIsolationProfile:
     raw_results_root: Path
     protected_roots: tuple[Path, ...]
     write_protected_roots: tuple[Path, ...]
+    missing_write_protected_paths: tuple[Path, ...]
     other_run_roots: tuple[Path, ...]
     argv: tuple[str, ...]
     environment: Mapping[str, str]
     sandbox_text: str
     issues: tuple[BenchmarkIssue, ...]
     executable: bool
+    preserve_environment: bool = False
+    environment_sha256: str = ""
+    launch_guard: Callable[[], None] | None = None
 
 
 @dataclass(frozen=True)
@@ -586,6 +590,124 @@ document.querySelector("#result").textContent=JSON.stringify({scenario:scenario.
 </script></body></html>"""
 
 
+@dataclass(frozen=True)
+class FrontendBrowserLaunch:
+    executable: Path
+    safety_arguments: tuple[str, ...]
+    source: str
+
+
+def _closed_browser_executable(path: Path, expected_sha256: str | None) -> Path:
+    absolute = Path(os.path.abspath(path))
+    before = absolute.lstat()
+    if (
+        stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or not before.st_mode & stat.S_IXUSR
+        or absolute.resolve(strict=True) != absolute
+    ):
+        raise RuntimeError("frozen browser executable metadata is invalid")
+    descriptor = os.open(
+        absolute,
+        os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        opened = os.fstat(descriptor)
+        payload = bytearray()
+        while chunk := os.read(descriptor, 1024 * 1024):
+            payload.extend(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+
+    def identity(item: os.stat_result) -> tuple[int, ...]:
+        return (
+            item.st_dev,
+            item.st_ino,
+            item.st_mode,
+            item.st_nlink,
+            item.st_size,
+            item.st_ctime_ns,
+            item.st_mtime_ns,
+        )
+
+    if identity(before) != identity(opened) or identity(opened) != identity(after):
+        raise RuntimeError("frozen browser executable changed during inspection")
+    if expected_sha256 is not None and (
+        not re.fullmatch(r"[a-f0-9]{64}", expected_sha256)
+        or sha256(payload).hexdigest() != expected_sha256
+    ):
+        raise RuntimeError("frozen browser executable digest is invalid")
+    return absolute
+
+
+def build_frontend_browser_launch(
+    environment: Mapping[str, str] | None = None,
+) -> FrontendBrowserLaunch:
+    """Resolve one closed browser binary and the mandatory non-keychain flags."""
+    values = os.environ if environment is None else environment
+    headless = values.get("AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL")
+    if headless:
+        digest = values.get("AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL_SHA256")
+        if digest is None:
+            raise RuntimeError("frozen Playwright headless shell digest is missing")
+        executable = _closed_browser_executable(Path(headless), digest)
+        source = "playwright-chromium-headless-shell"
+        system_chrome = False
+    else:
+        digest = values.get("AI_SDLC_BENCHMARK_BROWSER_SHA256")
+        if digest is None:
+            raise RuntimeError("frozen system browser digest is missing")
+        executable = _closed_browser_executable(
+            Path(
+                values.get(
+                    "AI_SDLC_BENCHMARK_BROWSER",
+                    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+                )
+            ),
+            digest,
+        )
+        source = "system-google-chrome"
+        system_chrome = "Google Chrome.app/Contents/MacOS/Google Chrome" in str(
+            executable
+        )
+    arguments = [
+        "--disable-gpu",
+        "--disable-background-networking",
+        "--disable-component-update",
+        "--disable-default-apps",
+        "--disable-extensions",
+        "--disable-sync",
+        "--no-first-run",
+        "--no-default-browser-check",
+        "--no-proxy-server",
+        "--proxy-bypass-list=*",
+        "--use-mock-keychain",
+    ]
+    if system_chrome:
+        arguments.append("--password-store=basic")
+    return FrontendBrowserLaunch(executable, tuple(arguments), source)
+
+
+def build_frontend_browser_command(
+    *,
+    url: str,
+    user_data_dir: Path,
+    environment: Mapping[str, str] | None = None,
+) -> list[str]:
+    """Build the sole direct browser argv used by the benchmark harness."""
+    launch = build_frontend_browser_launch(environment)
+    return [
+        str(launch.executable),
+        "--headless",
+        f"--user-data-dir={user_data_dir}",
+        *launch.safety_arguments,
+        "--virtual-time-budget=3000",
+        "--dump-dom",
+        url,
+    ]
+
+
 def run_frontend_browser_e2e(
     task_root: Path, browser_program: Mapping[str, object]
 ) -> Mapping[str, object]:
@@ -595,14 +717,17 @@ def run_frontend_browser_e2e(
     release_state = root / "src" / "release-state.mjs"
     if not release_state.is_file():
         raise ValueError("frontend release-state module is missing")
-    browser = Path(
-        os.environ.get(
-            "AI_SDLC_BENCHMARK_BROWSER",
-            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    launch_environment = dict(os.environ)
+    if "AI_SDLC_BENCHMARK_PLAYWRIGHT_HEADLESS_SHELL" not in launch_environment:
+        environment_lock = json.loads(
+            (root / "environment-lock.json").read_text(encoding="utf-8")
         )
-    )
-    if not browser.is_file():
-        raise RuntimeError("frozen browser executable is unavailable")
+        launch_environment.setdefault(
+            "AI_SDLC_BENCHMARK_BROWSER_SHA256",
+            str(environment_lock["browser"]["executable_identity_sha256"]),
+        )
+    launch = build_frontend_browser_launch(launch_environment)
+    browser = launch.executable
     evaluator_workspace = tempfile.TemporaryDirectory(
         prefix="ai-sdlc-frontend-evaluator-"
     )
@@ -644,9 +769,9 @@ def run_frontend_browser_e2e(
             module = Path(playwright_module).resolve(strict=True)
             adapter = r"""
 import { pathToFileURL } from "node:url";
-const [modulePath,browserPath,baseUrl,rawScenarios]=process.argv.slice(1);
+const [modulePath,browserPath,baseUrl,rawScenarios,rawSafetyArgs]=process.argv.slice(1);
 const { chromium }=await import(pathToFileURL(modulePath).href);
-const browser=await chromium.launch({executablePath:browserPath,headless:true});
+const browser=await chromium.launch({executablePath:browserPath,headless:true,args:JSON.parse(rawSafetyArgs)});
 const outputs=[];
 try {
   for (const scenario of JSON.parse(rawScenarios)) {
@@ -674,6 +799,7 @@ console.log(JSON.stringify(outputs));
                     str(browser),
                     f"http://127.0.0.1:{server.server_port}",
                     json.dumps(scenario_ids),
+                    json.dumps(launch.safety_arguments),
                 ],
                 capture_output=True,
                 text=True,
@@ -712,36 +838,37 @@ console.log(JSON.stringify(outputs));
                     f"http://127.0.0.1:{server.server_port}/tests/browser-interpreter.html"
                     f"?scenario={quote(scenario)}"
                 )
-                completed = subprocess.run(
-                    [
-                        str(browser),
-                        "--headless",
-                        f"--user-data-dir={profile}",
-                        "--disable-gpu",
-                        "--disable-background-networking",
-                        "--disable-component-update",
-                        "--disable-default-apps",
-                        "--disable-extensions",
-                        "--disable-sync",
-                        "--no-first-run",
-                        "--no-default-browser-check",
-                        "--no-proxy-server",
-                        "--proxy-bypass-list=*",
-                        "--virtual-time-budget=3000",
-                        "--dump-dom",
-                        url,
-                    ],
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                )
+                try:
+                    completed = subprocess.run(
+                        build_frontend_browser_command(
+                            url=url,
+                            user_data_dir=Path(profile),
+                            environment=launch_environment,
+                        ),
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                        check=False,
+                    )
+                    browser_stdout = completed.stdout
+                    browser_returncode = completed.returncode
+                except subprocess.TimeoutExpired as error:
+                    # Some Chrome builds finish --dump-dom but keep a background
+                    # network thread alive.  Accept only a complete, parseable
+                    # result marker; an incomplete timeout remains fail-closed.
+                    raw_stdout = error.stdout or b""
+                    browser_stdout = (
+                        raw_stdout.decode(errors="replace")
+                        if isinstance(raw_stdout, bytes)
+                        else raw_stdout
+                    )
+                    browser_returncode = 0
                 match = re.search(
                     r'<pre id="result">([^<]+)</pre>',
-                    completed.stdout,
+                    browser_stdout,
                     flags=re.DOTALL,
                 )
-                if completed.returncode != 0 or match is None:
+                if browser_returncode != 0 or match is None:
                     raise RuntimeError("real-browser acceptance process failed")
                 payload = json.loads(
                     match.group(1)
@@ -1634,7 +1761,6 @@ class FrozenIntentApprovalService:
         self._expected_proposals: dict[tuple[str, str], str] = {}
         self._expired_runs: set[str] = set()
         self._event_log = event_log
-
 
     @classmethod
     def from_sealed_root(
@@ -2755,9 +2881,7 @@ def _open_pinned_sealed_authority(root: Path) -> _PinnedSealedAuthority:
             ):
                 raise ValueError("sealed authority member metadata is invalid")
             member_flags = (
-                os.O_RDONLY
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0)
+                os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
             )
             member_fd = os.open(name, member_flags, dir_fd=dir_fd)
             try:
@@ -2772,11 +2896,9 @@ def _open_pinned_sealed_authority(root: Path) -> _PinnedSealedAuthority:
                     chunks.append(chunk)
                 after = os.fstat(member_fd)
                 path_after = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-                if (
-                    _sealed_stat_identity(after) != _sealed_stat_identity(opened)
-                    or _sealed_stat_identity(path_after)
-                    != _sealed_stat_identity(opened)
-                ):
+                if _sealed_stat_identity(after) != _sealed_stat_identity(
+                    opened
+                ) or _sealed_stat_identity(path_after) != _sealed_stat_identity(opened):
                     raise ValueError("sealed authority member changed during read")
                 identities[name] = _sealed_stat_identity(opened)
                 payloads[name] = b"".join(chunks)
@@ -3058,7 +3180,10 @@ def validate_sealed_commitments(
             raise ValueError("protocol authority is invalid")
         for fixture_id in FIXTURE_IDS:
             payload = json.loads(sealed_files[f"{fixture_id}.sealed.json"])
-            if not isinstance(payload, Mapping) or payload.get("fixture_id") != fixture_id:
+            if (
+                not isinstance(payload, Mapping)
+                or payload.get("fixture_id") != fixture_id
+            ):
                 raise ValueError("sealed payload fixture binding is invalid")
     except (
         EvaluatorNoGoError,
@@ -3399,6 +3524,9 @@ def build_provider_isolation_profile(
     raw_results_root: Path,
     protected_roots: Sequence[Path] = (),
     write_protected_roots: Sequence[Path] = (),
+    missing_write_protected_paths: Sequence[Path] = (),
+    preserve_environment: bool = False,
+    launch_guard: Callable[[], None] | None = None,
 ) -> ProviderIsolationProfile:
     """Create a fail-closed macOS Provider profile plus link/env/add-dir preflight."""
     run = run_root.resolve(strict=True)
@@ -3415,11 +3543,23 @@ def build_provider_isolation_profile(
         _resolve_extra_protected_root(Path(path), index=index, issues=issues)
         for index, path in enumerate(write_protected_roots)
     )
+    missing_write_protected: list[Path] = []
+    for index, path in enumerate(missing_write_protected_paths):
+        candidate = Path(os.path.abspath(path))
+        try:
+            candidate.relative_to(run.parent)
+            parent = candidate.parent.resolve(strict=True)
+            if candidate.exists() or parent != Path(os.path.abspath(candidate.parent)):
+                raise OSError("missing write path is not a canonical absent path")
+        except (OSError, ValueError):
+            issues.append(
+                BenchmarkIssue("isolation.missing-write-root", f"missing-root-{index}")
+            )
+        missing_write_protected.append(candidate)
     for index, root in enumerate(write_protected):
         try:
             if not (
-                stat.S_ISDIR(root.lstat().st_mode)
-                or stat.S_ISREG(root.lstat().st_mode)
+                stat.S_ISDIR(root.lstat().st_mode) or stat.S_ISREG(root.lstat().st_mode)
             ):
                 raise OSError("write protection root is not a directory")
         except OSError:
@@ -3476,8 +3616,26 @@ def build_provider_isolation_profile(
         if (rule := _deny_write_rule_for_root(path, index=index, issues=issues))
         is not None
     )
-    sandbox_text = f"(version 1)\n(allow default)\n{deny_rules}\n{write_deny_rules}\n"
+    missing_write_deny_rules = "\n".join(
+        (
+            f'  (deny file-write* (literal "{_seatbelt_literal(path)}"))\n'
+            f'  (deny file-write* (subpath "{_seatbelt_literal(path)}"))'
+        )
+        for path in missing_write_protected
+    )
+    sandbox_text = (
+        f"(version 1)\n(allow default)\n{deny_rules}\n{write_deny_rules}\n"
+        f"{missing_write_deny_rules}\n"
+    )
     executable = sys.platform == "darwin" and not issues
+    final_environment = (
+        dict(environment)
+        if preserve_environment
+        else {"PATH": environment.get("PATH", "")}
+    )
+    environment_sha256 = sha256(
+        json.dumps(final_environment, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
     return ProviderIsolationProfile(
         run_root=run,
         sealed_root=sealed,
@@ -3485,12 +3643,16 @@ def build_provider_isolation_profile(
         raw_results_root=raw_results,
         protected_roots=extra_protected,
         write_protected_roots=write_protected,
+        missing_write_protected_paths=tuple(missing_write_protected),
         other_run_roots=other,
         argv=tuple(argv),
-        environment={"PATH": environment.get("PATH", "")},
+        environment=final_environment,
         sandbox_text=sandbox_text,
         issues=tuple(issues),
         executable=executable,
+        preserve_environment=preserve_environment,
+        environment_sha256=environment_sha256,
+        launch_guard=launch_guard,
     )
 
 
@@ -3504,6 +3666,15 @@ def run_provider_isolated(
     requested_environment = (
         environment if environment is not None else profile.environment
     )
+    if dict(requested_environment) != dict(profile.environment):
+        return subprocess.CompletedProcess(list(argv), 126, "", "ISOLATION_REFUSED\n")
+    if profile.launch_guard is not None:
+        try:
+            profile.launch_guard()
+        except (OSError, ValueError):
+            return subprocess.CompletedProcess(
+                list(argv), 126, "", "ISOLATION_REFUSED\n"
+            )
     refreshed = build_provider_isolation_profile(
         run_root=profile.run_root,
         sealed_root=profile.sealed_root,
@@ -3511,11 +3682,18 @@ def run_provider_isolated(
         raw_results_root=profile.raw_results_root,
         protected_roots=profile.protected_roots,
         write_protected_roots=profile.write_protected_roots,
+        missing_write_protected_paths=profile.missing_write_protected_paths,
         other_run_roots=profile.other_run_roots,
         argv=argv,
         environment=requested_environment,
+        preserve_environment=profile.preserve_environment,
+        launch_guard=profile.launch_guard,
     )
-    if refreshed.issues:
+    if (
+        refreshed.issues
+        or refreshed.environment_sha256 != profile.environment_sha256
+        or refreshed.sandbox_text != profile.sandbox_text
+    ):
         return subprocess.CompletedProcess(list(argv), 126, "", "ISOLATION_REFUSED\n")
     return subprocess.run(
         ["/usr/bin/sandbox-exec", "-p", refreshed.sandbox_text, *argv],

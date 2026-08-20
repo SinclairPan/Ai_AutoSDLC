@@ -360,6 +360,7 @@ def validate_execution_authorization(
         schema = raw.get("schema")
         if schema == "ai-sdlc-v2-benefit-execution-authorization/v2":
             from ai_sdlc.benefit_benchmark_arms import (
+                closed_git_environment,
                 validate_execution_authorization_v2,
             )
 
@@ -367,12 +368,7 @@ def validate_execution_authorization(
             execution_commit = subprocess.run(
                 ["git", "rev-parse", "HEAD"],
                 cwd=_BENCHMARK_ROOT.parents[1],
-                env={
-                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
-                    "LC_ALL": "C",
-                    "GIT_CONFIG_NOSYSTEM": "1",
-                    "GIT_TERMINAL_PROMPT": "0",
-                },
+                env=closed_git_environment(),
                 check=True,
                 capture_output=True,
                 text=True,
@@ -387,58 +383,11 @@ def validate_execution_authorization(
             if issues:
                 raise ValueError("execution authorization v2 is invalid")
             return []
-        _reject_unknown(raw, _EXECUTION_AUTHORIZATION_KEYS, "execution authorization")
-        _require_keys(raw, _EXECUTION_AUTHORIZATION_KEYS, "execution authorization")
-        if raw["schema"] != "ai-sdlc-v2-benefit-execution-authorization/v1":
-            raise ValueError("execution authorization schema is invalid")
-        if raw["protocol_sha256"] != canonical_protocol_digest(protocol):
-            raise ValueError("execution authorization protocol binding is invalid")
-        identity = raw["execution_identity"]
-        budget = raw["attempt_budget"]
-        scope = raw["scope"]
-        if not isinstance(identity, dict):
-            raise ValueError("execution authorization identity is invalid")
-        _reject_unknown(identity, _LOCK_KEYS, "authorization execution identity")
-        _require_keys(identity, _LOCK_KEYS, "authorization execution identity")
-        if identity != {
-            key: getattr(protocol.execution_lock, key) for key in _LOCK_KEYS
-        }:
-            raise ValueError("execution authorization identity binding is invalid")
-        if not isinstance(budget, dict):
-            raise ValueError("execution authorization budget is invalid")
-        _reject_unknown(budget, _BUDGET_KEYS, "authorization attempt budget")
-        _require_keys(budget, _BUDGET_KEYS, "authorization attempt budget")
-        if budget != {
-            key: getattr(protocol.attempt_budget, key) for key in _BUDGET_KEYS
-        }:
-            raise ValueError("execution authorization budget binding is invalid")
-        if not isinstance(scope, dict):
-            raise ValueError("execution authorization scope is invalid")
-        _reject_unknown(
-            scope, _EXECUTION_AUTHORIZATION_SCOPE_KEYS, "authorization scope"
-        )
-        _require_keys(
-            scope, _EXECUTION_AUTHORIZATION_SCOPE_KEYS, "authorization scope"
-        )
-        if (
-            # v1 remains available only to deterministic unit tests of the mutation
-            # state machine.  The old formal matrix mode is permanently rejected.
-            scope["mode"] != "synthetic-unit-mutation"
-            or scope["run_ids"] != [run.run_id for run in protocol.run_matrix]
-            or scope["operations"] != list(_EXECUTION_AUTHORIZATION_OPERATIONS)
-        ):
-            raise ValueError("execution authorization scope binding is invalid")
-        valid_from = _parse_rfc3339(raw["valid_from"])
-        expires_at = _parse_rfc3339(raw["expires_at"])
-        now = datetime.now(UTC)
-        if (
-            valid_from is None
-            or expires_at is None
-            or valid_from >= expires_at
-            or now < valid_from
-            or now >= expires_at
-        ):
-            raise ValueError("execution authorization is expired or not yet valid")
+        # Schema v1 was a deterministic-test bridge.  It is deliberately rejected at
+        # the production boundary: serialized files must never be able to enable the
+        # mutation state machine.  Unit tests authorize mutations through a private,
+        # process-local monkeypatch instead.
+        raise ValueError("execution authorization schema is invalid")
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return [
             BenchmarkIssue(
@@ -487,10 +436,9 @@ def _load_execution_authorization(path: Path) -> dict[str, object]:
             chunks.append(chunk)
         after = os.fstat(fd)
         after_path = os.lstat(absolute)
-        if (
-            _stat_identity(after) != _stat_identity(opened)
-            or _stat_identity(after_path) != _stat_identity(opened)
-        ):
+        if _stat_identity(after) != _stat_identity(opened) or _stat_identity(
+            after_path
+        ) != _stat_identity(opened):
             raise ValueError("execution authorization file changed during read")
     finally:
         os.close(fd)
@@ -553,9 +501,7 @@ def start_run(
             "run_id": run_id,
             "run_started_at": now,
             "current_phase": "setup",
-            "phase_events": [
-                {"phase": "setup", "started_at": now, "ended_at": None}
-            ],
+            "phase_events": [{"phase": "setup", "started_at": now, "ended_at": None}],
             "sealed_evidence": None,
         }
         _validate_run_registry(
@@ -605,7 +551,9 @@ def transition_run_phase(
             not run_attempts
             or any(attempt.get("terminal") is not True for attempt in run_attempts)
         ):
-            raise ValueError("provider phase can close only after all attempts terminate")
+            raise ValueError(
+                "provider phase can close only after all attempts terminate"
+            )
         events = run.get("phase_events")
         if not isinstance(events, list) or not events:
             raise ValueError("run phase state is invalid")
@@ -665,9 +613,7 @@ def reserve_provider_attempt(
         new_attempt = _new_attempt(attempt_id, request, ledger["attempts"])
         _require_public_ledger_value(new_attempt, "Provider reservation")
         ledger["attempts"].append(new_attempt)
-        _validate_attempt_ledger_invariants(
-            ledger["attempts"], protocol.attempt_budget
-        )
+        _validate_attempt_ledger_invariants(ledger["attempts"], protocol.attempt_budget)
         _validate_run_registry(
             runs,
             ledger["attempts"],
@@ -756,8 +702,7 @@ def start_service_transaction(
             raise ValueError("service transaction type is not allowed by contract")
         service_events = attempt.get("service_events")
         if not isinstance(service_events, list) or any(
-            isinstance(item, Mapping)
-            and item.get("transaction_id") == transaction_id
+            isinstance(item, Mapping) and item.get("transaction_id") == transaction_id
             for item in service_events
         ):
             raise ValueError("service transaction identity is duplicated")
@@ -776,9 +721,7 @@ def start_service_transaction(
         _validate_service_event(event)
         _require_public_ledger_value(event, "service transaction")
         service_events.append(event)
-        _validate_attempt_ledger_invariants(
-            ledger["attempts"], protocol.attempt_budget
-        )
+        _validate_attempt_ledger_invariants(ledger["attempts"], protocol.attempt_budget)
         _validate_run_registry(
             ledger["runs"],
             ledger["attempts"],
@@ -835,12 +778,16 @@ def record_service_transaction(
         if event_type not in allowed:
             raise ValueError("service transaction type is not allowed by contract")
         service_events = attempt.get("service_events")
-        matches = [
-            (index, event)
-            for index, event in enumerate(service_events)
-            if isinstance(event, Mapping)
-            and event.get("transaction_id") == transaction_id
-        ] if isinstance(service_events, list) else []
+        matches = (
+            [
+                (index, event)
+                for index, event in enumerate(service_events)
+                if isinstance(event, Mapping)
+                and event.get("transaction_id") == transaction_id
+            ]
+            if isinstance(service_events, list)
+            else []
+        )
         if len(matches) != 1:
             raise ValueError("service transaction requires one prior start")
         event_index, started_event = matches[0]
@@ -891,9 +838,7 @@ def record_service_transaction(
         _validate_service_event(event)
         _require_public_ledger_value(event, "service transaction")
         service_events[event_index] = event
-        _validate_attempt_ledger_invariants(
-            ledger["attempts"], protocol.attempt_budget
-        )
+        _validate_attempt_ledger_invariants(ledger["attempts"], protocol.attempt_budget)
         _validate_run_registry(
             ledger["runs"],
             ledger["attempts"],
@@ -913,9 +858,7 @@ def seal_run_evidence(
 ) -> None:
     """Seal one immutable run from contract, ledger clocks and actual files."""
     protocol_digest = _require_executable_protocol(protocol)
-    _require_execution_authorization(
-        protocol, authorization_path, "seal_run_evidence"
-    )
+    _require_execution_authorization(protocol, authorization_path, "seal_run_evidence")
     contract = _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
         ledger = _load_ledger(
@@ -1254,9 +1197,7 @@ def _validate_receipt_ledger_binding(
         else None
     )
     authoritative_evidence = (
-        run_record.get("sealed_evidence")
-        if isinstance(run_record, Mapping)
-        else None
+        run_record.get("sealed_evidence") if isinstance(run_record, Mapping) else None
     )
     if not isinstance(authoritative_evidence, Mapping):
         issues.append(
@@ -1307,9 +1248,7 @@ def _validate_receipt_ledger_binding(
                 "sealed evidence does not match the contract-bound workspace",
             )
         )
-    _validate_receipt_run_evidence_projection(
-        receipt, authoritative_evidence, issues
-    )
+    _validate_receipt_run_evidence_projection(receipt, authoritative_evidence, issues)
     expected = [
         attempt
         for attempt in ledger["attempts"]
@@ -1408,13 +1347,19 @@ def _validate_receipt_ledger_binding(
         for attempt in writer_lineage
         if attempt.get("status") != "technical_failure"
     ]
-    if not writers and writer_lineage and all(
-        attempt.get("status") == "technical_failure" for attempt in writer_lineage
+    if (
+        not writers
+        and writer_lineage
+        and all(
+            attempt.get("status") == "technical_failure" for attempt in writer_lineage
+        )
     ):
         writers = [writer_lineage[-1]]
     if len(writers) != 1:
         issues.append(
-            BenchmarkIssue("receipt.ledger", "run must bind exactly one effective writer")
+            BenchmarkIssue(
+                "receipt.ledger", "run must bind exactly one effective writer"
+            )
         )
         return
     writer = writers[0]
@@ -1429,12 +1374,11 @@ def _validate_receipt_ledger_binding(
     if receipt.get("status") != expected_receipt_status:
         issues.append(
             BenchmarkIssue(
-                "receipt.ledger", "receipt status must be derived from the terminal writer"
+                "receipt.ledger",
+                "receipt status must be derived from the terminal writer",
             )
         )
-    expected_classification = _derive_failure_classification(
-        receipt, expected, writer
-    )
+    expected_classification = _derive_failure_classification(receipt, expected, writer)
     if receipt.get("failure_classification") != expected_classification:
         issues.append(
             BenchmarkIssue(
@@ -1452,16 +1396,21 @@ def _validate_receipt_ledger_binding(
         if not _is_empty_loop_evidence(close, "not_applicable") or callbacks != []:
             issues.append(
                 BenchmarkIssue(
-                    "receipt.loop", "non-Loop arms cannot publish Close or expert evidence"
+                    "receipt.loop",
+                    "non-Loop arms cannot publish Close or expert evidence",
                 )
             )
         return
     if arm == "A10" and callbacks != []:
-        issues.append(BenchmarkIssue("receipt.loop", "A10 cannot publish expert evidence"))
+        issues.append(
+            BenchmarkIssue("receipt.loop", "A10 cannot publish expert evidence")
+        )
     expected_loop_state = "closed" if status == "completed" else "open"
     if close.get("state") != expected_loop_state:
         issues.append(
-            BenchmarkIssue("receipt.close", "Loop state does not match the run terminal state")
+            BenchmarkIssue(
+                "receipt.close", "Loop state does not match the run terminal state"
+            )
         )
     loop_type, loop_id = _expected_loop_identity(receipt)
     if status == "completed" and (
@@ -1483,7 +1432,9 @@ def _validate_receipt_ledger_binding(
         )
     if status != "completed" and not _is_empty_loop_evidence(close, "open"):
         issues.append(
-            BenchmarkIssue("receipt.close", "an unclosed Loop cannot carry Close evidence")
+            BenchmarkIssue(
+                "receipt.close", "an unclosed Loop cannot carry Close evidence"
+            )
         )
     if arm == "A11":
         _validate_a11_attempt_closure(receipt, expected, writer, issues)
@@ -1541,18 +1492,20 @@ def _derive_failure_classification(
         for attempt in attempts
     ):
         return "expert_failure"
-    if writer.get("status") == "technical_failure" and writer.get(
-        "content_produced"
-    ) is False:
+    if (
+        writer.get("status") == "technical_failure"
+        and writer.get("content_produced") is False
+    ):
         return "provider_pre_output_failure"
     if writer.get("status") == "failed":
         return "writer_failure"
     measurements = _mapping(receipt.get("measurements"))
     if measurements.get("evidence_completeness") != 1:
         return "evidence_failure"
-    if _mapping(receipt.get("external_evaluator")).get(
-        "external_verified_delivery"
-    ) is False:
+    if (
+        _mapping(receipt.get("external_evaluator")).get("external_verified_delivery")
+        is False
+    ):
         return "evaluation_failure"
     return "writer_failure"
 
@@ -1578,9 +1531,7 @@ def _validate_a11_attempt_closure(
         if item.get("effective_kind") in {"primary_expert", "cross_risk_expert"}
     }
     callback_ids = [
-        item.get("expert_attempt_id")
-        for item in callbacks
-        if isinstance(item, Mapping)
+        item.get("expert_attempt_id") for item in callbacks if isinstance(item, Mapping)
     ]
     issue_code = (
         "receipt.a11.conflict"
@@ -1656,8 +1607,7 @@ def _validate_a11_attempt_closure(
             or (expected_exit_success and review_exit != 0)
             or (not expected_exit_success and review_exit == 0)
             or any(
-                not _is_non_placeholder_digest(callback.get(key))
-                for key in proof_keys
+                not _is_non_placeholder_digest(callback.get(key)) for key in proof_keys
             )
             or callback.get("parent_tree_before_sha256")
             != callback.get("parent_tree_after_sha256")
@@ -1683,7 +1633,9 @@ def _validate_a11_attempt_closure(
             or callback.get("finding_digest") != finding
         ):
             issues.append(
-                BenchmarkIssue(issue_code, "callback Finding evidence is not reproducible")
+                BenchmarkIssue(
+                    issue_code, "callback Finding evidence is not reproducible"
+                )
             )
         matching_repairs = [
             event for event in repairs if event.get("finding_digest") == finding
@@ -1742,7 +1694,8 @@ def _validate_a11_attempt_closure(
             if (
                 not isinstance(rereview_provider, Mapping)
                 or published.get("status") != rereview.get("status")
-                or published.get("child_session") != rereview_provider.get("child_session")
+                or published.get("child_session")
+                != rereview_provider.get("child_session")
                 or published.get("token_usage") != rereview_provider.get("token_usage")
                 or published.get("raw_output_sha256")
                 != rereview_provider.get("raw_provider_output_sha256")
@@ -1875,10 +1828,9 @@ def _validate_command_evidence(
                 )
             )
         raw_digest = item.get("raw_provider_output_sha256")
-        if (
-            raw_digest != attempt.get("raw_provider_output_sha256")
-            or not _is_non_placeholder_digest(raw_digest)
-        ):
+        if raw_digest != attempt.get(
+            "raw_provider_output_sha256"
+        ) or not _is_non_placeholder_digest(raw_digest):
             issues.append(
                 BenchmarkIssue(
                     "receipt.command",
@@ -1941,10 +1893,10 @@ def _is_provider_command(
         "expert_rereview",
     }:
         return False
-    expected_sandbox = (
-        "workspace-write" if effective_kind == "writer" else "read-only"
+    expected_sandbox = "workspace-write" if effective_kind == "writer" else "read-only"
+    expected_config = (
+        f'model_reasoning_effort="{protocol.execution_lock.reasoning_effort}"'
     )
-    expected_config = f'model_reasoning_effort="{protocol.execution_lock.reasoning_effort}"'
     return value == [
         "codex",
         "exec",
@@ -2001,7 +1953,11 @@ def _parse_closed_options(
         if index + 1 >= len(value):
             return None
         option_value = value[index + 1]
-        if not isinstance(option_value, str) or not option_value or option_value.startswith("--"):
+        if (
+            not isinstance(option_value, str)
+            or not option_value
+            or option_value.startswith("--")
+        ):
             return None
         parsed[option] = option_value
         index += 2
@@ -2109,11 +2065,7 @@ def _validate_receipt_verified_delivery_timing(
         or last_terminal is None
         or completed_at is None
         or not (
-            started_at
-            <= first_reservation
-            <= last_terminal
-            <= completed_at
-            == ended_at
+            started_at <= first_reservation <= last_terminal <= completed_at == ended_at
         )
     ):
         issues.append(
@@ -2124,9 +2076,7 @@ def _validate_receipt_verified_delivery_timing(
         )
         return
     expected = (completed_at - first_reservation).total_seconds()
-    actual = _mapping(receipt.get("timings")).get(
-        "verified_delivery_wall_seconds"
-    )
+    actual = _mapping(receipt.get("timings")).get("verified_delivery_wall_seconds")
     if not _finite_number(actual) or not math.isclose(
         actual, expected, rel_tol=0, abs_tol=1e-6
     ):
@@ -2138,19 +2088,16 @@ def _validate_receipt_verified_delivery_timing(
         )
 
 
-def _validate_summary_metrics(
-    value: object, issues: list[BenchmarkIssue]
-) -> None:
+def _validate_summary_metrics(value: object, issues: list[BenchmarkIssue]) -> None:
     metrics = _mapping(value)
     delivery = _mapping(metrics.get("external_verified_delivery_count"))
     delivery_arms = _mapping(delivery.get("arms"))
     delivery_deltas = _mapping(delivery.get("signed_deltas"))
-    if (
-        delivery_deltas.get("S_minus_P")
-        != delivery_arms.get("S") - delivery_arms.get("P")
-        or delivery_deltas.get("A11_minus_P")
-        != delivery_arms.get("A11") - delivery_arms.get("P")
-    ):
+    if delivery_deltas.get("S_minus_P") != delivery_arms.get("S") - delivery_arms.get(
+        "P"
+    ) or delivery_deltas.get("A11_minus_P") != delivery_arms.get(
+        "A11"
+    ) - delivery_arms.get("P"):
         issues.append(
             BenchmarkIssue(
                 "summary.metric-delta", "delivery signed deltas are not reproducible"
@@ -2288,9 +2235,7 @@ def _validate_contract_run(value: object) -> None:
         raise ValueError("evidence contract automated event types are invalid")
 
 
-def _contract_run(
-    contract: Mapping[str, object], run_id: str
-) -> Mapping[str, object]:
+def _contract_run(contract: Mapping[str, object], run_id: str) -> Mapping[str, object]:
     runs = contract.get("runs")
     if not isinstance(runs, list):
         raise ValueError("evidence contract run matrix is invalid")
@@ -2602,9 +2547,7 @@ def _build_authoritative_file_evidence(
         changed_files,
         changed_file_evidence,
         changed_scope_tree_digests,
-    ) = _derive_changed_files(
-        workspace_root, rule["changed_files_scope"]
-    )
+    ) = _derive_changed_files(workspace_root, rule["changed_files_scope"])
     return (
         artifacts,
         changed_files,
@@ -2666,13 +2609,18 @@ def _validate_run_registry(
     if not attempt_run_ids <= set(value):
         raise ValueError("attempt ledger run registry does not close over attempts")
     for run_id, run in value.items():
-        if run_id not in registry or not isinstance(run, Mapping) or set(run) != {
-            "run_id",
-            "run_started_at",
-            "current_phase",
-            "phase_events",
-            "sealed_evidence",
-        }:
+        if (
+            run_id not in registry
+            or not isinstance(run, Mapping)
+            or set(run)
+            != {
+                "run_id",
+                "run_started_at",
+                "current_phase",
+                "phase_events",
+                "sealed_evidence",
+            }
+        ):
             raise ValueError("attempt ledger run record is invalid")
         started = _parse_rfc3339(run.get("run_started_at"))
         if run.get("run_id") != run_id or started is None or started > now:
@@ -2774,18 +2722,14 @@ def _validate_run_registry(
                             service_end is None
                             or service_end > now
                             or service_end < service_start
-                            or (
-                                provider_end is not None
-                                and service_end > provider_end
-                            )
+                            or (provider_end is not None and service_end > provider_end)
                         )
                     )
                 ):
                     raise ValueError("attempt ledger service event time is invalid")
         if sealed is not None:
-            if (
-                run.get("current_phase") != "evaluation"
-                or len(phase_events) != len(_RUN_PHASES)
+            if run.get("current_phase") != "evaluation" or len(phase_events) != len(
+                _RUN_PHASES
             ):
                 raise ValueError("sealed run is not in the final phase")
             _validate_sealed_run_evidence(
@@ -2956,7 +2900,9 @@ def _attempt_binding_digest(attempts: list[Mapping[str, object]]) -> str:
 
 
 def _seal_binding_digest(sealed: Mapping[str, object]) -> str:
-    payload = {key: value for key, value in sealed.items() if key != "seal_binding_sha256"}
+    payload = {
+        key: value for key, value in sealed.items() if key != "seal_binding_sha256"
+    }
     return sha256(
         json.dumps(
             payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -3130,12 +3076,12 @@ def _new_attempt(
         if request.kind == "technical_retry"
         else None
     )
-    effective_kind = (
-        retried["effective_kind"] if retried is not None else request.kind
-    )
+    effective_kind = retried["effective_kind"] if retried is not None else request.kind
     retried_reserved = retried["history"][0] if retried is not None else None
     parent_attempt_id = (
-        retried["parent_attempt_id"] if retried is not None else request.parent_attempt_id
+        retried["parent_attempt_id"]
+        if retried is not None
+        else request.parent_attempt_id
     )
     role = retried["role"] if retried is not None else request.role
     parent_digest = (
@@ -3215,10 +3161,9 @@ def _validate_persisted_attempt(attempt: dict[str, object], expected_id: str) ->
     if not isinstance(kind, str) or kind not in _ATTEMPT_KINDS:
         raise ValueError("attempt ledger attempt has an invalid kind")
     effective_kind = attempt["effective_kind"]
-    if (
-        not isinstance(effective_kind, str)
-        or effective_kind not in _ATTEMPT_KINDS - {"technical_retry"}
-    ):
+    if not isinstance(effective_kind, str) or effective_kind not in _ATTEMPT_KINDS - {
+        "technical_retry"
+    }:
         raise ValueError("attempt ledger attempt has an invalid effective kind")
     if (
         not isinstance(attempt["sequence"], int)
@@ -3290,11 +3235,7 @@ def _validate_event(
 ) -> None:
     status = event["status"]
     sequence = event["sequence"]
-    if (
-        not isinstance(sequence, int)
-        or isinstance(sequence, bool)
-        or sequence < 1
-    ):
+    if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
         raise ValueError("attempt ledger attempt event has invalid sequence")
     if not isinstance(status, str):
         raise ValueError("attempt ledger attempt event has invalid status")
@@ -3451,7 +3392,10 @@ def _validate_kind_shape(
             raise ValueError("attempt ledger technical retry is invalid")
     elif effective_kind != kind:
         raise ValueError("attempt ledger effective kind does not match kind")
-    elif attempt["retry_reason"] is not None or attempt["retry_of_attempt_id"] is not None:
+    elif (
+        attempt["retry_reason"] is not None
+        or attempt["retry_of_attempt_id"] is not None
+    ):
         raise ValueError("attempt ledger non-retry has retry fields")
     if effective_kind == "writer":
         if any(
@@ -3481,8 +3425,7 @@ def _validate_kind_shape(
     if effective_kind == "cross_risk_expert" and attempt["role"] != "cross-risk":
         raise ValueError("attempt ledger cross-risk expert role is invalid")
     if effective_kind in {"primary_expert", "cross_risk_expert"} and (
-        reserved["finding_digest"] is not None
-        or reserved["repair_digest"] is not None
+        reserved["finding_digest"] is not None or reserved["repair_digest"] is not None
     ):
         raise ValueError("attempt ledger primary expert has repair bindings")
     if effective_kind == "expert_rereview" and (
@@ -3570,9 +3513,11 @@ def _validate_attempt_ledger_invariants(
     current_time = datetime.now(UTC)
     for event in event_timeline:
         recorded_at = _parse_rfc3339(event.get("recorded_at"))
-        if recorded_at is None or (
-            previous_at is not None and recorded_at < previous_at
-        ) or recorded_at > current_time:
+        if (
+            recorded_at is None
+            or (previous_at is not None and recorded_at < previous_at)
+            or recorded_at > current_time
+        ):
             raise ValueError("attempt ledger invariant: event time moved backwards")
         previous_at = recorded_at
     reservation_sequences = [
@@ -3590,9 +3535,7 @@ def _validate_attempt_ledger_invariants(
         kind = raw_attempt["kind"]
         if kind == "technical_retry":
             retried = _attempt_by_id(prior, raw_attempt["retry_of_attempt_id"])
-            retried_reserved = (
-                retried["history"][0] if retried is not None else None
-            )
+            retried_reserved = retried["history"][0] if retried is not None else None
             reserved = raw_attempt["history"][0]
             if (
                 retried is None
@@ -3601,8 +3544,7 @@ def _validate_attempt_ledger_invariants(
                 or retried["content_produced"] is not False
                 or retried["sequence"] >= reserved["sequence"]
                 or raw_attempt["effective_kind"] != retried["effective_kind"]
-                or raw_attempt["parent_attempt_id"]
-                != retried["parent_attempt_id"]
+                or raw_attempt["parent_attempt_id"] != retried["parent_attempt_id"]
                 or raw_attempt["role"] != retried["role"]
                 or raw_attempt["parent_digest"] != retried["parent_digest"]
                 or any(
@@ -3676,8 +3618,7 @@ def _validate_attempt_ledger_invariants(
                 or expert["finding_digest"] != reserved["finding_digest"]
                 or expert["candidate_digest"] == reserved["candidate_digest"]
                 or writer_state["status"] != "review_pending"
-                or writer_state["candidate_digest"]
-                != reserved["candidate_digest"]
+                or writer_state["candidate_digest"] != reserved["candidate_digest"]
                 or (
                     repair := _find_repair_event(
                         writer,
@@ -3732,8 +3673,7 @@ def _validate_attempt_ledger_invariants(
                     (
                         attempt
                         for attempt in completed_first_reviews
-                        if attempt.get("finding_digest")
-                        == event.get("finding_digest")
+                        if attempt.get("finding_digest") == event.get("finding_digest")
                     ),
                     None,
                 )
@@ -3785,8 +3725,7 @@ def _validate_retry_effective_role_active_parent(
             or writer.get("run_id") != retried.get("run_id")
             or writer.get("parent_digest") != retried.get("parent_digest")
             or writer_state.get("status") != "review_pending"
-            or writer_state.get("candidate_digest")
-            != reserved["candidate_digest"]
+            or writer_state.get("candidate_digest") != reserved["candidate_digest"]
         ):
             raise ValueError("technical retry effective role requires an active parent")
         return
@@ -3815,8 +3754,7 @@ def _validate_retry_effective_role_active_parent(
         or writer is None
         or writer_state is None
         or repair is None
-        or expert.get("effective_kind")
-        not in {"primary_expert", "cross_risk_expert"}
+        or expert.get("effective_kind") not in {"primary_expert", "cross_risk_expert"}
         or expert.get("status") != "completed"
         or expert.get("sequence") >= sequence
         or expert.get("run_id") != retried.get("run_id")
@@ -3871,7 +3809,9 @@ def _validate_writer_conflict(
     }
     if (
         set(role_findings) != {"primary", "cross-risk"}
-        or any(not _is_non_placeholder_digest(value) for value in role_findings.values())
+        or any(
+            not _is_non_placeholder_digest(value) for value in role_findings.values()
+        )
         or len(set(role_findings.values())) != 2
         or any(
             isinstance(attempt, Mapping)
@@ -3902,8 +3842,7 @@ def _validate_security_first_review_baselines(attempts: list[object]) -> None:
             for attempt in attempts
             if isinstance(attempt, Mapping)
             and attempt.get("parent_attempt_id") == writer.get("attempt_id")
-            and attempt.get("kind")
-            in {"primary_expert", "cross_risk_expert"}
+            and attempt.get("kind") in {"primary_expert", "cross_risk_expert"}
         ]
         if not first_reviews:
             continue
@@ -3961,9 +3900,7 @@ def _validate_json_schema(
         for item in expected_types
     ):
         label = " or ".join(str(item) for item in expected_types)
-        issues.append(
-            BenchmarkIssue(f"{scope}.schema", f"{path} must be {label}")
-        )
+        issues.append(BenchmarkIssue(f"{scope}.schema", f"{path} must be {label}"))
         return
     if "const" in schema and value != schema["const"]:
         issues.append(BenchmarkIssue(f"{scope}.schema", f"{path} does not match const"))
@@ -4001,7 +3938,9 @@ def _validate_json_schema(
         minimum = schema.get("minItems")
         maximum = schema.get("maxItems")
         if isinstance(minimum, int) and len(value) < minimum:
-            issues.append(BenchmarkIssue(f"{scope}.schema", f"{path} has too few items"))
+            issues.append(
+                BenchmarkIssue(f"{scope}.schema", f"{path} has too few items")
+            )
         if isinstance(maximum, int) and len(value) > maximum:
             issues.append(
                 BenchmarkIssue(f"{scope}.schema", f"{path} has too many items")
@@ -4177,8 +4116,7 @@ def _validate_rereview_reservation(
     if (
         expert is None
         or expert.get("run_id") != request.run_id
-        or expert.get("effective_kind")
-        not in {"primary_expert", "cross_risk_expert"}
+        or expert.get("effective_kind") not in {"primary_expert", "cross_risk_expert"}
     ):
         raise ValueError("expert rereview requires an existing expert reservation")
     if expert.get("status") != "completed" or expert.get("role") != request.role:
@@ -4271,8 +4209,7 @@ def _validate_writer_close(
         for item in attempts
         if isinstance(item, Mapping)
         and item.get("parent_attempt_id") == writer["attempt_id"]
-        and item.get("effective_kind")
-        in {"primary_expert", "cross_risk_expert"}
+        and item.get("effective_kind") in {"primary_expert", "cross_risk_expert"}
         and item.get("status") == "completed"
         and item.get("sequence") < event.get("sequence")
     }
@@ -4515,9 +4452,8 @@ def _validate_schema_node(
             )
         else:
             _validate_schema_node(node["items"], f"{path}.items", issues)
-    if (
-        any(key in node for key in {"minLength", "maxLength", "pattern"})
-        and ("string" not in type_set or not type_set <= {"string", "null"})
+    if any(key in node for key in {"minLength", "maxLength", "pattern"}) and (
+        "string" not in type_set or not type_set <= {"string", "null"}
     ):
         issues.append(
             BenchmarkIssue(
@@ -4533,9 +4469,8 @@ def _validate_schema_node(
                 "provider-schema.type", f"{path}: numeric constraint needs number type"
             )
         )
-    if (
-        any(key in node for key in {"minItems", "maxItems"})
-        and ("array" not in type_set or not type_set <= {"array", "null"})
+    if any(key in node for key in {"minItems", "maxItems"}) and (
+        "array" not in type_set or not type_set <= {"array", "null"}
     ):
         issues.append(
             BenchmarkIssue(
@@ -4612,10 +4547,14 @@ def _now_rfc3339() -> str:
 
 
 def _parse_rfc3339(value: object) -> datetime | None:
-    if not isinstance(value, str) or re.fullmatch(
-        r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
-        value,
-    ) is None:
+    if (
+        not isinstance(value, str)
+        or re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})",
+            value,
+        )
+        is None
+    ):
         return None
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -4633,8 +4572,10 @@ def _validate_token_usage_object(value: object, *, allow_all_zero: bool) -> None
         "output_tokens",
         "reasoning_output_tokens",
     }
-    if not isinstance(value, Mapping) or set(value) != required or any(
-        not _non_bool_int(value.get(key)) or value[key] < 0 for key in required
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != required
+        or any(not _non_bool_int(value.get(key)) or value[key] < 0 for key in required)
     ):
         raise ValueError("Provider completion token usage is invalid")
     if not allow_all_zero and sum(value.values()) == 0:
@@ -4786,13 +4727,16 @@ def _scan_non_placeholder_digests(
     if isinstance(value, Mapping):
         for key, child in value.items():
             child_path = f"{path}.{key}"
-            is_digest_field = (
-                str(key).endswith(("_sha256", "_digest"))
-                or key
-                in {"evidence_id", "receipt_sha256", "sha256", "fixture_commitment"}
-            )
-            if is_digest_field and child is not None and not _is_non_placeholder_digest(
-                child
+            is_digest_field = str(key).endswith(("_sha256", "_digest")) or key in {
+                "evidence_id",
+                "receipt_sha256",
+                "sha256",
+                "fixture_commitment",
+            }
+            if (
+                is_digest_field
+                and child is not None
+                and not _is_non_placeholder_digest(child)
             ):
                 issues.append(
                     BenchmarkIssue(
@@ -4803,9 +4747,7 @@ def _scan_non_placeholder_digests(
             _scan_non_placeholder_digests(child, child_path, scope, issues)
     elif isinstance(value, list):
         for index, child in enumerate(value):
-            _scan_non_placeholder_digests(
-                child, f"{path}[{index}]", scope, issues
-            )
+            _scan_non_placeholder_digests(child, f"{path}[{index}]", scope, issues)
 
 
 def _is_private_path(value: str) -> bool:
@@ -4820,7 +4762,9 @@ def _is_private_path(value: str) -> bool:
             retained += f"?{_percent_decode_once(parsed.query)}"
         if parsed.fragment:
             retained += f"#{_percent_decode_once(parsed.fragment)}"
-        scrubbed = scrubbed[: match.start()] + f"http-uri{retained}" + scrubbed[match.end() :]
+        scrubbed = (
+            scrubbed[: match.start()] + f"http-uri{retained}" + scrubbed[match.end() :]
+        )
     return bool(_PRIVATE_PATH.search(scrubbed))
 
 
@@ -4898,14 +4842,14 @@ def _is_secret_field_name(value: str) -> bool:
 
 
 def _contains_secret_value(value: str) -> bool:
-    normalized = re.sub(
-        r"(['\"])REDACTED\1", "REDACTED", value, flags=re.IGNORECASE
-    )
+    normalized = re.sub(r"(['\"])REDACTED\1", "REDACTED", value, flags=re.IGNORECASE)
     if _decoded_has_secret_token(normalized):
         return True
     for candidate in _HTTP_URI.findall(normalized):
         parsed = _strict_public_http(candidate)
-        if parsed is not None and _uri_has_secret_parameter(parsed.query, parsed.fragment):
+        if parsed is not None and _uri_has_secret_parameter(
+            parsed.query, parsed.fragment
+        ):
             return True
     decoded = _percent_decode_once(normalized)
     assignment = re.compile(
@@ -4927,8 +4871,10 @@ def _uri_has_secret_parameter(*parts: str) -> bool:
             key, separator, value = component.partition("=")
             if not separator:
                 key, separator, value = component.partition(":")
-            if separator and value.strip("\"'").upper() != "REDACTED" and (
-                _is_secret_field_name(key) or _decoded_has_secret_token(value)
+            if (
+                separator
+                and value.strip("\"'").upper() != "REDACTED"
+                and (_is_secret_field_name(key) or _decoded_has_secret_token(value))
             ):
                 return True
     return False
@@ -4962,9 +4908,7 @@ def _redact_secret_values(value: str) -> str:
             f"{match.group('separator')}{match.group('after')}REDACTED"
         )
 
-    value = _HTTP_URI.sub(
-        lambda match: _redact_uri_parameters(match.group(0)), value
-    )
+    value = _HTTP_URI.sub(lambda match: _redact_uri_parameters(match.group(0)), value)
     return _redact_encoded_secret_tokens(assignment.sub(replace, value))
 
 
@@ -5142,10 +5086,9 @@ def _validate_receipt_measurements(
     human_events = receipt.get("human_events")
     automated_events = receipt.get("automated_events")
     _validate_phase_measurement_evidence(receipt, issues)
-    if (
-        isinstance(provider_attempts, list)
-        and measurements.get("provider_attempt_count") != len(provider_attempts)
-    ):
+    if isinstance(provider_attempts, list) and measurements.get(
+        "provider_attempt_count"
+    ) != len(provider_attempts):
         issues.append(
             BenchmarkIssue(
                 "receipt.measurements", "Provider attempt count is not reproducible"
@@ -5157,7 +5100,9 @@ def _validate_receipt_measurements(
             for event in human_events
             if isinstance(event, Mapping)
         )
-        if measurements.get("human_event_count") != len(human_events) or not math.isclose(
+        if measurements.get("human_event_count") != len(
+            human_events
+        ) or not math.isclose(
             measurements.get("human_active_seconds"),
             human_seconds,
             rel_tol=0,
@@ -5298,14 +5243,11 @@ def _validate_phase_measurement_evidence(
         "evaluation": "evaluation_wall_seconds",
     }
     for phase_name, timing_name in timing_names.items():
-        if (
-            not _finite_number(timings.get(timing_name))
-            or not math.isclose(
-                timings[timing_name],
-                durations[phase_name],
-                rel_tol=0,
-                abs_tol=1e-6,
-            )
+        if not _finite_number(timings.get(timing_name)) or not math.isclose(
+            timings[timing_name],
+            durations[phase_name],
+            rel_tol=0,
+            abs_tol=1e-6,
         ):
             issues.append(
                 BenchmarkIssue(
@@ -5391,9 +5333,7 @@ def _validate_artifact_inventory(
             or (
                 observed
                 and (
-                    not applicable
-                    or not _is_non_placeholder_digest(digest)
-                    or size < 1
+                    not applicable or not _is_non_placeholder_digest(digest) or size < 1
                 )
             )
             or (not observed and (digest is not None or size != 0))

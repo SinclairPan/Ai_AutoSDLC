@@ -1,5 +1,21 @@
 # Task 3：五臂环境、指令隔离与零 Provider 执行边界
 
+## Fix Round 1 与浏览器启动器加固（2026-08-20）
+
+- 修复基线严格固定为 `86b8a66341bfc21b8cf3a44ef74a691d465c6e3b`；本轮只聚合关闭三方终审反例，Task 4 仍为 NO-GO。
+- 浏览器启动收口为单一 closed builder：优先选择显式路径且 exact SHA256 绑定的 Playwright `chromium_headless_shell`；该路径的 SHA 缺失或不匹配时立即 fail-closed，不回退到系统浏览器。
+- 只在未配置 headless shell 时使用 exact SHA256 绑定的系统 Chrome；macOS fallback 强制包含 `--use-mock-keychain` 与 `--password-store=basic`，且始终使用独立临时 profile。
+- direct CLI 与 Playwright adapter 共用同一组 closed safety arguments；`benefit_benchmark` / fixture / materializer / arms 路径穷举未发现第三条浏览器启动路径。
+- Fresh RED：3 failed / 0 passed（builder 缺失两项，system Chrome 缺 `--use-mock-keychain` 一项）。Targeted GREEN：4 passed in 2.32s（headless shell 优先、system fallback 安全参数、不完整 result fail-closed、Playwright 参数同源）。
+- 真实 frozen headless shell smoke：1 passed in 2.81s；真实 system Chrome fallback smoke：1 passed in 31.28s。未修改/重置 keychain，未终止用户 Chrome。
+- 格式化前分层门禁：browser targeted `4 passed`，arms + FixR1 `84 passed / 1 system-outside skip`，core + fixtures + materializer + CLI `565 passed / 1 skip`，full benefit `633 passed / 2 skip`，全部 `0 failed`。
+- Ruff check 通过；Ruff format 首次如实报告 8 个本轮变更文件待格式化，执行机械格式化后 `9 files already formatted`；格式化后 browser targeted 再次 `4 passed in 2.15s`，arms + FixR1 再次 `84 passed / 1 skip in 80.34s`，`git diff --check` 通过。
+- actual `benefit-evidence verify-sealed-commitments` 返回 `sealed-commitments / no-go`。追踪精确定位为 `runtime-capsule-drift`：1649 个 capsule entry 的数量、路径与文件内容均一致，唯一差异是外部 Python runtime 根目录 `.` 的 `ctime_ns/mtime_ns` 由 `1784432700565526991` 漂移为 `1787219031950878446`；expected capsule 为 `ed26993aef508d2361d9c772b91fa2a9a691262e363d6328168b957eef07caf5`，current 为 `2e5d0b51ad460f5f3ccc3e64638723727f99b47c140cd0c64df18e7ffe152cd8`。
+- 因此本次只能是独立 checkpoint：Task3 candidate / Task2 authority / Task4 均为 **NO-GO**，不得声称 bound 或 complete。本轮未回拨外部 runtime 时间戳，未弱化 capsule 算法，未重签/重物化 Task2 authority。capsule-v2 + r3 属于后续独立流程。
+- tracked `protocol.json`、`sealed-commitments.json` 与 Task2 report 相对 FixR1 基线 byte-unchanged；Provider / `codex exec` / formal authorization / ledger / results / experiment = 0。
+
+> 以下内容保留原 Task3 commit 的历史冻结记录；其中“Task2 authority bound”与“最终验证”只描述 `86b8a663...` 当时状态，已被上述 FixR1 actual NO-GO 结果覆盖。
+
 ## 冻结边界
 
 - Task 3 基线：`d8404e09b200b26b39184e321a467b055edf2797`。
@@ -93,7 +109,7 @@ macOS system-outside 实跑证明：
 
 该批次为 `1 passed / 0 skipped`；没有用 sandbox 文本检查代替真实系统拒绝。
 
-## Task 2 authority 未回归
+## 原 Task 3 冻结时的 Task 2 authority（历史记录）
 
 只读复核：
 
@@ -108,7 +124,7 @@ macOS system-outside 实跑证明：
 
 `benefit-evidence verify-sealed-commitments` 返回 `authority=task2-commitment / status=bound / provider=false / experiment=false`；默认 protocol validate 返回 Task2 bound，但 execution/provider/experiment 均为 false。
 
-## 最终验证
+## 原 Task 3 最终验证（历史记录）
 
 ```text
 arms focused: 60 passed, 1 nested-sandbox skip

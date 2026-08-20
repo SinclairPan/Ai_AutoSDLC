@@ -8,6 +8,7 @@ from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from rich.table import Table
 
 import ai_sdlc.cli.commands as commands_module
@@ -16,8 +17,61 @@ from ai_sdlc.models.state import Checkpoint, CompletedStage, FeatureInfo
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
-def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    ("command", "specific"),
+    [
+        ("start-run", ["--run-id", "P:requirement-contract-ambiguity"]),
+        (
+            "transition-phase",
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--next-phase",
+                "framework_init",
+            ],
+        ),
+        (
+            "reserve-attempt",
+            ["--run-id", "P:requirement-contract-ambiguity", "--kind", "writer"],
+        ),
+        ("complete-attempt", ["--attempt-id", "attempt-001", "--status", "failed"]),
+        (
+            "start-service-transaction",
+            [
+                "--attempt-id",
+                "attempt-001",
+                "--event-type",
+                "intent_service_event",
+                "--transaction-id",
+                "tx-001",
+            ],
+        ),
+        (
+            "complete-service-transaction",
+            [
+                "--attempt-id",
+                "attempt-001",
+                "--event-type",
+                "intent_service_event",
+                "--transaction-id",
+                "tx-001",
+                "--evidence",
+                "service-evidence.json",
+            ],
+        ),
+        (
+            "seal-run-evidence",
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--workspace-root",
+                "workspace",
+            ],
+        ),
+    ],
+)
+def test_benefit_benchmark_cli_rejects_v1_before_every_write(
+    tmp_path: Path, command: str, specific: list[str]
 ) -> None:
     source_protocol = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json"
     raw = json.loads(source_protocol.read_text(encoding="utf-8"))
@@ -84,41 +138,22 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
     )
     authorization.chmod(0o600)
     ledger = tmp_path / "ledger.json"
+    sentinel = b'{"sentinel":"byte-identical"}'
+    ledger.write_bytes(sentinel)
+    (tmp_path / "service-evidence.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "workspace").mkdir()
+    specific = [
+        str(tmp_path / item) if item in {"service-evidence.json", "workspace"} else item
+        for item in specific
+    ]
     script = REPO_ROOT / "scripts" / "ai_sdlc_v2_benefit_benchmark.py"
-    common = [
-        "--ledger",
-        str(ledger),
-        "--protocol",
-        str(protocol),
-        "--contract",
-        str(contract_path),
-        "--authorization",
-        str(authorization),
-        "--run-id",
-        "P:requirement-contract-ambiguity",
-    ]
-    phase_commands = [
-        ["start-run", *common],
-        ["transition-phase", *common, "--next-phase", "framework_init"],
-        ["transition-phase", *common, "--next-phase", "provider"],
-    ]
-    for phase_command in phase_commands:
-        phase_result = subprocess.run(
-            ["uv", "run", "python", str(script), *phase_command],
-            cwd=REPO_ROOT,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        assert phase_result.returncode == 0, phase_result.stdout
-
-    reserved = subprocess.run(
+    result = subprocess.run(
         [
             "uv",
             "run",
             "python",
             str(script),
-            "reserve-attempt",
+            command,
             "--ledger",
             str(ledger),
             "--protocol",
@@ -127,92 +162,16 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(contract_path),
             "--authorization",
             str(authorization),
-            "--run-id",
-            "P:requirement-contract-ambiguity",
-            "--kind",
-            "writer",
+            *specific,
         ],
         cwd=REPO_ROOT,
         check=False,
         capture_output=True,
         text=True,
     )
-    assert reserved.returncode == 0, reserved.stderr
-    assert json.loads(reserved.stdout)["attempt_id"] == "attempt-001"
-
-    checkpointed = subprocess.run(
-        [
-            "uv",
-            "run",
-            "python",
-            str(script),
-            "complete-attempt",
-            "--ledger",
-            str(ledger),
-            "--protocol",
-            str(protocol),
-            "--contract",
-            str(contract_path),
-            "--authorization",
-            str(authorization),
-            "--attempt-id",
-            "attempt-001",
-            "--status",
-            "candidate_ready",
-            "--content-produced",
-            "--candidate-digest",
-            "b" * 64,
-        ],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert checkpointed.returncode == 0, checkpointed.stderr
-
-    completed = subprocess.run(
-        [
-            "uv",
-            "run",
-            "python",
-            str(script),
-            "complete-attempt",
-            "--ledger",
-            str(ledger),
-            "--protocol",
-            str(protocol),
-            "--contract",
-            str(contract_path),
-            "--authorization",
-            str(authorization),
-            "--attempt-id",
-            "attempt-001",
-            "--status",
-            "failed",
-            "--content-produced",
-            "--child-session",
-            "session-attempt-001",
-            "--input-tokens",
-            "1",
-            "--cached-input-tokens",
-            "0",
-            "--output-tokens",
-            "1",
-            "--reasoning-output-tokens",
-            "0",
-            "--raw-provider-output-sha256",
-            "9" * 64,
-        ],
-        cwd=REPO_ROOT,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    assert completed.returncode == 0, completed.stderr
-    assert (
-        json.loads(ledger.read_text(encoding="utf-8"))["attempts"][0]["status"]
-        == "failed"
-    )
+    assert result.returncode == 2
+    assert "authorization" in result.stdout.lower()
+    assert ledger.read_bytes() == sentinel
 
 
 def test_add_truth_ledger_rows_deduplicates_release_targets() -> None:
@@ -410,7 +369,9 @@ def test_add_active_work_item_status_rows_deduplicates_active_files(tmp_path) ->
     original_load_runtime_state = commands_module.load_runtime_state
     original_load_working_set = commands_module.load_working_set
     original_load_latest_summary = commands_module.load_latest_summary
-    original_load_latest_reviewer_decision = commands_module.load_latest_reviewer_decision
+    original_load_latest_reviewer_decision = (
+        commands_module.load_latest_reviewer_decision
+    )
     original_load_resume_point = commands_module.load_resume_point
     original_load_execution_path = commands_module.load_execution_path
     original_load_parallel_coordination_artifact = (
@@ -431,8 +392,8 @@ def test_add_active_work_item_status_rows_deduplicates_active_files(tmp_path) ->
         commands_module.load_latest_reviewer_decision = lambda *_args, **_kwargs: None
         commands_module.load_resume_point = lambda *_args, **_kwargs: None
         commands_module.load_execution_path = lambda *_args, **_kwargs: None
-        commands_module.load_parallel_coordination_artifact = (
-            lambda *_args, **_kwargs: None
+        commands_module.load_parallel_coordination_artifact = lambda *_args, **_kwargs: (
+            None
         )
 
         commands_module._add_active_work_item_status_rows(

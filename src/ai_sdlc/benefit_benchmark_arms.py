@@ -7,7 +7,6 @@ but it has no Provider-launch API and never reserves an attempt.
 
 from __future__ import annotations
 
-import difflib
 import io
 import json
 import os
@@ -44,6 +43,22 @@ AI_SDLC_COMMIT = "737bda39e05c53450e180a20581b7b7a70db9cf0"
 AI_SDLC_TREE = "3db58121e228a7a1c4c6b760c535d6df1ffdbe84"
 SUPERPOWERS_COMMIT = "b36e0829c6d0140e93cfef2ca599b1b07d4a7797"
 SUPERPOWERS_TREE = "21219529a4e224bcb27baf8816b039c8bf7c6673"
+SUPERPOWERS_SOURCE_URL = "https://github.com/obra/superpowers.git"
+SUPERPOWERS_ARCHIVE_SHA256 = (
+    "8d795dfb2141e467bdf448474fd9acfa97dffa4da5837f0f6cf0dc2c290640ba"
+)
+SUPERPOWERS_LICENSE_SHA256 = (
+    "a37e0e9697144819e1d965176ac4ae5bc3fa02d11e7812036bbcadf6dafe2400"
+)
+SUPERPOWERS_PROVIDER_TREE_SHA256 = (
+    "b307431b48ee4cabb4c9c3843aa7727131449aff4eaa89f8a4d5b6112a60ea6a"
+)
+SUPERPOWERS_ADAPTATION_SHA256 = (
+    "9e8f69cc9630cf27df6cbbd1b36dc05db13e9d40fb5c11046447d54be1bb2aee"
+)
+SUPERPOWERS_SEMANTIC_DIFF_SHA256 = (
+    "922274d50d5d21d65bc725e7eafeadd1e306d87a3f6fd18968f2558c8aa3fc57"
+)
 CODEX_VERSION = "0.147.0"
 PROVIDER_CWD = "benchmark-task/"
 
@@ -63,12 +78,30 @@ _CAPABILITY_OFF_FEATURES = (
     "computer_use",
     "enable_mcp_apps",
     "image_generation",
+    "hooks",
+    "memories",
     "multi_agent",
     "multi_agent_v2",
     "plugins",
     "remote_plugin",
     "standalone_web_search",
+    "skill_mcp_dependency_install",
+    "tool_suggest",
     "web_search_request",
+    "workspace_dependencies",
+)
+ALLOWED_GIT_ENVIRONMENT_KEYS = frozenset(
+    {
+        "GIT_AUTHOR_NAME",
+        "GIT_AUTHOR_EMAIL",
+        "GIT_AUTHOR_DATE",
+        "GIT_COMMITTER_NAME",
+        "GIT_COMMITTER_EMAIL",
+        "GIT_COMMITTER_DATE",
+        "GIT_CONFIG_GLOBAL",
+        "GIT_CONFIG_NOSYSTEM",
+        "GIT_TERMINAL_PROMPT",
+    }
 )
 _DETERMINISTIC_GIT_ENV = {
     "GIT_AUTHOR_NAME": "AI-SDLC Benchmark Builder",
@@ -77,6 +110,9 @@ _DETERMINISTIC_GIT_ENV = {
     "GIT_COMMITTER_NAME": "AI-SDLC Benchmark Builder",
     "GIT_COMMITTER_EMAIL": "benchmark@invalid.example",
     "GIT_COMMITTER_DATE": "2000-01-01T00:00:00Z",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_TERMINAL_PROMPT": "0",
     "TZ": "UTC",
 }
 _MANIFEST_KEYS = {
@@ -85,6 +121,10 @@ _MANIFEST_KEYS = {
     "provider_cwd",
     "common_agent_contract_path",
     "common_agent_contract_sha256",
+    "prompt_matrix_path",
+    "prompt_matrix_sha256",
+    "ai_sdlc_method_surface_manifest_path",
+    "ai_sdlc_method_surface_manifest_sha256",
     "ai_sdlc",
     "superpowers",
     "codex",
@@ -111,6 +151,11 @@ _SUPERPOWERS_KEYS = {
     "source_tree",
     "full_archive_sha256",
     "closure_archive_sha256",
+    "provenance_archive_path",
+    "provider_closure_path",
+    "provenance_root",
+    "source_inventory_path",
+    "source_inventory_sha256",
     "license_path",
     "license_sha256",
     "adaptation_path",
@@ -118,8 +163,12 @@ _SUPERPOWERS_KEYS = {
     "namespace_diff_path",
     "namespace_diff_sha256",
     "namespace_rewrite",
+    "semantic_adaptation_diff_path",
+    "semantic_adaptation_diff_sha256",
     "multi_agent",
     "activation_skill",
+    "activation_agents_path",
+    "activation_agents_sha256",
     "files",
 }
 _VENDOR_FILE_KEYS = {
@@ -168,11 +217,18 @@ _ISOLATION_KEYS = {
     "deny_surfaces",
     "method_instructions_immutable",
     "direct_link_race_probes_required",
+    "p_s_forbidden_namespaces",
+    "a_writable_method_leaves",
 }
 _AUTH_V2_KEYS = {
     "schema",
     "protocol_sha256",
     "execution_commit",
+    "execution_tree_sha256",
+    "execution_clean_state_sha256",
+    "task3_runner_sha256",
+    "source_capsule_sha256",
+    "prompt_matrix_sha256",
     "arm_manifest_sha256",
     "neutral_envelope_sha256",
     "superpowers_adaptation_sha256",
@@ -193,6 +249,17 @@ _AUTH_OPERATIONS = (
     "record_service_transaction",
     "seal_run_evidence",
 )
+_EMPTY_GIT_STATUS_SHA256 = sha256(b"").hexdigest()
+
+
+@dataclass(frozen=True)
+class ExecutionSourceBinding:
+    commit: str
+    tree_sha256: str
+    clean_state_sha256: str
+    task3_runner_sha256: str
+    source_capsule_sha256: str
+    prompt_matrix_sha256: str
 
 
 @dataclass(frozen=True)
@@ -214,6 +281,11 @@ class SuperpowersBinding:
     source_tree: str
     full_archive_sha256: str
     closure_archive_sha256: str
+    provenance_archive_path: str
+    provider_closure_path: str
+    provenance_root: str
+    source_inventory_path: str
+    source_inventory_sha256: str
     license_path: str
     license_sha256: str
     adaptation_path: str
@@ -221,8 +293,12 @@ class SuperpowersBinding:
     namespace_diff_path: str
     namespace_diff_sha256: str
     namespace_rewrite: Mapping[str, str]
+    semantic_adaptation_diff_path: str
+    semantic_adaptation_diff_sha256: str
     multi_agent: bool
     activation_skill: str
+    activation_agents_path: str
+    activation_agents_sha256: str
     files: tuple[VendorFile, ...]
 
 
@@ -260,6 +336,10 @@ class ArmManifest:
     provider_cwd: str
     common_agent_contract_path: str
     common_agent_contract_sha256: str
+    prompt_matrix_path: str
+    prompt_matrix_sha256: str
+    ai_sdlc_method_surface_manifest_path: str
+    ai_sdlc_method_surface_manifest_sha256: str
     ai_sdlc_commit: str
     ai_sdlc_tree: str
     stock_agents_source_path: str
@@ -294,6 +374,30 @@ class CleanEnvironment:
     codex_home: Path
     provider_attempts_started: int
     environment: Mapping[str, str]
+    environment_sha256: str
+
+
+@dataclass(frozen=True)
+class PathIdentity:
+    path: Path
+    device: int
+    inode: int
+    uid: int
+    gid: int
+    mode: int
+    nlink: int
+
+
+@dataclass(frozen=True)
+class PreparedGitIdentity:
+    run_root: PathIdentity
+    provider_cwd: PathIdentity
+    git_dir: PathIdentity
+    head: str
+    tree: str
+    provider_pre_tree_sha256: str
+    absolute_git_dir: str
+    common_git_dir: str
 
 
 @dataclass(frozen=True)
@@ -372,6 +476,12 @@ class PreparedArm:
     provider_cwd_relative: str
     subprocess_cwd: str
     provider_cwd_tree_sha256: str
+    provider_pre_tree_sha256: str
+    run_root_identity: PathIdentity
+    provider_cwd_identity: PathIdentity
+    git_dir_identity: PathIdentity
+    git_head: str
+    git_tree: str
     public_input_sha256: str
     methodology_sha256: str
     base_global_sha256: str
@@ -379,8 +489,10 @@ class PreparedArm:
     instruction_inventory_path: Path
     method_instruction_paths: tuple[Path, ...]
     method_instruction_roots: tuple[Path, ...]
+    method_surface_sha256: str
     shared_runtime_root: Path | None
     prompt: str
+    prompt_sha256: str
     environment: CleanEnvironment
     codex: CodexRuntime
     framework_init: FrameworkInitEvidence
@@ -399,6 +511,259 @@ class ReviewEvidence:
     findings: tuple[Mapping[str, object], ...]
     parent_tree_before: str
     parent_tree_after: str
+
+
+@dataclass(frozen=True)
+class ExpertSnapshot:
+    root: Path
+    root_identity: PathIdentity
+    snapshot_sha256: str
+    candidate_sha256: str
+    tree_sha256: str
+
+
+@dataclass(frozen=True)
+class BoundSurface:
+    name: str
+    path: Path
+    device: int
+    inode: int
+    uid: int
+    mode: int
+    nlink: int
+    tree_sha256: str
+
+
+@dataclass(frozen=True)
+class ProductionSurfaceContract:
+    sealed_r2: BoundSurface
+    sealed_r1: BoundSurface
+    sealed_legacy: BoundSurface
+    source_r2: BoundSurface
+    source_r1: BoundSurface
+    disposition: BoundSurface
+    control_repo: BoundSurface
+    control_gitfile: BoundSurface
+    control_gitdir: BoundSurface
+    control_common_gitdir: BoundSurface
+    raw_results: BoundSurface
+    parent_runs: BoundSurface
+    other_runs: tuple[BoundSurface, ...]
+    fixture_source: BoundSurface
+    template: BoundSurface
+    runtime_capsule: BoundSurface
+    contract_sha256: str
+
+
+def _surface_tree(path: Path) -> str:
+    if path.is_file():
+        return _stable_regular_file_sha256(path)
+    records = []
+    for child in sorted(path.rglob("*"), key=lambda item: item.as_posix()):
+        metadata = child.lstat()
+        relative = child.relative_to(path).as_posix()
+        if stat.S_ISLNK(metadata.st_mode):
+            kind = "symlink"
+            digest = sha256(os.readlink(child).encode()).hexdigest()
+        elif stat.S_ISDIR(metadata.st_mode):
+            kind = "directory"
+            digest = None
+        elif stat.S_ISREG(metadata.st_mode):
+            kind = "file"
+            digest = _stable_regular_file_sha256(child)
+        else:
+            raise ValueError("production surface contains an unsupported node")
+        records.append(
+            {
+                "path": relative,
+                "kind": kind,
+                "mode": stat.S_IMODE(metadata.st_mode),
+                "size": metadata.st_size,
+                "sha256": digest,
+            }
+        )
+    return sha256(_canonical_bytes(records)).hexdigest()
+
+
+def _bound_surface(name: str, path: Path) -> BoundSurface:
+    absolute = Path(os.path.abspath(path))
+    metadata = os.lstat(absolute)
+    if stat.S_ISLNK(metadata.st_mode) or not (
+        stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+    ):
+        raise ValueError(f"production surface {name} has invalid type")
+    return BoundSurface(
+        name=name,
+        path=absolute,
+        device=metadata.st_dev,
+        inode=metadata.st_ino,
+        uid=metadata.st_uid,
+        mode=metadata.st_mode,
+        nlink=metadata.st_nlink,
+        tree_sha256=_surface_tree(absolute),
+    )
+
+
+def _surface_payload(surface: BoundSurface) -> Mapping[str, object]:
+    return {
+        "name": surface.name,
+        "path": str(surface.path),
+        "device": surface.device,
+        "inode": surface.inode,
+        "uid": surface.uid,
+        "mode": surface.mode,
+        "nlink": surface.nlink,
+        "tree_sha256": surface.tree_sha256,
+    }
+
+
+def build_production_surface_contract(
+    *,
+    raw_results_root: Path,
+    parent_runs_root: Path,
+    run_roots: Mapping[str, Path],
+    current_run_id: str,
+    fixture_source_root: Path,
+    template_root: Path,
+) -> ProductionSurfaceContract:
+    """Derive every protected path from Task 2 authority and a closed 15-run layout."""
+    from ai_sdlc.benefit_sealed_materializer import (
+        DISPOSITION_ROOT,
+        FINAL_TARGET,
+        INVALID_R1_ROOT,
+        LEGACY_ROOT,
+        PRIOR_TRUSTED_SOURCE_ROOT,
+        TRUSTED_SOURCE_ROOT,
+    )
+
+    expected_run_ids = {
+        f"{arm_id}:{fixture_id}"
+        for arm_id in ARM_IDS
+        for fixture_id in (
+            "requirement-contract-ambiguity",
+            "frontend-recovery-delivery",
+            "multi-tenant-security-review",
+        )
+    }
+    if set(run_roots) != expected_run_ids or current_run_id not in run_roots:
+        raise ValueError("production run surface registry is not the closed matrix")
+    normalized_runs = {
+        key: Path(os.path.abspath(value)) for key, value in run_roots.items()
+    }
+    if len(set(normalized_runs.values())) != 15:
+        raise ValueError("production run surfaces alias")
+    control_gitfile, control_gitdir, control_common = derive_repo_git_surfaces(
+        _REPO_ROOT
+    )
+    commitments = json.loads((FINAL_TARGET / "candidate-commitments.json").read_text())
+    runtime_capsule = Path(str(commitments["evaluator_runtime_capsule"]["root"]))
+    named = {
+        "sealed_r2": _bound_surface("sealed-r2", FINAL_TARGET),
+        "sealed_r1": _bound_surface("sealed-r1", INVALID_R1_ROOT),
+        "sealed_legacy": _bound_surface("sealed-legacy", LEGACY_ROOT),
+        "source_r2": _bound_surface("source-r2", TRUSTED_SOURCE_ROOT),
+        "source_r1": _bound_surface("source-r1", PRIOR_TRUSTED_SOURCE_ROOT),
+        "disposition": _bound_surface("disposition", DISPOSITION_ROOT),
+        "control_repo": _bound_surface("control-repo", _REPO_ROOT),
+        "control_gitfile": _bound_surface("control-gitfile", control_gitfile),
+        "control_gitdir": _bound_surface("control-gitdir", control_gitdir),
+        "control_common_gitdir": _bound_surface(
+            "control-common-gitdir", control_common
+        ),
+        "raw_results": _bound_surface("raw-results", raw_results_root),
+        "parent_runs": _bound_surface("parent-runs", parent_runs_root),
+        "fixture_source": _bound_surface("fixture-source", fixture_source_root),
+        "template": _bound_surface("template", template_root),
+        "runtime_capsule": _bound_surface("runtime-capsule", runtime_capsule),
+    }
+    other_runs = tuple(
+        _bound_surface(f"other-run:{run_id}", path)
+        for run_id, path in sorted(normalized_runs.items())
+        if run_id != current_run_id
+    )
+    if len(other_runs) != 14:
+        raise ValueError("production other-run surface count is invalid")
+    payload = {value.name: _surface_payload(value) for value in named.values()}
+    payload["other_runs"] = [_surface_payload(item) for item in other_runs]
+    digest = sha256(_canonical_bytes(payload)).hexdigest()
+    return ProductionSurfaceContract(
+        **named, other_runs=other_runs, contract_sha256=digest
+    )
+
+
+def verify_production_surface_contract(contract: ProductionSurfaceContract) -> None:
+    surfaces = [
+        contract.sealed_r2,
+        contract.sealed_r1,
+        contract.sealed_legacy,
+        contract.source_r2,
+        contract.source_r1,
+        contract.disposition,
+        contract.control_repo,
+        contract.control_gitfile,
+        contract.control_gitdir,
+        contract.control_common_gitdir,
+        contract.raw_results,
+        contract.parent_runs,
+        *contract.other_runs,
+        contract.fixture_source,
+        contract.template,
+        contract.runtime_capsule,
+    ]
+    if len(contract.other_runs) != 14 or len({item.path for item in surfaces}) != len(
+        surfaces
+    ):
+        raise ValueError("production surface contract is incomplete or aliased")
+    rebound = [_bound_surface(item.name, item.path) for item in surfaces]
+    if rebound != surfaces:
+        raise ValueError("production surface identity changed")
+    payload = {
+        item.name: _surface_payload(item)
+        for item in surfaces
+        if not item.name.startswith("other-run:")
+    }
+    payload["other_runs"] = [
+        _surface_payload(item)
+        for item in surfaces
+        if item.name.startswith("other-run:")
+    ]
+    if sha256(_canonical_bytes(payload)).hexdigest() != contract.contract_sha256:
+        raise ValueError("production surface contract digest changed")
+
+
+def freeze_expert_snapshot(
+    root: Path,
+    *,
+    parent_candidate_root: Path,
+    snapshot_sha256: str,
+    candidate_sha256: str,
+) -> ExpertSnapshot:
+    """Freeze one independent, snapshot-only expert CWD."""
+    absolute = Path(os.path.abspath(root))
+    parent = Path(os.path.abspath(parent_candidate_root))
+    if (
+        absolute == parent
+        or absolute.is_relative_to(parent)
+        or parent.is_relative_to(absolute)
+        or not _DIGEST.fullmatch(snapshot_sha256)
+        or not _DIGEST.fullmatch(candidate_sha256)
+    ):
+        raise ValueError("expert snapshot root is not independent")
+    return ExpertSnapshot(
+        root=absolute,
+        root_identity=_path_identity(absolute),
+        snapshot_sha256=snapshot_sha256,
+        candidate_sha256=candidate_sha256,
+        tree_sha256=_tree_digest(absolute, exclude_git=False),
+    )
+
+
+def _verify_expert_snapshot(snapshot: ExpertSnapshot) -> None:
+    if (
+        _path_identity(snapshot.root) != snapshot.root_identity
+        or _tree_digest(snapshot.root, exclude_git=False) != snapshot.tree_sha256
+    ):
+        raise ValueError("expert snapshot identity changed")
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -514,6 +879,14 @@ def _parse_manifest(raw: Mapping[str, object], canonical: bytes) -> ArmManifest:
         provider_cwd=str(raw["provider_cwd"]),
         common_agent_contract_path=str(raw["common_agent_contract_path"]),
         common_agent_contract_sha256=str(raw["common_agent_contract_sha256"]),
+        prompt_matrix_path=str(raw["prompt_matrix_path"]),
+        prompt_matrix_sha256=str(raw["prompt_matrix_sha256"]),
+        ai_sdlc_method_surface_manifest_path=str(
+            raw["ai_sdlc_method_surface_manifest_path"]
+        ),
+        ai_sdlc_method_surface_manifest_sha256=str(
+            raw["ai_sdlc_method_surface_manifest_sha256"]
+        ),
         ai_sdlc_commit=str(ai["peeled_commit"]),
         ai_sdlc_tree=str(ai["source_tree"]),
         stock_agents_source_path=str(ai["stock_agents_source_path"]),
@@ -555,7 +928,7 @@ def validate_arm_manifest(
     """Verify identities, every vendored byte, namespace diff and skill closure."""
     try:
         if (
-            manifest.schema != "ai-sdlc-v2-benefit-arm-manifest/v1"
+            manifest.schema != "ai-sdlc-v2-benefit-arm-manifest/v2"
             or manifest.arm_ids != ARM_IDS
             or manifest.provider_cwd != PROVIDER_CWD
             or manifest.ai_sdlc_commit != AI_SDLC_COMMIT
@@ -564,6 +937,16 @@ def validate_arm_manifest(
             or manifest.superpowers.source_tree != SUPERPOWERS_TREE
             or manifest.superpowers.tag != "v6.3.0"
             or manifest.superpowers.tag_object_type != "tag"
+            or manifest.superpowers.source_url != SUPERPOWERS_SOURCE_URL
+            or manifest.superpowers.full_archive_sha256 != SUPERPOWERS_ARCHIVE_SHA256
+            or manifest.superpowers.license_sha256 != SUPERPOWERS_LICENSE_SHA256
+            or manifest.superpowers.closure_archive_sha256
+            != SUPERPOWERS_PROVIDER_TREE_SHA256
+            or manifest.superpowers.adaptation_sha256 != SUPERPOWERS_ADAPTATION_SHA256
+            or manifest.superpowers.source_inventory_sha256
+            != SUPERPOWERS_ADAPTATION_SHA256
+            or manifest.superpowers.semantic_adaptation_diff_sha256
+            != SUPERPOWERS_SEMANTIC_DIFF_SHA256
             or manifest.superpowers.multi_agent is not False
             or manifest.superpowers.namespace_rewrite
             != {"from": "superpowers:<name>", "to": "$<name>"}
@@ -580,6 +963,67 @@ def validate_arm_manifest(
             manifest.common_agent_contract_path,
             manifest.common_agent_contract_sha256,
         )
+        _file_under(
+            arms_root, manifest.prompt_matrix_path, manifest.prompt_matrix_sha256
+        )
+        _file_under(
+            arms_root,
+            manifest.ai_sdlc_method_surface_manifest_path,
+            manifest.ai_sdlc_method_surface_manifest_sha256,
+        )
+        prompt_matrix = _closed(
+            json.loads((arms_root / manifest.prompt_matrix_path).read_text()),
+            {"schema", "runs"},
+            "prompt matrix",
+        )
+        if (
+            prompt_matrix["schema"] != "ai-sdlc-v2-benefit-prompt-matrix/v1"
+            or not isinstance(prompt_matrix["runs"], list)
+            or len(prompt_matrix["runs"]) != 15
+        ):
+            raise ValueError("prompt matrix binding is invalid")
+        common_text = (arms_root / manifest.common_agent_contract_path).read_text(
+            encoding="utf-8"
+        )
+        expected_prompt_rows = []
+        for fixture_id in (
+            "requirement-contract-ambiguity",
+            "frontend-recovery-delivery",
+            "multi-tenant-security-review",
+        ):
+            prompt_digest = sha256(
+                _prompt_for(fixture_id, common_text).encode()
+            ).hexdigest()
+            expected_prompt_rows.extend(
+                {
+                    "run_id": f"{arm_id}:{fixture_id}",
+                    "prompt_sha256": prompt_digest,
+                }
+                for arm_id in ARM_IDS
+            )
+        if prompt_matrix["runs"] != expected_prompt_rows:
+            raise ValueError("prompt matrix content drifted")
+        method_policy = _closed(
+            json.loads(
+                (arms_root / manifest.ai_sdlc_method_surface_manifest_path).read_text()
+            ),
+            {"schema", "immutable_roots", "writable_leaves"},
+            "AI-SDLC method surface manifest",
+        )
+        if (
+            method_policy["schema"] != "ai-sdlc-v2-benefit-method-surfaces/v1"
+            or method_policy["writable_leaves"]
+            != manifest.isolation["a_writable_method_leaves"]
+            or manifest.isolation["p_s_forbidden_namespaces"]
+            != [
+                ".ai-sdlc",
+                ".agents",
+                ".codex",
+                "AGENTS.md",
+                "AGENTS.override.md",
+            ]
+        ):
+            raise ValueError("method surface policy drifted")
         _file_under(
             arms_root,
             manifest.callback_bridge_path,
@@ -600,6 +1044,65 @@ def validate_arm_manifest(
             manifest.superpowers.namespace_diff_path,
             manifest.superpowers.namespace_diff_sha256,
         )
+        _file_under(
+            arms_root,
+            manifest.superpowers.semantic_adaptation_diff_path,
+            manifest.superpowers.semantic_adaptation_diff_sha256,
+        )
+        archive_path = _file_under(
+            arms_root,
+            manifest.superpowers.provenance_archive_path,
+            manifest.superpowers.full_archive_sha256,
+        )
+        _file_under(
+            arms_root,
+            manifest.superpowers.source_inventory_path,
+            manifest.superpowers.source_inventory_sha256,
+        )
+        source_inventory = _closed(
+            json.loads(
+                (arms_root / manifest.superpowers.source_inventory_path).read_text()
+            ),
+            {
+                "schema",
+                "source_url",
+                "tag",
+                "tag_object_type",
+                "peeled_commit",
+                "source_tree",
+                "full_archive_sha256",
+                "license_sha256",
+                "provider_policy",
+                "forbidden_reachable_terms",
+                "semantic_adaptation_diff_sha256",
+                "provider_files",
+                "provider_tree_sha256",
+            },
+            "Superpowers source inventory",
+        )
+        if (
+            source_inventory["schema"]
+            != "ai-sdlc-v2-superpowers-single-agent-adaptation/v2"
+            or source_inventory["source_url"] != SUPERPOWERS_SOURCE_URL
+            or source_inventory["tag"] != "v6.3.0"
+            or source_inventory["tag_object_type"] != "tag"
+            or source_inventory["peeled_commit"] != SUPERPOWERS_COMMIT
+            or source_inventory["source_tree"] != SUPERPOWERS_TREE
+            or source_inventory["full_archive_sha256"] != SUPERPOWERS_ARCHIVE_SHA256
+            or source_inventory["license_sha256"] != SUPERPOWERS_LICENSE_SHA256
+            or source_inventory["provider_tree_sha256"]
+            != SUPERPOWERS_PROVIDER_TREE_SHA256
+            or source_inventory["semantic_adaptation_diff_sha256"]
+            != SUPERPOWERS_SEMANTIC_DIFF_SHA256
+            or source_inventory["forbidden_reachable_terms"]
+            != ["subagent", "parallel", "dispatch"]
+        ):
+            raise ValueError("Superpowers source inventory drifted")
+        _file_under(
+            arms_root,
+            manifest.superpowers.activation_agents_path,
+            manifest.superpowers.activation_agents_sha256,
+        )
         for entry in manifest.arms:
             _file_under(arms_root, entry.config_path, entry.config_sha256)
             if (entry.override_path is None) != (entry.override_sha256 is None):
@@ -608,74 +1111,73 @@ def validate_arm_manifest(
                 _file_under(arms_root, entry.override_path, entry.override_sha256)
         expected_paths = set()
         skill_names = set()
-        reconstructed_diff: list[str] = []
-        for entry in manifest.superpowers.files:
-            if (
-                entry.kind != "file"
-                or entry.mode not in {"100644", "100755"}
-                or not _DIGEST.fullmatch(entry.upstream_sha256)
-                or not _DIGEST.fullmatch(entry.adapted_sha256)
-                or isinstance(entry.namespace_replacements, bool)
-                or entry.namespace_replacements < 0
-            ):
-                raise ValueError("vendor file binding is invalid")
-            path = _file_under(arms_root / "S", entry.path, entry.adapted_sha256)
-            expected_paths.add(path.relative_to(arms_root / "S").as_posix())
-            if path.name == "SKILL.md":
-                skill_names.add(path.parent.name)
+        provider_root = arms_root / _safe_relative(
+            manifest.superpowers.provider_closure_path
+        )
+        with tarfile.open(archive_path, mode="r:") as archive:
+            members = {member.name: member for member in archive.getmembers()}
+            for member in members.values():
+                archive_path_value = Path(member.name)
+                link_path = (
+                    Path(member.linkname) if member.issym() or member.islnk() else None
+                )
+                if (
+                    archive_path_value.is_absolute()
+                    or ".." in archive_path_value.parts
+                    or (
+                        link_path is not None
+                        and (link_path.is_absolute() or ".." in link_path.parts)
+                    )
+                ):
+                    raise ValueError("Superpowers provenance archive is unsafe")
+            for entry in manifest.superpowers.files:
+                if (
+                    entry.kind != "file"
+                    or entry.mode not in {"100644", "100755"}
+                    or not _DIGEST.fullmatch(entry.upstream_sha256)
+                    or not _DIGEST.fullmatch(entry.adapted_sha256)
+                    or isinstance(entry.namespace_replacements, bool)
+                    or entry.namespace_replacements < 0
+                ):
+                    raise ValueError("vendor file binding is invalid")
+                path = _file_under(arms_root / "S", entry.path, entry.adapted_sha256)
+                path.relative_to(provider_root)
+                expected_paths.add(path.relative_to(provider_root).as_posix())
+                if path.name == "SKILL.md":
+                    skill_names.add(path.parent.name)
+                upstream_name = "skills/" + path.relative_to(provider_root).as_posix()
+                member = members.get(upstream_name)
+                extracted = (
+                    archive.extractfile(member)
+                    if member is not None and member.isfile()
+                    else None
+                )
+                if (
+                    extracted is None
+                    or sha256(extracted.read()).hexdigest() != entry.upstream_sha256
+                ):
+                    raise ValueError("Superpowers upstream file binding drifted")
         actual_paths = {
-            path.relative_to(arms_root / "S").as_posix()
-            for path in (arms_root / "S" / ".agents" / "skills").rglob("*")
+            path.relative_to(provider_root).as_posix()
+            for path in provider_root.rglob("*")
             if path.is_file()
         }
         if actual_paths != expected_paths:
             raise ValueError("vendor closure is not closed")
         if manifest.superpowers.activation_skill not in skill_names:
             raise ValueError("Superpowers activation skill is missing")
-        entries_by_path = {entry.path: entry for entry in manifest.superpowers.files}
         for relative in sorted(expected_paths):
-            path = arms_root / "S" / relative
-            entry = entries_by_path[relative]
-            if path.suffix != ".md":
-                if (
-                    entry.namespace_replacements
-                    or entry.upstream_sha256 != entry.adapted_sha256
-                ):
-                    raise ValueError("non-Markdown vendor bytes drifted")
-                continue
+            path = provider_root / relative
             text = path.read_text(encoding="utf-8")
             if "superpowers:" in text:
                 raise ValueError("Superpowers namespace rewrite is incomplete")
+            lowered = text.lower()
+            if any(word in lowered for word in ("subagent", "parallel", "dispatch")):
+                raise ValueError("Superpowers reachable closure is not single-agent")
             references = set(_SKILL_REFERENCE.findall(text))
             missing = references - skill_names - _IGNORED_SHELL_REFERENCES
             if missing:
                 raise ValueError("Superpowers reference closure is incomplete")
-            upstream = text
-            replacements = 0
-            for skill_name in sorted(skill_names, key=len, reverse=True):
-                pattern = re.compile(rf"\${re.escape(skill_name)}\b")
-                upstream, count = pattern.subn(f"superpowers:{skill_name}", upstream)
-                replacements += count
-            if replacements != entry.namespace_replacements:
-                raise ValueError("Superpowers namespace replacement count drifted")
-            if sha256(upstream.encode()).hexdigest() != entry.upstream_sha256:
-                raise ValueError("Superpowers upstream reconstruction drifted")
-            if upstream != text:
-                source_relative = relative.removeprefix(".agents/")
-                reconstructed_diff.extend(
-                    difflib.unified_diff(
-                        upstream.splitlines(True),
-                        text.splitlines(True),
-                        fromfile=f"a/{source_relative}",
-                        tofile=f"b/{relative}",
-                        n=0,
-                    )
-                )
-        if (
-            "".join(reconstructed_diff).encode()
-            != (arms_root / manifest.superpowers.namespace_diff_path).read_bytes()
-        ):
-            raise ValueError("Superpowers namespace diff is not reproducible")
     except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
         return (BenchmarkIssue("arms.manifest", "arm manifest is invalid"),)
     return ()
@@ -783,11 +1285,21 @@ def _run_local(
     )
 
 
+def closed_git_environment() -> dict[str, str]:
+    """Return the complete Git environment; inherited Git state is never visible."""
+    return {
+        "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+        "LC_ALL": "C",
+        "LANG": "C",
+        **_DETERMINISTIC_GIT_ENV,
+    }
+
+
 def _git(root: Path, *arguments: str, check: bool = True) -> str:
     result = subprocess.run(
         ["git", *arguments],
         cwd=root,
-        env={**os.environ, **_DETERMINISTIC_GIT_ENV},
+        env=closed_git_environment(),
         check=check,
         capture_output=True,
         text=True,
@@ -797,8 +1309,9 @@ def _git(root: Path, *arguments: str, check: bool = True) -> str:
 
 def _initialize_single_root_git(root: Path, message: str) -> None:
     for arguments in (
-        ("init", "--quiet", "--initial-branch=main"),
+        ("init", "--quiet", "--initial-branch=main", "--template="),
         ("config", "core.autocrlf", "false"),
+        ("config", "core.hooksPath", "/dev/null"),
         ("add", "--all"),
         (
             "-c",
@@ -832,6 +1345,104 @@ def _amend_single_root_git(root: Path) -> None:
         raise ValueError("prepared arm is not a single-root Git repository")
     if _git(root, "status", "--porcelain=v1"):
         raise ValueError("prepared arm Git repository is dirty")
+
+
+def _path_identity(path: Path) -> PathIdentity:
+    absolute = Path(os.path.abspath(path))
+    before = os.lstat(absolute)
+    if stat.S_ISLNK(before.st_mode) or not stat.S_ISDIR(before.st_mode):
+        raise ValueError("prepared directory identity is invalid")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(absolute, flags)
+    try:
+        opened = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    identity = (
+        opened.st_dev,
+        opened.st_ino,
+        opened.st_uid,
+        opened.st_gid,
+        opened.st_mode,
+        opened.st_nlink,
+    )
+    if identity != (
+        before.st_dev,
+        before.st_ino,
+        before.st_uid,
+        before.st_gid,
+        before.st_mode,
+        before.st_nlink,
+    ):
+        raise ValueError("prepared directory changed during identity read")
+    return PathIdentity(
+        absolute,
+        before.st_dev,
+        before.st_ino,
+        before.st_uid,
+        before.st_gid,
+        before.st_mode,
+        before.st_nlink,
+    )
+
+
+def _freeze_prepared_git_identity(
+    root: Path, provider_cwd: Path
+) -> PreparedGitIdentity:
+    git_dir = root / ".git"
+    absolute_git_dir = _git(root, "rev-parse", "--absolute-git-dir")
+    common_git_dir = _git(root, "rev-parse", "--git-common-dir")
+    expected_git_dir = str(git_dir.resolve(strict=True))
+    resolved_common = str((root / common_git_dir).resolve(strict=True))
+    if (
+        absolute_git_dir != expected_git_dir
+        or resolved_common != expected_git_dir
+        or not git_dir.is_dir()
+        or git_dir.is_symlink()
+        or _git(root, "rev-list", "--count", "HEAD") != "1"
+        or _git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    ):
+        raise ValueError("prepared Git identity is not a clean internal single root")
+    return PreparedGitIdentity(
+        run_root=_path_identity(root),
+        provider_cwd=_path_identity(provider_cwd),
+        git_dir=_path_identity(git_dir),
+        head=_git(root, "rev-parse", "HEAD"),
+        tree=_git(root, "rev-parse", "HEAD^{tree}"),
+        provider_pre_tree_sha256=_tree_digest(provider_cwd, exclude_git=False),
+        absolute_git_dir=absolute_git_dir,
+        common_git_dir=resolved_common,
+    )
+
+
+def verify_prepared_arm_identity(prepared: PreparedArm) -> None:
+    """Fail closed if a prepared run, CWD, or internal Git root was replaced."""
+    if not hasattr(os, "O_NOFOLLOW"):
+        raise ValueError("O_NOFOLLOW is required for prepared identity checks")
+    current = _freeze_prepared_git_identity(prepared.root, prepared.provider_cwd)
+    expected = (
+        prepared.run_root_identity,
+        prepared.provider_cwd_identity,
+        prepared.git_dir_identity,
+        prepared.git_head,
+        prepared.git_tree,
+        prepared.provider_pre_tree_sha256,
+    )
+    actual = (
+        current.run_root,
+        current.provider_cwd,
+        current.git_dir,
+        current.head,
+        current.tree,
+        current.provider_pre_tree_sha256,
+    )
+    if actual != expected:
+        raise ValueError("prepared arm identity or expected pre-launch tree changed")
 
 
 def _ensure_shared_runtime(runtime_root: Path) -> tuple[Path, str]:
@@ -917,8 +1528,21 @@ def _clean_environment(root: Path) -> CleanEnvironment:
     codex_home.mkdir(mode=0o700)
     home.chmod(0o700)
     codex_home.chmod(0o700)
+    codex_entry, _native = _resolve_codex_binary()
+    safe_path = ":".join(
+        dict.fromkeys(
+            (
+                str(codex_entry.parent),
+                "/opt/homebrew/bin",
+                "/usr/bin",
+                "/bin",
+                "/usr/sbin",
+                "/sbin",
+            )
+        )
+    )
     allowed = {
-        "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+        "PATH": safe_path,
         "HOME": str(home),
         "CODEX_HOME": str(codex_home),
         "LC_ALL": "C",
@@ -926,22 +1550,22 @@ def _clean_environment(root: Path) -> CleanEnvironment:
         "TZ": "UTC",
         "PYTHONDONTWRITEBYTECODE": "1",
         "PIP_NO_INDEX": "1",
+        "GIT_CONFIG_GLOBAL": "/dev/null",
         "GIT_CONFIG_NOSYSTEM": "1",
         "GIT_TERMINAL_PROMPT": "0",
         "NO_PROXY": "*",
         "no_proxy": "*",
         "AI_SDLC_BENCHMARK_PROVIDER": "forbidden-task3",
+        "AI_SDLC_BENCHMARK_SERVICE_SOCKET": str(root / "service.sock"),
     }
-    return CleanEnvironment(home, codex_home, 0, allowed)
+    environment_sha256 = sha256(_canonical_bytes(allowed)).hexdigest()
+    return CleanEnvironment(home, codex_home, 0, allowed, environment_sha256)
 
 
 def _copy_methodology(arm_id: str, root: Path, manifest: ArmManifest) -> None:
-    if arm_id in {"P", "S"}:
-        shutil.copy2(
-            _ARMS_ROOT / manifest.common_agent_contract_path, root / "AGENTS.md"
-        )
     if arm_id == "S":
-        shutil.copytree(_ARMS_ROOT / "S" / ".agents", root / ".agents")
+        shutil.copy2(_ARMS_ROOT / "S" / "AGENTS.md", root / "AGENTS.md")
+        shutil.copytree(_ARMS_ROOT / "S" / "provider" / ".agents", root / ".agents")
     if arm_id in {"A00", "A10"}:
         entry = manifest.arm(arm_id)
         if entry.override_path is None:
@@ -1062,7 +1686,10 @@ def _capability_arguments() -> list[str]:
 
 
 def _codex_local_probe(
-    prepared_root: Path, environment: CleanEnvironment, manifest: ArmManifest
+    prepared_root: Path,
+    environment: CleanEnvironment,
+    manifest: ArmManifest,
+    prompt: str,
 ) -> tuple[CodexRuntime, Mapping[str, object]]:
     entry, native = _resolve_codex_binary()
     if _sha_file(entry) != manifest.codex.entrypoint_sha256:
@@ -1130,7 +1757,7 @@ def _codex_local_probe(
             *_capability_arguments(),
             "debug",
             "prompt-input",
-            "benchmark inventory probe",
+            prompt,
         ],
         cwd=prepared_root / "benchmark-task",
         environment=environment.environment,
@@ -1272,35 +1899,19 @@ def _string_leaves(value: object) -> tuple[str, ...]:
     return ()
 
 
-def _prompt_for(arm_id: str, fixture_id: str, common_contract: str) -> str:
-    parts = [
-        common_contract.rstrip(),
-        "",
-        f"Frozen run: arm={arm_id}; fixture={fixture_id}; provider_cwd={PROVIDER_CWD}",
-        "Read input-contract.json and complete only its target stage.",
-    ]
-    if arm_id == "S":
-        parts.extend(
+def _prompt_for(fixture_id: str, common_contract: str) -> str:
+    """Build the identical public user prompt used by every arm for one fixture."""
+    return (
+        "\n".join(
             [
-                "Activate $using-superpowers before proceeding.",
-                "This is the frozen single-Agent adaptation: multi_agent=false; do not dispatch subagents.",
+                common_contract.rstrip(),
+                "",
+                f"Frozen fixture: {fixture_id}; provider_cwd={PROVIDER_CWD}",
+                "Read input-contract.json and complete only its target stage.",
             ]
         )
-    elif arm_id == "A00":
-        parts.append("Honor the exact nested A00 harness-ablation overlay.")
-    elif arm_id == "A10":
-        parts.append(
-            "Use exactly one target-stage Loop; no runner expert callback is available."
-        )
-    elif arm_id == "A11":
-        parts.append(
-            "Use exactly one target-stage Loop and await the hash-bound bounded-review callback before Close."
-        )
-    if fixture_id == "frontend-recovery-delivery" and arm_id.startswith("A"):
-        parts.append(
-            "Before changing frontend source: solution-confirm dry-run, digest-bound frontend-solution approval, then execute."
-        )
-    return "\n".join(parts) + "\n"
+        + "\n"
+    )
 
 
 def _instruction_chain(root: Path, arm_id: str) -> tuple[tuple[str, str], ...]:
@@ -1311,7 +1922,7 @@ def _instruction_chain(root: Path, arm_id: str) -> tuple[tuple[str, str], ...]:
     override = root / "benchmark-task" / "AGENTS.override.md"
     if override.is_file():
         chain.append(("benchmark-task/AGENTS.override.md", _sha_file(override)))
-    expected = 2 if arm_id in {"A00", "A10"} else 1
+    expected = {"P": 0, "S": 1, "A00": 2, "A10": 2, "A11": 1}[arm_id]
     if len(chain) != expected:
         raise ValueError("resolved instruction chain is invalid")
     return tuple(chain)
@@ -1330,6 +1941,23 @@ def _freeze_method_instruction_files(
     instruction_roots = [client.parent]
     if skills.is_dir():
         instruction_roots.append(skills)
+    if arm_id.startswith("A"):
+        policy = json.loads(
+            (_ARMS_ROOT / "ai-sdlc-method-surfaces.json").read_text(encoding="utf-8")
+        )
+        for relative in policy["immutable_roots"]:
+            surface = root / relative
+            if surface.is_dir():
+                instruction_roots.append(surface)
+            elif surface.is_file():
+                paths.append(surface)
+            else:
+                raise ValueError("AI-SDLC immutable method surface is missing")
+    else:
+        for relative in (".agents", ".codex", ".ai-sdlc"):
+            surface = root / relative
+            if surface.is_dir():
+                instruction_roots.append(surface)
     roots = tuple(
         dict.fromkeys(path.resolve(strict=True) for path in instruction_roots)
     )
@@ -1347,6 +1975,74 @@ def _freeze_method_instruction_files(
     ):
         directory.chmod(0o555)
     return unique, roots
+
+
+def _method_surface_sha256(root: Path, arm_id: str) -> str:
+    """Bind static method namespaces while excluding only closed Loop output leaves."""
+    if arm_id in {"P", "S"}:
+        records: list[dict[str, object]] = []
+        for base_name, base in (("root", root), ("provider", root / "benchmark-task")):
+            for relative in (
+                ".ai-sdlc",
+                ".agents",
+                ".codex",
+                "AGENTS.md",
+                "AGENTS.override.md",
+            ):
+                path = base / relative
+                if not path.exists():
+                    continue
+                info = path.lstat()
+                if stat.S_ISLNK(info.st_mode):
+                    raise ValueError("method namespace contains a symlink")
+                records.append(
+                    {
+                        "path": f"{base_name}/{relative}",
+                        "kind": "directory" if path.is_dir() else "file",
+                        "sha256": (
+                            _tree_digest(path, exclude_git=False)
+                            if path.is_dir()
+                            else _sha_file(path)
+                        ),
+                    }
+                )
+        return sha256(_canonical_bytes(records)).hexdigest()
+
+    ai_sdlc = root / ".ai-sdlc"
+    records = []
+    for path in sorted(ai_sdlc.rglob("*"), key=lambda item: item.as_posix()):
+        relative = path.relative_to(root)
+        parts = relative.parts
+        allowed_state = len(parts) >= 3 and parts[:3] == (
+            ".ai-sdlc",
+            "state",
+            "loop",
+        )
+        allowed_work_item = parts[:2] == (".ai-sdlc", "work-items") and (
+            len(parts) == 3 or (len(parts) >= 4 and parts[3] in {"loop", "outputs"})
+        )
+        if allowed_state or allowed_work_item:
+            continue
+        info = path.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            raise ValueError("AI-SDLC method surface contains a symlink")
+        if stat.S_ISDIR(info.st_mode):
+            kind = "directory"
+            digest = None
+        elif stat.S_ISREG(info.st_mode):
+            kind = "file"
+            digest = _sha_file(path)
+        else:
+            raise ValueError("AI-SDLC method surface contains an unsupported entry")
+        records.append(
+            {
+                "path": relative.as_posix(),
+                "kind": kind,
+                "mode": stat.S_IMODE(info.st_mode),
+                "sha256": digest,
+            }
+        )
+    return sha256(_canonical_bytes(records)).hexdigest()
 
 
 def prepare_arm(
@@ -1431,7 +2127,15 @@ def prepare_arm(
     method_instruction_paths, method_instruction_roots = (
         _freeze_method_instruction_files(destination, arm_id)
     )
-    runtime_binding, probe = _codex_local_probe(destination, environment, manifest)
+    method_surface_sha256 = _method_surface_sha256(destination, arm_id)
+    prompt = _prompt_for(
+        fixture.fixture_id,
+        (_ARMS_ROOT / manifest.common_agent_contract_path).read_text(encoding="utf-8"),
+    )
+    prompt_sha256 = sha256(prompt.encode()).hexdigest()
+    runtime_binding, probe = _codex_local_probe(
+        destination, environment, manifest, prompt
+    )
     chain = _instruction_chain(destination, arm_id)
     repo_skills = (
         tuple(
@@ -1452,11 +2156,6 @@ def prepare_arm(
             manifest.callback_bridge_sha256 if arm_id == "A11" else None
         ),
     }
-    prompt = _prompt_for(
-        arm_id,
-        fixture.fixture_id,
-        (_ARMS_ROOT / manifest.common_agent_contract_path).read_text(encoding="utf-8"),
-    )
     inventory_payload = {
         "schema": "ai-sdlc-v2-benefit-instruction-inventory/v1",
         "arm_id": arm_id,
@@ -1473,7 +2172,8 @@ def prepare_arm(
         ),
         "base_global": probe["base"],
         "base_global_sha256": probe["base_sha256"],
-        "prompt_input_sha256": probe["prompt_input_sha256"],
+        "prompt_sha256": prompt_sha256,
+        "codex_prompt_input_sha256": probe["prompt_input_sha256"],
         "method_instruction_files": [
             {
                 "path": (
@@ -1492,11 +2192,15 @@ def prepare_arm(
             }
             for path in method_instruction_roots
         ],
+        "method_surface_sha256": method_surface_sha256,
         "provider_attempts_started": 0,
     }
     inventory_path = environment.home.parent / "instruction-inventory.json"
     inventory_path.write_bytes(_canonical_bytes(inventory_payload) + b"\n")
     inventory_path.chmod(0o600)
+    git_identity = _freeze_prepared_git_identity(
+        destination, destination / "benchmark-task"
+    )
     prepared = PreparedArm(
         arm_id=arm_id,
         fixture_id=fixture.fixture_id,
@@ -1507,17 +2211,25 @@ def prepare_arm(
         provider_cwd_tree_sha256=_tree_digest(
             destination / "benchmark-task", exclude_git=False
         ),
+        provider_pre_tree_sha256=git_identity.provider_pre_tree_sha256,
+        run_root_identity=git_identity.run_root,
+        provider_cwd_identity=git_identity.provider_cwd,
+        git_dir_identity=git_identity.git_dir,
+        git_head=git_identity.head,
+        git_tree=git_identity.tree,
         public_input_sha256=_sha_file(
             destination / "benchmark-task" / "input-contract.json"
         ),
         methodology_sha256=sha256(_canonical_bytes(methodology)).hexdigest(),
         base_global_sha256=str(probe["base_sha256"]),
-        instruction_inventory_sha256=str(probe["prompt_input_sha256"]),
+        instruction_inventory_sha256=prompt_sha256,
         instruction_inventory_path=inventory_path,
         method_instruction_paths=method_instruction_paths,
         method_instruction_roots=method_instruction_roots,
+        method_surface_sha256=method_surface_sha256,
         shared_runtime_root=shared_runtime,
         prompt=prompt,
+        prompt_sha256=prompt_sha256,
         environment=environment,
         codex=runtime_binding,
         framework_init=framework_init,
@@ -1538,7 +2250,17 @@ def inspect_instruction_sources(prepared: PreparedArm) -> InstructionInventory:
 def _inspect_instruction_sources(
     prepared: PreparedArm, *, reprobe_global: bool
 ) -> InstructionInventory:
-    chain = _instruction_chain(prepared.root, prepared.arm_id)
+    issues: list[BenchmarkIssue] = []
+    try:
+        chain = _instruction_chain(prepared.root, prepared.arm_id)
+    except (OSError, ValueError):
+        chain = ()
+        issues.append(
+            BenchmarkIssue(
+                "arms.instruction-namespace-drift",
+                "an unallowlisted instruction or methodology namespace exists",
+            )
+        )
     chain_digest = sha256(_canonical_bytes(chain)).hexdigest()
     skills_root = prepared.root / ".agents" / "skills"
     repo_skills = (
@@ -1549,7 +2271,6 @@ def _inspect_instruction_sources(
     skill_digest = _tree_digest(skills_root, exclude_git=False) if repo_skills else None
     ai_sdlc_present = (prepared.root / ".ai-sdlc").is_dir()
     superpowers_present = skills_root.exists()
-    issues: list[BenchmarkIssue] = []
     try:
         metadata = prepared.instruction_inventory_path.lstat()
         stored = json.loads(prepared.instruction_inventory_path.read_bytes())
@@ -1560,7 +2281,8 @@ def _inspect_instruction_sources(
             or stat.S_IMODE(metadata.st_mode) != 0o600
             or metadata.st_nlink != 1
             or stored["base_global_sha256"] != prepared.base_global_sha256
-            or stored["prompt_input_sha256"] != prepared.instruction_inventory_sha256
+            or stored["prompt_sha256"] != prepared.prompt_sha256
+            or prepared.prompt_sha256 != sha256(prepared.prompt.encode()).hexdigest()
             or sha256(_canonical_bytes(stored["base_global"])).hexdigest()
             != prepared.base_global_sha256
             or stored["repo_skills"] != list(repo_skills)
@@ -1569,12 +2291,14 @@ def _inspect_instruction_sources(
             raise ValueError("stored instruction inventory changed")
         if reprobe_global:
             _runtime, current = _codex_local_probe(
-                prepared.root, prepared.environment, load_arm_manifest()
+                prepared.root,
+                prepared.environment,
+                load_arm_manifest(),
+                prepared.prompt,
             )
             if (
                 current["base_sha256"] != prepared.base_global_sha256
-                or current["prompt_input_sha256"]
-                != prepared.instruction_inventory_sha256
+                or current["prompt_input_sha256"] != stored["codex_prompt_input_sha256"]
                 or tuple(current["repo_prompt_skills"]) != repo_skills
             ):
                 raise ValueError("actual Codex instruction inventory drifted")
@@ -1585,7 +2309,7 @@ def _inspect_instruction_sources(
                 "actual prompt/tool/global instruction inventory changed",
             )
         )
-    allowed_instruction_files = {"AGENTS.md"}
+    allowed_instruction_files = {"AGENTS.md"} if prepared.arm_id != "P" else set()
     if prepared.arm_id in {"A00", "A10"}:
         allowed_instruction_files.add("benchmark-task/AGENTS.override.md")
     actual_instruction_files = {
@@ -1668,11 +2392,15 @@ def verify_method_instruction_immutability(
         inventory = json.loads(prepared.instruction_inventory_path.read_text())
         expected = inventory["method_instruction_files"]
         expected_roots = inventory["method_instruction_roots"]
+        expected_surface = inventory["method_surface_sha256"]
         if (
             not isinstance(expected, list)
             or len(expected) != len(prepared.method_instruction_paths)
             or not isinstance(expected_roots, list)
             or len(expected_roots) != len(prepared.method_instruction_roots)
+            or expected_surface != prepared.method_surface_sha256
+            or _method_surface_sha256(prepared.root, prepared.arm_id)
+            != expected_surface
         ):
             raise ValueError("instruction inventory coverage changed")
         by_relative = {
@@ -1717,36 +2445,83 @@ def build_arm_isolation_profile(
     prepared: PreparedArm,
     reservation: AttemptReservation,
     *,
-    sealed_root: Path,
-    control_root: Path,
-    raw_results_root: Path,
-    other_run_roots: Sequence[Path],
-    protected_roots: Sequence[Path],
+    surfaces: ProductionSurfaceContract,
     output_schema: Path | None = None,
+    expert_snapshot: ExpertSnapshot | None = None,
 ) -> ProviderIsolationProfile:
     """Bind Task 2's strong Seatbelt profile to an exact arm command and surfaces."""
+    verify_production_surface_contract(surfaces)
+    verify_prepared_arm_identity(prepared)
     if verify_method_instruction_immutability(prepared):
         raise ValueError("method instruction immutability check failed")
-    command = build_codex_command(prepared, reservation, output_schema=output_schema)
-    control_git = derive_repo_git_surfaces(control_root)
+    command = build_codex_command(
+        prepared,
+        reservation,
+        output_schema=output_schema,
+        expert_snapshot=expert_snapshot,
+    )
     write_protected = [
         *prepared.method_instruction_paths,
         *prepared.method_instruction_roots,
     ]
     if prepared.shared_runtime_root is not None:
         write_protected.append(prepared.shared_runtime_root)
+    missing_method_paths: list[Path] = []
+    if prepared.arm_id in {"P", "S"}:
+        for base in (prepared.root, prepared.provider_cwd):
+            for relative in (
+                ".ai-sdlc",
+                ".agents",
+                ".codex",
+                "AGENTS.md",
+                "AGENTS.override.md",
+            ):
+                candidate = base / relative
+                if not candidate.exists():
+                    missing_method_paths.append(candidate)
+
+    def launch_guard() -> None:
+        verify_prepared_arm_identity(prepared)
+        verify_production_surface_contract(surfaces)
+        if verify_method_instruction_immutability(prepared):
+            raise ValueError("method instruction immutability check failed")
+        if (
+            prepared.environment.environment_sha256
+            != sha256(
+                _canonical_bytes(dict(prepared.environment.environment))
+            ).hexdigest()
+        ):
+            raise ValueError("launch environment binding changed")
+
+    protected = (
+        surfaces.sealed_r1.path,
+        surfaces.sealed_legacy.path,
+        surfaces.source_r2.path,
+        surfaces.source_r1.path,
+        surfaces.disposition.path,
+        surfaces.control_gitfile.path,
+        surfaces.control_gitdir.path,
+        surfaces.control_common_gitdir.path,
+        surfaces.parent_runs.path,
+        surfaces.fixture_source.path,
+        surfaces.template.path,
+        _ARMS_ROOT,
+    )
     profile = build_provider_isolation_profile(
         run_root=prepared.provider_cwd,
-        sealed_root=sealed_root,
-        control_root=control_root,
-        raw_results_root=raw_results_root,
-        protected_roots=tuple(
-            dict.fromkeys((*protected_roots, *control_git, _ARMS_ROOT))
+        sealed_root=surfaces.sealed_r2.path,
+        control_root=surfaces.control_repo.path,
+        raw_results_root=surfaces.raw_results.path,
+        protected_roots=tuple(dict.fromkeys(protected)),
+        write_protected_roots=tuple(
+            dict.fromkeys((*write_protected, surfaces.runtime_capsule.path))
         ),
-        write_protected_roots=tuple(dict.fromkeys(write_protected)),
-        other_run_roots=other_run_roots,
+        missing_write_protected_paths=tuple(missing_method_paths),
+        other_run_roots=tuple(item.path for item in surfaces.other_runs),
         argv=command,
         environment=prepared.environment.environment,
+        preserve_environment=True,
+        launch_guard=launch_guard,
     )
     if profile.issues:
         codes = ",".join(f"{issue.code}:{issue.message}" for issue in profile.issues)
@@ -1759,9 +2534,13 @@ def build_codex_command(
     reservation: AttemptReservation,
     *,
     output_schema: Path | None = None,
+    expert_snapshot: ExpertSnapshot | None = None,
 ) -> list[str]:
     """Construct, validate and return argv; this function never launches a subprocess."""
     policy = prepared.command_policy
+    verify_prepared_arm_identity(prepared)
+    if prepared.prompt_sha256 != sha256(prepared.prompt.encode()).hexdigest():
+        raise ValueError("prepared prompt binding changed")
     if Path(prepared.subprocess_cwd).resolve() != prepared.provider_cwd.resolve():
         raise ValueError("provider cwd and subprocess cwd disagree")
     if (
@@ -1791,8 +2570,14 @@ def build_codex_command(
         raise ValueError("command policy is not closed")
     kind = reservation.request.kind
     expert = kind in {"primary_expert", "cross_risk_expert", "expert_rereview"}
-    if expert and output_schema is None:
-        raise ValueError("expert command requires a frozen output schema")
+    if expert and (output_schema is None or expert_snapshot is None):
+        raise ValueError("expert command requires a frozen output schema and snapshot")
+    if not expert and expert_snapshot is not None:
+        raise ValueError("writer command cannot use an expert snapshot")
+    command_cwd = prepared.provider_cwd
+    if expert_snapshot is not None:
+        _verify_expert_snapshot(expert_snapshot)
+        command_cwd = expert_snapshot.root
     sandbox = "read-only" if expert else "workspace-write"
     argv = [
         prepared.codex.executable,
@@ -1809,7 +2594,7 @@ def build_codex_command(
         "--sandbox",
         sandbox,
         "-C",
-        str(prepared.provider_cwd),
+        str(command_cwd),
         *_capability_arguments(),
     ]
     if expert:
@@ -1818,9 +2603,7 @@ def build_codex_command(
     forbidden = load_arm_manifest().codex.forbidden_exec_options
     if any(option in argv for option in forbidden):
         raise ValueError("command contains a forbidden capability")
-    if argv.count("-C") != 1 or argv[argv.index("-C") + 1] != str(
-        prepared.provider_cwd
-    ):
+    if argv.count("-C") != 1 or argv[argv.index("-C") + 1] != str(command_cwd):
         raise ValueError("command cwd binding is invalid")
     return argv
 
@@ -1845,6 +2628,9 @@ class BoundedReviewBridge:
         writer_session: str,
         parent_digest: str,
         candidate_digest: str,
+        initial_snapshot: bytes,
+        input_digest: str,
+        candidate_tree_digest: str,
     ) -> None:
         if (
             fixture_id not in self._ALLOWED_ROLES
@@ -1852,6 +2638,9 @@ class BoundedReviewBridge:
             or not writer_session
             or not _DIGEST.fullmatch(parent_digest)
             or not _DIGEST.fullmatch(candidate_digest)
+            or not initial_snapshot
+            or not _DIGEST.fullmatch(input_digest)
+            or not _DIGEST.fullmatch(candidate_tree_digest)
         ):
             raise ValueError("review callback binding is invalid")
         self.run_id = run_id
@@ -1859,10 +2648,15 @@ class BoundedReviewBridge:
         self.writer_session = writer_session
         self.parent_digest = parent_digest
         self.candidate_digest = candidate_digest
+        self.initial_snapshot_sha256 = sha256(initial_snapshot).hexdigest()
+        self.input_digest = input_digest
+        self.candidate_tree_digest = candidate_tree_digest
         self._reviews: dict[str, ReviewEvidence] = {}
         self._rereviews: dict[str, ReviewEvidence] = {}
         self._children: set[str] = set()
         self._repair_digest: str | None = None
+        self._repaired_snapshot_sha256: str | None = None
+        self._repair_count = 0
         self._failed: str | None = None
         self._conflict = False
         self._closed = False
@@ -1902,11 +2696,17 @@ class BoundedReviewBridge:
             or not child_session
         ):
             raise ValueError("review child session is not unique or bounded")
-        if not reason or not snapshot:
+        if (
+            not reason
+            or not snapshot
+            or sha256(snapshot).hexdigest() != self.initial_snapshot_sha256
+            or (role == "Cross-risk" and "security" not in reason.lower())
+        ):
             raise ValueError("review snapshot binding is invalid")
         if (
             not _DIGEST.fullmatch(parent_tree_before)
             or parent_tree_before != parent_tree_after
+            or parent_tree_before != self.candidate_tree_digest
         ):
             self._failed = "parent_mutation"
             raise ValueError("review parent mutation is forbidden")
@@ -1937,22 +2737,39 @@ class BoundedReviewBridge:
         return evidence
 
     def record_writer_repair(
-        self, writer_session: str, repair_digest: str, new_candidate_digest: str
+        self,
+        writer_session: str,
+        repair_digest: str,
+        new_candidate_digest: str,
+        repaired_snapshot: bytes,
+        new_candidate_tree_digest: str,
     ) -> None:
         if writer_session != self.writer_session:
             raise ValueError("replacement writer cannot repair")
-        if self._failed or self._closed or not self._reviews:
-            raise ValueError("review repair preconditions are invalid")
+        if (
+            self._failed
+            or self._closed
+            or set(self._reviews) != set(self._ALLOWED_ROLES[self.fixture_id])
+        ):
+            raise ValueError("required initial expert roles are incomplete")
+        if self._repair_count:
+            raise ValueError("writer may repair at most once")
         if not any(review.findings for review in self._reviews.values()):
             raise ValueError("review repair has no Findings")
         if (
             not _DIGEST.fullmatch(repair_digest)
             or not _DIGEST.fullmatch(new_candidate_digest)
             or new_candidate_digest == self.candidate_digest
+            or not repaired_snapshot
+            or not _DIGEST.fullmatch(new_candidate_tree_digest)
+            or new_candidate_tree_digest == self.candidate_tree_digest
         ):
             raise ValueError("review repair digest is invalid")
         self._repair_digest = repair_digest
+        self._repair_count = 1
         self.candidate_digest = new_candidate_digest
+        self.candidate_tree_digest = new_candidate_tree_digest
+        self._repaired_snapshot_sha256 = sha256(repaired_snapshot).hexdigest()
 
     def dispatch_fake_rereview(
         self,
@@ -1972,11 +2789,13 @@ class BoundedReviewBridge:
             raise ValueError("review rereview did not pass")
         if (
             not snapshot
+            or sha256(snapshot).hexdigest() != self._repaired_snapshot_sha256
             or not _DIGEST.fullmatch(parent_tree_before)
             or parent_tree_before != parent_tree_after
+            or parent_tree_before != self.candidate_tree_digest
         ):
             self._failed = "parent_mutation"
-            raise ValueError("review rereview snapshot or parent binding is invalid")
+            raise ValueError("review repaired snapshot or parent binding is invalid")
         self._validate_findings(findings)
         evidence = ReviewEvidence(
             role=role,
@@ -2026,7 +2845,11 @@ class BoundedReviewBridge:
 
     @property
     def close_allowed(self) -> bool:
-        if self._failed or self._conflict or "Primary" not in self._reviews:
+        if (
+            self._failed
+            or self._conflict
+            or set(self._reviews) != set(self._ALLOWED_ROLES[self.fixture_id])
+        ):
             return False
         roles_with_findings = {
             role for role, review in self._reviews.items() if review.findings
@@ -2049,10 +2872,10 @@ class BoundedReviewBridge:
         if (
             self._failed
             or self._conflict
-            or "Primary" not in self._reviews
+            or set(self._reviews) != set(self._ALLOWED_ROLES[self.fixture_id])
             or self._closed
         ):
-            raise ValueError("review Close preconditions are invalid")
+            raise ValueError("review Close required roles are incomplete")
         roles_with_findings = {
             role for role, review in self._reviews.items() if review.findings
         }
@@ -2075,6 +2898,60 @@ class BoundedReviewBridge:
         }
 
 
+def _capture_execution_source_binding(
+    arms_root: Path, execution_commit: str
+) -> ExecutionSourceBinding:
+    repo_root = arms_root.parents[2]
+    head = _git(repo_root, "rev-parse", "HEAD")
+    status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+        cwd=repo_root,
+        env=closed_git_environment(),
+        check=True,
+        capture_output=True,
+    ).stdout
+    tree_listing = subprocess.run(
+        ["git", "ls-tree", "-r", "-z", "HEAD"],
+        cwd=repo_root,
+        env=closed_git_environment(),
+        check=True,
+        capture_output=True,
+    ).stdout
+    if head != execution_commit or status:
+        raise ValueError("execution source is not the exact clean commit")
+    source_paths = (
+        repo_root / "src/ai_sdlc/benefit_benchmark.py",
+        repo_root / "src/ai_sdlc/benefit_benchmark_fixtures.py",
+        repo_root / "src/ai_sdlc/benefit_benchmark_arms.py",
+        repo_root / "scripts/ai_sdlc_v2_benefit_benchmark.py",
+        arms_root / "manifest.json",
+        arms_root / "prompt-matrix.json",
+        arms_root / "ai-sdlc-method-surfaces.json",
+        arms_root / "common-agent-contract.md",
+        arms_root / "S/adaptation.json",
+        arms_root / "S/semantic-adaptation.diff",
+        arms_root / "S/AGENTS.md",
+    )
+    source_capsule = [
+        {
+            "path": path.relative_to(repo_root).as_posix(),
+            "sha256": _stable_regular_file_sha256(path),
+        }
+        for path in source_paths
+    ]
+    manifest = load_arm_manifest(arms_root / "manifest.json")
+    return ExecutionSourceBinding(
+        commit=head,
+        tree_sha256=sha256(tree_listing).hexdigest(),
+        clean_state_sha256=sha256(status).hexdigest(),
+        task3_runner_sha256=_stable_regular_file_sha256(
+            repo_root / "src/ai_sdlc/benefit_benchmark_arms.py"
+        ),
+        source_capsule_sha256=sha256(_canonical_bytes(source_capsule)).hexdigest(),
+        prompt_matrix_sha256=manifest.prompt_matrix_sha256,
+    )
+
+
 def validate_execution_authorization_v2(
     protocol: BenchmarkProtocol,
     authorization_path: Path | None,
@@ -2082,6 +2959,7 @@ def validate_execution_authorization_v2(
     execution_commit: str,
     preflight_receipt: Path,
     arms_root: Path = _ARMS_ROOT,
+    _test_execution_binding: ExecutionSourceBinding | None = None,
 ) -> tuple[BenchmarkIssue, ...]:
     """Validate the Task-4 external authorization v2 bindings without writing it.
 
@@ -2098,11 +2976,20 @@ def validate_execution_authorization_v2(
         )
         scope = _closed(raw["scope"], _AUTH_SCOPE_KEYS, "authorization scope")
         manifest = load_arm_manifest(arms_root / "manifest.json")
+        binding = _test_execution_binding or _capture_execution_source_binding(
+            arms_root, execution_commit
+        )
         if (
             raw["schema"] != "ai-sdlc-v2-benefit-execution-authorization/v2"
             or raw["protocol_sha256"] != canonical_protocol_digest(protocol)
             or raw["execution_commit"] != execution_commit
             or not _COMMIT.fullmatch(execution_commit)
+            or raw["execution_tree_sha256"] != binding.tree_sha256
+            or raw["execution_clean_state_sha256"] != binding.clean_state_sha256
+            or binding.clean_state_sha256 != _EMPTY_GIT_STATUS_SHA256
+            or raw["task3_runner_sha256"] != binding.task3_runner_sha256
+            or raw["source_capsule_sha256"] != binding.source_capsule_sha256
+            or raw["prompt_matrix_sha256"] != binding.prompt_matrix_sha256
             or raw["arm_manifest_sha256"] != _sha_file(arms_root / "manifest.json")
             or raw["neutral_envelope_sha256"]
             != _sha_file(arms_root / manifest.common_agent_contract_path)

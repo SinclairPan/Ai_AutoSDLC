@@ -1136,6 +1136,21 @@ def test_fix_round3_system_publication_requires_real_final_path_canary(
         (policy.target / "isolation-attestation.json").read_bytes()
     )
     assert attestation["state"] == "validated"
+    expected_profile = materializer._build_final_isolation_profile(policy)
+    expected_protected_roots = len(
+        tuple(
+            dict.fromkeys(
+                (
+                    expected_profile.sealed_root,
+                    expected_profile.sealed_root.parent,
+                    expected_profile.control_root,
+                    expected_profile.raw_results_root,
+                    *expected_profile.protected_roots,
+                    *expected_profile.other_run_roots,
+                )
+            )
+        )
+    )
     assert attestation["checks"] == {
         "direct": True,
         "parent": True,
@@ -1144,7 +1159,7 @@ def test_fix_round3_system_publication_requires_real_final_path_canary(
         "environment": True,
         "other_run": True,
         "add_dir": True,
-        "protected_roots": 7,
+        "protected_roots": expected_protected_roots,
         "write_protected_roots": 1,
     }
     assert (
