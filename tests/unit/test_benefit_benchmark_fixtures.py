@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from hashlib import sha256
 from pathlib import Path
 
@@ -163,20 +164,190 @@ def _write_sealed_test_root(root: Path) -> Path:
         intent_map, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
     (root / "intent-map.json").write_bytes(intent_bytes)
+    runtime = fixture_module.evaluator_python_runtime_identity()
+    runtime_sha256 = fixture_module.evaluator_runtime_identity_sha256(runtime)
     manifest = {
-        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v2",
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v3",
         "lock_id": "unit-test-only",
         "entries": entries,
         "intent_map": {
             "path": "intent-map.json",
             "sha256": sha256(intent_bytes).hexdigest(),
         },
+        "evaluator_python_runtime_sha256": runtime_sha256,
     }
     manifest_bytes = json.dumps(
         manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode()
     (root / "sealed-manifest.json").write_bytes(manifest_bytes)
+    (root / "candidate-commitments.json").write_text(
+        json.dumps(
+            {
+                "schema": "ai-sdlc-v2-benefit-candidate-commitments/v2",
+                "lock_id": "unit-test-only",
+                "source_head": "0" * 40,
+                "source_tree_sha": "1" * 40,
+                "materializer_sha256": "2" * 64,
+                "source_bundle_sha256": "3" * 64,
+                "fixture_manifest_sha256": "4" * 64,
+                "fixture_tree_sha256": "5" * 64,
+                "evidence_contract_sha256": "6" * 64,
+                "sealed_manifest_sha256": sha256(manifest_bytes).hexdigest(),
+                "intent_map_sha256": sha256(intent_bytes).hexdigest(),
+                "fixture_payloads": entries,
+                "source_root_tree_sha256": "7" * 64,
+                "evaluator_python_runtime": runtime,
+                "evaluator_python_runtime_sha256": runtime_sha256,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
     return root
+
+
+def test_fix_round6_runtime_is_external_canonical_and_frozen() -> None:
+    identity = fixture_module.evaluator_python_runtime_identity()
+
+    runtime = Path(str(identity["path"]))
+    assert runtime == Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+    assert identity["sha256"] == sha256(runtime.read_bytes()).hexdigest()
+    assert identity["implementation"] == "CPython"
+    assert identity["version"]
+    assert identity["cache_tag"]
+    with pytest.raises(ValueError):
+        runtime.relative_to(REPO_ROOT)
+    assert (
+        fixture_module.evaluator_runtime_identity_sha256(identity)
+        == sha256(
+            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+
+
+def test_fix_round6_runtime_rejects_control_overlap_and_identity_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(fixture_module.EvaluatorNoGoError, match="runtime-overlap"):
+        fixture_module.evaluator_python_runtime_identity(
+            forbidden_roots=(fixture_module.EVALUATOR_PYTHON.parent,)
+        )
+
+    original = fixture_module._digest_file
+    monkeypatch.setattr(
+        fixture_module,
+        "_digest_file",
+        lambda path: (
+            "0" * 64 if path == fixture_module.EVALUATOR_PYTHON else original(path)
+        ),
+    )
+    with pytest.raises(fixture_module.EvaluatorNoGoError, match="runtime-identity"):
+        fixture_module.evaluator_python_runtime_identity(expected_sha256="f" * 64)
+
+
+@pytest.mark.parametrize(
+    "failure", ["exit71", "timeout", "invalid-json", "adapter-error"]
+)
+def test_fix_round6_adapter_infrastructure_failure_is_no_go(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source = candidate / "candidate.py"
+    source.write_text("pass\n", encoding="utf-8")
+
+    def isolated_launch(_profile: object, argv: object, **_kwargs: object):
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(list(argv), 10)
+        if failure == "exit71":
+            return subprocess.CompletedProcess(
+                list(argv), 71, "", "execvp not permitted"
+            )
+        if failure == "invalid-json":
+            return subprocess.CompletedProcess(list(argv), 0, "not-json", "")
+        return subprocess.CompletedProcess(list(argv), 0, '{"adapter_error":"bad"}', "")
+
+    monkeypatch.setattr(fixture_module, "run_provider_isolated", isolated_launch)
+
+    with pytest.raises(fixture_module.EvaluatorNoGoError, match="adapter-"):
+        fixture_module._run_candidate_adapter(
+            candidate,
+            sealed,
+            source=source,
+            scenario={},
+        )
+
+
+def test_fix_round6_adapter_launches_bound_external_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source = candidate / "candidate.py"
+    source.write_text("pass\n", encoding="utf-8")
+    launches: list[tuple[str, ...]] = []
+
+    def isolated_launch(_profile: object, argv: object, **_kwargs: object):
+        launches.append(tuple(argv))
+        return subprocess.CompletedProcess(
+            list(argv), 0, '{"allowed":false,"status":"pending"}', ""
+        )
+
+    monkeypatch.setattr(fixture_module, "run_provider_isolated", isolated_launch)
+    fixture_module._run_candidate_adapter(candidate, sealed, source=source, scenario={})
+
+    assert launches[0][0] == str(fixture_module.EVALUATOR_PYTHON)
+    assert not launches[0][0].startswith(str(REPO_ROOT))
+
+
+def test_fix_round6_invalid_r1_without_runtime_binding_is_no_go(tmp_path: Path) -> None:
+    actual = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1")
+    if not actual.is_dir():
+        pytest.skip("invalid r1 is not present on this host")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source = candidate / "candidate.py"
+    source.write_text("pass\n", encoding="utf-8")
+
+    with pytest.raises(fixture_module.EvaluatorNoGoError, match="runtime-binding"):
+        fixture_module._run_candidate_adapter(
+            candidate,
+            actual,
+            source=source,
+            scenario={},
+        )
+
+
+def test_fix_round6_frontend_browser_timeout_remains_expected_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    candidate = tmp_path / "candidate"
+    sealed = tmp_path / "sealed"
+    candidate.mkdir()
+    sealed.mkdir()
+    monkeypatch.setattr(
+        fixture_module,
+        "run_frontend_browser_e2e",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            subprocess.TimeoutExpired(["test-browser"], 30)
+        ),
+    )
+
+    assert (
+        fixture_module._criterion_passes(
+            candidate,
+            sealed,
+            {
+                "kind": "frontend_browser_suite",
+                "expected": {"executed_with_real_browser": True},
+            },
+            browser_program=_test_browser_program(),
+        )
+        is False
+    )
 
 
 def test_task2_red_manifest_is_closed_stable_and_covers_three_fixtures() -> None:
@@ -1032,6 +1203,14 @@ def test_fix_round1_requirement_placeholder_cannot_receive_credit(
     manifest_path.write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":"))
     )
+    commitments_path = sealed / "candidate-commitments.json"
+    commitments = json.loads(commitments_path.read_text())
+    commitments["sealed_manifest_sha256"] = sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    commitments_path.write_text(
+        json.dumps(commitments, sort_keys=True, separators=(",", ":"))
+    )
     candidate = tmp_path / "candidate"
     (candidate / "benchmark-task").mkdir(parents=True)
     (candidate / "benchmark-task" / "design-contract.json").write_text(
@@ -1228,6 +1407,14 @@ def test_fix_round1_security_oracle_reports_finding_confusion_metrics(
     manifest_path.write_text(
         json.dumps(manifest, sort_keys=True, separators=(",", ":"))
     )
+    commitments_path = sealed / "candidate-commitments.json"
+    commitments = json.loads(commitments_path.read_text())
+    commitments["sealed_manifest_sha256"] = sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    commitments_path.write_text(
+        json.dumps(commitments, sort_keys=True, separators=(",", ":"))
+    )
     prepared = prepare_fixture("multi-tenant-security-review", tmp_path / "candidate")
     (prepared.root / "benchmark-task" / "findings.json").write_text(
         json.dumps(
@@ -1237,8 +1424,11 @@ def test_fix_round1_security_oracle_reports_finding_confusion_metrics(
 
     try:
         result = evaluate_fixture("multi-tenant-security-review", prepared.root, sealed)
-    except RuntimeError as error:
-        if "sandbox_apply: Operation not permitted" in str(error):
+    except (RuntimeError, fixture_module.EvaluatorNoGoError) as error:
+        if (
+            "sandbox_apply: Operation not permitted" in str(error)
+            or getattr(error, "code", "") == "adapter-sandbox"
+        ):
             pytest.skip("nested Seatbelt is unavailable inside the test sandbox")
         raise
 

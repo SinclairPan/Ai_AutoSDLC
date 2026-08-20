@@ -320,3 +320,45 @@ git diff --check: clean
 ```
 
 本轮没有重试正式 materialize，没有修改 external source、old root、tracked protocol 或交易/发布合同，也没有启动 Provider、`codex exec` 或 experiment arm。上一轮失败留下的 raw-results stale canary 保持原样，留待父任务在任何正式重试决策前按已确认的精确路径处理。
+
+## Fix Round 6：仓外冻结评估运行时与 r2 单调替换合同
+
+### Critical、RED 与运行时选择
+
+- Fix 基线：`c639703162ea18544da0974c738ed713ce42ed14`，起点 clean。
+- actual r1 复核发现 security evaluator 使用控制仓 `.venv` 内的 `sys.executable`；最终 Seatbelt 同时拒绝 control root，导致子进程 `execvp` 失败。旧实现又把 nonzero、invalid JSON 和 `adapter_error` 折叠成普通 criterion false，使六个行为 Oracle 系统性失效，而两套 fresh 结果仍可相等，属于 Critical 假绿。
+- fresh FixR6 focused 为 `11 failed`；另对 frontend timeout 增补单独 RED，修复前为 `1 failed`。所有失败均在实现前真实运行。
+- 首选 `/usr/bin/python3` 的真实 system-outside 回归暴露 Python 3.9 不支持公开 fixture 使用的 `datetime.UTC`，退出码为 1；因此未把“不在仓内”误当作“兼容可执行”。最终选择当前控制器的 canonical base executable，仅当其位于 control root 外、全链路无 symlink、祖先与 leaf owner/mode/type 合法时接受，并在材料化时冻结完整身份。
+
+### Closed runtime binding 与 evaluator NO-GO
+
+- runtime identity 是 closed v1 object，绑定 canonical path、binary SHA256、Python version、implementation、cache tag，以及 device/inode/uid/gid/mode/nlink/size；任何 symlink、owner/type/mode、祖先、hash、version 或 stat 漂移均 NO-GO。
+- sealed manifest v3、candidate commitments v2、materialization receipt v2 与 isolation attestation 同时绑定 runtime identity digest；candidate commitments 另保存完整 closed identity。评估时从 commitments 读取已冻结 path/hash，再复算当前身份，不能由 PATH 或其他环境变量替换。
+- materializer validation scratch 与后续 actual-root replay 都经同一 `evaluate_fixture` 路径加载同一冻结 runtime。当前 invalid r1 不含该绑定，使用新 evaluator 读取时明确 `runtime-binding` NO-GO，不能继续输出分数。
+- security adapter 的 timeout、launch error、Seatbelt error、任何 nonzero（包括 71）、invalid JSON、非 mapping 或 `adapter_error` 均抛出 `EvaluatorNoGoError`，整套评估中止；不再转换成 criterion false。frontend browser timeout 仍按冻结规则 fail closed 为 false，不升级为 security infrastructure error，也不修改 rubric。
+
+### r2 单调发布与不可变 r1
+
+- production target/lock 单调升级为 exact literal `v2-benefits-20260819-r2`；没有 `latest`、glob 或 fallback，入口显式拒绝 r1 lock。新的 source root 同步版本化为 `sealed-source-r2`。
+- invalid-unbound r1 原地保留，production policy 冻结其 inode 与 identity-tree digest；materialize 起点、发布前和发布后均复算，不一致则在 r2 发布前 NO-GO，或仅按 r2 inode-bound rollback 清理本轮 r2。r1 不会被搬移、删除、覆盖或复用。
+- r2 最终 isolation profile 同时覆盖 exact r2 sealed root、r1、旧 evaluator root、r1/r2 两代 source root、repo、gitfile、per-worktree gitdir、common Git dir、raw results 与 other run roots。
+- 新增 closed disposition-plan API，只生成 `requires-independent-review` / `preserve-in-place` 的 opaque record；目标是独立 protected audit root。当前仅测试 API，不创建 audit root、不写 r1、不执行 disposition。
+
+### FixR6 门禁
+
+```text
+fresh RED: 11 failed + frontend timeout 1 failed
+FixR6 focused: 12 passed, 1 nested-sandbox skip
+fixture + materializer related: 120 passed, 10 skipped
+benefit + fixture + materializer related: 483 passed, 10 skipped
+system-outside six security oracles × two fresh: 1 passed in 1.58s
+system-outside complete scratch: 1 passed in 246.39s
+system-outside exact final Git surfaces: 1 passed
+Ruff check: All checks passed
+Ruff format: 4 files already formatted
+git diff --check: clean
+```
+
+完整 scratch 的耗时包含冻结的两次 frontend baseline timeout；两者均按预期 fail closed。独立 security 专项证明六个 Oracle 在两套 fresh candidate 上都由同一仓外冻结 runtime 真实执行，结果 byte-stable 且 baseline non-delivery，不含 `adapter_error`。
+
+最终只读门禁：invalid r1 inode `402612600`、identity-tree SHA256 `9701e5fa4ebc55aeb2911d8eee8c97af9b618a9bfeac48ac8d9bfcfa8144dc30` 未变；r2 target absent；tracked protocol 四项均为 `pending-unbound`；Provider、`codex exec`、experiment arm 调用为 `0`。本轮未重试 materialize，未删除或替换 r1，未修改 external source、旧 root 或 stale raw-results canary。

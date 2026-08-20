@@ -25,11 +25,14 @@ except ImportError:  # pragma: no cover - 正式物化器仅在 macOS 上执行�
 
 from ai_sdlc.benefit_benchmark_fixtures import (
     FIXTURE_IDS,
+    EvaluatorNoGoError,
     FrozenIntentApprovalService,
     ProviderIsolationProfile,
     build_provider_isolation_profile,
     derive_repo_git_surfaces,
     evaluate_fixture,
+    evaluator_python_runtime_identity,
+    evaluator_runtime_identity_sha256,
     load_fixture_manifest,
     prepare_fixture,
     probe_provider_isolation,
@@ -38,12 +41,21 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     validate_frontend_browser_program,
 )
 
-FINAL_LOCK_ID = "v2-benefits-20260819-r1"
-FINAL_TARGET = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1")
+FINAL_LOCK_ID = "v2-benefits-20260819-r2"
+FINAL_TARGET = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r2")
+INVALID_R1_ROOT = Path(
+    "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1"
+)
+EXPECTED_INVALID_R1_INODE = 402612600
+EXPECTED_INVALID_R1_TREE_SHA256 = (
+    "9701e5fa4ebc55aeb2911d8eee8c97af9b618a9bfeac48ac8d9bfcfa8144dc30"
+)
 LEGACY_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819")
 TRUST_ANCHOR = Path("/private/tmp")
 TRUSTED_SOURCE_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-source")
-TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source"
+PRIOR_TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source"
+TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source-r2"
+DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit")
 FINAL_CANARY_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-isolation-canary")
 EXPECTED_LEGACY_INODE = 400173643
 
@@ -125,6 +137,8 @@ CANDIDATE_COMMITMENT_KEYS = {
     "intent_map_sha256",
     "fixture_payloads",
     "source_root_tree_sha256",
+    "evaluator_python_runtime",
+    "evaluator_python_runtime_sha256",
 }
 RECEIPT_KEYS = {
     "schema",
@@ -143,6 +157,7 @@ RECEIPT_KEYS = {
     "candidate_commitments_sha256",
     "isolation_probe_state",
     "source_root_tree_sha256",
+    "evaluator_python_runtime_sha256",
 }
 
 
@@ -161,6 +176,14 @@ class TreeFingerprint:
 
 
 @dataclass(frozen=True)
+class ImmutableRoot:
+    path: Path
+    inode: int
+    tree_sha256: str
+    label: str
+
+
+@dataclass(frozen=True)
 class MaterializerPolicy:
     repo_root: Path
     target: Path
@@ -173,6 +196,9 @@ class MaterializerPolicy:
     canary_run_root: Path
     raw_results_root: Path
     other_run_roots: tuple[Path, ...]
+    prior_source_roots: tuple[Path, ...] = ()
+    immutable_roots: tuple[ImmutableRoot, ...] = ()
+    disposition_root: Path = DISPOSITION_ROOT
 
 
 @dataclass(frozen=True)
@@ -424,6 +450,55 @@ def fingerprint_tree(root: Path) -> TreeFingerprint:
     )
 
 
+def _capture_immutable_roots(
+    policy: MaterializerPolicy,
+) -> tuple[TreeFingerprint, ...]:
+    observed: list[TreeFingerprint] = []
+    for binding in policy.immutable_roots:
+        current = fingerprint_tree(binding.path)
+        if (
+            current.inode != binding.inode
+            or current.sha256 != binding.tree_sha256
+            or not binding.label
+        ):
+            raise MaterializationError("immutable-root")
+        observed.append(current)
+    return tuple(observed)
+
+
+def _assert_immutable_roots(
+    policy: MaterializerPolicy, expected: tuple[TreeFingerprint, ...]
+) -> None:
+    if _capture_immutable_roots(policy) != expected:
+        raise MaterializationError("immutable-root-changed")
+
+
+def build_disposition_record(policy: MaterializerPolicy) -> bytes:
+    """Build, but never publish, the closed review record for an invalid root."""
+    invalid = next(
+        (item for item in policy.immutable_roots if item.label == "invalid-r1"), None
+    )
+    if invalid is None:
+        raise MaterializationError("disposition-binding")
+    current = fingerprint_tree(invalid.path)
+    if current != TreeFingerprint(invalid.inode, invalid.tree_sha256):
+        raise MaterializationError("disposition-binding")
+    if _paths_overlap(policy.disposition_root, invalid.path) or _paths_overlap(
+        policy.disposition_root, policy.target
+    ):
+        raise MaterializationError("disposition-overlap")
+    return _canonical_json_bytes(
+        {
+            "schema": "ai-sdlc-v2-benefit-disposition-plan/v1",
+            "state": "requires-independent-review",
+            "invalid_lock_id": invalid.path.name,
+            "replacement_lock_id": policy.target.name,
+            "invalid_root_tree_sha256": current.sha256,
+            "action": "preserve-in-place",
+        }
+    )
+
+
 def default_policy() -> MaterializerPolicy:
     benchmark = _REPO_ROOT / _BENCHMARK_RELATIVE
     return MaterializerPolicy(
@@ -435,6 +510,9 @@ def default_policy() -> MaterializerPolicy:
         forbidden_roots=(
             _REPO_ROOT,
             _REPO_ROOT / ".git",
+            INVALID_R1_ROOT,
+            LEGACY_ROOT,
+            PRIOR_TRUSTED_SOURCE_ROOT,
             benchmark / "results",
             benchmark / "runs",
             benchmark / "raw-results",
@@ -445,6 +523,16 @@ def default_policy() -> MaterializerPolicy:
         canary_run_root=FINAL_CANARY_BASE / "run",
         raw_results_root=FINAL_CANARY_BASE / "raw-results",
         other_run_roots=(FINAL_CANARY_BASE / "other-run",),
+        prior_source_roots=(PRIOR_TRUSTED_SOURCE_ROOT,),
+        immutable_roots=(
+            ImmutableRoot(
+                INVALID_R1_ROOT,
+                EXPECTED_INVALID_R1_INODE,
+                EXPECTED_INVALID_R1_TREE_SHA256,
+                "invalid-r1",
+            ),
+        ),
+        disposition_root=DISPOSITION_ROOT,
     )
 
 
@@ -1071,6 +1159,20 @@ def compile_source_bundle(
     source = _validate_source_object(source_bytes, policy=policy)
     bindings = _capture_repo_bindings(expected_head, policy)
     source_root_tree_sha256 = fingerprint_tree(policy.source_root).sha256
+    try:
+        runtime_identity = evaluator_python_runtime_identity(
+            forbidden_roots=(
+                policy.repo_root,
+                policy.target,
+                policy.legacy_root,
+                policy.source_root,
+                *policy.prior_source_roots,
+                *(item.path for item in policy.immutable_roots),
+            )
+        )
+        runtime_sha256 = evaluator_runtime_identity_sha256(runtime_identity)
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-identity") from error
     intent_bytes = _canonical_json_bytes(source["intent_map"])
     payloads = source["payloads"]
     files: dict[str, bytes] = {"intent-map.json": intent_bytes}
@@ -1085,15 +1187,16 @@ def compile_source_bundle(
         payload_commitments.append({"fixture_id": fixture_id, "sha256": digest})
     intent_sha = _digest_bytes(intent_bytes)
     manifest = {
-        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v2",
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v3",
         "lock_id": policy.target.name,
         "entries": entries,
         "intent_map": {"path": "intent-map.json", "sha256": intent_sha},
+        "evaluator_python_runtime_sha256": runtime_sha256,
     }
     manifest_bytes = _canonical_json_bytes(manifest)
     files["sealed-manifest.json"] = manifest_bytes
     commitments = {
-        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v1",
+        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v2",
         "lock_id": policy.target.name,
         "source_head": bindings.source_head,
         "source_tree_sha": bindings.source_tree_sha,
@@ -1106,11 +1209,13 @@ def compile_source_bundle(
         "intent_map_sha256": intent_sha,
         "fixture_payloads": payload_commitments,
         "source_root_tree_sha256": source_root_tree_sha256,
+        "evaluator_python_runtime": runtime_identity,
+        "evaluator_python_runtime_sha256": runtime_sha256,
     }
     commitment_bytes = _canonical_json_bytes(commitments)
     files["candidate-commitments.json"] = commitment_bytes
     receipt = {
-        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v1",
+        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v2",
         "publication_state": "published-pending-isolation",
         "isolation_probe_state": "pending",
         "target_lock_id": policy.target.name,
@@ -1126,6 +1231,7 @@ def compile_source_bundle(
         "fixture_payloads": payload_commitments,
         "candidate_commitments_sha256": _digest_bytes(commitment_bytes),
         "source_root_tree_sha256": source_root_tree_sha256,
+        "evaluator_python_runtime_sha256": runtime_sha256,
     }
     files["materialization-receipt.json"] = _canonical_json_bytes(receipt)
     if tuple(files) != _OUTPUT_ORDER:
@@ -1163,7 +1269,7 @@ def _validate_candidate_commitments(
             for fixture_id in FIXTURE_IDS
         ]
         if (
-            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v1"
+            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v2"
             or raw["lock_id"] != manifest["lock_id"]
             or raw["sealed_manifest_sha256"] != _digest_bytes(manifest_bytes)
             or raw["intent_map_sha256"] != _digest_file(root / "intent-map.json")
@@ -1175,10 +1281,18 @@ def _validate_candidate_commitments(
             or receipt["publication_state"] != "published-pending-isolation"
             or receipt["isolation_probe_state"] != "pending"
             or receipt["source_root_tree_sha256"] != raw["source_root_tree_sha256"]
+            or evaluator_runtime_identity_sha256(raw["evaluator_python_runtime"])
+            != raw["evaluator_python_runtime_sha256"]
+            or raw["evaluator_python_runtime_sha256"]
+            != manifest["evaluator_python_runtime_sha256"]
+            or receipt["evaluator_python_runtime_sha256"]
+            != raw["evaluator_python_runtime_sha256"]
         ):
             raise MaterializationError("candidate-commitments")
     except MaterializationError:
         raise
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("candidate-commitments") from error
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
         raise MaterializationError("candidate-commitments") from error
 
@@ -1606,7 +1720,13 @@ def _build_final_isolation_profile(
     policy: MaterializerPolicy,
 ) -> ProviderIsolationProfile:
     git_surfaces = derive_repo_git_surfaces(policy.repo_root)
-    protected_roots = (*git_surfaces, policy.source_root)
+    protected_roots = (
+        *git_surfaces,
+        policy.source_root,
+        *policy.prior_source_roots,
+        policy.legacy_root,
+        *(item.path for item in policy.immutable_roots),
+    )
     return build_provider_isolation_profile(
         run_root=policy.canary_run_root,
         sealed_root=policy.target,
@@ -1620,7 +1740,10 @@ def _build_final_isolation_profile(
 
 
 def _run_final_isolation_canary(
-    policy: MaterializerPolicy, *, pending_receipt_sha256: str
+    policy: MaterializerPolicy,
+    *,
+    pending_receipt_sha256: str,
+    evaluator_python_runtime_sha256: str | None = None,
 ) -> bytes:
     for root in (
         policy.canary_run_root,
@@ -1634,6 +1757,23 @@ def _run_final_isolation_canary(
         raise MaterializationError("isolation-profile") from error
     if not profile.executable or profile.issues:
         raise MaterializationError("isolation-profile")
+    try:
+        current_runtime = evaluator_python_runtime_identity(
+            forbidden_roots=(
+                policy.repo_root,
+                policy.target,
+                policy.source_root,
+                *policy.prior_source_roots,
+                *(item.path for item in policy.immutable_roots),
+            )
+        )
+        current_runtime_sha256 = evaluator_runtime_identity_sha256(current_runtime)
+        if evaluator_python_runtime_sha256 is None:
+            evaluator_python_runtime_sha256 = current_runtime_sha256
+        if current_runtime_sha256 != evaluator_python_runtime_sha256:
+            raise MaterializationError("runtime-identity")
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-identity") from error
     try:
         probe = probe_provider_isolation(profile)
     except (OSError, RuntimeError, ValueError) as error:
@@ -1665,6 +1805,7 @@ def _run_final_isolation_canary(
             "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
             "state": "validated",
             "pending_receipt_sha256": pending_receipt_sha256,
+            "evaluator_python_runtime_sha256": evaluator_python_runtime_sha256,
             "profile_sha256": profile_sha256,
             "checks": {
                 "direct": probe.direct,
@@ -1857,6 +1998,9 @@ def _publish_compiled(
         attestation = _run_final_isolation_canary(
             policy,
             pending_receipt_sha256=digests["materialization-receipt.json"],
+            evaluator_python_runtime_sha256=json.loads(
+                compiled.files["candidate-commitments.json"]
+            )["evaluator_python_runtime_sha256"],
         )
         attestation_sha256 = _write_final_attestation(
             parent_fd,
@@ -1909,6 +2053,7 @@ def materialize_with_policy(
     injector = failure_injector or FailureInjector()
     start_bindings = _capture_repo_bindings(expected_head, policy)
     legacy_before = fingerprint_tree(policy.legacy_root)
+    immutable_before = _capture_immutable_roots(policy)
     if legacy_before.inode != policy.expected_legacy_inode:
         raise MaterializationError("legacy-inode")
     if (
@@ -1941,6 +2086,7 @@ def materialize_with_policy(
         _assert_repo_unchanged(compiled.bindings, policy)
         if fingerprint_tree(policy.legacy_root) != legacy_before:
             raise MaterializationError("legacy-changed")
+        _assert_immutable_roots(policy, immutable_before)
         if fingerprint_tree(policy.source_root) != source_root_before:
             raise MaterializationError("source-raced")
         result = _publish_compiled(
@@ -1955,6 +2101,7 @@ def materialize_with_policy(
             _assert_repo_unchanged(compiled.bindings, policy)
             if fingerprint_tree(policy.legacy_root) != legacy_before:
                 raise MaterializationError("legacy-changed")
+            _assert_immutable_roots(policy, immutable_before)
             if fingerprint_tree(policy.source_root) != source_root_before:
                 raise MaterializationError("source-raced")
         except MaterializationError as error:

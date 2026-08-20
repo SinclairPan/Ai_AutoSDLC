@@ -31,6 +31,39 @@ _BENCHMARK_ROOT = (
 )
 _FIXTURE_ROOT = _BENCHMARK_ROOT / "fixtures"
 _DIGEST = re.compile(r"^[a-f0-9]{64}$")
+EVALUATOR_PYTHON = Path(getattr(sys, "_base_executable", sys.executable)).resolve()
+_RUNTIME_IDENTITY_KEYS = {
+    "schema",
+    "path",
+    "sha256",
+    "version",
+    "implementation",
+    "cache_tag",
+    "device",
+    "inode",
+    "uid",
+    "gid",
+    "mode",
+    "nlink",
+    "size",
+}
+_RUNTIME_COMMITMENT_KEYS = {
+    "schema",
+    "lock_id",
+    "source_head",
+    "source_tree_sha",
+    "materializer_sha256",
+    "source_bundle_sha256",
+    "fixture_manifest_sha256",
+    "fixture_tree_sha256",
+    "evidence_contract_sha256",
+    "sealed_manifest_sha256",
+    "intent_map_sha256",
+    "fixture_payloads",
+    "source_root_tree_sha256",
+    "evaluator_python_runtime",
+    "evaluator_python_runtime_sha256",
+}
 _SEALED_PHRASE_MARKERS = (
     "SEALED_RUBRIC_PHRASE",
     "consecutive-failure-recovery-answer",
@@ -147,6 +180,14 @@ class IsolationProbeResult:
     other_run: bool
     add_dir: bool
     protected_root_results: tuple[tuple[str, bool], ...] = ()
+
+
+class EvaluatorNoGoError(RuntimeError):
+    """Fail one complete evaluation when its trusted infrastructure is uncertain."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
 
 
 _BROWSER_PROGRAM_KEYS = {"schema", "scenarios"}
@@ -652,6 +693,129 @@ def _canonical_json_bytes(value: object) -> bytes:
     return json.dumps(
         value, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
+
+
+def evaluator_runtime_identity_sha256(identity: Mapping[str, object]) -> str:
+    """Return the canonical commitment for one closed runtime identity."""
+    if set(identity) != _RUNTIME_IDENTITY_KEYS:
+        raise EvaluatorNoGoError("runtime-identity")
+    return sha256(_canonical_json_bytes(identity)).hexdigest()
+
+
+def evaluator_python_runtime_identity(
+    *,
+    runtime_path: Path | None = None,
+    forbidden_roots: Sequence[Path] = (),
+    expected_sha256: str | None = None,
+) -> Mapping[str, object]:
+    """Inspect the literal external evaluator runtime and freeze its full identity."""
+    path = runtime_path or EVALUATOR_PYTHON
+    try:
+        lexical = path.lstat()
+        canonical = path.resolve(strict=True)
+        if (
+            canonical != path
+            or stat.S_ISLNK(lexical.st_mode)
+            or not stat.S_ISREG(lexical.st_mode)
+            or lexical.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(lexical.st_mode) & 0o022
+            or not stat.S_IMODE(lexical.st_mode) & 0o111
+        ):
+            raise EvaluatorNoGoError("runtime-security")
+        current = Path(canonical.anchor)
+        for part in canonical.parent.relative_to(current).parts:
+            current /= part
+            ancestor = current.lstat()
+            if (
+                stat.S_ISLNK(ancestor.st_mode)
+                or not stat.S_ISDIR(ancestor.st_mode)
+                or ancestor.st_uid not in {0, os.geteuid()}
+                or stat.S_IMODE(ancestor.st_mode) & 0o022
+            ):
+                raise EvaluatorNoGoError("runtime-security")
+        for root in forbidden_roots:
+            resolved = root.resolve(strict=False)
+            try:
+                canonical.relative_to(resolved)
+                raise EvaluatorNoGoError("runtime-overlap")
+            except ValueError:
+                pass
+        digest = _digest_file(path)
+        if expected_sha256 is not None and (
+            not _DIGEST.fullmatch(expected_sha256) or digest != expected_sha256
+        ):
+            raise EvaluatorNoGoError("runtime-identity")
+        completed = subprocess.run(
+            [
+                str(path),
+                "-I",
+                "-c",
+                (
+                    "import json,platform,sys;"
+                    "print(json.dumps({'version':platform.python_version(),"
+                    "'implementation':platform.python_implementation(),"
+                    "'cache_tag':sys.implementation.cache_tag},sort_keys=True))"
+                ),
+            ],
+            cwd="/private/tmp",
+            env={"PATH": "/usr/bin:/bin"},
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+        rebound = path.lstat()
+        if completed.returncode != 0 or (
+            lexical.st_dev,
+            lexical.st_ino,
+            lexical.st_mode,
+            lexical.st_uid,
+            lexical.st_gid,
+            lexical.st_nlink,
+            lexical.st_size,
+        ) != (
+            rebound.st_dev,
+            rebound.st_ino,
+            rebound.st_mode,
+            rebound.st_uid,
+            rebound.st_gid,
+            rebound.st_nlink,
+            rebound.st_size,
+        ):
+            raise EvaluatorNoGoError("runtime-identity")
+        version = json.loads(completed.stdout)
+        if not isinstance(version, Mapping) or set(version) != {
+            "version",
+            "implementation",
+            "cache_tag",
+        }:
+            raise EvaluatorNoGoError("runtime-identity")
+        identity: Mapping[str, object] = {
+            "schema": "ai-sdlc-v2-benefit-python-runtime/v1",
+            "path": str(path),
+            "sha256": digest,
+            "version": version["version"],
+            "implementation": version["implementation"],
+            "cache_tag": version["cache_tag"],
+            "device": lexical.st_dev,
+            "inode": lexical.st_ino,
+            "uid": lexical.st_uid,
+            "gid": lexical.st_gid,
+            "mode": stat.S_IMODE(lexical.st_mode),
+            "nlink": lexical.st_nlink,
+            "size": lexical.st_size,
+        }
+        evaluator_runtime_identity_sha256(identity)
+        return identity
+    except EvaluatorNoGoError:
+        raise
+    except (
+        OSError,
+        subprocess.TimeoutExpired,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
+        raise EvaluatorNoGoError("runtime-identity") from error
 
 
 def _tree_digest(root: Path) -> str:
@@ -1315,12 +1479,22 @@ def _load_sealed_payload(fixture_id: str, sealed_root: Path) -> Mapping[str, obj
     if not isinstance(manifest_raw, Mapping) or set(manifest_raw) not in {
         frozenset({"schema", "lock_id", "entries"}),
         frozenset({"schema", "lock_id", "entries", "intent_map"}),
+        frozenset(
+            {
+                "schema",
+                "lock_id",
+                "entries",
+                "intent_map",
+                "evaluator_python_runtime_sha256",
+            }
+        ),
     }:
         raise ValueError("sealed manifest must be a closed object")
     manifest = manifest_raw
     if manifest["schema"] not in {
         "ai-sdlc-v2-benefit-sealed-manifest/v1",
         "ai-sdlc-v2-benefit-sealed-manifest/v2",
+        "ai-sdlc-v2-benefit-sealed-manifest/v3",
     }:
         raise ValueError("sealed manifest schema is invalid")
     entries = manifest["entries"]
@@ -1423,6 +1597,64 @@ print(json.dumps({"allowed":getattr(result,"allowed",None),"reason":getattr(resu
 """
 
 
+def _load_bound_evaluator_runtime(sealed_root: Path, candidate: Path) -> Path:
+    """Revalidate the exact external runtime committed by the sealed compiler."""
+    try:
+        manifest_path = sealed_root / "sealed-manifest.json"
+        commitments_path = sealed_root / "candidate-commitments.json"
+        manifest_bytes = manifest_path.read_bytes()
+        manifest = json.loads(manifest_bytes)
+        commitments = json.loads(commitments_path.read_bytes())
+        if (
+            not isinstance(manifest, Mapping)
+            or set(manifest)
+            != {
+                "schema",
+                "lock_id",
+                "entries",
+                "intent_map",
+                "evaluator_python_runtime_sha256",
+            }
+            or manifest.get("schema") != "ai-sdlc-v2-benefit-sealed-manifest/v3"
+            or not isinstance(commitments, Mapping)
+            or set(commitments) != _RUNTIME_COMMITMENT_KEYS
+            or commitments.get("schema")
+            != "ai-sdlc-v2-benefit-candidate-commitments/v2"
+            or commitments.get("lock_id") != manifest.get("lock_id")
+            or commitments.get("sealed_manifest_sha256")
+            != sha256(manifest_bytes).hexdigest()
+        ):
+            raise EvaluatorNoGoError("runtime-binding")
+        identity = commitments.get("evaluator_python_runtime")
+        if not isinstance(identity, Mapping):
+            raise EvaluatorNoGoError("runtime-binding")
+        commitment = evaluator_runtime_identity_sha256(identity)
+        if commitment != commitments.get(
+            "evaluator_python_runtime_sha256"
+        ) or commitment != manifest.get("evaluator_python_runtime_sha256"):
+            raise EvaluatorNoGoError("runtime-binding")
+        runtime_path = identity.get("path")
+        runtime_sha256 = identity.get("sha256")
+        if not isinstance(runtime_path, str) or not isinstance(runtime_sha256, str):
+            raise EvaluatorNoGoError("runtime-binding")
+        current = evaluator_python_runtime_identity(
+            runtime_path=Path(runtime_path),
+            forbidden_roots=(
+                _BENCHMARK_ROOT.parent.parent,
+                sealed_root,
+                candidate,
+            ),
+            expected_sha256=runtime_sha256,
+        )
+        if current != identity:
+            raise EvaluatorNoGoError("runtime-identity")
+        return Path(runtime_path)
+    except EvaluatorNoGoError:
+        raise
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise EvaluatorNoGoError("runtime-binding") from error
+
+
 def _build_candidate_isolation_profile(
     *,
     candidate: Path,
@@ -1452,11 +1684,10 @@ def _run_candidate_adapter(
     scenario: Mapping[str, object],
 ) -> Mapping[str, object]:
     if sys.platform != "darwin":
-        raise RuntimeError(
-            "sealed candidate evaluation requires the macOS deny-read profile"
-        )
+        raise EvaluatorNoGoError("adapter-platform")
+    runtime = _load_bound_evaluator_runtime(sealed_root, candidate)
     argv = [
-        sys.executable,
+        str(runtime),
         "-I",
         "-c",
         _SECURITY_ADAPTER,
@@ -1472,21 +1703,24 @@ def _run_candidate_adapter(
         argv=argv,
     )
     if not profile.executable:
-        raise ValueError("sealed candidate isolation preflight failed")
-    completed = run_provider_isolated(profile, argv)
+        raise EvaluatorNoGoError("adapter-preflight")
+    try:
+        completed = run_provider_isolated(profile, argv)
+    except subprocess.TimeoutExpired as error:
+        raise EvaluatorNoGoError("adapter-timeout") from error
+    except OSError as error:
+        raise EvaluatorNoGoError("adapter-launch") from error
     if "sandbox_apply: Operation not permitted" in completed.stderr:
-        raise RuntimeError(completed.stderr.strip())
+        raise EvaluatorNoGoError("adapter-sandbox")
     if completed.returncode != 0:
-        return {"adapter_error": "candidate_execution_failed"}
+        raise EvaluatorNoGoError("adapter-exit")
     try:
         parsed = json.loads(completed.stdout)
     except json.JSONDecodeError:
-        return {"adapter_error": "candidate_output_invalid"}
-    return (
-        parsed
-        if isinstance(parsed, Mapping)
-        else {"adapter_error": "candidate_output_invalid"}
-    )
+        raise EvaluatorNoGoError("adapter-output") from None
+    if not isinstance(parsed, Mapping) or "adapter_error" in parsed:
+        raise EvaluatorNoGoError("adapter-output")
+    return parsed
 
 
 def _criterion_passes(
@@ -1619,7 +1853,7 @@ def _criterion_passes(
                     candidate / "benchmark-task", browser_program
                 )
                 cache["frontend_browser_suite"] = actual
-        except (OSError, RuntimeError, ValueError):
+        except (OSError, RuntimeError, ValueError, subprocess.TimeoutExpired):
             return False
         return _subset_matches(actual, expected)
     raise ValueError("sealed evaluator criterion kind is unsupported")

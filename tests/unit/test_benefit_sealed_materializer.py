@@ -562,11 +562,14 @@ def _stable_unit_isolation_attestation(
     monkeypatch.setattr(
         materializer,
         "_run_final_isolation_canary",
-        lambda _policy, *, pending_receipt_sha256: _canonical(
+        lambda _policy, *, pending_receipt_sha256, **_kwargs: _canonical(
             {
                 "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
                 "state": "validated",
                 "pending_receipt_sha256": pending_receipt_sha256,
+                "evaluator_python_runtime_sha256": fixture_module.evaluator_runtime_identity_sha256(
+                    fixture_module.evaluator_python_runtime_identity()
+                ),
                 "profile_sha256": "2" * 64,
                 "checks": {
                     "direct": True,
@@ -943,6 +946,14 @@ def test_fix_round3_final_canary_uses_exact_published_and_protected_roots(
     assert profile.sealed_root == policy.target.resolve()
     assert profile.control_root == policy.repo_root.resolve()
     assert policy.source_root.resolve() in profile.protected_roots
+    assert all(
+        source.resolve() in profile.protected_roots
+        for source in policy.prior_source_roots
+    )
+    assert all(
+        item.path.resolve() in profile.protected_roots
+        for item in policy.immutable_roots
+    )
     assert (policy.repo_root / ".git").resolve() in profile.protected_roots
     assert profile.raw_results_root == policy.raw_results_root.resolve()
     assert profile.other_run_roots == tuple(
@@ -962,13 +973,27 @@ def _default_policy_with_test_canary_roots(
     run = canary / "run"
     raw = canary / "raw-results"
     other = canary / "other-run"
+    source = tmp_path / "source-r2"
+    prior_source = tmp_path / "source-r1"
+    immutable = tmp_path / "invalid-r1"
     protected.mkdir(mode=0o700)
     target.mkdir(mode=0o700)
-    for path in (canary, run, raw, other):
+    for path in (canary, run, raw, other, source, prior_source, immutable):
         path.mkdir(mode=0o700)
+    immutable_fingerprint = materializer.fingerprint_tree(immutable)
     return replace(
         base,
         target=target,
+        source_root=source,
+        prior_source_roots=(prior_source,),
+        immutable_roots=(
+            materializer.ImmutableRoot(
+                immutable,
+                immutable_fingerprint.inode,
+                immutable_fingerprint.sha256,
+                "invalid-r1",
+            ),
+        ),
         canary_run_root=run,
         raw_results_root=raw,
         other_run_roots=(other,),
@@ -1007,6 +1032,8 @@ def test_fix_round5_default_policy_final_profile_derives_all_git_surfaces(
 
     assert expected <= set(profile.protected_roots)
     assert policy.source_root.resolve() in profile.protected_roots
+    assert policy.prior_source_roots[0].resolve() in profile.protected_roots
+    assert policy.immutable_roots[0].path.resolve() in profile.protected_roots
     assert attestation["state"] == "validated"
 
 
@@ -1188,7 +1215,13 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
     commitments = json.loads(compiled.files["candidate-commitments.json"])
     manifest = json.loads(compiled.files["sealed-manifest.json"])
 
-    assert set(manifest) == {"schema", "lock_id", "entries", "intent_map"}
+    assert set(manifest) == {
+        "schema",
+        "lock_id",
+        "entries",
+        "intent_map",
+        "evaluator_python_runtime_sha256",
+    }
     assert [item["fixture_id"] for item in manifest["entries"]] == list(
         materializer.FIXTURE_IDS
     )
@@ -1220,6 +1253,122 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
         receipt["candidate_commitments_sha256"]
         == sha256(compiled.files["candidate-commitments.json"]).hexdigest()
     )
+    runtime_sha256 = fixture_module.evaluator_runtime_identity_sha256(
+        commitments["evaluator_python_runtime"]
+    )
+    assert runtime_sha256 == manifest["evaluator_python_runtime_sha256"]
+    assert runtime_sha256 == commitments["evaluator_python_runtime_sha256"]
+    assert runtime_sha256 == receipt["evaluator_python_runtime_sha256"]
+
+
+def test_fix_round6_production_target_is_monotonic_r2_and_refuses_r1() -> None:
+    policy = materializer.default_policy()
+
+    assert materializer.FINAL_LOCK_ID == "v2-benefits-20260819-r2"
+    assert policy.target == Path(
+        "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r2"
+    )
+    assert (
+        Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1")
+        == materializer.INVALID_R1_ROOT
+    )
+    assert policy.target != materializer.INVALID_R1_ROOT
+    assert policy.source_root.name == "sealed-source-r2"
+    assert policy.prior_source_roots == (materializer.PRIOR_TRUSTED_SOURCE_ROOT,)
+    assert policy.immutable_roots == (
+        materializer.ImmutableRoot(
+            materializer.INVALID_R1_ROOT,
+            materializer.EXPECTED_INVALID_R1_INODE,
+            materializer.EXPECTED_INVALID_R1_TREE_SHA256,
+            "invalid-r1",
+        ),
+    )
+    if materializer.INVALID_R1_ROOT.is_dir():
+        assert materializer.fingerprint_tree(materializer.INVALID_R1_ROOT) == (
+            materializer.TreeFingerprint(
+                materializer.EXPECTED_INVALID_R1_INODE,
+                materializer.EXPECTED_INVALID_R1_TREE_SHA256,
+            )
+        )
+    with pytest.raises(MaterializationError, match="target-lock"):
+        materializer.materialize_sealed_bundle(
+            source_fd=-1,
+            expected_source_sha256="0" * 64,
+            expected_head="0" * 40,
+            lock_id="v2-benefits-20260819-r1",
+            expected_old_root_tree_sha256="0" * 64,
+        )
+
+
+def test_fix_round6_disposition_plan_is_closed_read_only_and_opaque(
+    tmp_path: Path,
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    invalid = tmp_path / "protected" / "invalid-r1"
+    invalid.mkdir(mode=0o700)
+    (invalid / "receipt.json").write_text('{"invalid":true}', encoding="utf-8")
+    before = materializer.fingerprint_tree(invalid)
+    policy = replace(
+        policy,
+        immutable_roots=(
+            materializer.ImmutableRoot(
+                invalid, before.inode, before.sha256, "invalid-r1"
+            ),
+        ),
+        disposition_root=tmp_path / "protected-disposition-audit",
+    )
+
+    record = json.loads(materializer.build_disposition_record(policy))
+
+    assert set(record) == {
+        "schema",
+        "state",
+        "invalid_lock_id",
+        "replacement_lock_id",
+        "invalid_root_tree_sha256",
+        "action",
+    }
+    assert record["state"] == "requires-independent-review"
+    assert record["action"] == "preserve-in-place"
+    assert not policy.disposition_root.exists()
+    assert materializer.fingerprint_tree(invalid) == before
+    assert '{"invalid":true}' not in json.dumps(record)
+
+
+def test_fix_round6_immutable_r1_drift_stops_before_r2_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, head, source = _policy(tmp_path)
+    invalid = tmp_path / "protected" / "invalid-r1"
+    invalid.mkdir(mode=0o700)
+    marker = invalid / "receipt.json"
+    marker.write_text('{"state":"invalid-unbound"}', encoding="utf-8")
+    before = materializer.fingerprint_tree(invalid)
+    policy = replace(
+        policy,
+        immutable_roots=(
+            materializer.ImmutableRoot(
+                invalid, before.inode, before.sha256, "invalid-r1"
+            ),
+        ),
+    )
+
+    def drift_after_compile(*_args: object, **_kwargs: object) -> None:
+        marker.write_text('{"state":"drifted"}', encoding="utf-8")
+
+    monkeypatch.setattr(materializer, "_validate_scratch", drift_after_compile)
+    with pytest.raises(MaterializationError, match="immutable-root"):
+        _materialize_for_test(
+            source,
+            expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
+            expected_head=head,
+            expected_old_root_tree_sha256=materializer.fingerprint_tree(
+                policy.legacy_root
+            ).sha256,
+            policy=policy,
+        )
+
+    assert not policy.target.exists()
 
 
 def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
@@ -1877,7 +2026,48 @@ def test_compiled_scratch_validation_is_deterministic_and_non_delivery(
             scratch_parent=scratch,
             fixture_root=FIXTURE_ROOT,
         )
-    except (PermissionError, RuntimeError) as error:
-        if "sandbox_apply: Operation not permitted" in str(error):
+    except (PermissionError, RuntimeError, fixture_module.EvaluatorNoGoError) as error:
+        if (
+            "sandbox_apply: Operation not permitted" in str(error)
+            or getattr(error, "code", "") == "adapter-sandbox"
+        ):
             pytest.skip("nested sandbox blocks exact evaluator profile")
         raise
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_fix_round6_system_external_runtime_executes_six_oracles_twice(
+    tmp_path: Path,
+) -> None:
+    policy, head, source = _policy(tmp_path)
+    compiled = _compile_for_test(policy, head, source)
+    sealed = tmp_path / "protected" / "sealed"
+    sealed.parent.mkdir(mode=0o700, exist_ok=True)
+    materializer._write_plain_files(sealed, compiled.files)
+    first = fixture_module.prepare_fixture(
+        "multi-tenant-security-review",
+        tmp_path / "runs" / "first",
+        fixture_root=FIXTURE_ROOT,
+    )
+    second = fixture_module.prepare_fixture(
+        "multi-tenant-security-review",
+        tmp_path / "runs" / "second",
+        fixture_root=FIXTURE_ROOT,
+    )
+
+    try:
+        first_result = fixture_module.evaluate_fixture(
+            "multi-tenant-security-review", first.root, sealed
+        )
+        second_result = fixture_module.evaluate_fixture(
+            "multi-tenant-security-review", second.root, sealed
+        )
+    except fixture_module.EvaluatorNoGoError as error:
+        if error.code == "adapter-sandbox":
+            pytest.skip("nested sandbox blocks exact evaluator profile")
+        raise
+
+    assert len(first_result.satisfied_criteria) + len(first_result.failed_criteria) == 6
+    assert first_result == second_result
+    assert first_result.external_verified_delivery is False
+    assert first_result.result_sha256 == second_result.result_sha256
