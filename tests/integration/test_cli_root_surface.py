@@ -1,4 +1,4 @@
-"""Normal-user root CLI surface stays compact without deleting compatibility paths."""
+"""Normal-user root CLI surface excludes retired parallel authorities."""
 
 from __future__ import annotations
 
@@ -23,10 +23,13 @@ _VISIBLE = {
     "pr-review",
     "self-update",
 }
-_HIDDEN = {
+_RETAINED_HIDDEN = {
     "index",
     "scan",
     "refresh",
+    "handoff",
+}
+_RETIRED = {
     "agentops",
     "enterprise",
     "gate",
@@ -35,7 +38,6 @@ _HIDDEN = {
     "stage",
     "program",
     "host-runtime",
-    "handoff",
     "telemetry",
     "provenance",
     "trace",
@@ -46,11 +48,12 @@ def test_root_command_metadata_exposes_only_normal_user_surface() -> None:
     root_command = get_command(app)
 
     assert all(root_command.commands[name].hidden is False for name in _VISIBLE)
-    assert all(root_command.commands[name].hidden is True for name in _HIDDEN)
+    assert all(root_command.commands[name].hidden is True for name in _RETAINED_HIDDEN)
+    assert _RETIRED.isdisjoint(root_command.commands)
 
 
-def test_hidden_compatibility_command_remains_callable() -> None:
+def test_retired_parallel_authority_is_not_callable() -> None:
     result = runner.invoke(app, ["rules", "--help"])
 
-    assert result.exit_code == 0, result.output
-    assert "show" in result.output
+    assert result.exit_code == 2, result.output
+    assert "No such command" in result.output

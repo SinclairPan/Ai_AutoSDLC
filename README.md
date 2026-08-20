@@ -19,8 +19,7 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 | 精简建议 | 对代码体积和复杂度给出非阻断建议；建议不改变 Loop 状态，也不阻止 close。 |
 | 质量与治理门禁 | 对规则、任务、约束、分支、文档契约、前端证据和关闭条件执行只读验证。 |
 | 本地对抗审查 | `pr-review` 支持 Git 范围、暂存区、工作区和补丁输入，在提交前由独立只读代理检查当前变更。 |
-| 前端交付治理 | 覆盖页面契约、生成约束、组件提供方、浏览器探针、视觉回归、可访问性和交付上下文。 |
-| AgentOps 集成 | 可输出运行事件、保存 outbox、检查网关配置并重试投递，不在仓库内保存令牌值。 |
+| 前端交付闭环 | 基于项目事实确认方案，受控应用后采集浏览器、视觉回归与可访问性证据，并进入 Frontend Evidence Loop。 |
 | 跨平台交付 | 支持 Windows、macOS、Linux 的源码安装、在线安装和带 Python 运行时的离线包。 |
 | 本地优先 | 核心扫描、规则解析、门禁、Loop 和审查编排均可在本地执行；代码外发默认关闭。 |
 
@@ -111,13 +110,21 @@ ai-sdlc loop implementation close --loop-id <loop-id> --expect-review-digest <in
 
 # Frontend Evidence（仅前端工作）
 ai-sdlc loop frontend-evidence doctor --provider auto
+ai-sdlc loop frontend-evidence solution-confirm --wi specs/<work-item> --dry-run --json
+ai-sdlc loop frontend-evidence solution-confirm --wi specs/<work-item> --execute --yes
+ai-sdlc loop frontend-evidence apply --dry-run --json
+ai-sdlc loop frontend-evidence apply --execute --yes
+ai-sdlc loop frontend-evidence capture --execute
+# 首次采集要求视觉基线时：
+ai-sdlc loop frontend-evidence baseline --execute --yes
+ai-sdlc loop frontend-evidence capture --execute
 ai-sdlc loop frontend-evidence start --wi specs/<work-item> --loop-id <loop-id>
 ai-sdlc loop status --type frontend-evidence
 ai-sdlc loop review --type frontend-evidence --loop-id <loop-id> --json
 ai-sdlc loop frontend-evidence close --loop-id <loop-id> --expect-review-digest <input_digest> --yes
 ```
 
-每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。`loop review` 会按内容返回最多两个 `expert_roles`；Codex、Claude Code、Cursor 或 VS Code 中的宿主 Agent 自动为每个角色启动独立只读上下文，并用 `loop review-record` 记录本轮结果，不要求用户手动触发专家。专家读取待审工件时使用同一 `loop review` 命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只检查返回的 `review_snapshot`，不重新打开可变路径。`review-record` 返回 `passed` 后，`input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc program browser-gate-probe --execute`。
+每个 Loop 都从本地工件计算状态，输出缺口、停止原因和下一步动作。`loop review` 会按内容返回最多两个 `expert_roles`；Codex、Claude Code、Cursor 或 VS Code 中的宿主 Agent 自动为每个角色启动独立只读上下文，并用 `loop review-record` 记录本轮结果，不要求用户手动触发专家。专家读取待审工件时使用同一 `loop review` 命令并追加 `--expect-digest <input_digest> --read-path <artifact_path>`，只检查返回的 `review_snapshot`，不重新打开可变路径。`review-record` 返回 `passed` 后，`input_digest` 必须原样传给紧随其后的 close/freeze；输入或目标身份发生变化时会拒绝关闭。Frontend Evidence 有告警时可显式追加 `--allow-warnings`；没有可用浏览器提供方时可使用 `ai-sdlc loop frontend-evidence skip`，需要重新采集时运行 `ai-sdlc loop frontend-evidence capture --execute`。
 
 ### 非阻断精简建议
 
@@ -201,30 +208,12 @@ Local PR Review 在 close 前由独立的本地只读代理检查 Review Pack、
 
 AI-SDLC 将前端质量作为可验证交付的一部分：
 
-- 页面/UI Schema 与生成约束绑定；
-- 组件提供方和运行时适配器有明确边界；
-- 浏览器探针输出结构化检查回执；
+- 方案来自当前项目事实或用户明确选择，不固定框架、组件库或 style pack；
+- 确认前不写业务文件，应用时执行路径、范围和回滚保护；
+- 浏览器探针输出结构化检查回执并绑定当前源码摘要；
 - 支持截图、视觉差异、可访问性和主题令牌治理；
-- 交付上下文贯穿生成、验证、应用和关闭阶段；
-- 管理式变更在写入前执行路径、范围和回滚保护。
-
-## AgentOps
-
-配置网关后，AI-SDLC 可将运行事实写入本地 outbox 并投递到 AgentOps：
-
-```powershell
-ai-sdlc agentops doctor
-ai-sdlc agentops status
-ai-sdlc agentops retry
-```
-
-企业配置只记录端点、策略和令牌环境变量名：
-
-```powershell
-ai-sdlc enterprise configure --help
-```
-
-完整配置见 [企业 AgentOps 接入说明](docs/enterprise-agentops-setup.zh-CN.md)。
+- 视觉/可访问性结果进入同一个 Frontend Evidence review snapshot；
+- 源码或证据摘要漂移时拒绝 Close。
 
 ## 离线打包
 

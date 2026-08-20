@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from ai_sdlc.models import (
+from ai_sdlc.models.frontend_contracts import (
     ContractLegacyContext,
     ContractRuleBundle,
     FrontendContractSet,

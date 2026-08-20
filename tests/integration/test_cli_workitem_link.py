@@ -1,4 +1,4 @@
-"""Integration tests for ai-sdlc workitem link and status."""
+"""Integration tests for optional WorkItem checkpoint linkage."""
 
 from __future__ import annotations
 
@@ -9,14 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from ai_sdlc.cli.main import app
-from ai_sdlc.context.state import save_checkpoint
-from ai_sdlc.core.p1_artifacts import save_reviewer_decision
+from ai_sdlc.context.state import load_checkpoint, save_checkpoint
 from ai_sdlc.models.state import Checkpoint, FeatureInfo
-from ai_sdlc.models.work import (
-    PrdReviewerCheckpoint,
-    PrdReviewerDecision,
-    PrdReviewerDecisionKind,
-)
 from ai_sdlc.routers.bootstrap import init_project
 
 runner = CliRunner()
@@ -28,132 +22,70 @@ def _no_ide_adapter_hook() -> None:
         yield
 
 
-def _checkpoint(tmp_path: Path) -> None:
-    cp = Checkpoint(
-        current_stage="init",
-        feature=FeatureInfo(
-            id="unknown",
-            spec_dir="specs/001",
-            design_branch="design/x",
-            feature_branch="feature/x",
-            current_branch="main",
+def _initialize(root: Path) -> None:
+    init_project(root)
+    save_checkpoint(
+        root,
+        Checkpoint(
+            current_stage="init",
+            feature=FeatureInfo(
+                id="unknown",
+                spec_dir="specs/001",
+                design_branch="design/x",
+                feature_branch="feature/x",
+                current_branch="main",
+            ),
         ),
     )
-    save_checkpoint(tmp_path, cp)
 
 
-class TestWorkitemLinkStatus:
-    def test_workitem_link_updates_checkpoint(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        init_project(tmp_path)
-        _checkpoint(tmp_path)
-        monkeypatch.chdir(tmp_path)
+def test_workitem_link_updates_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _initialize(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(
-            app,
-            [
-                "workitem",
-                "link",
-                "--wi-id",
-                "001-sample-work-item",
-                "--plan-uri",
-                ".cursor/plans/foo.plan.md",
-            ],
-        )
-        assert result.exit_code == 0
-        assert "linked_wi_id" in result.output
+    result = runner.invoke(
+        app,
+        [
+            "workitem",
+            "link",
+            "--wi-id",
+            "001-sample-work-item",
+            "--plan-uri",
+            ".cursor/plans/foo.plan.md",
+        ],
+    )
 
-        with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            st = runner.invoke(app, ["status", "--details"])
-        assert st.exit_code == 0
-        assert "Linked WI ID" in st.output
-        assert "001-sample-work-item" in st.output
-        assert "Linked plan URI" in st.output
-        assert ".cursor/plans/foo.plan.md" in st.output
-        assert "Last synced (plan)" in st.output
+    assert result.exit_code == 0, result.output
+    checkpoint = load_checkpoint(tmp_path)
+    assert checkpoint is not None
+    assert checkpoint.linked_wi_id == "001-sample-work-item"
+    assert checkpoint.linked_plan_uri == ".cursor/plans/foo.plan.md"
 
-    def test_workitem_link_requires_arg(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        init_project(tmp_path)
-        _checkpoint(tmp_path)
-        monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(app, ["workitem", "link"])
-        assert result.exit_code == 2
+def test_workitem_link_requires_at_least_one_value(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _initialize(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-    def test_status_without_links_unchanged(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        init_project(tmp_path)
-        _checkpoint(tmp_path)
-        monkeypatch.chdir(tmp_path)
+    result = runner.invoke(app, ["workitem", "link"])
 
-        with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            st = runner.invoke(app, ["status", "--details"])
-        assert st.exit_code == 0
-        assert "Linked WI ID" not in st.output
+    assert result.exit_code == 2
 
-    def test_status_shows_latest_reviewer_decision(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        init_project(tmp_path)
-        _checkpoint(tmp_path)
-        monkeypatch.chdir(tmp_path)
 
-        result = runner.invoke(
-            app,
-            [
-                "workitem",
-                "link",
-                "--wi-id",
-                "WI-2026-777",
-                "--plan-uri",
-                ".cursor/plans/foo.plan.md",
-            ],
-        )
-        assert result.exit_code == 0
+def test_status_does_not_restore_parallel_reviewer_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _initialize(tmp_path)
+    monkeypatch.chdir(tmp_path)
 
-        save_reviewer_decision(
-            tmp_path,
-            "WI-2026-777",
-            PrdReviewerDecision(
-                checkpoint=PrdReviewerCheckpoint.PRD_FREEZE,
-                decision=PrdReviewerDecisionKind.APPROVE,
-                target="WI-2026-777",
-                reason="Ready to freeze",
-                next_action="Persist final_prd",
-                timestamp="2026-03-29T10:00:00+08:00",
-            ),
-        )
-        save_reviewer_decision(
-            tmp_path,
-            "WI-2026-777",
-            PrdReviewerDecision(
-                checkpoint=PrdReviewerCheckpoint.DOCS_BASELINE_FREEZE,
-                decision=PrdReviewerDecisionKind.APPROVE,
-                target="WI-2026-777",
-                reason="Docs baseline is aligned",
-                next_action="Persist docs baseline",
-                timestamp="2026-03-29T11:00:00+08:00",
-            ),
-        )
-        save_reviewer_decision(
-            tmp_path,
-            "WI-2026-777",
-            PrdReviewerDecision(
-                checkpoint=PrdReviewerCheckpoint.PRE_CLOSE,
-                decision=PrdReviewerDecisionKind.APPROVE,
-                target="WI-2026-777",
-                reason="Ready to close",
-                next_action="Archive work item",
-                timestamp="2026-03-29T12:00:00+08:00",
-            ),
-        )
+    result = runner.invoke(app, ["status", "--details"])
 
-        with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            st = runner.invoke(app, ["status", "--details"])
-        assert st.exit_code == 0
-        assert "Latest Reviewer Decision" in st.output
-        assert "pre_close:approve -> WI-2026-777" in st.output
+    assert result.exit_code == 0, result.output
+    assert "Latest Reviewer Decision" not in result.output
+    assert "Program Truth" not in result.output

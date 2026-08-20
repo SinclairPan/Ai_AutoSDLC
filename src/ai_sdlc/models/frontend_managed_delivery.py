@@ -1,4 +1,4 @@
-"""Managed delivery apply runtime models for work item 123."""
+"""Managed frontend delivery apply runtime models."""
 
 from __future__ import annotations
 
@@ -169,7 +169,9 @@ class DeliveryApplyDecisionReceipt(FrontendManagedDeliveryModel):
     decision_receipt_id: str
     action_plan_id: str
     confirmation_surface_id: str
-    decision: Literal["continue", "cancel", "return_to_solution", "return_to_action_plan"]
+    decision: Literal[
+        "continue", "cancel", "return_to_solution", "return_to_action_plan"
+    ]
     selected_action_ids: list[str] = Field(default_factory=list)
     deselected_optional_action_ids: list[str] = Field(default_factory=list)
     risk_acknowledgement_ids: list[str] = Field(default_factory=list)
@@ -256,15 +258,15 @@ class ManagedDeliveryExecutorContext(FrontendManagedDeliveryModel):
     execute_actions: bool = False
     repo_root: Path | None = None
     before_state_failures: dict[str, str] = Field(default_factory=dict)
-    dependency_installer: Callable[
-        [DependencyInstallExecutionPayload, Path], dict[str, str]
-    ] | None = None
-    runtime_remediator: Callable[
-        [RuntimeRemediationExecutionPayload, Path], dict[str, str]
-    ] | None = None
-    artifact_writer: Callable[
-        [ArtifactGenerateExecutionPayload, Path], dict[str, str]
-    ] | None = None
-    workspace_integrator: Callable[
-        [WorkspaceIntegrationExecutionPayload, Path], dict[str, str]
-    ] | None = None
+    dependency_installer: (
+        Callable[[DependencyInstallExecutionPayload, Path], dict[str, str]] | None
+    ) = None
+    runtime_remediator: (
+        Callable[[RuntimeRemediationExecutionPayload, Path], dict[str, str]] | None
+    ) = None
+    artifact_writer: (
+        Callable[[ArtifactGenerateExecutionPayload, Path], dict[str, str]] | None
+    ) = None
+    workspace_integrator: (
+        Callable[[WorkspaceIntegrationExecutionPayload, Path], dict[str, str]] | None
+    ) = None

@@ -72,6 +72,7 @@ def build_browser_quality_gate_execution_context(
     page_schema_ids: list[str] | None = None,
     visual_regression_matrix_id: str = "",
     visual_regression_viewport_id: str = "",
+    visual_regression_baseline_root: str = "",
 ) -> BrowserQualityGateExecutionContext:
     """Build the frozen execution context from apply truth and solution truth."""
 
@@ -129,6 +130,7 @@ def build_browser_quality_gate_execution_context(
         page_schema_ids=_unique_strings(page_schema_ids or []),
         visual_regression_matrix_id=visual_regression_matrix_id,
         visual_regression_viewport_id=visual_regression_viewport_id,
+        visual_regression_baseline_root=visual_regression_baseline_root,
         required_probe_set=_unique_strings(required_probe_set),
         browser_entry_ref=browser_entry_ref,
         source_linkage_refs={
@@ -200,6 +202,9 @@ def run_default_browser_gate_probe(
             "page_schema_ids": _unique_strings(execution_context.page_schema_ids),
             "visual_regression_matrix_id": execution_context.visual_regression_matrix_id,
             "visual_regression_viewport_id": execution_context.visual_regression_viewport_id,
+            "visual_regression_baseline_root": (
+                execution_context.visual_regression_baseline_root
+            ),
             "effective_provider": execution_context.effective_provider,
             "effective_style_pack": execution_context.effective_style_pack,
         }
@@ -230,7 +235,10 @@ def run_default_browser_gate_probe(
             )
     stdout = completed.stdout.strip()
     if not stdout:
-        warning = completed.stderr.strip() or "Playwright runtime is not available on this host."
+        warning = (
+            completed.stderr.strip()
+            or "Playwright runtime is not available on this host."
+        )
         return _transient_probe_runner_result(
             gate_run_id=execution_context.gate_run_id,
             artifact_root_rel=artifact_root_rel,
@@ -241,7 +249,9 @@ def run_default_browser_gate_probe(
         raw_payload = json.loads(stdout)
         return BrowserGateProbeRunnerResult.model_validate(raw_payload)
     except Exception as exc:
-        warning = completed.stderr.strip() or f"browser gate runner output invalid: {exc}"
+        warning = (
+            completed.stderr.strip() or f"browser gate runner output invalid: {exc}"
+        )
         return _transient_probe_runner_result(
             gate_run_id=execution_context.gate_run_id,
             artifact_root_rel=artifact_root_rel,
@@ -438,14 +448,20 @@ def materialize_browser_gate_probe_runtime(
             started_at=generated_at,
             finished_at=generated_at,
             runtime_status="incomplete",
-            artifact_ids=_unique_strings(record.artifact_id for record in smoke_records),
+            artifact_ids=_unique_strings(
+                record.artifact_id for record in smoke_records
+            ),
             classification_candidate="evidence_missing",
             recheck_required=True,
             remediation_hints=_unique_strings(
                 ["materialize shared Playwright runtime evidence"]
             ),
-            blocking_reason_codes=_unique_strings(["playwright_probe_evidence_missing"]),
-            requirement_linkage=_unique_strings(["browser_quality_gate:playwright_smoke"]),
+            blocking_reason_codes=_unique_strings(
+                ["playwright_probe_evidence_missing"]
+            ),
+            requirement_linkage=_unique_strings(
+                ["browser_quality_gate:playwright_smoke"]
+            ),
         )
         interaction_records = _materialize_missing_probe_artifacts(
             root=root,
@@ -490,18 +506,20 @@ def materialize_browser_gate_probe_runtime(
         write_artifacts=write_artifacts,
         auto_visual_a11y_provider=auto_visual_a11y_provider,
     )
-    visual_records, visual_receipt, a11y_receipt = _materialize_visual_and_a11y_receipts(
-        root=root,
-        artifact_root=artifact_root,
-        context=context,
-        gate_run_id=context.gate_run_id,
-        visual_a11y_evidence_artifact=effective_visual_a11y_evidence_artifact,
-        quality_capture=(
-            runner_result.quality_capture if runner_result is not None else None
-        ),
-        smoke_result=smoke_receipt.classification_candidate,
-        generated_at=generated_at,
-        write_artifacts=write_artifacts,
+    visual_records, visual_receipt, a11y_receipt = (
+        _materialize_visual_and_a11y_receipts(
+            root=root,
+            artifact_root=artifact_root,
+            context=context,
+            gate_run_id=context.gate_run_id,
+            visual_a11y_evidence_artifact=effective_visual_a11y_evidence_artifact,
+            quality_capture=(
+                runner_result.quality_capture if runner_result is not None else None
+            ),
+            smoke_result=smoke_receipt.classification_candidate,
+            generated_at=generated_at,
+            write_artifacts=write_artifacts,
+        )
     )
     artifact_records.extend(visual_records)
     receipts.extend([visual_receipt, a11y_receipt])
@@ -512,7 +530,9 @@ def materialize_browser_gate_probe_runtime(
                 artifact_root=artifact_root,
                 gate_run_id=context.gate_run_id,
                 visual_regression_capture=(
-                    runner_result.visual_regression_capture if runner_result is not None else None
+                    runner_result.visual_regression_capture
+                    if runner_result is not None
+                    else None
                 ),
                 generated_at=generated_at,
                 write_artifacts=write_artifacts,
@@ -604,14 +624,10 @@ def materialize_browser_gate_probe_runtime(
             for requirement in receipt.requirement_linkage
         ),
         blocking_reason_codes=_unique_strings(
-            code
-            for receipt in receipts
-            for code in receipt.blocking_reason_codes
+            code for receipt in receipts for code in receipt.blocking_reason_codes
         ),
         advisory_reason_codes=_unique_strings(
-            code
-            for receipt in receipts
-            for code in receipt.advisory_reason_codes
+            code for receipt in receipts for code in receipt.advisory_reason_codes
         ),
         generated_at=generated_at,
         source_linkage_refs={
@@ -700,7 +716,9 @@ def _resolve_visual_a11y_evidence_artifact(
     existing_artifact = visual_a11y_evidence_artifact
     if existing_artifact is None and evidence_path.is_file():
         try:
-            existing_artifact = load_frontend_visual_a11y_evidence_artifact(evidence_path)
+            existing_artifact = load_frontend_visual_a11y_evidence_artifact(
+                evidence_path
+            )
         except ValueError:
             existing_artifact = None
 
@@ -790,7 +808,8 @@ def _materialize_real_smoke_receipt(
     refs = [
         (
             "playwright_trace",
-            capture.trace_artifact_ref or f"{artifact_root_rel}/{_PLAYWRIGHT_TRACE_REL_PATH}",
+            capture.trace_artifact_ref
+            or f"{artifact_root_rel}/{_PLAYWRIGHT_TRACE_REL_PATH}",
         ),
         (
             "navigation_screenshot",
@@ -826,7 +845,10 @@ def _materialize_real_smoke_receipt(
             )
         )
 
-    if runner_result.runtime_status == "failed_transient" or capture.capture_status == "capture_failed":
+    if (
+        runner_result.runtime_status == "failed_transient"
+        or capture.capture_status == "capture_failed"
+    ):
         return records, BrowserProbeExecutionReceipt(
             check_name="playwright_smoke",
             started_at=generated_at,
@@ -834,13 +856,16 @@ def _materialize_real_smoke_receipt(
             runtime_status="failed_transient",
             artifact_ids=_unique_strings(record.artifact_id for record in records),
             anchor_refs=_unique_strings(capture.anchor_refs),
-            requirement_linkage=_unique_strings(["browser_quality_gate:playwright_smoke"]),
+            requirement_linkage=_unique_strings(
+                ["browser_quality_gate:playwright_smoke"]
+            ),
             classification_candidate="transient_run_failure",
             recheck_required=True,
             remediation_hints=_unique_strings(
                 ["re-run the browser gate probe after restoring the Playwright runtime"]
             ),
-            blocking_reason_codes=diagnostic_codes or ["playwright_probe_transient_failure"],
+            blocking_reason_codes=diagnostic_codes
+            or ["playwright_probe_transient_failure"],
         )
 
     if missing_artifact:
@@ -851,13 +876,16 @@ def _materialize_real_smoke_receipt(
             runtime_status="incomplete",
             artifact_ids=_unique_strings(record.artifact_id for record in records),
             anchor_refs=_unique_strings(capture.anchor_refs),
-            requirement_linkage=_unique_strings(["browser_quality_gate:playwright_smoke"]),
+            requirement_linkage=_unique_strings(
+                ["browser_quality_gate:playwright_smoke"]
+            ),
             classification_candidate="evidence_missing",
             recheck_required=True,
             remediation_hints=_unique_strings(
                 ["materialize shared Playwright runtime evidence"]
             ),
-            blocking_reason_codes=diagnostic_codes or ["playwright_probe_evidence_missing"],
+            blocking_reason_codes=diagnostic_codes
+            or ["playwright_probe_evidence_missing"],
         )
 
     quality_capture = runner_result.quality_capture
@@ -883,7 +911,9 @@ def _materialize_real_smoke_receipt(
             runtime_status="completed",
             artifact_ids=_unique_strings(record.artifact_id for record in records),
             anchor_refs=_unique_strings(capture.anchor_refs),
-            requirement_linkage=_unique_strings(["browser_quality_gate:playwright_smoke"]),
+            requirement_linkage=_unique_strings(
+                ["browser_quality_gate:playwright_smoke"]
+            ),
             classification_candidate="actual_quality_blocker",
             remediation_hints=_unique_strings(
                 ["fix browser console/page errors and rerun the browser gate probe"]
@@ -948,7 +978,9 @@ def _materialize_real_interaction_receipt(
                 anchor_refs=_unique_strings(capture.anchor_refs),
                 capture_status=resolved_status,
                 captured_at=generated_at,
-                source_linkage_refs={"interaction_probe_id": capture.interaction_probe_id},
+                source_linkage_refs={
+                    "interaction_probe_id": capture.interaction_probe_id
+                },
             )
         )
 
@@ -970,9 +1002,12 @@ def _materialize_real_interaction_receipt(
             classification_candidate="transient_run_failure",
             recheck_required=True,
             remediation_hints=_unique_strings(
-                ["re-run the browser gate probe after restoring the interaction runtime"]
+                [
+                    "re-run the browser gate probe after restoring the interaction runtime"
+                ]
             ),
-            blocking_reason_codes=diagnostic_codes or ["interaction_probe_transient_failure"],
+            blocking_reason_codes=diagnostic_codes
+            or ["interaction_probe_transient_failure"],
         )
 
     if missing_artifact or capture.classification_candidate == "evidence_missing":
@@ -991,7 +1026,8 @@ def _materialize_real_interaction_receipt(
             remediation_hints=_unique_strings(
                 ["materialize interaction anti-pattern probe evidence"]
             ),
-            blocking_reason_codes=diagnostic_codes or ["interaction_probe_evidence_missing"],
+            blocking_reason_codes=diagnostic_codes
+            or ["interaction_probe_evidence_missing"],
         )
 
     if capture.classification_candidate == "actual_quality_blocker":
@@ -1009,7 +1045,8 @@ def _materialize_real_interaction_receipt(
             remediation_hints=_unique_strings(
                 ["review interaction anti-pattern issue findings"]
             ),
-            blocking_reason_codes=diagnostic_codes or ["interaction_probe_quality_blocker"],
+            blocking_reason_codes=diagnostic_codes
+            or ["interaction_probe_quality_blocker"],
         )
 
     advisory_codes = _unique_strings(capture.advisory_reason_codes)
@@ -1057,7 +1094,9 @@ def _materialize_missing_probe_artifacts(
     write_artifacts: bool,
 ) -> list[BrowserProbeArtifactRecord]:
     records: list[BrowserProbeArtifactRecord] = []
-    for index, (artifact_type, relative_artifact_path) in enumerate(artifact_specs, start=1):
+    for index, (artifact_type, relative_artifact_path) in enumerate(
+        artifact_specs, start=1
+    ):
         artifact_path = artifact_root / relative_artifact_path
         if write_artifacts:
             artifact_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1107,9 +1146,7 @@ def _materialize_visual_evidence_artifacts(
         return [], []
 
     evidence_items = [
-        item
-        for item in quality_capture.visual_evidence_items
-        if isinstance(item, dict)
+        item for item in quality_capture.visual_evidence_items if isinstance(item, dict)
     ]
     if not evidence_items:
         return [], []
@@ -1168,7 +1205,9 @@ def _materialize_visual_evidence_artifacts(
     return records, advisory_codes
 
 
-def _visual_evidence_advisory_codes(evidence_items: list[dict[str, object]]) -> list[str]:
+def _visual_evidence_advisory_codes(
+    evidence_items: list[dict[str, object]],
+) -> list[str]:
     advisory_codes: list[str] = []
     required_viewports = {"desktop-1440", "mobile-390"}
     observed_viewports = {
@@ -1189,9 +1228,8 @@ def _visual_evidence_advisory_codes(evidence_items: list[dict[str, object]]) -> 
         viewport_width = _int_from_mapping(item, "viewport_width")
         document_scroll_width = _int_from_mapping(item, "document_scroll_width")
         horizontal_overflow_count = _int_from_mapping(item, "horizontal_overflow_count")
-        if (
-            horizontal_overflow_count > 0
-            or (viewport_width > 0 and document_scroll_width > viewport_width + 1)
+        if horizontal_overflow_count > 0 or (
+            viewport_width > 0 and document_scroll_width > viewport_width + 1
         ):
             advisory_codes.append("visual_horizontal_overflow")
     return _unique_strings(advisory_codes)
@@ -1217,9 +1255,7 @@ def _interaction_a11y_advisory_codes(
         return []
     a11y_prefixes = ("a11y_", "interaction_dialog_")
     return _unique_strings(
-        str(code)
-        for code in codes
-        if str(code).startswith(a11y_prefixes)
+        str(code) for code in codes if str(code).startswith(a11y_prefixes)
     )
 
 
@@ -1234,16 +1270,22 @@ def _materialize_visual_and_a11y_receipts(
     smoke_result: str,
     generated_at: str,
     write_artifacts: bool,
-) -> tuple[list[BrowserProbeArtifactRecord], BrowserProbeExecutionReceipt, BrowserProbeExecutionReceipt]:
-    visual_evidence_records, visual_advisory_codes = _materialize_visual_evidence_artifacts(
-        root=root,
-        artifact_root=artifact_root,
-        context=context,
-        gate_run_id=gate_run_id,
-        quality_capture=quality_capture,
-        smoke_result=smoke_result,
-        generated_at=generated_at,
-        write_artifacts=write_artifacts,
+) -> tuple[
+    list[BrowserProbeArtifactRecord],
+    BrowserProbeExecutionReceipt,
+    BrowserProbeExecutionReceipt,
+]:
+    visual_evidence_records, visual_advisory_codes = (
+        _materialize_visual_evidence_artifacts(
+            root=root,
+            artifact_root=artifact_root,
+            context=context,
+            gate_run_id=gate_run_id,
+            quality_capture=quality_capture,
+            smoke_result=smoke_result,
+            generated_at=generated_at,
+            write_artifacts=write_artifacts,
+        )
     )
     if visual_a11y_evidence_artifact is None:
         records = _materialize_missing_probe_artifacts(
@@ -1251,7 +1293,9 @@ def _materialize_visual_and_a11y_receipts(
             artifact_root=artifact_root,
             gate_run_id=gate_run_id,
             check_name="visual_expectation",
-            artifact_specs=(("checkpoint_screenshot", "visual/expectation-missing.yaml"),),
+            artifact_specs=(
+                ("checkpoint_screenshot", "visual/expectation-missing.yaml"),
+            ),
             generated_at=generated_at,
             reason="visual_a11y_evidence_missing",
             write_artifacts=write_artifacts,
@@ -1304,11 +1348,15 @@ def _materialize_visual_and_a11y_receipts(
                     ["materialize frontend visual / a11y evidence input"]
                 ),
                 blocking_reason_codes=_unique_strings(["basic_a11y_evidence_missing"]),
-                requirement_linkage=_unique_strings(["browser_quality_gate:basic_a11y"]),
+                requirement_linkage=_unique_strings(
+                    ["browser_quality_gate:basic_a11y"]
+                ),
             ),
         )
 
-    outcome_set = {evaluation.outcome for evaluation in visual_a11y_evidence_artifact.evaluations}
+    outcome_set = {
+        evaluation.outcome for evaluation in visual_a11y_evidence_artifact.evaluations
+    }
     visual_classification = "pass"
     a11y_classification = "pass"
     runtime_status = "completed"
@@ -1327,9 +1375,7 @@ def _materialize_visual_and_a11y_receipts(
         visual_classification = (
             "advisory_only" if visual_advisory_reason_codes else "pass"
         )
-        a11y_classification = (
-            "advisory_only" if a11y_advisory_reason_codes else "pass"
-        )
+        a11y_classification = "advisory_only" if a11y_advisory_reason_codes else "pass"
         remediation_hints = ["review generated frontend visual/accessibility warnings"]
     artifact_payload = {
         "gate_run_id": gate_run_id,
@@ -1362,7 +1408,9 @@ def _materialize_visual_and_a11y_receipts(
         artifact_ref=_posix_ref(visual_path.relative_to(root)),
         capture_status="captured",
         captured_at=generated_at,
-        source_linkage_refs={"evidence_provider": visual_a11y_evidence_artifact.provenance.provider_name},
+        source_linkage_refs={
+            "evidence_provider": visual_a11y_evidence_artifact.provenance.provider_name
+        },
     )
     a11y_record = BrowserProbeArtifactRecord(
         artifact_id=f"{gate_run_id}-a11y-1",
@@ -1372,7 +1420,9 @@ def _materialize_visual_and_a11y_receipts(
         artifact_ref=_posix_ref(a11y_path.relative_to(root)),
         capture_status="captured",
         captured_at=generated_at,
-        source_linkage_refs={"evidence_provider": visual_a11y_evidence_artifact.provenance.provider_name},
+        source_linkage_refs={
+            "evidence_provider": visual_a11y_evidence_artifact.provenance.provider_name
+        },
     )
     return (
         [*visual_evidence_records, visual_record, a11y_record],
@@ -1394,7 +1444,9 @@ def _materialize_visual_and_a11y_receipts(
             ),
             blocking_reason_codes=_unique_strings(blocking_reason_codes),
             advisory_reason_codes=_unique_strings(visual_advisory_reason_codes),
-            requirement_linkage=_unique_strings(["browser_quality_gate:visual_expectation"]),
+            requirement_linkage=_unique_strings(
+                ["browser_quality_gate:visual_expectation"]
+            ),
         ),
         BrowserProbeExecutionReceipt(
             check_name="basic_a11y",
@@ -1515,9 +1567,7 @@ def _materialize_visual_regression_receipt(
     verdict = str(getattr(capture, "verdict", "evidence_missing")).strip()
     if missing_artifact and verdict == "pass":
         verdict = "evidence_missing"
-    classification_candidate = (
-        "evidence_missing" if verdict == "recheck" else verdict
-    )
+    classification_candidate = "evidence_missing" if verdict == "recheck" else verdict
     runtime_status = (
         "failed_transient"
         if verdict == "transient_run_failure"
@@ -1569,7 +1619,9 @@ def _normalize_runner_artifact_ref(artifact_ref: str) -> str:
     return ref.replace("\\", "/")
 
 
-def _runner_artifact_exists(*, root: Path, artifact_root: Path, artifact_ref: str) -> bool:
+def _runner_artifact_exists(
+    *, root: Path, artifact_root: Path, artifact_ref: str
+) -> bool:
     normalized_ref = _normalize_runner_artifact_ref(artifact_ref)
     if not normalized_ref:
         return False
@@ -1654,7 +1706,9 @@ def _transient_probe_runner_result(
         interaction_capture=BrowserGateInteractionProbeCapture(
             gate_run_id=gate_run_id,
             interaction_probe_id="primary-action",
-            artifact_refs=_unique_strings([f"{artifact_root_rel}/{_INTERACTION_SNAPSHOT_REL_PATH}"]),
+            artifact_refs=_unique_strings(
+                [f"{artifact_root_rel}/{_INTERACTION_SNAPSHOT_REL_PATH}"]
+            ),
             capture_status="capture_failed",
             classification_candidate="transient_run_failure",
             blocking_reason_codes=_unique_strings([diagnostic_code]),
@@ -1729,7 +1783,9 @@ def _overall_gate_status(receipts: list[BrowserProbeExecutionReceipt]) -> str:
     return "passed"
 
 
-def _receipt_verdict(receipts: list[BrowserProbeExecutionReceipt], check_name: str) -> str:
+def _receipt_verdict(
+    receipts: list[BrowserProbeExecutionReceipt], check_name: str
+) -> str:
     for receipt in receipts:
         if receipt.check_name == check_name:
             return receipt.classification_candidate
@@ -1746,7 +1802,11 @@ def _resolve_visual_verdict(
     )
     if visual_regression_capture is not None:
         visual_regression_receipt = next(
-            (receipt for receipt in receipts if receipt.check_name == "visual_regression"),
+            (
+                receipt
+                for receipt in receipts
+                if receipt.check_name == "visual_regression"
+            ),
             None,
         )
         if visual_regression_receipt is None:

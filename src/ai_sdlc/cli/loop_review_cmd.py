@@ -15,6 +15,9 @@ from typing import cast
 
 import typer
 
+from ai_sdlc.core.frontend_visual_baseline import (
+    validate_frontend_visual_baseline_identity,
+)
 from ai_sdlc.core.loop_review_service import (
     LoopReviewPreparation,
     LoopReviewServiceError,
@@ -681,6 +684,27 @@ def _stage_source_material(root: Path, loop_type: str, loop_dir: Path) -> list[P
             root, loop_dir / "frontend-evidence-snapshot.json"
         )
         referenced: list[Path] = []
+        baseline_root = snapshot_payload.get("visual_baseline_root", "")
+        if isinstance(baseline_root, str) and baseline_root.strip():
+            baseline_identity = {
+                "root": baseline_root,
+                "image_path": snapshot_payload.get(
+                    "visual_baseline_image_path", ""
+                ),
+                "metadata_path": snapshot_payload.get(
+                    "visual_baseline_metadata_path", ""
+                ),
+                "digest": snapshot_payload.get("visual_baseline_digest", ""),
+            }
+            validated_baseline = validate_frontend_visual_baseline_identity(
+                root,
+                baseline_identity,
+                expected_root=baseline_root,
+            )
+            referenced.extend(
+                _repo_path(root, validated_baseline[field_name], field_name)
+                for field_name in ("image_path", "metadata_path")
+            )
         source_path = input_payload.get("source_artifact_path", "")
         if isinstance(source_path, str) and source_path.strip():
             referenced.append(_repo_path(root, source_path, "source_artifact_path"))

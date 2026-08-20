@@ -1,4 +1,4 @@
-"""Frontend solution confirmation models for work item 073."""
+"""Frontend solution confirmation models for project-scoped delivery."""
 
 from __future__ import annotations
 
@@ -22,9 +22,7 @@ PUBLIC_PRIMEVUE_TEMPLATE_RUNTIME_DEPENDENCIES = (
     "vue-router",
     "zod",
 )
-PUBLIC_PRIMEVUE_TEMPLATE_REQUIRED_CSS_IMPORTS = (
-    "primeicons/primeicons.css",
-)
+PUBLIC_PRIMEVUE_TEMPLATE_REQUIRED_CSS_IMPORTS = ("primeicons/primeicons.css",)
 PUBLIC_PRIMEVUE_TEMPLATE_DEV_DEPENDENCIES = (
     "@antfu/eslint-config",
     "@commitlint/cli",
@@ -365,7 +363,7 @@ def build_mvp_solution_snapshot(
             overrides.get("effective_style_pack_id", "modern-saas")
         )
         base_payload: dict[str, object] = {
-            "project_id": "073-demo",
+            "project_id": "sample-demo",
             "created_at": "2026-04-08T00:00:00Z",
             "confirmed_at": "2026-04-08T00:05:00Z",
             "confirmed_by_mode": "guided",
@@ -424,7 +422,9 @@ def build_mvp_solution_snapshot(
     base_payload.update(
         {
             "snapshot_id": snapshot_id,
-            "version": 1 if previous_snapshot is None else previous_snapshot.version + 1,
+            "version": 1
+            if previous_snapshot is None
+            else previous_snapshot.version + 1,
             "changed_from_snapshot_id": (
                 None if previous_snapshot is None else previous_snapshot.snapshot_id
             ),
@@ -440,9 +440,9 @@ def build_mvp_solution_snapshot(
             previous_snapshot is not None
             and effective_style_pack_id == previous_snapshot.effective_style_pack_id
         ):
-            previous_resolved_style_tokens = previous_snapshot.model_dump(mode="json").get(
-                "resolved_style_tokens"
-            )
+            previous_resolved_style_tokens = previous_snapshot.model_dump(
+                mode="json"
+            ).get("resolved_style_tokens")
 
         base_payload["resolved_style_tokens"] = _default_resolved_style_tokens(
             effective_style_pack_id,

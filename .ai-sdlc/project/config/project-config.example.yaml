@@ -7,7 +7,3 @@ preferred_shell: powershell
 agent_target: codex
 adapter_canonical_path: AGENTS.md
 agentops_reporting_mode: 'off'
-agentops_ingestion_mode: gateway
-agentops_ingestion_token_env: AGENTOPS_INGESTION_TOKEN
-telemetry_profile: self_hosting
-telemetry_mode: lite

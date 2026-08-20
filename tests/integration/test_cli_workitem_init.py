@@ -22,7 +22,12 @@ from ai_sdlc.routers.bootstrap import init_project
 REPO_ROOT = Path(__file__).resolve().parents[2]
 runner = CliRunner()
 
-_INIT_ARGS = ["workitem", "init", "--title=Direct Formal Entry", "--wi-id=008-direct-formal-entry"]
+_INIT_ARGS = [
+    "workitem",
+    "init",
+    "--title=Direct Formal Entry",
+    "--wi-id=008-direct-formal-entry",
+]
 
 
 @pytest.fixture(autouse=True)
@@ -217,7 +222,10 @@ class TestCliWorkitemInit:
         assert "代码审查结论" in exec_log_text
         assert "任务/计划同步状态" in exec_log_text
         assert "已完成 git 提交：待执行" in exec_log_text
-        assert all(token in exec_log_text for token in ("merge-pending", "archived(reason)", "retained(reason)"))
+        assert all(
+            token in exec_log_text
+            for token in ("merge-pending", "archived(reason)", "retained(reason)")
+        )
 
     def test_workitem_init_leaves_existing_program_manifest_unchanged(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -397,7 +405,10 @@ class TestCliWorkitemInit:
         root, calls = adapter_receipt
         plan = root / ".cursor" / "plans" / "p.md"
         plan.parent.mkdir(parents=True)
-        plan.write_text("---\ntodos:\n  - id: x\n    content: Work\n    status: pending\n---\n", encoding="utf-8")
+        plan.write_text(
+            "---\ntodos:\n  - id: x\n    content: Work\n    status: pending\n---\n",
+            encoding="utf-8",
+        )
         _init_git_repo(root)
 
         result = runner.invoke(app, ["workitem", "plan-check", "--plan", str(plan)])
@@ -588,8 +599,7 @@ class TestCliWorkitemInit:
 
         env = dict(os.environ)
         dep_site = _dependency_overlay_site_packages(tmp_path)
-        prev = env.get("PYTHONPATH", "")
-        env["PYTHONPATH"] = str(dep_site) if not prev else f"{dep_site}{os.pathsep}{prev}"
+        env["PYTHONPATH"] = str(dep_site)
 
         package_root = subprocess.run(
             [str(venv_python), "-c", "import ai_sdlc; print(ai_sdlc.__file__)"],

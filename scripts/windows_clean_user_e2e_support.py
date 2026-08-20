@@ -9,37 +9,21 @@ import subprocess
 from pathlib import Path
 
 DEFAULT_SOLUTION_TOKENS = (
-    "Program Frontend Solution Confirm Simple",
-    "Recommended Solution",
-    "recommended_frontend_stack: vue3",
-    "recommended_provider_id: public-primevue",
-    "recommended_style_pack_id: modern-saas",
-    "PrimeVue + @primeuix/themes + primeicons",
-    "definePreset(Aura) + #1770e6 + darkModeSelector=false",
-    "Vite + TypeScript + UnoCSS + CSS Variables",
-    "Pinia + Vue Router + Axios + vee-validate + zod + vue-i18n",
-    "Playwright + ESLint + Prettier + husky + lint-staged + commitlint",
-    "Advanced Choice Entry",
-    "ai-sdlc program solution-confirm --dry-run --mode advanced",
-)
-ADVANCED_SOLUTION_TOKENS = (
-    "Program Frontend Solution Confirm Advanced",
-    "Structured Wizard",
-    "Candidate Matrix",
-    "enterprise-default",
-    "data-console",
-    "high-clarity",
-    "macos-glass",
-    "enterprise-vue2",
-    "public-primevue",
+    '"status": "dry_run"',
+    '"recommended_option_source": "existing-project-facts"',
+    '"recommended_frontend_stack": "vue3"',
+    '"recommended_provider_id": "public-primevue"',
+    '"recommended_style_pack_id": "modern-saas"',
+    '"option_id": "custom"',
+    '"custom_choice_supported": true',
 )
 CUSTOM_SOLUTION_TOKENS = (
-    "requested_frontend_stack: vue3",
-    "requested_provider_id: public-primevue",
-    "requested_style_pack_id: data-console",
-    "effective_frontend_stack: vue3",
-    "effective_provider_id: public-primevue",
-    "effective_style_pack_id: data-console",
+    '"requested_frontend_stack": "vue3"',
+    '"requested_provider_id": "public-primevue"',
+    '"requested_style_pack_id": "data-console"',
+    '"effective_frontend_stack": "vue3"',
+    '"effective_provider_id": "public-primevue"',
+    '"effective_style_pack_id": "data-console"',
 )
 
 
@@ -92,7 +76,8 @@ def _write_existing_project(project_root: Path) -> list[Path]:
     business_files = {
         "package.json": (
             '{\n  "name": "existing-customer-portal",\n'
-            '  "private": true,\n  "scripts": {"build": "vite build"}\n}\n'
+            '  "private": true,\n  "scripts": {"build": "vite build"},\n'
+            '  "dependencies": {"vue": "^3.5.0", "primevue": "^4.0.0"}\n}\n'
         ),
         "README.md": "# Existing Customer Portal\n\nProduction project fixture.\n",
         "TODO.md": "- [ ] Add the customer approval dashboard\n",
@@ -131,10 +116,10 @@ def _write_summary(evidence_root: Path) -> None:
         "selected_agent_target": "codex",
         "selected_shell": "powershell",
         "requirement_flow": "public-loop-and-workitem-cli",
-        "default_frontend_stack": "vue3",
-        "default_provider": "public-primevue",
-        "default_style_pack": "modern-saas",
-        "custom_advanced_style_pack": "data-console",
+        "project_fact_frontend_stack": "vue3",
+        "project_fact_provider": "public-primevue",
+        "project_fact_style_pack": "modern-saas",
+        "custom_style_pack": "data-console",
         "managed_delivery_apply_executed": False,
         "business_files_unchanged": True,
     }

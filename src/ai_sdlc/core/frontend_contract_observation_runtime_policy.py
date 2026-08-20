@@ -17,10 +17,6 @@ FRONTEND_CONTRACT_OBSERVATION_SOURCE_REQUIREMENT_SAMPLE_SELFCHECK_ONLY = (
     "sample_selfcheck_only"
 )
 
-_SAMPLE_SELFCHECK_WORK_ITEM_PREFIXES = (
-    "012",
-    "018",
-)
 _SAMPLE_FIXTURE_SEGMENT = "/tests/fixtures/frontend-contract-sample-src/"
 
 
@@ -55,10 +51,8 @@ def assess_frontend_contract_observation_source(
     """Assess whether an observation artifact source profile is acceptable at runtime."""
 
     source_profile = classify_frontend_contract_observation_source(artifact)
-    if (
-        source_profile == FRONTEND_CONTRACT_OBSERVATION_SOURCE_PROFILE_SAMPLE_SELFCHECK
-        and not _allows_sample_selfcheck_for_work_item(work_item_id)
-    ):
+    _ = work_item_id
+    if source_profile == FRONTEND_CONTRACT_OBSERVATION_SOURCE_PROFILE_SAMPLE_SELFCHECK:
         return FrontendContractObservationSourceAssessment(
             source_profile=source_profile,
             requirement_state=(
@@ -73,11 +67,6 @@ def assess_frontend_contract_observation_source(
         source_profile=source_profile,
         requirement_state=FRONTEND_CONTRACT_OBSERVATION_SOURCE_REQUIREMENT_ALLOWED,
     )
-
-
-def _allows_sample_selfcheck_for_work_item(work_item_id: str) -> bool:
-    normalized = (work_item_id or "").strip()
-    return normalized.startswith(_SAMPLE_SELFCHECK_WORK_ITEM_PREFIXES)
 
 
 def _looks_like_sample_fixture_source_ref(source_ref: str) -> bool:

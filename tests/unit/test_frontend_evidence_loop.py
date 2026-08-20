@@ -136,13 +136,12 @@ def test_start_frontend_evidence_loop_blocks_stale_browser_gate_artifact(
 
     assert result.status == "blocked"
     assert "older than the closed implementation loop" in result.blocker
-    assert result.next_guidance.command == "ai-sdlc program browser-gate-probe --execute"
+    assert (
+        result.next_guidance.command
+        == "ai-sdlc loop frontend-evidence capture --execute"
+    )
     assert not (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "frontend-evidence"
-        / "fe-stale-browser-gate"
+        tmp_path / ".ai-sdlc" / "loops" / "frontend-evidence" / "fe-stale-browser-gate"
     ).exists()
 
 
@@ -164,11 +163,7 @@ def test_start_frontend_evidence_loop_blocks_missing_browser_gate_artifact(
     assert "artifact is missing" in result.blocker
     assert result.next_guidance.command == "ai-sdlc loop frontend-evidence doctor"
     assert not (
-        tmp_path
-        / ".ai-sdlc"
-        / "loops"
-        / "frontend-evidence"
-        / "fe-missing-artifact"
+        tmp_path / ".ai-sdlc" / "loops" / "frontend-evidence" / "fe-missing-artifact"
     ).exists()
 
 
@@ -227,10 +222,15 @@ def test_doctor_does_not_mark_declared_playwright_ready_without_runtime(
     )
 
     with patch("ai_sdlc.core.frontend_evidence_loop.shutil.which") as which:
-        which.side_effect = lambda command: f"/usr/bin/{command}" if command in {
-            "node",
-            "npm",
-        } else None
+        which.side_effect = lambda command: (
+            f"/usr/bin/{command}"
+            if command
+            in {
+                "node",
+                "npm",
+            }
+            else None
+        )
         result = doctor_frontend_evidence_provider(
             FrontendEvidenceDoctorOptions(root=tmp_path, provider="playwright")
         )
@@ -238,20 +238,27 @@ def test_doctor_does_not_mark_declared_playwright_ready_without_runtime(
     assert result.status == "needs_user"
     assert result.recommended_provider == "playwright"
     assert "browser-gate-probe" not in result.next_action
-    assert result.next_guidance.command == "npm install -D @playwright/test"
+    assert result.next_guidance.command == (
+        "npm install -D @playwright/test pixelmatch pngjs"
+    )
     playwright = next(
-        provider for provider in result.providers if provider.provider_id == "playwright"
+        provider
+        for provider in result.providers
+        if provider.provider_id == "playwright"
     )
     assert playwright.selected is True
     assert playwright.available is False
     assert playwright.node_available is True
     assert playwright.package_manager_available is True
     assert playwright.run_commands == []
-    assert "npm install -D @playwright/test" in playwright.install_commands
+    assert (
+        "npm install -D @playwright/test pixelmatch pngjs"
+        in playwright.install_commands
+    )
     assert "package.json declares Playwright" in playwright.evidence
 
 
-def test_doctor_marks_playwright_ready_only_when_runtime_is_installed(
+def test_doctor_does_not_mark_playwright_ready_without_visual_comparators(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "package.json").write_text(
@@ -261,23 +268,104 @@ def test_doctor_marks_playwright_ready_only_when_runtime_is_installed(
     (tmp_path / "node_modules" / "playwright").mkdir(parents=True)
 
     with patch("ai_sdlc.core.frontend_evidence_loop.shutil.which") as which:
-        which.side_effect = lambda command: f"/usr/bin/{command}" if command in {
-            "node",
-            "npm",
-        } else None
+        which.side_effect = lambda command: (
+            f"/usr/bin/{command}"
+            if command
+            in {
+                "node",
+                "npm",
+            }
+            else None
+        )
+        result = doctor_frontend_evidence_provider(
+            FrontendEvidenceDoctorOptions(root=tmp_path, provider="playwright")
+        )
+
+    assert result.status == "needs_user"
+    playwright = next(
+        provider
+        for provider in result.providers
+        if provider.provider_id == "playwright"
+    )
+    assert playwright.available is False
+    assert playwright.run_commands == []
+
+
+def test_doctor_marks_playwright_ready_only_when_all_runtime_packages_exist(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"devDependencies": {"@playwright/test": "^1.45.0"}}),
+        encoding="utf-8",
+    )
+    for package_name in ("playwright", "pixelmatch", "pngjs"):
+        (tmp_path / "node_modules" / package_name).mkdir(parents=True)
+
+    with patch("ai_sdlc.core.frontend_evidence_loop.shutil.which") as which:
+        which.side_effect = lambda command: (
+            f"/usr/bin/{command}" if command in {"node", "npm"} else None
+        )
         result = doctor_frontend_evidence_provider(
             FrontendEvidenceDoctorOptions(root=tmp_path, provider="playwright")
         )
 
     assert result.status == "ready"
-    assert result.next_guidance.command == "ai-sdlc program browser-gate-probe --execute"
+    assert (
+        result.next_guidance.command
+        == "ai-sdlc loop frontend-evidence capture --execute"
+    )
     playwright = next(
-        provider for provider in result.providers if provider.provider_id == "playwright"
+        provider
+        for provider in result.providers
+        if provider.provider_id == "playwright"
     )
     assert playwright.selected is True
     assert playwright.available is True
-    assert playwright.run_commands == ["ai-sdlc program browser-gate-probe --execute"]
+    assert playwright.run_commands == [
+        "ai-sdlc loop frontend-evidence capture --execute"
+    ]
     assert "node_modules/playwright" in playwright.evidence
+    assert "node_modules/pixelmatch" in playwright.evidence
+    assert "node_modules/pngjs" in playwright.evidence
+
+
+@pytest.mark.parametrize(
+    ("package_manager", "expected"),
+    (
+        (
+            "npm",
+            [
+                "npm install -D @playwright/test pixelmatch pngjs",
+                "npx playwright install chromium",
+            ],
+        ),
+        (
+            "pnpm",
+            [
+                "pnpm add -D @playwright/test pixelmatch pngjs",
+                "pnpm exec playwright install chromium",
+            ],
+        ),
+        (
+            "yarn",
+            [
+                "yarn add -D @playwright/test pixelmatch pngjs",
+                "yarn playwright install chromium",
+            ],
+        ),
+    ),
+)
+def test_playwright_install_commands_include_visual_comparators(
+    package_manager: str,
+    expected: list[str],
+) -> None:
+    assert (
+        frontend_evidence_loop_module._playwright_install_commands(
+            package_manager,
+            "chromium",
+        )
+        == expected
+    )
 
 
 def test_skip_frontend_evidence_loop_requires_confirmation(tmp_path: Path) -> None:
@@ -305,7 +393,9 @@ def test_skip_frontend_evidence_loop_waits_for_review_before_close(
 ) -> None:
     work_item = _write_work_item(tmp_path)
     _write_closed_implementation_loop(tmp_path, work_item)
-    reason = "Company laptop cannot install browser plugins or launch controlled browsers."
+    reason = (
+        "Company laptop cannot install browser plugins or launch controlled browsers."
+    )
 
     result = skip_frontend_evidence_loop(
         FrontendEvidenceSkipOptions(
@@ -531,8 +621,7 @@ def test_start_frontend_evidence_loop_blocks_runtime_session_scope_drift(
 
         assert result.status == "blocked"
         assert (
-            "runtime session scope is inconsistent "
-            f"for {field_name}"
+            f"runtime session scope is inconsistent for {field_name}"
         ) in result.blocker
 
 
@@ -623,7 +712,10 @@ def test_frontend_evidence_loop_reports_visual_regression_recheck_without_artifa
     assert result.status == "needs_fix"
     assert result.loop_status == "needs_fix"
     assert result.blocker_count == 2
-    assert result.next_guidance.command == "ai-sdlc program browser-gate-probe --execute"
+    assert (
+        result.next_guidance.command
+        == "ai-sdlc loop frontend-evidence capture --execute"
+    )
     report_path = (
         tmp_path
         / ".ai-sdlc"
@@ -659,7 +751,10 @@ def test_start_frontend_evidence_loop_respects_plain_language_blockers(
     assert result.status == "needs_fix"
     assert result.loop_status == "needs_fix"
     assert result.blocker_count == 1
-    assert result.next_guidance.command == "ai-sdlc program browser-gate-probe --execute"
+    assert (
+        result.next_guidance.command
+        == "ai-sdlc loop frontend-evidence capture --execute"
+    )
 
 
 def test_start_frontend_evidence_loop_blocks_ready_gate_with_missing_evidence(
@@ -1015,7 +1110,10 @@ def test_frontend_evidence_loop_needs_fix_for_missing_evidence(
     assert result.status == "needs_fix"
     assert result.loop_status == "needs_fix"
     assert result.blocker_count == 2
-    assert result.next_guidance.command == "ai-sdlc program browser-gate-probe --execute"
+    assert (
+        result.next_guidance.command
+        == "ai-sdlc loop frontend-evidence capture --execute"
+    )
 
     close = close_frontend_evidence_loop(
         FrontendEvidenceCloseOptions(
@@ -1092,9 +1190,7 @@ def _write_closed_implementation_loop(
         artifacts.pointer_path,
         ImplementationCurrentPointer(
             loop_id="impl-frontend",
-            loop_run_path=(
-                ".ai-sdlc/loops/implementation/impl-frontend/loop-run.json"
-            ),
+            loop_run_path=(".ai-sdlc/loops/implementation/impl-frontend/loop-run.json"),
         ),
     )
 
@@ -1283,7 +1379,12 @@ def _write_browser_gate_artifact(
         "recommended_next_steps": [],
     }
     artifact_path = (
-        tmp_path / ".ai-sdlc" / "memory" / "frontend-browser-gate" / "latest.yaml"
+        tmp_path
+        / ".ai-sdlc"
+        / "memory"
+        / "frontend-delivery"
+        / "browser"
+        / "latest.yaml"
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(

@@ -22,7 +22,7 @@ from ai_sdlc.gates.frontend_contract_gate import FrontendContractGate
 from ai_sdlc.generators.frontend_contract_artifacts import (
     materialize_frontend_contract_artifacts,
 )
-from ai_sdlc.models import (
+from ai_sdlc.models.frontend_contracts import (
     ContractLegacyContext,
     ContractRuleBundle,
     FrontendContractSet,
@@ -42,7 +42,7 @@ from ai_sdlc.models.gate import GateCheck, GateResult, GateVerdict
 
 def _build_contract_set() -> FrontendContractSet:
     return FrontendContractSet(
-        work_item_id="012-frontend-contract-verify-integration",
+        work_item_id="sample-frontend-contract-verify-integration",
         module_contracts=[
             ModuleContract(
                 module_id="user",
@@ -183,7 +183,9 @@ def _assert_diagnostic_contract(
     assert diagnostic.policy_projection.coverage_effect == expected_coverage_effect
 
 
-def test_build_frontend_contract_verification_report_returns_pass_context(tmp_path) -> None:
+def test_build_frontend_contract_verification_report_returns_pass_context(
+    tmp_path,
+) -> None:
     materialize_frontend_contract_artifacts(tmp_path, _build_contract_set())
 
     report = build_frontend_contract_verification_report(
@@ -217,7 +219,9 @@ def test_build_frontend_contract_verification_report_returns_pass_context(tmp_pa
     )
 
 
-def test_frontend_contract_verification_report_runtime_object_canonicalizes_lists() -> None:
+def test_frontend_contract_verification_report_runtime_object_canonicalizes_lists() -> (
+    None
+):
     report = FrontendContractVerificationReport(
         contracts_root="contracts/frontend",
         source_name="frontend contract verification",
@@ -245,7 +249,10 @@ def test_frontend_contract_verification_report_runtime_object_canonicalizes_list
             ),
         ),
         blockers=("blocker", "blocker"),
-        coverage_gaps=("frontend_contract_observations", "frontend_contract_observations"),
+        coverage_gaps=(
+            "frontend_contract_observations",
+            "frontend_contract_observations",
+        ),
         advisory_checks=("advisory", "advisory"),
         gate_result=GateResult(
             stage="verify",
@@ -309,7 +316,9 @@ def test_build_frontend_contract_verification_report_maps_missing_observations_t
     )
 
 
-def test_frontend_contract_verification_report_to_json_dict_deduplicates_lists() -> None:
+def test_frontend_contract_verification_report_to_json_dict_deduplicates_lists() -> (
+    None
+):
     report = FrontendContractVerificationReport(
         contracts_root="contracts/frontend",
         source_name="frontend contract verification",
@@ -337,7 +346,10 @@ def test_frontend_contract_verification_report_to_json_dict_deduplicates_lists()
             ),
         ),
         blockers=("missing observations", "missing observations"),
-        coverage_gaps=("frontend_contract_observations", "frontend_contract_observations"),
+        coverage_gaps=(
+            "frontend_contract_observations",
+            "frontend_contract_observations",
+        ),
         advisory_checks=("advisory", "advisory"),
         gate_result=GateResult(
             stage="verify",
@@ -364,7 +376,9 @@ def test_build_frontend_contract_verification_report_short_circuits_invalid_befo
     tmp_path,
 ) -> None:
     materialize_frontend_contract_artifacts(tmp_path, _build_contract_set())
-    artifact_path = tmp_path / "specs" / "012-sample" / "frontend-contract-observations.json"
+    artifact_path = (
+        tmp_path / "specs" / "sample-contract" / "frontend-contract-observations.json"
+    )
 
     report = build_frontend_contract_verification_report(
         tmp_path / "contracts" / "frontend",
@@ -400,7 +414,9 @@ def test_build_frontend_contract_verification_report_treats_sample_selfcheck_pro
     tmp_path,
 ) -> None:
     materialize_frontend_contract_artifacts(tmp_path, _build_contract_set())
-    artifact_path = tmp_path / "specs" / "001-auth" / "frontend-contract-observations.json"
+    artifact_path = (
+        tmp_path / "specs" / "001-auth" / "frontend-contract-observations.json"
+    )
 
     report = build_frontend_contract_verification_report(
         tmp_path / "contracts" / "frontend",
@@ -416,7 +432,10 @@ def test_build_frontend_contract_verification_report_treats_sample_selfcheck_pro
 
     assert report.coverage_gaps == ("frontend_contract_observations",)
     assert len(report.blockers) == 1
-    assert "sample self-check observation artifact cannot satisfy this spec" in report.blockers[0]
+    assert (
+        "sample self-check observation artifact cannot satisfy this spec"
+        in report.blockers[0]
+    )
     _assert_diagnostic_contract(
         report,
         expected_status="source_profile_mismatch",
@@ -467,7 +486,9 @@ def test_build_frontend_contract_verification_report_distinguishes_valid_empty_a
     )
 
 
-def test_build_frontend_contract_verification_report_maps_drift_to_blocker(tmp_path) -> None:
+def test_build_frontend_contract_verification_report_maps_drift_to_blocker(
+    tmp_path,
+) -> None:
     materialize_frontend_contract_artifacts(tmp_path, _build_contract_set())
 
     report = build_frontend_contract_verification_report(

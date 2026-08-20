@@ -9,7 +9,7 @@ from ai_sdlc.core.frontend_contract_drift import (
 from ai_sdlc.generators.frontend_contract_artifacts import (
     materialize_frontend_contract_artifacts,
 )
-from ai_sdlc.models import (
+from ai_sdlc.models.frontend_contracts import (
     ContractLegacyContext,
     ContractRuleBundle,
     FrontendContractSet,

@@ -10,8 +10,6 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ai_sdlc.generators.doc_gen import TasksParser
-
 _TASK_SPLIT_RE = re.compile(r"(?m)^###\s+Task\s+")
 _TASK_ID_RE = re.compile(r"(?P<major>\d+)\.(?P<minor>\d+)")
 _DOC_FIRST_MARKERS = (
@@ -155,15 +153,20 @@ def next_pending_task_ref(
     last_committed_task: str = "",
 ) -> str | None:
     """Return the next task runtime id implied by current batch progress."""
-    plan = TasksParser().parse(tasks_path)
-    if not plan.batches:
+    if not tasks_path.is_file():
         return None
-
-    batch_index = current_batch if 0 <= current_batch < len(plan.batches) else 0
-    batches = plan.batches[batch_index:]
+    task_ids_by_phase: dict[int, list[str]] = {}
+    for block in _iter_task_blocks(tasks_path.read_text(encoding="utf-8")):
+        phase = int(block.task_id.split(".", 1)[0])
+        task_ids_by_phase.setdefault(phase, []).append(block.runtime_task_id)
+    batches = [task_ids_by_phase[phase] for phase in sorted(task_ids_by_phase)]
+    if not batches:
+        return None
+    batch_index = current_batch if 0 <= current_batch < len(batches) else 0
+    remaining_batches = batches[batch_index:]
     first = True
-    for batch in batches:
-        task_ids = list(batch.tasks)
+    for batch in remaining_batches:
+        task_ids = list(batch)
         if first and last_committed_task and last_committed_task in task_ids:
             start = task_ids.index(last_committed_task) + 1
             task_ids = task_ids[start:]

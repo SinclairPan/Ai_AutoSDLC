@@ -19,12 +19,6 @@ from ai_sdlc.core.close_check import (
     run_branch_check,
     run_close_check,
 )
-from ai_sdlc.core.frontend_delivery_truth import (
-    summarize_frontend_delivery_status_for_display,
-)
-from ai_sdlc.core.frontend_inheritance_truth import (
-    summarize_frontend_inheritance_status_for_display,
-)
 from ai_sdlc.core.plan_check import PlanCheckResult, format_json, run_plan_check
 from ai_sdlc.core.task_guard import evaluate_task_guard
 from ai_sdlc.core.workitem_scaffold import WorkitemScaffolder, WorkitemScaffoldError
@@ -33,7 +27,6 @@ from ai_sdlc.core.workitem_truth import (
     format_truth_check_json,
     run_truth_check,
 )
-from ai_sdlc.telemetry.display import summarize_frontend_delivery_scope_for_display
 from ai_sdlc.utils.helpers import find_project_root, is_git_repo, now_iso
 
 _WORKITEM_ADAPTER_HOOK_META_KEY = "ai_sdlc.cli.workitem.adapter_hook"
@@ -359,64 +352,14 @@ def _print_close_table(result: CloseCheckResult) -> None:
         for action in branch_lifecycle_next_actions:
             console.print(f"  - {action}")
 
-    program_truth_next_actions = _extract_program_truth_next_actions(result.checks)
-    if program_truth_next_actions:
-        console.print("[bold yellow]Program Truth Next Actions[/bold yellow]")
-        for action in program_truth_next_actions:
-            console.print(f"  - {action}")
-
     if result.blockers:
         console.print("[bold red]BLOCKERs[/bold red]")
         for b in _dedupe_cli_text_items(result.blockers):
             console.print(f"  {b}")
 
 
-def _extract_program_truth_next_actions(checks: list[dict[str, object]]) -> list[str]:
-    actions: list[str] = []
-    for check in checks:
-        if str(check.get("name", "")).strip() != "program_truth":
-            continue
-        for action in check.get("next_required_actions", []) or []:
-            normalized = str(action).strip()
-            if normalized and normalized not in actions:
-                actions.append(normalized)
-    return actions
-
-
 def _format_close_check_detail(item: dict[str, object]) -> str:
-    detail = str(item.get("detail", "")).strip()
-    frontend_delivery_status = item.get("frontend_delivery_status")
-    frontend_inheritance_status = item.get("frontend_inheritance_status")
-    inheritance_summary = ""
-    if isinstance(frontend_inheritance_status, dict):
-        inheritance_summary = summarize_frontend_inheritance_status_for_display(
-            frontend_inheritance_status
-        )
-    if isinstance(frontend_delivery_status, dict):
-        frontend_summary = summarize_frontend_delivery_status_for_display(
-            frontend_delivery_status
-        )
-        if frontend_summary:
-            scope_note = summarize_frontend_delivery_scope_for_display()
-            inheritance_block = (
-                f"\nfrontend inheritance: {inheritance_summary}"
-                if inheritance_summary
-                else ""
-            )
-            if detail:
-                return (
-                    f"{detail}\nfrontend: {frontend_summary}\n"
-                    f"frontend scope: {scope_note}"
-                    f"{inheritance_block}"
-                )
-            return (
-                f"frontend: {frontend_summary}\n"
-                f"frontend scope: {scope_note}"
-                f"{inheritance_block}"
-            )
-    if detail and inheritance_summary:
-        return f"{detail}\nfrontend inheritance: {inheritance_summary}"
-    return detail
+    return str(item.get("detail", "")).strip()
 
 
 def _extract_branch_lifecycle_next_actions(checks: list[dict[str, object]]) -> list[str]:

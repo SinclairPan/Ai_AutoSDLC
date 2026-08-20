@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -10,7 +11,6 @@ import ai_sdlc.core.workitem_scaffold as workitem_scaffold_module
 from ai_sdlc.core.config import load_project_state, save_project_state
 from ai_sdlc.core.plan_check import parse_markdown_frontmatter
 from ai_sdlc.core.workitem_scaffold import WorkitemScaffolder, WorkitemScaffoldError
-from ai_sdlc.generators.doc_gen import TasksParser
 from ai_sdlc.models.project import ProjectState, ProjectStatus
 
 TEMPLATE_DIR = Path(__file__).resolve().parents[2] / "templates"
@@ -36,7 +36,9 @@ def _copy_scaffold_templates(dest: Path) -> None:
         "tasks-template.md",
         "execution-log-template.md",
     ):
-        (dest / name).write_text((TEMPLATE_DIR / name).read_text(encoding="utf-8"), encoding="utf-8")
+        (dest / name).write_text(
+            (TEMPLATE_DIR / name).read_text(encoding="utf-8"), encoding="utf-8"
+        )
 
 
 def test_scaffold_generates_parser_friendly_formal_docs_with_refs(
@@ -104,7 +106,9 @@ def test_scaffold_generates_parser_friendly_formal_docs_with_refs(
     assert "### Task 3.1 完成验证与独立评审" in tasks_body
     assert "进入 execute 前确认" in tasks_body
 
-    exec_log_text = (result.spec_dir / "task-execution-log.md").read_text(encoding="utf-8")
+    exec_log_text = (result.spec_dir / "task-execution-log.md").read_text(
+        encoding="utf-8"
+    )
     assert "# 任务执行日志：Payment retry policy" in exec_log_text
     assert f"**功能编号**：`{result.work_item_id}`" in exec_log_text
     assert "统一验证命令" in exec_log_text
@@ -112,9 +116,12 @@ def test_scaffold_generates_parser_friendly_formal_docs_with_refs(
     assert "任务/计划同步状态" in exec_log_text
     assert "已完成 git 提交：待执行" in exec_log_text
 
-    parsed = TasksParser().parse(result.spec_dir / "tasks.md")
-    assert parsed.total_tasks == 3
-    assert [task.task_id for task in parsed.tasks] == ["T11", "T21", "T31"]
+    task_headers = re.findall(r"^### Task (\d+)\.(\d+) ", tasks_body, re.MULTILINE)
+    assert [f"T{phase}{index}" for phase, index in task_headers] == [
+        "T11",
+        "T21",
+        "T31",
+    ]
 
     state = load_project_state(root)
     assert state.next_work_item_seq == 9
@@ -169,7 +176,9 @@ def test_scaffold_rejects_duplicate_canonical_doc_set(tmp_path: Path) -> None:
         wi_id="004-duplicate-canonical-docs",
     )
 
-    with pytest.raises(WorkitemScaffoldError, match="canonical formal docs already exist"):
+    with pytest.raises(
+        WorkitemScaffoldError, match="canonical formal docs already exist"
+    ):
         scaffolder.scaffold(
             root=root,
             title="Duplicate Canonical Docs",
@@ -177,7 +186,9 @@ def test_scaffold_rejects_duplicate_canonical_doc_set(tmp_path: Path) -> None:
         )
 
 
-def test_scaffold_uses_next_free_sequence_when_project_state_lags(tmp_path: Path) -> None:
+def test_scaffold_uses_next_free_sequence_when_project_state_lags(
+    tmp_path: Path,
+) -> None:
     root = tmp_path / "repo"
     root.mkdir()
     _setup_project(root, next_work_item_seq=20)
@@ -187,10 +198,10 @@ def test_scaffold_uses_next_free_sequence_when_project_state_lags(tmp_path: Path
 
     result = WorkitemScaffolder(template_dir=TEMPLATE_DIR).scaffold(
         root=root,
-        title="Frontend Program Final Proof Archive Orchestration Baseline",
+        title="Frontend Delivery Review Baseline",
     )
 
-    assert result.work_item_id == "047-frontend-program-final-proof-archive-orchestration-baseline"
+    assert result.work_item_id == "047-frontend-delivery-review-baseline"
     state = load_project_state(root)
     assert state.next_work_item_seq == 48
 
@@ -203,7 +214,9 @@ def test_scaffold_falls_back_to_packaged_templates_when_repo_templates_missing(
     root.mkdir()
     _setup_project(root, next_work_item_seq=8)
 
-    package_root = tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "ai_sdlc"
+    package_root = (
+        tmp_path / "venv" / "lib" / "python3.11" / "site-packages" / "ai_sdlc"
+    )
     _copy_scaffold_templates(package_root / "templates")
     fake_module_path = package_root / "core" / "workitem_scaffold.py"
     fake_module_path.parent.mkdir(parents=True, exist_ok=True)
@@ -229,7 +242,14 @@ def test_scaffold_falls_back_to_importlib_template_resources(
 
     resource_templates = tmp_path / "resources"
     _copy_scaffold_templates(resource_templates)
-    fake_module_path = tmp_path / "python" / "site-packages" / "ai_sdlc" / "core" / "workitem_scaffold.py"
+    fake_module_path = (
+        tmp_path
+        / "python"
+        / "site-packages"
+        / "ai_sdlc"
+        / "core"
+        / "workitem_scaffold.py"
+    )
     fake_module_path.parent.mkdir(parents=True, exist_ok=True)
     fake_module_path.touch()
 

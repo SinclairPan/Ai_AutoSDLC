@@ -9,40 +9,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import ValidationError
 
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.core.plan_check import resolve_plan_path_from_wi, run_plan_check
 from ai_sdlc.core.pr_review_models import ReviewFindings, ReviewPack, ReviewRun
 from ai_sdlc.core.pr_review_service import CURRENT_REVIEW_PATH
-from ai_sdlc.core.program_service import (
-    FRONTEND_EVIDENCE_CLASS_MIRROR_PROBLEM_FAMILY,
-    PROGRAM_TRUTH_SYNC_DRY_RUN_COMMAND,
-    PROGRAM_TRUTH_SYNC_EXECUTE_COMMAND,
-    ProgramFrontendEvidenceClassStatus,
-    ProgramService,
-    _parse_frontend_evidence_class_status_blocker,
-)
-from ai_sdlc.core.provenance_gate import load_phase1_provenance_gate_payload
-from ai_sdlc.core.release_gate import (
-    ReleaseGateParseError,
-    build_release_gate_governance_payload,
-    load_release_gate_report,
-)
-from ai_sdlc.core.reviewer_gate import (
-    ReviewerGateOutcomeKind,
-    evaluate_reviewer_gate,
-)
-from ai_sdlc.core.verify_constraints import (
-    _is_frontend_evidence_class_subject as _is_frontend_evidence_class_spec_subject,
-)
-from ai_sdlc.core.verify_constraints import collect_frontend_evidence_class_blockers
 from ai_sdlc.core.workitem_traceability import (
     analyze_completion_truth,
     evaluate_work_item_branch_lifecycle,
 )
-from ai_sdlc.models.work import WorkItemStatus
 from ai_sdlc.utils.helpers import find_project_root
 
 REQUIRED_LOG_MARKERS = (
@@ -66,13 +42,7 @@ VERIFICATION_PROFILE_REQUIRED_COMMANDS: dict[
 ] = {
     "docs-only": ("uv run ai-sdlc verify constraints",),
     "rules-only": ("uv run ai-sdlc verify constraints",),
-    "truth-only": (
-        "uv run ai-sdlc verify constraints",
-        (
-            PROGRAM_TRUTH_SYNC_DRY_RUN_COMMAND,
-            "uv run ai-sdlc program truth sync --dry-run",
-        ),
-    ),
+    "truth-only": ("uv run ai-sdlc verify constraints",),
     "code-change": (
         "uv run pytest",
         "uv run ruff check",
@@ -84,7 +54,6 @@ DOCS_WHITELIST_RELS = (
     Path("docs/pull-request-checklist.zh.md"),
     Path("USER_GUIDE.zh-CN.md"),
 )
-RELEASE_GATE_EVIDENCE_FILE = "release-gate-evidence.md"
 GIT_CLOSURE_ALLOWED_DIRTY_RELS = (
     ".ai-sdlc/state/checkpoint.yml",
     ".ai-sdlc/state/checkpoint.yml.bak",
@@ -108,154 +77,6 @@ def _registered_command_strings() -> tuple[str, ...]:
     from ai_sdlc.cli.command_names import collect_flat_command_strings
 
     return collect_flat_command_strings()
-
-
-def _is_frontend_evidence_class_subject(wi_dir_name: str) -> bool:
-    return _is_frontend_evidence_class_spec_subject(wi_dir_name)
-
-
-def _format_frontend_evidence_class_late_resurfacing_detail(
-    status: ProgramFrontendEvidenceClassStatus,
-) -> str:
-    token = status.summary_token.strip()
-    detail = f"{status.problem_family} via {status.detection_surface}".strip()
-    if token:
-        return f"{detail} ({token})"
-    return detail
-
-
-def _build_frontend_evidence_class_close_check_summary(
-    root: Path,
-    wi_dir: Path,
-    *,
-    program_service: ProgramService | None = None,
-    program_manifest: object | None = None,
-    program_validation_result: object | None = None,
-) -> ProgramFrontendEvidenceClassStatus | None:
-    if not _is_frontend_evidence_class_subject(wi_dir.name):
-        return None
-
-    for blocker in collect_frontend_evidence_class_blockers(wi_dir):
-        parsed = _parse_frontend_evidence_class_status_blocker(blocker)
-        if parsed is None:
-            continue
-        return ProgramFrontendEvidenceClassStatus(
-            has_blocker=True,
-            problem_family=parsed["problem_family"],
-            detection_surface=parsed["detection_surface"],
-            summary_token=parsed["summary_token"],
-        )
-
-    manifest_path = root / "program-manifest.yaml"
-    if not manifest_path.is_file():
-        return ProgramFrontendEvidenceClassStatus(
-            has_blocker=True,
-            problem_family=FRONTEND_EVIDENCE_CLASS_MIRROR_PROBLEM_FAMILY,
-            detection_surface="program load",
-            summary_token="manifest_missing",
-        )
-
-    svc = program_service or ProgramService(root, manifest_path)
-    try:
-        manifest = (
-            program_manifest if program_manifest is not None else svc.load_manifest()
-        )
-    except Exception:
-        return ProgramFrontendEvidenceClassStatus(
-            has_blocker=True,
-            problem_family=FRONTEND_EVIDENCE_CLASS_MIRROR_PROBLEM_FAMILY,
-            detection_surface="program load",
-            summary_token="manifest_unreadable",
-        )
-
-    resolved_wi_dir = wi_dir.resolve()
-    matched_spec_ids: list[str] = []
-    for spec in manifest.specs:
-        try:
-            spec_dir = svc._resolve_spec_dir(spec.path)
-        except ValueError:
-            continue
-        if spec_dir == resolved_wi_dir:
-            matched_spec_ids.append(spec.id)
-    if not matched_spec_ids:
-        return ProgramFrontendEvidenceClassStatus(
-            has_blocker=True,
-            problem_family=FRONTEND_EVIDENCE_CLASS_MIRROR_PROBLEM_FAMILY,
-            detection_surface="program load",
-            summary_token="manifest_unmapped",
-        )
-    if len(matched_spec_ids) > 1:
-        return ProgramFrontendEvidenceClassStatus(
-            has_blocker=True,
-            problem_family=FRONTEND_EVIDENCE_CLASS_MIRROR_PROBLEM_FAMILY,
-            detection_surface="program load",
-            summary_token="manifest_ambiguous_path_match",
-        )
-    matched_spec_id = matched_spec_ids[0]
-
-    validation_result = (
-        program_validation_result
-        if program_validation_result is not None
-        else svc.validate_manifest(manifest)
-    )
-    summary = svc.build_frontend_evidence_class_statuses(
-        manifest,
-        validation_result=validation_result,
-    ).get(matched_spec_id)
-    if summary is not None:
-        return summary
-    return ProgramFrontendEvidenceClassStatus(has_blocker=False)
-
-
-def _build_program_truth_close_check_summary(
-    root: Path,
-    wi_dir: Path,
-    *,
-    program_service: ProgramService | None = None,
-    program_manifest: object | None = None,
-    program_validation_result: object | None = None,
-) -> dict[str, object] | None:
-    manifest_path = root / "program-manifest.yaml"
-    if not manifest_path.is_file():
-        return None
-
-    svc = program_service or ProgramService(root, manifest_path)
-    try:
-        manifest = (
-            program_manifest if program_manifest is not None else svc.load_manifest()
-        )
-    except Exception as exc:
-        return {
-            "ok": False,
-            "summary_token": "manifest_unreadable",
-            "detail": f"manifest_unreadable: {exc}",
-            "next_required_actions": [
-                "fix program-manifest.yaml so it can be parsed",
-                PROGRAM_TRUTH_SYNC_EXECUTE_COMMAND,
-            ],
-        }
-
-    readiness = svc.build_spec_truth_readiness(
-        manifest,
-        spec_path=wi_dir,
-        validation_result=(
-            program_validation_result
-            if program_validation_result is not None
-            else svc.validate_manifest(manifest)
-        ),
-    )
-    if readiness is None:
-        return None
-
-    return {
-        "ok": readiness.ready,
-        "summary_token": readiness.summary_token,
-        "detail": readiness.detail,
-        "next_required_actions": _dedupe_text_items(readiness.next_required_actions),
-        "frontend_delivery_status": dict(readiness.frontend_delivery_status),
-        "frontend_delivery_scope": readiness.frontend_delivery_scope,
-        "frontend_inheritance_status": dict(readiness.frontend_inheritance_status),
-    }
 
 
 @dataclass
@@ -405,8 +226,6 @@ def _path_allowed_for_docs_profile(path: str) -> bool:
 
 def _path_allowed_for_truth_profile(path: str) -> bool:
     normalized = path.strip().replace("\\", "/")
-    if normalized == "program-manifest.yaml":
-        return True
     if normalized.startswith(".ai-sdlc/"):
         return True
     if normalized.startswith("specs/") and normalized.endswith(".md"):
@@ -497,39 +316,6 @@ def _git_closure_violation(root: Path, log_text: str) -> str | None:
     return None
 
 
-def _manifest_payload_without_truth_snapshot(text: str) -> dict[str, Any] | None:
-    payload = yaml.safe_load(text)
-    if not isinstance(payload, dict):
-        return None
-    normalized = dict(payload)
-    normalized.pop("truth_snapshot", None)
-    return normalized
-
-
-def _is_truth_snapshot_only_manifest_drift(root: Path) -> bool:
-    manifest_rel = "program-manifest.yaml"
-    manifest_path = root / manifest_rel
-    if not manifest_path.is_file():
-        return False
-    try:
-        current_payload = _manifest_payload_without_truth_snapshot(
-            manifest_path.read_text(encoding="utf-8")
-        )
-    except OSError:
-        return False
-    if current_payload is None:
-        return False
-    try:
-        git = GitClient(root)
-        head_text = git._run("show", f"HEAD:{manifest_rel}")
-    except GitError:
-        return False
-    head_payload = _manifest_payload_without_truth_snapshot(head_text)
-    if head_payload is None:
-        return False
-    return current_payload == head_payload
-
-
 def _has_uncommitted_changes_excluding_allowed(root: Path) -> bool:
     client = GitClient(root)
     status = client._run("status", "--porcelain", "--untracked-files=all")
@@ -545,34 +331,9 @@ def _has_uncommitted_changes_excluding_allowed(root: Path) -> bool:
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
         normalized = path.strip().replace("\\", "/")
-        if (
-            normalized == "program-manifest.yaml"
-            and _is_truth_snapshot_only_manifest_drift(root)
-        ):
-            continue
         if normalized not in allowed:
             return True
     return False
-
-
-def _requires_release_gate(wi_dir: Path) -> bool:
-    return (
-        wi_dir.name.startswith("003-")
-        or (wi_dir / RELEASE_GATE_EVIDENCE_FILE).is_file()
-    )
-
-
-def _requires_formal_reviewer_gate(wi_dir: Path) -> bool:
-    return wi_dir.name.startswith("003-")
-
-
-def load_verification_governance_bundle(
-    root: Path,
-    *,
-    wi_dir: Path | None = None,
-) -> dict[str, object] | None:
-    """Return a bounded verification governance bundle when one is available."""
-    return None
 
 
 def run_branch_check(*, cwd: Path | None, wi: Path) -> BranchCheckResult:
@@ -619,10 +380,6 @@ def run_close_check(
     cwd: Path | None,
     wi: Path,
     all_docs: bool = False,
-    include_program_truth: bool = True,
-    program_service: ProgramService | None = None,
-    program_manifest: object | None = None,
-    program_validation_result: object | None = None,
 ) -> CloseCheckResult:
     """Run read-only close checks for a `specs/<WI>/` directory.
 
@@ -740,38 +497,15 @@ def run_close_check(
             if review_evidence_ok
             else "review evidence missing"
         )
-        formal_review_ok = True
-        formal_review_detail = ""
-        if _requires_formal_reviewer_gate(wi_dir):
-            gate = evaluate_reviewer_gate(
-                root, wi_dir.name, WorkItemStatus.DEV_REVIEWED
-            )
-            formal_review_ok = gate.outcome == ReviewerGateOutcomeKind.ALLOW
-            if not formal_review_ok:
-                checkpoint_label = (
-                    gate.checkpoint.value if gate.checkpoint is not None else "n/a"
-                )
-                formal_review_detail = (
-                    f"formal reviewer gate {gate.outcome.value} at {checkpoint_label}: "
-                    f"{gate.reason}"
-                )
-            else:
-                formal_review_detail = (
-                    f"formal reviewer gate approved at {gate.checkpoint.value}"
-                )
-        review_ok = review_evidence_ok and formal_review_ok
-        review_detail = review_gate_detail
-        if formal_review_detail:
-            review_detail = f"{review_gate_detail}; {formal_review_detail}"
         checks.append(
             {
                 "name": "review_gate",
-                "ok": review_ok,
-                "detail": review_detail,
+                "ok": review_evidence_ok,
+                "detail": review_gate_detail,
             }
         )
-        if not review_ok:
-            blockers.append(f"BLOCKER: Review Gate failed: {review_detail}.")
+        if not review_evidence_ok:
+            blockers.append(f"BLOCKER: Review Gate failed: {review_gate_detail}.")
         verification_profile_violation = _verification_profile_violation(log_text)
         verification_profile_ok = verification_profile_violation is None
         checks.append(
@@ -837,188 +571,6 @@ def run_close_check(
             }
         )
         blockers.extend(branch_lifecycle.blockers)
-
-        program_truth_status = (
-            _build_program_truth_close_check_summary(
-                root,
-                wi_dir,
-                program_service=program_service,
-                program_manifest=program_manifest,
-                program_validation_result=program_validation_result,
-            )
-            if include_program_truth
-            else None
-        )
-        if program_truth_status is not None:
-            program_truth_ok = bool(program_truth_status.get("ok"))
-            program_truth_detail = str(program_truth_status.get("detail", "")).strip()
-            check = {
-                "name": "program_truth",
-                "ok": program_truth_ok,
-                "detail": program_truth_detail
-                if program_truth_detail
-                else "program truth is fresh and mapped",
-                "next_required_actions": _dedupe_text_items(
-                    program_truth_status.get("next_required_actions", [])
-                ),
-                "frontend_delivery_status": dict(
-                    program_truth_status.get("frontend_delivery_status", {})
-                ),
-            }
-            frontend_delivery_scope = str(
-                program_truth_status.get("frontend_delivery_scope", "")
-            ).strip()
-            if frontend_delivery_scope:
-                check["frontend_delivery_scope"] = frontend_delivery_scope
-            frontend_inheritance_status = program_truth_status.get(
-                "frontend_inheritance_status", {}
-            )
-            if (
-                isinstance(frontend_inheritance_status, dict)
-                and frontend_inheritance_status
-            ):
-                check["frontend_inheritance_status"] = dict(frontend_inheritance_status)
-            checks.append(check)
-            if not program_truth_ok:
-                blocker = "BLOCKER: program truth unresolved"
-                if program_truth_detail:
-                    blocker = f"{blocker}: {program_truth_detail}"
-                blockers.append(blocker)
-
-        frontend_evidence_class_status = (
-            _build_frontend_evidence_class_close_check_summary(
-                root,
-                wi_dir,
-                program_service=program_service,
-                program_manifest=program_manifest,
-                program_validation_result=program_validation_result,
-            )
-        )
-        if frontend_evidence_class_status is not None:
-            frontend_evidence_class_ok = not frontend_evidence_class_status.has_blocker
-            frontend_evidence_class_detail = (
-                "no unresolved frontend_evidence_class blocker"
-                if frontend_evidence_class_ok
-                else _format_frontend_evidence_class_late_resurfacing_detail(
-                    frontend_evidence_class_status
-                )
-            )
-            checks.append(
-                {
-                    "name": "frontend_evidence_class",
-                    "ok": frontend_evidence_class_ok,
-                    "detail": frontend_evidence_class_detail,
-                }
-            )
-            if not frontend_evidence_class_ok:
-                blockers.append(
-                    f"BLOCKER: close-stage unresolved {frontend_evidence_class_detail}"
-                )
-
-    if _requires_release_gate(wi_dir):
-        release_gate_path = wi_dir / RELEASE_GATE_EVIDENCE_FILE
-        if not release_gate_path.is_file():
-            detail = f"{RELEASE_GATE_EVIDENCE_FILE} missing"
-            checks.append({"name": "release_gate", "ok": False, "detail": detail})
-            blockers.append(
-                f"BLOCKER: release gate evidence missing: {release_gate_path}"
-            )
-        else:
-            try:
-                release_gate = load_release_gate_report(release_gate_path)
-                assert release_gate is not None
-            except (ReleaseGateParseError, AssertionError) as exc:
-                checks.append(
-                    {
-                        "name": "release_gate",
-                        "ok": False,
-                        "detail": str(exc),
-                    }
-                )
-                blockers.append(f"BLOCKER: invalid release gate evidence: {exc}")
-            else:
-                release_gate_ok = release_gate.overall_verdict != "BLOCK"
-                checks.append(
-                    {
-                        "name": "release_gate",
-                        "ok": release_gate_ok,
-                        "detail": release_gate.summary(),
-                    }
-                )
-                blockers.extend(_dedupe_text_items(release_gate.blocker_lines()))
-                release_payload = build_release_gate_governance_payload(
-                    release_gate,
-                    decision_subject=f"release:{wi_dir.name}",
-                    evidence_refs=(str(release_gate_path),),
-                )
-                release_governance_ok = release_payload[
-                    "source_closure_status"
-                ] == "closed" and release_payload["decision_result"] in {
-                    "allow",
-                    "warn",
-                }
-                checks.append(
-                    {
-                        "name": "release_governance",
-                        "ok": release_governance_ok,
-                        "detail": (
-                            f"{release_payload['decision_result']}; "
-                            f"source_closure_status={release_payload['source_closure_status']}"
-                        ),
-                    }
-                )
-                if release_payload["source_closure_status"] != "closed":
-                    blockers.append(
-                        "BLOCKER: release governance source closure incomplete; "
-                        "release must remain reviewed/draft/blocked, not published"
-                    )
-
-    verification_governance = load_verification_governance_bundle(root, wi_dir=wi_dir)
-    if verification_governance is not None:
-        gate_payload = verification_governance.get("gate_decision_payload", {})
-        decision_result = str(gate_payload.get("decision_result", "")).strip().lower()
-        source_closure_status = (
-            str(gate_payload.get("source_closure_status", "")).strip().lower()
-        )
-        governance_ok = source_closure_status == "closed" and decision_result in {
-            "allow",
-            "warn",
-        }
-        checks.append(
-            {
-                "name": "verification_governance",
-                "ok": governance_ok,
-                "detail": (
-                    f"{decision_result or 'unknown'}; "
-                    f"source_closure_status={source_closure_status or 'unknown'}"
-                ),
-            }
-        )
-        if source_closure_status != "closed":
-            blockers.append(
-                "BLOCKER: verification governance source closure incomplete; "
-                "work item must remain reviewed/draft/blocked, not published"
-            )
-        elif decision_result == "block":
-            governance_blockers = verification_governance.get("blockers", ())
-            if governance_blockers:
-                blockers.extend(_dedupe_text_items(governance_blockers))
-            else:
-                blockers.append(
-                    "BLOCKER: verification governance gate decision blocked close-check"
-                )
-
-    provenance_phase1 = load_phase1_provenance_gate_payload(root)
-    checks.append(
-        {
-            "name": "provenance_phase1",
-            "ok": True,
-            "detail": (
-                f"{provenance_phase1.get('decision_result', 'advisory')}; "
-                "Phase 1 remains advisory-only and outside the default blocker path"
-            ),
-        }
-    )
 
     doc_violations = _docs_consistency_violations(root, wi_dir, all_docs=all_docs)
     docs_ok = len(doc_violations) == 0

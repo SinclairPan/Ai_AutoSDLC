@@ -70,8 +70,8 @@ This section is for development of this AI-SDLC repository itself. Do not copy
 it into external user guidance or framework runtime rules.
 
 For this repository's self-development workflow, treat the checked-out source as
-the active framework implementation. Use `uv run ai-sdlc ...` for SDLC
-governance, AgentOps, handoff, work item, verify, and run commands. A globally
+the active framework implementation. Use `uv run ai-sdlc ...` for Loop, Local PR
+Review, handoff, work item, verify, and run commands. A globally
 installed `ai-sdlc` may be older and is only a distribution/user-install smoke
 target, not the controlling framework for local repository development.
 

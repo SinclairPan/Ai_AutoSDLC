@@ -9,7 +9,6 @@ from ai_sdlc.core.config import load_project_config, save_project_config
 from ai_sdlc.integrations.ide_adapter import ensure_ide_adaptation
 from ai_sdlc.models.project import ProjectConfig
 from ai_sdlc.routers.bootstrap import init_project
-from ai_sdlc.telemetry.enums import TelemetryMode, TelemetryProfile
 from ai_sdlc.utils.helpers import AI_SDLC_DIR, PROJECT_CONFIG_PATH
 
 
@@ -20,8 +19,8 @@ def test_load_project_config_missing_file_returns_defaults(tmp_path: Path) -> No
     assert cfg.product_form == "hybrid"
     assert cfg.preferred_shell == ""
     assert cfg.detected_ide == ""
-    assert cfg.telemetry_profile is TelemetryProfile.SELF_HOSTING
-    assert cfg.telemetry_mode is TelemetryMode.LITE
+    assert not hasattr(cfg, "telemetry_profile")
+    assert not hasattr(cfg, "telemetry_mode")
 
 
 def test_save_project_config_creates_file(tmp_path: Path) -> None:
@@ -29,8 +28,6 @@ def test_save_project_config_creates_file(tmp_path: Path) -> None:
         detected_ide="vscode",
         adapter_applied="vscode",
         preferred_shell="powershell",
-        telemetry_profile=TelemetryProfile.EXTERNAL_PROJECT,
-        telemetry_mode=TelemetryMode.STRICT,
     )
     save_project_config(tmp_path, cfg)
     path = tmp_path / PROJECT_CONFIG_PATH
@@ -39,8 +36,9 @@ def test_save_project_config_creates_file(tmp_path: Path) -> None:
     assert again.detected_ide == "vscode"
     assert again.adapter_applied == "vscode"
     assert again.preferred_shell == "powershell"
-    assert again.telemetry_profile is TelemetryProfile.EXTERNAL_PROJECT
-    assert again.telemetry_mode is TelemetryMode.STRICT
+    rendered = path.read_text(encoding="utf-8")
+    assert "telemetry" not in rendered.lower()
+    assert "agentops" not in rendered.lower()
 
 
 def test_save_project_config_skips_atomic_replace_when_content_is_unchanged(
@@ -95,13 +93,13 @@ def test_ensure_ide_adaptation_writes_config_when_missing(tmp_path: Path) -> Non
     assert path.is_file()
     cfg = load_project_config(tmp_path)
     assert cfg.adapter_applied_at != ""
-    assert cfg.telemetry_profile is TelemetryProfile.SELF_HOSTING
-    assert cfg.telemetry_mode is TelemetryMode.LITE
+    assert not hasattr(cfg, "telemetry_profile")
+    assert not hasattr(cfg, "telemetry_mode")
 
 
-def test_project_config_template_freezes_telemetry_defaults() -> None:
+def test_project_config_template_has_no_retired_runtime_defaults() -> None:
     template = Path("src/ai_sdlc/templates/project-config.yaml.j2").read_text(
         encoding="utf-8"
     )
-    assert 'telemetry_profile: "self_hosting"' in template
-    assert 'telemetry_mode: "lite"' in template
+    assert "telemetry" not in template.lower()
+    assert "agentops" not in template.lower()

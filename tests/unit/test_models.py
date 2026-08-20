@@ -4,46 +4,50 @@ from __future__ import annotations
 
 import pytest
 
-from ai_sdlc.models import (
-    Checkpoint,
-    CompletedStage,
-    Confidence,
-    ExecuteProgress,
-    ExecutionBatch,
-    ExecutionPlan,
-    ExecutionStatus,
-    FeatureInfo,
+from ai_sdlc.models.gate import (
     GateCheck,
     GateResult,
     GateVerdict,
     GovernanceItem,
     GovernanceState,
-    MultiAgentInfo,
-    PrdReadiness,
+)
+from ai_sdlc.models.project import (
     PreferredShell,
     ProjectConfig,
     ProjectState,
     ProjectStatus,
+)
+from ai_sdlc.models.state import (
+    Checkpoint,
+    CompletedStage,
+    ExecuteProgress,
+    ExecutionBatch,
+    ExecutionPlan,
+    ExecutionStatus,
+    FeatureInfo,
+    MultiAgentInfo,
     ResumePack,
     RuntimeState,
-    Severity,
     Task,
     TaskStatus,
     WorkingSet,
-    WorkItem,
-    WorkItemSource,
-    WorkItemStatus,
-    WorkType,
 )
 from ai_sdlc.models.work import (
     ClarificationState,
+    Confidence,
     DraftPrd,
     FinalPrd,
     PrdAuthoringResult,
     PrdDocumentState,
+    PrdReadiness,
     PrdReviewerCheckpoint,
     PrdReviewerDecision,
     PrdReviewerDecisionKind,
+    Severity,
+    WorkItem,
+    WorkItemSource,
+    WorkItemStatus,
+    WorkType,
 )
 
 

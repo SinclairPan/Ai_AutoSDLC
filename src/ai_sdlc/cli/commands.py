@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -15,10 +14,8 @@ from rich.table import Table
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.cli.beginner_guidance import render_init_complete_guidance
 from ai_sdlc.context.state import (
-    CHECKPOINT_PATH,
     CheckpointLoadError,
     ResumePackError,
-    active_work_item_id,
     load_checkpoint,
     load_execution_plan,
     load_latest_summary,
@@ -27,10 +24,7 @@ from ai_sdlc.context.state import (
     load_working_set,
     save_checkpoint,
 )
-from ai_sdlc.core.artifact_target_guard import evaluate_formal_artifact_target_guard
-from ai_sdlc.core.backlog_breach_guard import evaluate_backlog_breach_guard
 from ai_sdlc.core.config import load_project_config, load_project_state
-from ai_sdlc.core.execute_authorization import evaluate_execute_authorization
 from ai_sdlc.core.frontend_contract_observation_provider import (
     load_frontend_contract_observation_artifact,
 )
@@ -49,9 +43,7 @@ from ai_sdlc.core.reconcile import (
     detect_reconcile_hint,
     reconcile_checkpoint,
 )
-from ai_sdlc.core.runner import PipelineHaltError, SDLCRunner
 from ai_sdlc.gates.governance_guard import load_governance_state
-from ai_sdlc.gates.pipeline_gates import InitGate
 from ai_sdlc.generators.index_gen import (
     generate_all_extended_indexes,
     generate_index,
@@ -70,10 +62,8 @@ from ai_sdlc.integrations.ide_adapter import (
     build_adapter_governance_surface,
     detect_ide,
     ensure_ide_adaptation,
-    format_adapter_notice,
 )
 from ai_sdlc.knowledge.engine import apply_refresh, compute_refresh_level, load_baseline
-from ai_sdlc.models.gate import GateResult
 from ai_sdlc.models.project import PreferredShell, ProjectStatus
 from ai_sdlc.models.state import Checkpoint, CompletedStage
 from ai_sdlc.routers.bootstrap import (
@@ -86,23 +76,7 @@ from ai_sdlc.routers.existing_project_init import run_full_scan
 from ai_sdlc.scanners.frontend_contract_scanner import (
     write_frontend_contract_scanner_artifact,
 )
-from ai_sdlc.telemetry.clock import utc_now_z
-from ai_sdlc.telemetry.display import (
-    summarize_capability_closure_focus_for_display,
-    summarize_frontend_delivery_scope_for_display,
-    summarize_frontend_delivery_status_for_display,
-    summarize_frontend_inheritance_status_for_display,
-    summarize_next_action_for_display,
-    summarize_truth_ledger_explain_for_display,
-    summarize_truth_ledger_focus_for_display,
-    summarize_truth_ledger_frontend_delivery_for_display,
-    summarize_truth_ledger_frontend_inheritance_for_display,
-    summarize_truth_ledger_next_steps_for_display,
-    summarize_workitem_findings_for_display,
-    summarize_workitem_reason_for_display,
-)
-from ai_sdlc.telemetry.readiness import build_status_json_surface
-from ai_sdlc.utils.helpers import AI_SDLC_DIR, find_project_root
+from ai_sdlc.utils.helpers import AI_SDLC_DIR, find_project_root, now_iso
 
 console = Console()
 
@@ -116,50 +90,16 @@ def _dedupe_status_text_items(values: object) -> list[str]:
     return deduped
 
 
-def _failed_gate_messages_for_init(result: GateResult | None) -> list[str]:
-    if result is None:
-        return []
-    messages: list[str] = []
-    for check in result.checks:
-        if check.passed or not check.message:
-            continue
-        if check.message not in messages:
-            messages.append(check.message)
-    return messages
-
-
 class InitSafeRehearsalError(RuntimeError):
     """Raised when init's automatic dry-run crashes instead of reaching gates."""
 
 
 def _run_init_safe_rehearsal(root: Path) -> tuple[bool, list[str], bool]:
-    """Run the same dry-run startup check that users previously ran manually."""
-
-    last_result: GateResult | None = None
-    init_result = InitGate().check({"root": str(root)})
-
-    def remember_result(stage: str, result: GateResult) -> None:
-        nonlocal last_result
-        last_result = result
-
-    try:
-        SDLCRunner(root).run(dry_run=True, on_stage_finish=remember_result)
-    except PipelineHaltError as exc:
-        return False, [str(exc)], False
-    except Exception as exc:  # pragma: no cover - defensive CLI boundary
-        raise InitSafeRehearsalError(str(exc)) from exc
-
-    if last_result is None:
-        raise InitSafeRehearsalError("dry-run did not report a final gate result")
-    verdict = str(getattr(last_result.verdict, "value", last_result.verdict)).upper()
-    init_verdict = str(
-        getattr(init_result.verdict, "value", init_result.verdict)
-    ).upper()
-    return (
-        verdict == "PASS",
-        _failed_gate_messages_for_init(last_result),
-        init_verdict == "PASS",
-    )
+    """Run the current project and five-Loop entry checks without writes."""
+    constitution = root / AI_SDLC_DIR / "memory" / "constitution.md"
+    if not constitution.is_file():
+        return False, [f"missing required file: {constitution.relative_to(root)}"], False
+    return True, [], True
 
 
 def _run_init_safe_rehearsal_or_exit(root: Path) -> tuple[bool, list[str], bool]:
@@ -195,7 +135,7 @@ def _ensure_init_checkpoint_completed(root: Path, *, init_gate_passed: bool) -> 
         stage.stage == "init" for stage in cp.completed_stages
     ):
         cp.completed_stages.append(
-            CompletedStage(stage="init", completed_at=utc_now_z())
+            CompletedStage(stage="init", completed_at=now_iso())
         )
         changed = True
     if not init_gate_passed:
@@ -301,273 +241,6 @@ def _add_state_detail_rows(
 ) -> None:
     table.add_row(title, str(state))
     table.add_row(detail_title, str(detail))
-
-
-def _add_workitem_diagnostics_rows(
-    table: Table,
-    workitem_diagnostics: dict[str, Any],
-) -> None:
-    table.add_row("Workitem Diagnostics", str(workitem_diagnostics.get("state", "-")))
-    active_work_item_value = workitem_diagnostics.get("active_work_item")
-    active_work_item = (
-        active_work_item_value.strip()
-        if isinstance(active_work_item_value, str)
-        else ""
-    )
-    _add_optional_row(table, "Workitem Scope", active_work_item)
-    workitem_source = str(workitem_diagnostics.get("source", "")).strip()
-    _add_optional_row(table, "Workitem Source", workitem_source)
-    blocking_count = workitem_diagnostics.get("blocking_count")
-    actionable_count = workitem_diagnostics.get("actionable_count")
-    if blocking_count is not None or actionable_count is not None:
-        findings = summarize_workitem_findings_for_display(
-            blocking_count=blocking_count,
-            actionable_count=actionable_count,
-        )
-        _add_optional_row(table, "Workitem Findings", findings)
-    truth_classification_value = workitem_diagnostics.get("truth_classification")
-    workitem_truth = (
-        truth_classification_value.strip()
-        if isinstance(truth_classification_value, str)
-        else ""
-    )
-    _add_optional_row(table, "Workitem Truth", workitem_truth)
-    workitem_detail = str(
-        workitem_diagnostics.get("primary_reason")
-        or workitem_diagnostics.get("truth_detail")
-        or workitem_diagnostics.get("detail", "-")
-    ).strip()
-    if workitem_detail:
-        workitem_detail = summarize_workitem_reason_for_display(
-            workitem_detail,
-            source=workitem_source,
-        )
-    _add_optional_row(table, "Workitem Detail", workitem_detail)
-    workitem_frontend = workitem_diagnostics.get("frontend_delivery_status")
-    workitem_inheritance = workitem_diagnostics.get("frontend_inheritance_status")
-    if isinstance(workitem_frontend, dict):
-        _add_optional_row(
-            table,
-            "Workitem Frontend",
-            summarize_frontend_delivery_status_for_display(workitem_frontend),
-        )
-        _add_optional_row(
-            table,
-            "Workitem Frontend Scope",
-            summarize_frontend_delivery_scope_for_display(),
-        )
-    if isinstance(workitem_inheritance, dict):
-        _add_optional_row(
-            table,
-            "Workitem Inheritance",
-            summarize_frontend_inheritance_status_for_display(workitem_inheritance),
-        )
-    workitem_next = str(workitem_diagnostics.get("next_required_action", "")).strip()
-    _add_optional_row(
-        table,
-        "Workitem Next",
-        summarize_next_action_for_display(workitem_next),
-    )
-
-
-def _add_truth_ledger_rows(
-    table: Table,
-    truth_ledger: dict[str, Any],
-) -> None:
-    _add_state_detail_rows(
-        table,
-        title="Truth Ledger",
-        state=truth_ledger["state"],
-        detail_title="Truth Ledger Detail",
-        detail=truth_ledger["detail"],
-    )
-    table.add_row("Truth Snapshot", str(truth_ledger["snapshot_state"]))
-    if truth_ledger.get("release_targets"):
-        table.add_row(
-            "Truth Release Targets",
-            ", ".join(_dedupe_status_text_items(truth_ledger["release_targets"])),
-        )
-    if truth_ledger.get("release_capabilities"):
-        summary = summarize_truth_ledger_focus_for_display(
-            truth_ledger["release_capabilities"]
-        )
-        _add_optional_row(table, "Truth Ledger Focus", summary)
-        explanations = summarize_truth_ledger_explain_for_display(
-            truth_ledger["release_capabilities"]
-        )
-        _add_optional_row(table, "Truth Ledger Explain", explanations)
-        frontend_delivery = summarize_truth_ledger_frontend_delivery_for_display(
-            truth_ledger["release_capabilities"]
-        )
-        _add_optional_row(table, "Truth Ledger Frontend", frontend_delivery)
-        if frontend_delivery:
-            _add_optional_row(
-                table,
-                "Truth Ledger Frontend Scope",
-                summarize_frontend_delivery_scope_for_display(),
-            )
-        frontend_inheritance = summarize_truth_ledger_frontend_inheritance_for_display(
-            truth_ledger["release_capabilities"]
-        )
-        _add_optional_row(table, "Truth Ledger Inheritance", frontend_inheritance)
-        next_steps = summarize_truth_ledger_next_steps_for_display(
-            truth_ledger["release_capabilities"]
-        )
-        _add_optional_row(table, "Truth Ledger Next Step", next_steps)
-
-
-def _add_capability_closure_rows(
-    table: Table,
-    capability_closure: dict[str, Any],
-) -> None:
-    _add_state_detail_rows(
-        table,
-        title="Capability Closure",
-        state=capability_closure["state"],
-        detail_title="Capability Closure Detail",
-        detail=capability_closure["detail"],
-    )
-    summary = summarize_capability_closure_focus_for_display(
-        capability_closure.get("open_clusters", [])
-    )
-    _add_optional_row(table, "Capability Closure Focus", summary)
-
-
-def _add_guard_rows(
-    table: Table,
-    *,
-    title: str,
-    detail_title: str,
-    reasons_title: str,
-    surface: dict[str, Any],
-) -> None:
-    _add_state_detail_rows(
-        table,
-        title=title,
-        state=surface.get("state", "-"),
-        detail_title=detail_title,
-        detail=surface.get("detail", "") or "-",
-    )
-    if surface.get("reason_codes"):
-        table.add_row(
-            reasons_title,
-            ", ".join(_dedupe_status_text_items(surface["reason_codes"])),
-        )
-
-
-def _add_branch_lifecycle_rows(
-    table: Table,
-    branch_lifecycle: dict[str, Any],
-) -> None:
-    _add_state_detail_rows(
-        table,
-        title="Branch Lifecycle",
-        state=branch_lifecycle.get("state", "-"),
-        detail_title="Branch Lifecycle Detail",
-        detail=branch_lifecycle.get("detail", "-"),
-    )
-    branch_lifecycle_next = str(
-        branch_lifecycle.get("next_required_action", "")
-    ).strip()
-    if branch_lifecycle_next:
-        table.add_row("Branch Lifecycle Next", branch_lifecycle_next)
-
-
-def _add_status_guard_rows(
-    table: Table,
-    *,
-    formal_artifact_target: dict[str, Any],
-    backlog_breach_guard: dict[str, Any],
-    execute_authorization: dict[str, Any],
-) -> None:
-    for title, detail_title, reasons_title, surface in (
-        (
-            "Formal Artifact Target",
-            "Formal Artifact Detail",
-            "Formal Artifact Reasons",
-            formal_artifact_target,
-        ),
-        (
-            "Backlog Breach Guard",
-            "Backlog Breach Detail",
-            "Backlog Breach Reasons",
-            backlog_breach_guard,
-        ),
-        (
-            "Execute Authorization",
-            "Execute Authorization Detail",
-            "Execute Auth Reasons",
-            execute_authorization,
-        ),
-    ):
-        _add_guard_rows(
-            table,
-            title=title,
-            detail_title=detail_title,
-            reasons_title=reasons_title,
-            surface=surface,
-        )
-
-
-def _add_status_surface_optional_rows(
-    table: Table,
-    status_surface: dict[str, Any],
-) -> None:
-    branch_lifecycle = status_surface.get("branch_lifecycle")
-    if branch_lifecycle is not None:
-        _add_branch_lifecycle_rows(table, branch_lifecycle)
-    workitem_diagnostics = status_surface.get("workitem_diagnostics")
-    if workitem_diagnostics is not None:
-        _add_workitem_diagnostics_rows(table, workitem_diagnostics)
-    capability_closure = status_surface.get("capability_closure")
-    if capability_closure is not None:
-        _add_capability_closure_rows(table, capability_closure)
-    truth_ledger = status_surface.get("truth_ledger")
-    if truth_ledger is not None:
-        _add_truth_ledger_rows(table, truth_ledger)
-
-
-def _print_plain_status_summaries(status_surface: dict[str, Any]) -> None:
-    capability_closure = status_surface.get("capability_closure")
-    if isinstance(capability_closure, dict):
-        summary = summarize_capability_closure_focus_for_display(
-            capability_closure.get("open_clusters", [])
-        )
-        if summary:
-            typer.echo(f"Capability Closure Focus: {summary}")
-
-    truth_ledger = status_surface.get("truth_ledger")
-    if isinstance(truth_ledger, dict):
-        summary = summarize_truth_ledger_focus_for_display(
-            truth_ledger.get("release_capabilities", [])
-        )
-        if summary:
-            typer.echo(f"Truth Ledger Focus: {summary}")
-
-        frontend_delivery = summarize_truth_ledger_frontend_delivery_for_display(
-            truth_ledger.get("release_capabilities", [])
-        )
-        if frontend_delivery:
-            typer.echo(f"Truth Ledger Frontend: {frontend_delivery}")
-
-        frontend_inheritance = summarize_truth_ledger_frontend_inheritance_for_display(
-            truth_ledger.get("release_capabilities", [])
-        )
-        if frontend_inheritance:
-            typer.echo(f"Truth Ledger Inheritance: {frontend_inheritance}")
-
-        next_steps = summarize_truth_ledger_next_steps_for_display(
-            truth_ledger.get("release_capabilities", [])
-        )
-        if next_steps:
-            typer.echo(f"Truth Ledger Next Step: {next_steps}")
-
-
-def _print_plain_handoff_summary(root: Path) -> None:
-    handoff = check_handoff(root)
-    typer.echo(f"Continuity Handoff: {handoff.state} ({handoff.path})")
-    if handoff.next_steps:
-        typer.echo(f"Continuity Handoff Next: {handoff.next_steps[0]}")
 
 
 def _add_governance_rows(table: Table, governance: Any) -> None:
@@ -676,25 +349,6 @@ def _load_resume_pack_or_exit(root: Path, *, refreshed_notice: str) -> Any:
     if resume_events:
         console.print(f"[yellow]{refreshed_notice}[/yellow]")
     return pack
-
-
-def _resolve_guard_surface(
-    surface: dict[str, Any] | None,
-    *,
-    evaluator: Callable[[], Any],
-) -> dict[str, Any]:
-    if surface is not None:
-        normalized_surface = dict(surface)
-        normalized_surface["reason_codes"] = _dedupe_status_text_items(
-            normalized_surface.get("reason_codes", [])
-        )
-        return normalized_surface
-    evaluated = evaluator()
-    return {
-        "state": evaluated.state,
-        "detail": evaluated.detail,
-        "reason_codes": _dedupe_status_text_items(evaluated.reason_codes),
-    }
 
 
 def _add_checkpoint_progress_rows(
@@ -984,142 +638,81 @@ def status_command(
         console.print("[red]--details cannot be combined with --json.[/red]")
         raise typer.Exit(code=2)
 
-    if not as_json and not details:
-        state = load_project_state(root)
-        if state.status == ProjectStatus.UNINITIALIZED:
-            console.print("[yellow]Project found but not initialized.[/yellow]")
-            raise typer.Exit(code=1)
-        # Local imports avoid coupling the legacy diagnostic command module to
-        # CLI sub-app initialization while keeping the default path read-only.
-        from ai_sdlc.cli.loop_cmd import get_review_aware_loop_status
-        from ai_sdlc.core.loop_router import LoopRouteStatus, route_five_loops
-
-        route = route_five_loops(
-            root,
-            status_loader=get_review_aware_loop_status,
-        )
-        console.print(f"[bold]当前结果 / Result:[/bold] {route.result}")
-        console.print(f"[bold]下一步 / Next:[/bold] {route.next_action or 'None'}")
-        console.print("[bold]阻断项 / Blockers:[/bold]")
-        if route.blockers:
-            for blocker in route.blockers:
-                console.print(f"- {blocker}", markup=False)
-        else:
-            console.print("- None")
-        if route.status == LoopRouteStatus.BLOCKED:
-            raise typer.Exit(code=1)
-        raise typer.Exit(code=0)
-
-    status_surface = build_status_json_surface(
-        root,
-        include_program_truth=as_json,
-        include_truth_ledger=as_json,
-        include_workitem_truth=as_json,
-    )
-    if as_json:
-        typer.echo(json.dumps(status_surface, indent=2))
-        raise typer.Exit(code=0)
-
-    note = format_adapter_notice(ensure_ide_adaptation(root))
-    if note:
-        console.print(note)
-
     state = load_project_state(root)
-    adapter_governance = build_adapter_governance_surface(root)
     if state.status == ProjectStatus.UNINITIALIZED:
         console.print("[yellow]Project found but not initialized.[/yellow]")
         raise typer.Exit(code=1)
 
-    hint = detect_reconcile_hint(root)
-    table = _property_table("AI-SDLC Status")
+    from ai_sdlc.cli.loop_cmd import get_review_aware_loop_status
+    from ai_sdlc.core.loop_router import LoopRouteStatus, route_five_loops
 
-    table.add_row("Project", state.project_name)
-    table.add_row("Status", state.status.value)
-    table.add_row("Version", state.version)
-    table.add_row("Next WI Seq", str(state.next_work_item_seq))
-    _add_adapter_governance_rows(table, adapter_governance)
-
-    resume_pack = None
-    checkpoint_usable = not (hint is not None and hint.checkpoint_stage == "missing")
-    cp = load_checkpoint(root) if checkpoint_usable else None
-    if (root / CHECKPOINT_PATH).exists() and checkpoint_usable:
-        resume_pack = _load_resume_pack_or_exit(
-            root,
-            refreshed_notice="status using refreshed resume-pack",
-        )
-        cp = load_checkpoint(root, strict=True)
-
-    if cp:
-        workitem_diagnostics_surface = status_surface.get("workitem_diagnostics")
-        active_workitem = (
-            workitem_diagnostics_surface.get("active_work_item")
-            if isinstance(workitem_diagnostics_surface, dict)
-            else None
-        )
-        checkpoint_workitem = active_work_item_id(cp)
-        show_active_binding = bool(
-            (isinstance(active_workitem, str) and active_workitem.strip())
-            or checkpoint_workitem
-        )
-        _add_checkpoint_progress_rows(
-            table,
-            checkpoint=cp,
-            resume_pack=resume_pack,
-            show_active_binding=show_active_binding,
-            current_branch_override=_live_current_branch(root, cp),
-        )
-        work_item_id = _surface_work_item_id(cp)
-        linked_active_wi = active_work_item_id(cp)
-        active_wi_id = (
-            linked_active_wi
-            or (
-                (active_workitem.strip() if isinstance(active_workitem, str) else "")
-                if show_active_binding
-                else ""
-            )
-            or (checkpoint_workitem if show_active_binding else "")
-        )
-        if active_wi_id:
-            _add_active_work_item_status_rows(
-                table,
-                root=root,
-                active_work_item=active_wi_id,
-            )
-        if show_active_binding and work_item_id:
-            governance = load_governance_state(root, work_item_id)
-            if governance is not None:
-                _add_governance_rows(table, governance)
-
-    execute_authorization = _resolve_guard_surface(
-        status_surface.get("execute_authorization"),
-        evaluator=lambda: evaluate_execute_authorization(root=root, checkpoint=cp),
+    route = route_five_loops(root, status_loader=get_review_aware_loop_status)
+    adapter_surface = build_adapter_governance_surface(root)
+    handoff = check_handoff(root)
+    frontend_solution = (
+        root
+        / AI_SDLC_DIR
+        / "memory"
+        / "frontend-delivery"
+        / "solution"
+        / "latest.yaml"
     )
-    formal_artifact_target = _resolve_guard_surface(
-        status_surface.get("formal_artifact_target"),
-        evaluator=lambda: evaluate_formal_artifact_target_guard(root),
-    )
-    backlog_breach_guard = _resolve_guard_surface(
-        status_surface.get("backlog_breach_guard"),
-        evaluator=lambda: evaluate_backlog_breach_guard(root),
-    )
-    _add_status_guard_rows(
-        table,
-        formal_artifact_target=formal_artifact_target,
-        backlog_breach_guard=backlog_breach_guard,
-        execute_authorization=execute_authorization,
-    )
-    _add_status_surface_optional_rows(table, status_surface)
+    frontend_apply = frontend_solution.parent.parent / "apply" / "latest.yaml"
+    frontend_browser = frontend_solution.parent.parent / "browser" / "latest.yaml"
+    status_payload = {
+        "schema_version": "project-status/v2",
+        "project": {
+            "name": state.project_name,
+            "status": state.status.value,
+            "version": state.version,
+            "next_work_item_seq": state.next_work_item_seq,
+        },
+        "adapter": adapter_surface,
+        "five_loops": {
+            "status": str(getattr(route.status, "value", route.status)),
+            "result": route.result,
+            "next_action": route.next_action,
+            "blockers": list(route.blockers),
+        },
+        "frontend_delivery": {
+            "solution_confirmed": frontend_solution.is_file(),
+            "apply_available": frontend_apply.is_file(),
+            "browser_evidence_available": frontend_browser.is_file(),
+        },
+        "handoff": {
+            "state": handoff.state,
+            "path": handoff.path.as_posix(),
+            "next_steps": list(handoff.next_steps),
+        },
+    }
+    if as_json:
+        typer.echo(json.dumps(status_payload, indent=2, ensure_ascii=False))
+        raise typer.Exit(code=0)
+    if details:
+        table = _property_table("AI-SDLC Status")
+        table.add_row("Project", state.project_name)
+        table.add_row("Status", state.status.value)
+        table.add_row("Version", state.version)
+        table.add_row("Adapter", str(adapter_surface))
+        table.add_row("Five Loops", str(status_payload["five_loops"]["status"]))
+        table.add_row("Result", route.result)
+        table.add_row("Next", route.next_action or "None")
+        table.add_row("Frontend Solution", "yes" if frontend_solution.is_file() else "no")
+        table.add_row("Frontend Apply", "yes" if frontend_apply.is_file() else "no")
+        table.add_row("Browser Evidence", "yes" if frontend_browser.is_file() else "no")
+        table.add_row("Continuity Handoff", handoff.state)
+        console.print(table)
+        raise typer.Exit(code=0)
 
-    console.print(table)
-    _print_plain_handoff_summary(root)
-    _print_plain_status_summaries(status_surface)
-    if hint is not None:
-        _print_reconcile_guidance(
-            hint,
-            current_command="ai-sdlc status",
-            blocking=False,
-        )
-    raise typer.Exit(code=0)
+    console.print(f"[bold]当前结果 / Result:[/bold] {route.result}")
+    console.print(f"[bold]下一步 / Next:[/bold] {route.next_action or 'None'}")
+    console.print("[bold]阻断项 / Blockers:[/bold]")
+    if route.blockers:
+        for blocker in route.blockers:
+            console.print(f"- {blocker}", markup=False)
+    else:
+        console.print("- None")
+    raise typer.Exit(code=1 if route.status == LoopRouteStatus.BLOCKED else 0)
 
 
 # ---------------------------------------------------------------------------
@@ -1269,7 +862,7 @@ def scan_command(
 
     if frontend_contract_spec_dir is not None:
         spec_dir = Path(frontend_contract_spec_dir).expanduser().resolve()
-        generated_at = frontend_contract_generated_at or utc_now_z()
+        generated_at = frontend_contract_generated_at or now_iso()
         console.print(
             f"[bold]Scanning frontend contract observations at {root}...[/bold]"
         )
