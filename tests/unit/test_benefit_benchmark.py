@@ -3,9 +3,10 @@
 import copy
 import json
 import multiprocessing
+import os
 import subprocess
 from dataclasses import fields, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from pathlib import Path
 
@@ -20,25 +21,188 @@ from ai_sdlc.benefit_benchmark import (
     ExecutionLock,
     canonical_protocol_digest,
     load_protocol,
-    record_service_transaction,
-    start_run,
-    start_service_transaction,
-    transition_run_phase,
     validate_protocol,
     validate_provider_output_schema,
     verify_summary,
 )
 from ai_sdlc.benefit_benchmark import (
-    record_provider_completion as _record_provider_completion,
+    record_provider_completion as _core_record_provider_completion,
 )
 from ai_sdlc.benefit_benchmark import (
-    reserve_provider_attempt as _reserve_provider_attempt,
+    record_service_transaction as _core_record_service_transaction,
 )
-from ai_sdlc.benefit_benchmark import seal_run_evidence as _seal_run_evidence
+from ai_sdlc.benefit_benchmark import (
+    reserve_provider_attempt as _core_reserve_provider_attempt,
+)
+from ai_sdlc.benefit_benchmark import seal_run_evidence as _core_seal_run_evidence
+from ai_sdlc.benefit_benchmark import start_run as _core_start_run
+from ai_sdlc.benefit_benchmark import (
+    start_service_transaction as _core_start_service_transaction,
+)
+from ai_sdlc.benefit_benchmark import (
+    transition_run_phase as _core_transition_run_phase,
+)
 from ai_sdlc.benefit_benchmark import verify_receipt as _verify_receipt
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PROTOCOL_PATH = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json"
+
+
+def _write_execution_authorization(
+    path: Path,
+    protocol,
+    *,
+    valid_from: datetime | None = None,
+    expires_at: datetime | None = None,
+) -> Path:
+    now = datetime.now(UTC)
+    payload = {
+        "schema": "ai-sdlc-v2-benefit-execution-authorization/v1",
+        "protocol_sha256": canonical_protocol_digest(protocol),
+        "execution_identity": {
+            field.name: getattr(protocol.execution_lock, field.name)
+            for field in fields(ExecutionLock)
+        },
+        "attempt_budget": {
+            field.name: getattr(protocol.attempt_budget, field.name)
+            for field in fields(protocol.attempt_budget)
+        },
+        "valid_from": (valid_from or now - timedelta(minutes=1)).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "expires_at": (expires_at or now + timedelta(hours=1)).isoformat().replace(
+            "+00:00", "Z"
+        ),
+        "scope": {
+            "mode": "single-frozen-matrix",
+            "run_ids": [run.run_id for run in protocol.run_matrix],
+            "operations": [
+                "start_run",
+                "transition_run_phase",
+                "reserve_provider_attempt",
+                "record_provider_completion",
+                "start_service_transaction",
+                "record_service_transaction",
+                "seal_run_evidence",
+            ],
+        },
+    }
+    path.write_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    )
+    path.chmod(0o600)
+    return path
+
+
+def _authorization_path(ledger: Path, protocol) -> Path:
+    return ledger.parent / (
+        f"execution-authorization-{canonical_protocol_digest(protocol)}.json"
+    )
+
+
+def start_run(ledger: Path, protocol, contract: Path, *, run_id: str) -> None:
+    _core_start_run(
+        ledger,
+        protocol,
+        contract,
+        run_id=run_id,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
+
+
+def transition_run_phase(
+    ledger: Path, protocol, contract: Path, *, run_id: str, next_phase: str
+) -> None:
+    _core_transition_run_phase(
+        ledger,
+        protocol,
+        contract,
+        run_id=run_id,
+        next_phase=next_phase,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
+
+
+def _reserve_provider_attempt(ledger: Path, protocol, request, contract: Path):
+    return _core_reserve_provider_attempt(
+        ledger,
+        protocol,
+        request,
+        contract,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
+
+
+def _record_provider_completion(
+    ledger: Path, protocol, completion, contract: Path
+) -> None:
+    _core_record_provider_completion(
+        ledger,
+        protocol,
+        completion,
+        contract,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
+
+
+def start_service_transaction(
+    ledger: Path,
+    protocol,
+    contract: Path,
+    *,
+    attempt_id: str,
+    event_type: str,
+    transaction_id: str,
+) -> None:
+    _core_start_service_transaction(
+        ledger,
+        protocol,
+        contract,
+        attempt_id=attempt_id,
+        event_type=event_type,
+        transaction_id=transaction_id,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
+
+
+def record_service_transaction(
+    ledger: Path,
+    protocol,
+    contract: Path,
+    *,
+    attempt_id: str,
+    event_type: str,
+    transaction_id: str,
+    evidence,
+) -> None:
+    _core_record_service_transaction(
+        ledger,
+        protocol,
+        contract,
+        attempt_id=attempt_id,
+        event_type=event_type,
+        transaction_id=transaction_id,
+        evidence=evidence,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
+
+
+def _seal_run_evidence(
+    ledger: Path,
+    protocol,
+    contract: Path,
+    *,
+    run_id: str,
+    workspace_root: Path,
+) -> None:
+    _core_seal_run_evidence(
+        ledger,
+        protocol,
+        contract,
+        run_id=run_id,
+        workspace_root=workspace_root,
+        authorization_path=_authorization_path(ledger, protocol),
+    )
 
 
 def _ensure_run_provider(ledger: Path, protocol, run_id: str) -> None:
@@ -230,6 +394,12 @@ def _bound_protocol_path(tmp_path: Path, *, compact: bool = False) -> Path:
     path = tmp_path / ("protocol-compact.json" if compact else "protocol.json")
     path.write_text(
         json.dumps(raw, separators=(",", ":") if compact else None), encoding="utf-8"
+    )
+    protocol = load_protocol(path)
+    _write_execution_authorization(
+        tmp_path
+        / f"execution-authorization-{canonical_protocol_digest(protocol)}.json",
+        protocol,
     )
     return path
 
@@ -3499,7 +3669,7 @@ def test_static_schemas_and_offline_cli_validation_are_available() -> None:
     )
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["execution_ready"] is True
+    assert payload["execution_ready"] is False
     assert payload["task2_commitment_bound"] is True
     assert payload["provider_authorized"] is False
     assert payload["experiment_authorized"] is False
@@ -3612,6 +3782,31 @@ def test_completion_and_reservation_share_one_cross_process_transaction_lock(
 
 def _run_task13_cli(*arguments: str) -> subprocess.CompletedProcess[str]:
     resolved = list(arguments)
+    if (
+        resolved
+        and resolved[0]
+        in {
+            "start-run",
+            "transition-phase",
+            "reserve-attempt",
+            "complete-attempt",
+            "start-service-transaction",
+            "complete-service-transaction",
+            "seal-run-evidence",
+        }
+        and "--protocol" in resolved
+        and "--authorization" not in resolved
+    ):
+        protocol_path = Path(resolved[resolved.index("--protocol") + 1])
+        try:
+            protocol = load_protocol(protocol_path)
+        except (OSError, ValueError, json.JSONDecodeError):
+            protocol = None
+        if protocol is not None:
+            authorization = protocol_path.parent / (
+                f"execution-authorization-{canonical_protocol_digest(protocol)}.json"
+            )
+            resolved.extend(["--authorization", str(authorization)])
     if (
         resolved
         and resolved[0] == "verify-receipt"
@@ -4151,7 +4346,7 @@ def test_task13_validate_reports_structural_validity_separately_from_execution_r
     assert bound.returncode == 0
     bound_payload = json.loads(bound.stdout)
     assert bound_payload == {
-        "execution_ready": True,
+        "execution_ready": False,
         "experiment_authorized": False,
         "issues": [],
         "provider_authorized": False,
@@ -4168,6 +4363,317 @@ def test_task13_validate_reports_structural_validity_separately_from_execution_r
     invalid_payload = json.loads(invalid.stdout)
     assert invalid_payload["structurally_valid"] is False
     assert invalid_payload["execution_ready"] is False
+
+
+def test_task2_bound_protocol_cannot_start_provider_or_reserve_without_authorization(
+    tmp_path: Path,
+) -> None:
+    protocol = load_protocol(PROTOCOL_PATH)
+    contract = (
+        REPO_ROOT
+        / "benchmarks"
+        / "ai-sdlc-v2-benefits"
+        / "fixtures"
+        / "evidence-contract.template.json"
+    )
+    ledger = tmp_path / "ledger.json"
+    run_id = "P:requirement-contract-ambiguity"
+    authorization = _write_execution_authorization(
+        tmp_path / "synthetic-authorization.json", protocol
+    )
+    benchmark_core.start_run(
+        ledger, protocol, contract, run_id=run_id, authorization_path=authorization
+    )
+    for next_phase in ("framework_init", "provider"):
+        benchmark_core.transition_run_phase(
+            ledger,
+            protocol,
+            contract,
+            run_id=run_id,
+            next_phase=next_phase,
+            authorization_path=authorization,
+        )
+    before = ledger.read_bytes()
+
+    with pytest.raises(ValueError, match="authorization"):
+        benchmark_core.reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest(run_id, "writer"),
+            contract,
+            authorization_path=None,
+        )
+    assert ledger.read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "start_run",
+        "transition_run_phase",
+        "reserve_provider_attempt",
+        "record_provider_completion",
+        "start_service_transaction",
+        "record_service_transaction",
+        "seal_run_evidence",
+    ],
+)
+def test_every_mutation_api_has_one_fail_closed_authorization_gate(
+    tmp_path: Path, mutation: str
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    sentinel = b'{"sentinel":"unchanged"}'
+    ledger.write_bytes(sentinel)
+    contract = tmp_path / "evidence-contract.json"
+    run_id = "P:requirement-contract-ambiguity"
+    calls = {
+        "start_run": lambda: benchmark_core.start_run(
+            ledger, protocol, contract, run_id=run_id, authorization_path=None
+        ),
+        "transition_run_phase": lambda: benchmark_core.transition_run_phase(
+            ledger,
+            protocol,
+            contract,
+            run_id=run_id,
+            next_phase="framework_init",
+            authorization_path=None,
+        ),
+        "reserve_provider_attempt": lambda: benchmark_core.reserve_provider_attempt(
+            ledger,
+            protocol,
+            AttemptRequest(run_id, "writer"),
+            contract,
+            authorization_path=None,
+        ),
+        "record_provider_completion": lambda: benchmark_core.record_provider_completion(
+            ledger,
+            protocol,
+            _completion("attempt-001", "failed", False),
+            contract,
+            authorization_path=None,
+        ),
+        "start_service_transaction": lambda: benchmark_core.start_service_transaction(
+            ledger,
+            protocol,
+            contract,
+            attempt_id="attempt-001",
+            event_type="intent_service_event",
+            transaction_id="tx-001",
+            authorization_path=None,
+        ),
+        "record_service_transaction": lambda: benchmark_core.record_service_transaction(
+            ledger,
+            protocol,
+            contract,
+            attempt_id="attempt-001",
+            event_type="intent_service_event",
+            transaction_id="tx-001",
+            evidence={"closed": True},
+            authorization_path=None,
+        ),
+        "seal_run_evidence": lambda: benchmark_core.seal_run_evidence(
+            ledger,
+            protocol,
+            contract,
+            run_id=run_id,
+            workspace_root=tmp_path / "workspace",
+            authorization_path=None,
+        ),
+    }
+
+    with pytest.raises(ValueError, match="authorization"):
+        calls[mutation]()
+    assert ledger.read_bytes() == sentinel
+
+
+@pytest.mark.parametrize("case", ["expired", "protocol", "budget", "identity", "scope"])
+def test_execution_authorization_rejects_expiry_and_every_frozen_binding(
+    tmp_path: Path, case: str
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    authorization = _write_execution_authorization(
+        tmp_path / "synthetic-authorization.json",
+        protocol,
+        expires_at=(
+            datetime.now(UTC) - timedelta(minutes=1) if case == "expired" else None
+        ),
+    )
+    payload = json.loads(authorization.read_text())
+    if case == "protocol":
+        payload["protocol_sha256"] = _digest("0")
+    elif case == "budget":
+        payload["attempt_budget"]["limit"] += 1
+    elif case == "identity":
+        payload["execution_identity"]["model"] = "drift"
+    elif case == "scope":
+        payload["scope"]["run_ids"] = payload["scope"]["run_ids"][:-1]
+    authorization.write_bytes(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    )
+    ledger = tmp_path / "ledger.json"
+
+    with pytest.raises(ValueError, match="authorization"):
+        benchmark_core.start_run(
+            ledger,
+            protocol,
+            tmp_path / "evidence-contract.json",
+            run_id="P:requirement-contract-ambiguity",
+            authorization_path=authorization,
+        )
+    assert not ledger.exists()
+
+
+@pytest.mark.parametrize("case", ["extra", "missing", "mode", "hardlink", "symlink"])
+def test_execution_authorization_is_closed_and_metadata_protected(
+    tmp_path: Path, case: str
+) -> None:
+    protocol = _bound_protocol(tmp_path)
+    authorization = _write_execution_authorization(
+        tmp_path / "synthetic-authorization.json", protocol
+    )
+    if case in {"extra", "missing"}:
+        payload = json.loads(authorization.read_text())
+        if case == "extra":
+            payload["permission"] = True
+        else:
+            payload.pop("expires_at")
+        authorization.write_bytes(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        )
+    elif case == "mode":
+        authorization.chmod(0o644)
+    elif case == "hardlink":
+        os.link(authorization, tmp_path / "authorization-alias.json")
+    else:
+        target = tmp_path / "authorization-target.json"
+        authorization.rename(target)
+        authorization.symlink_to(target)
+    ledger = tmp_path / "ledger.json"
+
+    with pytest.raises(ValueError, match="authorization"):
+        benchmark_core.start_run(
+            ledger,
+            protocol,
+            tmp_path / "evidence-contract.json",
+            run_id="P:requirement-contract-ambiguity",
+            authorization_path=authorization,
+        )
+    assert not ledger.exists()
+
+
+def test_validate_requires_explicit_independent_authorization_for_execution_ready(
+    tmp_path: Path,
+) -> None:
+    protocol_path = _bound_protocol_path(tmp_path)
+    protocol = load_protocol(protocol_path)
+    authorization = _write_execution_authorization(
+        tmp_path / "synthetic-authorization.json", protocol
+    )
+    default = _run_task13_cli("validate", "--protocol", str(protocol_path))
+    authorized = _run_task13_cli(
+        "validate", "--protocol", str(protocol_path), "--authorization", str(authorization)
+    )
+
+    assert json.loads(default.stdout) == {
+        "execution_ready": False,
+        "experiment_authorized": False,
+        "issues": [],
+        "provider_authorized": False,
+        "structurally_valid": True,
+        "task2_commitment_bound": True,
+    }
+    assert json.loads(authorized.stdout) == {
+        "execution_ready": True,
+        "experiment_authorized": True,
+        "issues": [],
+        "provider_authorized": True,
+        "structurally_valid": True,
+        "task2_commitment_bound": True,
+    }
+
+
+@pytest.mark.parametrize(
+    ("command", "specific"),
+    [
+        ("start-run", ["--run-id", "P:requirement-contract-ambiguity"]),
+        (
+            "transition-phase",
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--next-phase",
+                "framework_init",
+            ],
+        ),
+        (
+            "reserve-attempt",
+            ["--run-id", "P:requirement-contract-ambiguity", "--kind", "writer"],
+        ),
+        ("complete-attempt", ["--attempt-id", "attempt-001", "--status", "failed"]),
+        (
+            "start-service-transaction",
+            [
+                "--attempt-id",
+                "attempt-001",
+                "--event-type",
+                "intent_service_event",
+                "--transaction-id",
+                "tx-001",
+            ],
+        ),
+        (
+            "complete-service-transaction",
+            [
+                "--attempt-id",
+                "attempt-001",
+                "--event-type",
+                "intent_service_event",
+                "--transaction-id",
+                "tx-001",
+                "--evidence",
+                "service-evidence.json",
+            ],
+        ),
+        (
+            "seal-run-evidence",
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--workspace-root",
+                "workspace",
+            ],
+        ),
+    ],
+)
+def test_every_mutation_cli_requires_independent_authorization_before_write(
+    tmp_path: Path, command: str, specific: list[str]
+) -> None:
+    protocol = _bound_protocol_path(tmp_path)
+    ledger = tmp_path / "ledger.json"
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            "scripts/ai_sdlc_v2_benefit_benchmark.py",
+            command,
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol),
+            "--contract",
+            str(tmp_path / "evidence-contract.json"),
+            *specific,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    _assert_task13_json_error(result, "cli.usage")
+    assert not ledger.exists()
 
 
 def test_task13_cli_missing_private_file_error_is_json_and_path_redacted() -> None:

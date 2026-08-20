@@ -211,6 +211,9 @@ def _write_sealed_test_root(root: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    root.chmod(0o700)
+    for child in root.iterdir():
+        child.chmod(0o600)
     return root
 
 
@@ -842,6 +845,9 @@ def _write_v3_commitment_authority(
     attestation_path.write_bytes(
         json.dumps(attestation, sort_keys=True, separators=(",", ":")).encode()
     )
+    for child in sealed.iterdir():
+        child.chmod(0o600)
+    sealed.chmod(0o700)
     commitments = {
         "schema": "ai-sdlc-v2-benefit-sealed-commitments/v3",
         "lock_id": sealed.name,
@@ -902,6 +908,105 @@ def test_task2_bound_commitment_authority_verifies_without_event_writes(
         == []
     )
     assert not event_path.exists()
+
+
+@pytest.mark.parametrize("case", ["root-mode", "file-mode", "extra", "hardlink"])
+def test_task2_bound_authority_rejects_nonexclusive_publication_metadata(
+    tmp_path: Path, case: str
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    if case == "root-mode":
+        sealed.chmod(0o755)
+    elif case == "file-mode":
+        (sealed / "sealed-manifest.json").chmod(0o644)
+    elif case == "extra":
+        extra = sealed / "ninth-entry.json"
+        extra.write_text("{}", encoding="utf-8")
+        extra.chmod(0o600)
+    else:
+        os.link(sealed / "sealed-manifest.json", tmp_path / "manifest-hardlink.json")
+
+    issues = validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+    assert [issue.code for issue in issues] == ["fixture.sealed-commitment"]
+
+
+def test_task2_bound_authority_rejects_symlinked_member(tmp_path: Path) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    target = sealed / "sealed-manifest.json"
+    outside = tmp_path / "outside-manifest.json"
+    target.rename(outside)
+    target.symlink_to(outside)
+
+    issues = validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+    assert [issue.code for issue in issues] == ["fixture.sealed-commitment"]
+
+
+def test_task2_bound_authority_fails_closed_when_directory_scan_errors(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+
+    def denied(_target):
+        raise OSError("test-only scan failure")
+
+    monkeypatch.setattr(fixture_module.os, "listdir", denied)
+    issues = validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+    assert [issue.code for issue in issues] == ["fixture.sealed-commitment"]
+
+
+def test_task2_bound_authority_rejects_root_replacement_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    real_listdir = os.listdir
+    calls = 0
+
+    def replace_after_first_scan(target):
+        nonlocal calls
+        result = real_listdir(target)
+        calls += 1
+        if calls == 1:
+            sealed.rename(tmp_path / "moved-authority")
+            sealed.mkdir(mode=0o700)
+        return result
+
+    monkeypatch.setattr(fixture_module.os, "listdir", replace_after_first_scan)
+    issues = validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+    assert [issue.code for issue in issues] == ["fixture.sealed-commitment"]
+
+
+def test_task2_bound_authority_rejects_file_replacement_race(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    path, sealed, source, protocol = _write_v3_commitment_authority(tmp_path)
+    target = sealed / "candidate-commitments.json"
+    original = target.read_bytes()
+    real_read = os.read
+    replaced = False
+
+    def replace_open_member(fd: int, count: int) -> bytes:
+        nonlocal replaced
+        result = real_read(fd, count)
+        if result and not replaced:
+            replaced = True
+            target.rename(tmp_path / "moved-candidate.json")
+            target.write_bytes(original)
+            target.chmod(0o600)
+        return result
+
+    monkeypatch.setattr(fixture_module.os, "read", replace_open_member)
+    issues = validate_sealed_commitments(
+        path, sealed, FIXTURE_ROOT, source_root=source, protocol_path=protocol
+    )
+    assert [issue.code for issue in issues] == ["fixture.sealed-commitment"]
 
 
 @pytest.mark.parametrize(

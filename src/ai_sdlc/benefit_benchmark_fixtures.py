@@ -89,6 +89,18 @@ _RUNTIME_CAPSULE_ENTRY_KEYS = {
     "mtime_ns",
 }
 _SEALED_AUTHORITY_LOCK_ID = "v2-benefits-20260819-r2"
+_SEALED_AUTHORITY_FILENAMES = frozenset(
+    {
+        "candidate-commitments.json",
+        "frontend-recovery-delivery.sealed.json",
+        "intent-map.json",
+        "isolation-attestation.json",
+        "materialization-receipt.json",
+        "multi-tenant-security-review.sealed.json",
+        "requirement-contract-ambiguity.sealed.json",
+        "sealed-manifest.json",
+    }
+)
 _SEALED_AUTHORITY_KEYS = {
     "schema",
     "lock_id",
@@ -1583,42 +1595,46 @@ def build_canonical_pre_state(
     return state
 
 
+def _parse_intent_map_bytes(payload: bytes) -> Mapping[str, object]:
+    raw = _closed_object(
+        json.loads(payload), {"schema", "questions", "approvals"}, "intent map"
+    )
+    if raw["schema"] not in {
+        "ai-sdlc-v2-benefit-intent-map/v1",
+        "ai-sdlc-v2-benefit-intent-map/v2",
+    }:
+        raise ValueError("intent map schema is invalid")
+    if not isinstance(raw["questions"], Mapping) or not isinstance(
+        raw["approvals"], list
+    ):
+        raise ValueError("intent map content is invalid")
+    for question_id, question in raw["questions"].items():
+        if (
+            not isinstance(question_id, str)
+            or not isinstance(question, Mapping)
+            or set(question) != {"answer", "delay_ms"}
+            or isinstance(question["delay_ms"], bool)
+            or not isinstance(question["delay_ms"], int)
+            or question["delay_ms"] < 0
+        ):
+            raise ValueError("intent map question surface is invalid")
+    approvals = raw["approvals"]
+    if not all(isinstance(item, str) and item for item in approvals):
+        raise ValueError("intent map approval surface is invalid")
+    return raw
+
+
 class FrozenIntentApprovalService:
     """Deterministic, automated-only intent and proposal-digest approval service."""
 
     def __init__(self, sealed_mapping: Path, event_log: Path):
-        raw = _closed_object(
-            json.loads(sealed_mapping.read_text(encoding="utf-8")),
-            {"schema", "questions", "approvals"},
-            "intent map",
-        )
-        if raw["schema"] not in {
-            "ai-sdlc-v2-benefit-intent-map/v1",
-            "ai-sdlc-v2-benefit-intent-map/v2",
-        }:
-            raise ValueError("intent map schema is invalid")
-        if not isinstance(raw["questions"], Mapping) or not isinstance(
-            raw["approvals"], list
-        ):
-            raise ValueError("intent map content is invalid")
+        raw = _parse_intent_map_bytes(sealed_mapping.read_bytes())
         self._questions = raw["questions"]
         self._approvals = frozenset(raw["approvals"])
         self._expected_proposals: dict[tuple[str, str], str] = {}
         self._expired_runs: set[str] = set()
         self._event_log = event_log
 
-        for question_id, question in self._questions.items():
-            if (
-                not isinstance(question_id, str)
-                or not isinstance(question, Mapping)
-                or set(question) != {"answer", "delay_ms"}
-                or isinstance(question["delay_ms"], bool)
-                or not isinstance(question["delay_ms"], int)
-                or question["delay_ms"] < 0
-            ):
-                raise ValueError("intent map question surface is invalid")
-        if not all(isinstance(item, str) and item for item in self._approvals):
-            raise ValueError("intent map approval surface is invalid")
 
     @classmethod
     def from_sealed_root(
@@ -2642,6 +2658,142 @@ def _payload_commitments(value: object) -> list[Mapping[str, object]]:
     return payloads
 
 
+def _sealed_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_uid,
+        value.st_gid,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_ctime_ns,
+        value.st_mtime_ns,
+    )
+
+
+@dataclass
+class _PinnedSealedAuthority:
+    root: Path
+    dir_fd: int
+    root_identity: tuple[int, ...]
+    file_identities: Mapping[str, tuple[int, ...]]
+    payloads: Mapping[str, bytes]
+
+    def verify_and_close(self) -> None:
+        try:
+            names = os.listdir(self.dir_fd)
+            if len(names) != len(_SEALED_AUTHORITY_FILENAMES) or set(names) != set(
+                _SEALED_AUTHORITY_FILENAMES
+            ):
+                raise ValueError("sealed authority directory coverage changed")
+            for name in sorted(_SEALED_AUTHORITY_FILENAMES):
+                path_stat = os.stat(name, dir_fd=self.dir_fd, follow_symlinks=False)
+                if _sealed_stat_identity(path_stat) != self.file_identities[name]:
+                    raise ValueError("sealed authority member changed")
+                flags = (
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                member_fd = os.open(name, flags, dir_fd=self.dir_fd)
+                try:
+                    if (
+                        _sealed_stat_identity(os.fstat(member_fd))
+                        != self.file_identities[name]
+                    ):
+                        raise ValueError("sealed authority member identity changed")
+                finally:
+                    os.close(member_fd)
+            if (
+                _sealed_stat_identity(os.fstat(self.dir_fd)) != self.root_identity
+                or _sealed_stat_identity(os.lstat(self.root)) != self.root_identity
+            ):
+                raise ValueError("sealed authority root changed")
+        finally:
+            os.close(self.dir_fd)
+
+
+def _open_pinned_sealed_authority(root: Path) -> _PinnedSealedAuthority:
+    absolute = Path(os.path.abspath(root))
+    before_path = os.lstat(absolute)
+    if (
+        stat.S_ISLNK(before_path.st_mode)
+        or not stat.S_ISDIR(before_path.st_mode)
+        or before_path.st_uid != os.geteuid()
+        or stat.S_IMODE(before_path.st_mode) != 0o700
+        or absolute.resolve(strict=True) != absolute
+    ):
+        raise ValueError("sealed authority root metadata is invalid")
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    dir_fd = os.open(absolute, flags)
+    try:
+        opened_root = os.fstat(dir_fd)
+        root_identity = _sealed_stat_identity(opened_root)
+        if root_identity != _sealed_stat_identity(before_path):
+            raise ValueError("sealed authority root changed before open")
+        names = os.listdir(dir_fd)
+        if len(names) != len(_SEALED_AUTHORITY_FILENAMES) or set(names) != set(
+            _SEALED_AUTHORITY_FILENAMES
+        ):
+            raise ValueError("sealed authority directory coverage is invalid")
+        identities: dict[str, tuple[int, ...]] = {}
+        payloads: dict[str, bytes] = {}
+        for name in sorted(_SEALED_AUTHORITY_FILENAMES):
+            path_before = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+            if (
+                stat.S_ISLNK(path_before.st_mode)
+                or not stat.S_ISREG(path_before.st_mode)
+                or path_before.st_uid != os.geteuid()
+                or stat.S_IMODE(path_before.st_mode) != 0o600
+                or path_before.st_nlink != 1
+            ):
+                raise ValueError("sealed authority member metadata is invalid")
+            member_flags = (
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            member_fd = os.open(name, member_flags, dir_fd=dir_fd)
+            try:
+                opened = os.fstat(member_fd)
+                if _sealed_stat_identity(opened) != _sealed_stat_identity(path_before):
+                    raise ValueError("sealed authority member changed before read")
+                chunks: list[bytes] = []
+                while True:
+                    chunk = os.read(member_fd, 65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                after = os.fstat(member_fd)
+                path_after = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+                if (
+                    _sealed_stat_identity(after) != _sealed_stat_identity(opened)
+                    or _sealed_stat_identity(path_after)
+                    != _sealed_stat_identity(opened)
+                ):
+                    raise ValueError("sealed authority member changed during read")
+                identities[name] = _sealed_stat_identity(opened)
+                payloads[name] = b"".join(chunks)
+            finally:
+                os.close(member_fd)
+        return _PinnedSealedAuthority(
+            root=absolute,
+            dir_fd=dir_fd,
+            root_identity=root_identity,
+            file_identities=identities,
+            payloads=payloads,
+        )
+    except Exception:
+        os.close(dir_fd)
+        raise
+
+
 def validate_sealed_commitments(
     commitments_path: Path,
     sealed_root: Path,
@@ -2652,7 +2804,11 @@ def validate_sealed_commitments(
 ) -> list[BenchmarkIssue]:
     """Verify the unique r2 authority without emitting sealed data or events."""
     issues: list[BenchmarkIssue] = []
+    authority: _PinnedSealedAuthority | None = None
+    failed = False
     try:
+        authority = _open_pinned_sealed_authority(sealed_root)
+        sealed_files = authority.payloads
         commitments = _closed_object(
             json.loads(commitments_path.read_text(encoding="utf-8")),
             _SEALED_AUTHORITY_KEYS,
@@ -2690,8 +2846,7 @@ def validate_sealed_commitments(
         ):
             raise ValueError("public commitment pair is invalid")
 
-        manifest_path = sealed_root / "sealed-manifest.json"
-        manifest_bytes = manifest_path.read_bytes()
+        manifest_bytes = sealed_files["sealed-manifest.json"]
         manifest = _closed_object(
             json.loads(manifest_bytes),
             {
@@ -2728,7 +2883,8 @@ def validate_sealed_commitments(
                 entry["fixture_id"] != expected_id
                 or relative.name != f"{expected_id}.sealed.json"
                 or relative.parent != Path(".")
-                or _digest_file(sealed_root / relative) != entry["sha256"]
+                or sha256(sealed_files[relative.as_posix()]).hexdigest()
+                != entry["sha256"]
             ):
                 raise ValueError("sealed payload authority is invalid")
             normalized_entries.append(
@@ -2739,17 +2895,17 @@ def validate_sealed_commitments(
         intent = _closed_object(
             manifest["intent_map"], {"path", "sha256"}, "sealed intent map"
         )
-        intent_path = sealed_root / _safe_relative(intent["path"])
+        intent_relative = _safe_relative(intent["path"])
+        intent_bytes = sealed_files[intent_relative]
         if (
             intent["path"] != "intent-map.json"
             or intent["sha256"] != commitments["intent_map_sha256"]
-            or _digest_file(intent_path) != intent["sha256"]
+            or sha256(intent_bytes).hexdigest() != intent["sha256"]
         ):
             raise ValueError("sealed intent authority is invalid")
-        FrozenIntentApprovalService(intent_path, Path(os.devnull))
+        _parse_intent_map_bytes(intent_bytes)
 
-        candidate_path = sealed_root / "candidate-commitments.json"
-        candidate_bytes = candidate_path.read_bytes()
+        candidate_bytes = sealed_files["candidate-commitments.json"]
         candidate = _closed_object(
             json.loads(candidate_bytes), _RUNTIME_COMMITMENT_KEYS, "candidate authority"
         )
@@ -2762,8 +2918,7 @@ def validate_sealed_commitments(
             raise ValueError("candidate authority is invalid")
         candidate_payloads = _payload_commitments(candidate["fixture_payloads"])
 
-        receipt_path = sealed_root / "materialization-receipt.json"
-        receipt_bytes = receipt_path.read_bytes()
+        receipt_bytes = sealed_files["materialization-receipt.json"]
         receipt = _closed_object(
             json.loads(receipt_bytes),
             _MATERIALIZATION_RECEIPT_KEYS,
@@ -2782,8 +2937,7 @@ def validate_sealed_commitments(
             raise ValueError("materialization receipt authority is invalid")
         receipt_payloads = _payload_commitments(receipt["fixture_payloads"])
 
-        attestation_path = sealed_root / "isolation-attestation.json"
-        attestation_bytes = attestation_path.read_bytes()
+        attestation_bytes = sealed_files["isolation-attestation.json"]
         attestation = _closed_object(
             json.loads(attestation_bytes),
             _ISOLATION_ATTESTATION_KEYS,
@@ -2903,7 +3057,9 @@ def validate_sealed_commitments(
         ):
             raise ValueError("protocol authority is invalid")
         for fixture_id in FIXTURE_IDS:
-            _load_sealed_payload(fixture_id, sealed_root)
+            payload = json.loads(sealed_files[f"{fixture_id}.sealed.json"])
+            if not isinstance(payload, Mapping) or payload.get("fixture_id") != fixture_id:
+                raise ValueError("sealed payload fixture binding is invalid")
     except (
         EvaluatorNoGoError,
         KeyError,
@@ -2912,6 +3068,14 @@ def validate_sealed_commitments(
         ValueError,
         json.JSONDecodeError,
     ):
+        failed = True
+    finally:
+        if authority is not None:
+            try:
+                authority.verify_and_close()
+            except (OSError, TypeError, ValueError):
+                failed = True
+    if failed:
         issues.append(BenchmarkIssue("fixture.sealed-commitment", "authority-invalid"))
     return issues
 

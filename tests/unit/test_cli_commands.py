@@ -53,6 +53,36 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
     raw["execution_lock"]["evidence_contract_commitment"] = contract_digest
     protocol = tmp_path / "protocol.json"
     protocol.write_text(json.dumps(raw), encoding="utf-8")
+    authorization = tmp_path / "synthetic-execution-authorization.json"
+    authorization.write_text(
+        json.dumps(
+            {
+                "schema": "ai-sdlc-v2-benefit-execution-authorization/v1",
+                "protocol_sha256": sha256(protocol.read_bytes()).hexdigest(),
+                "execution_identity": raw["execution_lock"],
+                "attempt_budget": raw["attempt_budget"],
+                "valid_from": "2020-01-01T00:00:00Z",
+                "expires_at": "2999-01-01T00:00:00Z",
+                "scope": {
+                    "mode": "single-frozen-matrix",
+                    "run_ids": [row["run_id"] for row in raw["run_matrix"]],
+                    "operations": [
+                        "start_run",
+                        "transition_run_phase",
+                        "reserve_provider_attempt",
+                        "record_provider_completion",
+                        "start_service_transaction",
+                        "record_service_transaction",
+                        "seal_run_evidence",
+                    ],
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    authorization.chmod(0o600)
     ledger = tmp_path / "ledger.json"
     script = REPO_ROOT / "scripts" / "ai_sdlc_v2_benefit_benchmark.py"
     common = [
@@ -62,6 +92,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
         str(protocol),
         "--contract",
         str(contract_path),
+        "--authorization",
+        str(authorization),
         "--run-id",
         "P:requirement-contract-ambiguity",
     ]
@@ -93,6 +125,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(protocol),
             "--contract",
             str(contract_path),
+            "--authorization",
+            str(authorization),
             "--run-id",
             "P:requirement-contract-ambiguity",
             "--kind",
@@ -119,6 +153,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(protocol),
             "--contract",
             str(contract_path),
+            "--authorization",
+            str(authorization),
             "--attempt-id",
             "attempt-001",
             "--status",
@@ -147,6 +183,8 @@ def test_benefit_benchmark_cli_binds_protocol_for_reserve_and_complete(
             str(protocol),
             "--contract",
             str(contract_path),
+            "--authorization",
+            str(authorization),
             "--attempt-id",
             "attempt-001",
             "--status",

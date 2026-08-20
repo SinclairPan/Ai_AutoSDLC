@@ -6,6 +6,7 @@ import json
 import math
 import os
 import re
+import stat
 import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
@@ -153,6 +154,25 @@ _BUDGET_KEYS = {
     "max_pre_output_retries",
     "reserved_security_slots",
 }
+_EXECUTION_AUTHORIZATION_KEYS = {
+    "schema",
+    "protocol_sha256",
+    "execution_identity",
+    "attempt_budget",
+    "valid_from",
+    "expires_at",
+    "scope",
+}
+_EXECUTION_AUTHORIZATION_SCOPE_KEYS = {"mode", "run_ids", "operations"}
+_EXECUTION_AUTHORIZATION_OPERATIONS = (
+    "start_run",
+    "transition_run_phase",
+    "reserve_provider_attempt",
+    "record_provider_completion",
+    "start_service_transaction",
+    "record_service_transaction",
+    "seal_run_evidence",
+)
 _ARMS = ("P", "S", "A00", "A10", "A11")
 _FIXTURES = (
     "requirement-contract-ambiguity",
@@ -326,15 +346,150 @@ def canonical_protocol_digest(protocol: BenchmarkProtocol) -> str:
     return sha256(protocol.canonical_bytes).hexdigest()
 
 
+def validate_execution_authorization(
+    protocol: BenchmarkProtocol,
+    authorization_path: Path | None,
+) -> list[BenchmarkIssue]:
+    """Validate a separately supplied, closed execution authorization."""
+    try:
+        _require_executable_protocol(protocol)
+        if authorization_path is None:
+            raise ValueError("execution authorization is missing")
+        raw = _load_execution_authorization(authorization_path)
+        _reject_unknown(raw, _EXECUTION_AUTHORIZATION_KEYS, "execution authorization")
+        _require_keys(raw, _EXECUTION_AUTHORIZATION_KEYS, "execution authorization")
+        if raw["schema"] != "ai-sdlc-v2-benefit-execution-authorization/v1":
+            raise ValueError("execution authorization schema is invalid")
+        if raw["protocol_sha256"] != canonical_protocol_digest(protocol):
+            raise ValueError("execution authorization protocol binding is invalid")
+        identity = raw["execution_identity"]
+        budget = raw["attempt_budget"]
+        scope = raw["scope"]
+        if not isinstance(identity, dict):
+            raise ValueError("execution authorization identity is invalid")
+        _reject_unknown(identity, _LOCK_KEYS, "authorization execution identity")
+        _require_keys(identity, _LOCK_KEYS, "authorization execution identity")
+        if identity != {
+            key: getattr(protocol.execution_lock, key) for key in _LOCK_KEYS
+        }:
+            raise ValueError("execution authorization identity binding is invalid")
+        if not isinstance(budget, dict):
+            raise ValueError("execution authorization budget is invalid")
+        _reject_unknown(budget, _BUDGET_KEYS, "authorization attempt budget")
+        _require_keys(budget, _BUDGET_KEYS, "authorization attempt budget")
+        if budget != {
+            key: getattr(protocol.attempt_budget, key) for key in _BUDGET_KEYS
+        }:
+            raise ValueError("execution authorization budget binding is invalid")
+        if not isinstance(scope, dict):
+            raise ValueError("execution authorization scope is invalid")
+        _reject_unknown(
+            scope, _EXECUTION_AUTHORIZATION_SCOPE_KEYS, "authorization scope"
+        )
+        _require_keys(
+            scope, _EXECUTION_AUTHORIZATION_SCOPE_KEYS, "authorization scope"
+        )
+        if (
+            scope["mode"] != "single-frozen-matrix"
+            or scope["run_ids"] != [run.run_id for run in protocol.run_matrix]
+            or scope["operations"] != list(_EXECUTION_AUTHORIZATION_OPERATIONS)
+        ):
+            raise ValueError("execution authorization scope binding is invalid")
+        valid_from = _parse_rfc3339(raw["valid_from"])
+        expires_at = _parse_rfc3339(raw["expires_at"])
+        now = datetime.now(UTC)
+        if (
+            valid_from is None
+            or expires_at is None
+            or valid_from >= expires_at
+            or now < valid_from
+            or now >= expires_at
+        ):
+            raise ValueError("execution authorization is expired or not yet valid")
+    except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError):
+        return [
+            BenchmarkIssue(
+                "authorization.execution", "execution authorization is invalid"
+            )
+        ]
+    return []
+
+
+def _load_execution_authorization(path: Path) -> dict[str, object]:
+    absolute = Path(os.path.abspath(path))
+    before_path = os.lstat(absolute)
+    if (
+        stat.S_ISLNK(before_path.st_mode)
+        or not stat.S_ISREG(before_path.st_mode)
+        or before_path.st_uid != os.geteuid()
+        or stat.S_IMODE(before_path.st_mode) != 0o600
+        or before_path.st_nlink != 1
+        or absolute.resolve(strict=True) != absolute
+    ):
+        raise ValueError("execution authorization file metadata is invalid")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(absolute, flags)
+    try:
+        opened = os.fstat(fd)
+        if _stat_identity(opened) != _stat_identity(before_path):
+            raise ValueError("execution authorization file changed before read")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(fd, 65536)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        after = os.fstat(fd)
+        after_path = os.lstat(absolute)
+        if (
+            _stat_identity(after) != _stat_identity(opened)
+            or _stat_identity(after_path) != _stat_identity(opened)
+        ):
+            raise ValueError("execution authorization file changed during read")
+    finally:
+        os.close(fd)
+    raw = json.loads(b"".join(chunks))
+    if not isinstance(raw, dict):
+        raise ValueError("execution authorization must be an object")
+    return raw
+
+
+def _stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_uid,
+        value.st_gid,
+        value.st_mode,
+        value.st_nlink,
+        value.st_size,
+        value.st_ctime_ns,
+        value.st_mtime_ns,
+    )
+
+
+def _require_execution_authorization(
+    protocol: BenchmarkProtocol,
+    authorization_path: Path | None,
+    operation: str,
+) -> None:
+    if operation not in _EXECUTION_AUTHORIZATION_OPERATIONS:
+        raise ValueError("execution authorization operation is invalid")
+    if validate_execution_authorization(protocol, authorization_path):
+        raise ValueError("execution authorization is missing or invalid")
+
+
 def start_run(
     ledger_path: Path,
     protocol: BenchmarkProtocol,
     evidence_contract_path: Path,
     *,
     run_id: str,
+    authorization_path: Path | None = None,
 ) -> None:
     """Create a run in setup before any Provider reservation."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(protocol, authorization_path, "start_run")
     contract = _load_evidence_contract(evidence_contract_path, protocol)
     _contract_run(contract, run_id)
     with _ledger_lock(ledger_path):
@@ -372,9 +527,13 @@ def transition_run_phase(
     *,
     run_id: str,
     next_phase: str,
+    authorization_path: Path | None = None,
 ) -> None:
     """Atomically close the current phase and open its fixed successor."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(
+        protocol, authorization_path, "transition_run_phase"
+    )
     _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
         ledger = _load_ledger(
@@ -423,9 +582,14 @@ def reserve_provider_attempt(
     protocol: BenchmarkProtocol,
     request: AttemptRequest,
     evidence_contract_path: Path,
+    *,
+    authorization_path: Path | None = None,
 ) -> AttemptReservation:
     """Atomically reserve an allowed logical Provider attempt before it starts."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(
+        protocol, authorization_path, "reserve_provider_attempt"
+    )
     _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
         ledger = _load_ledger(
@@ -472,9 +636,14 @@ def record_provider_completion(
     protocol: BenchmarkProtocol,
     completion: AttemptCompletion,
     evidence_contract_path: Path,
+    *,
+    authorization_path: Path | None = None,
 ) -> None:
     """Atomically record one allowed Provider attempt state transition."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(
+        protocol, authorization_path, "record_provider_completion"
+    )
     _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
         ledger = _load_ledger(
@@ -513,9 +682,13 @@ def start_service_transaction(
     attempt_id: str,
     event_type: str,
     transaction_id: str,
+    authorization_path: Path | None = None,
 ) -> None:
     """Start one service transaction using only the core clock."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(
+        protocol, authorization_path, "start_service_transaction"
+    )
     contract = _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
         ledger = _load_ledger(
@@ -579,9 +752,13 @@ def record_service_transaction(
     event_type: str,
     transaction_id: str,
     evidence: Mapping[str, object],
+    authorization_path: Path | None = None,
 ) -> None:
     """Close one started service transaction using only the core clock."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(
+        protocol, authorization_path, "record_service_transaction"
+    )
     contract = _load_evidence_contract(evidence_contract_path, protocol)
     privacy_issues: list[BenchmarkIssue] = []
     _scan_public_value(evidence, "$", privacy_issues)
@@ -686,9 +863,13 @@ def seal_run_evidence(
     *,
     run_id: str,
     workspace_root: Path,
+    authorization_path: Path | None = None,
 ) -> None:
     """Seal one immutable run from contract, ledger clocks and actual files."""
     protocol_digest = _require_executable_protocol(protocol)
+    _require_execution_authorization(
+        protocol, authorization_path, "seal_run_evidence"
+    )
     contract = _load_evidence_contract(evidence_contract_path, protocol)
     with _ledger_lock(ledger_path):
         ledger = _load_ledger(

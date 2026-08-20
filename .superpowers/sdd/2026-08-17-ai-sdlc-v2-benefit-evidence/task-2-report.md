@@ -404,7 +404,7 @@ git diff --check: clean
 - `sealed-commitments.json` 升级为 closed v3，仅保存 opaque SHA256 与状态：exact r2 lock、sealed manifest、三个 payload、intent map、public fixture manifest/tree pair、evidence-contract pair、candidate commitments、materialization receipt、isolation attestation、runtime identity/capsule、source bundle/root tree，以及派生状态 `materialized-validated`。公开文件不含 sealed plaintext、答案或绝对路径。
 - consumer 逐项重算 public fixture/evidence、actual r2 manifest/payload/intent、candidate/receipt/attestation、external source identity tree、runtime identity 与完整 capsule；同时校验 manifest/candidate/receipt/attestation 的 runtime、payload、source 与 receipt 链四向一致。缺字段、额外字段、schema v2、r1 lock、未验证状态或任何 authority surface 漂移均只返回 opaque `authority-invalid`，不创建 intent/approval event 文件。
 - protocol 只把四个 `pending-unbound` 字段绑定为 fixture pair `3a5a2a…4ff8a` 与 evidence pair `7b32d6…060c`；其余 execution lock、run matrix、预算与顶层结构 byte-semantically unchanged。
-- 新增只读 `benefit-evidence verify-sealed-commitments`。成功只报告 `authority=task2-commitment` 与 `status=bound`；离线 protocol validate 即使显示 `execution_ready=true`，也同时明确 `provider_authorized=false`、`experiment_authorized=false`。这里的 ready 仅表示 Task 2 commitment 已绑定，不授权 Task 3/4、Provider 或 experiment arms。
+- 新增只读 `benefit-evidence verify-sealed-commitments`。成功只报告 `authority=task2-commitment` 与 `status=bound`。binding 提交当时离线 validate 曾把 Task 2 commitment bound 误标为 `execution_ready=true`；后续 FixR1 已将该标签缺口升级为独立授权硬门禁，当前默认输出为 `execution_ready=false`、`provider_authorized=false`、`experiment_authorized=false`。
 
 ### TDD 与门禁
 
@@ -422,3 +422,42 @@ git diff --check: clean
 首次把 production protocol 绑定后，42 个旧 materializer 测试按生产 fail-closed 合同统一停在 `protocol-state`；这不是实现回归，而是测试 fixture 此前直接复制 production pending 状态。测试 helper 已改为显式构造 pre-binding pending protocol，materializer 的生产门禁没有放宽，随后统一回归全绿。
 
 binding 前后 external identity 完全一致：actual r2 inode `403098441` / tree `b5b2b362…8615b`，invalid r1 inode `402612600` / tree `9701e5fa…dc30`，r2 source inode `403084506` / tree `56387824…9596`，disposition inode `403084461` / tree `52797356…44ae`，runtime identity `4e52fbf6…87a2`，runtime capsule `ed26993a…caf5`。actual 八个 authority 文件分别重算并与 tracked v3 完全一致；Provider、`codex exec`、experiment arm 调用仍为 `0`，没有启动 Task 3/4 或实验。
+
+## Task 2 binding FixR1：独立执行授权与发布元数据闭包
+
+### 两项 Critical 与 fresh RED
+
+- Fix 基线：`9b2b86df00a6c9a4d2f0091c019179babe0165a0`，起点 clean。
+- C1 证明 binding 输出中的三项 authorization flag 只是标签：bound protocol 可直接进入 `start_run → provider → reserve`，没有独立授权输入。fresh C1 批次为 `15 failed`，覆盖默认 ready 假阳性、七个 mutation API、过期与 protocol/budget/identity/scope 漂移。
+- C2 证明 actual sealed consumer 只校验内容 digest，没有先闭合发布目录元数据。fresh C2 批次为 `8 failed`，覆盖 root `0755`、member `0644`、extra 第九项、hardlink、symlink、scan error、root replacement race 和 file replacement race。
+- 两批 RED 均在生产修复前真实执行；统一 GREEN 后分别为 C1 `35 passed`、C2 `9 passed`。
+
+### 独立 closed execution authorization
+
+- 新增 `ai-sdlc-v2-benefit-execution-authorization/v1` closed contract；正式仓库不生成、不跟踪 authorization 实例，测试只在 `tmp_path` 创建 synthetic authorization。
+- 合同逐项绑定 canonical protocol SHA256、完整 execution lock、完整 `33/19/4/3/7` attempt budget、UTC `valid_from/expires_at` 窗口、exact 15 run IDs 和 exact 七项 mutation scope。未知、缺失、非 canonical binding、过期或尚未生效均 fail closed。
+- authorization leaf 必须 canonical regular、owner=euid、exact `0600`、`nlink=1`，通过 `O_NOFOLLOW` 打开；读取前后同时比较 path/opened inode、dev、uid/gid、mode、nlink、size、ctime/mtime。symlink、hardlink、mode 漂移与 replacement race 均不能授权。
+- `start_run`、`transition_run_phase`、`reserve_provider_attempt`、`record_provider_completion`、`start_service_transaction`、`record_service_transaction`、`seal_run_evidence` 在读取 evidence contract、ledger 或写入第一个字节前统一调用同一 authorization gate。无、错、过期或漂移 authorization 均保持 ledger/state byte-identical。
+- 对应七个离线 CLI mutation command 全部要求显式 `--authorization`，且只把该外部路径传入同一 core gate，不在 CLI 复制或弱化授权逻辑。
+- `validate` 不再从 Task 2 commitment 推导任何执行许可。默认 actual protocol 输出为 `task2_commitment_bound=true`，但 `execution_ready=false`、`provider_authorized=false`、`experiment_authorized=false`；只有显式 supplied、当前有效且完整绑定的独立 authorization 才可能把三项变为 true。
+
+### actual r2 发布元数据闭包
+
+- `validate_sealed_commitments` 在解析任何 sealed JSON 前先要求 canonical、euid-owned、exact `0700` r2 root 和 exact 八个文件名；不存在“允许额外调试文件”的开放面。
+- root 以 `O_DIRECTORY|O_NOFOLLOW` pinned dirfd 打开。八个 member 逐一用相对 `openat` 语义和 `O_NOFOLLOW` 打开，必须 regular、euid-owned、exact `0600`、`nlink=1`。
+- 每个文件在读取前、读取后与整个 authority closure 完成后三次比较 path/opened identity；root 同时比较 pinned fd 与 lexical path identity。任何 extra、symlink、hardlink、chmod、scan error、file/root replacement race 均返回单一 opaque `fixture.sealed-commitment / authority-invalid`。
+- manifest、三个 payload、intent map、candidate commitments、receipt 与 attestation 全部只从 pinned snapshot bytes 解析；不再在 digest 校验后通过普通路径重新读取，且不会创建 intent/approval event。
+
+### FixR1 门禁
+
+```text
+fresh RED: C1 15 failed; C2 8 failed
+focused GREEN: C1 35 passed; C2 9 passed
+benefit + fixture + materializer + CLI related: 544 passed, 11 skipped
+Ruff check: All checks passed
+git diff --check: clean
+actual r2 authority CLI: bound; Provider/experiment authorization false
+actual protocol default validate: Task2 bound; execution/provider/experiment false
+```
+
+post-fix external identity 与 binding 前一致：actual r2 inode `403098441` / tree `b5b2b362…8615b`，r2 source inode `403084506` / tree `56387824…9596`，disposition inode `403084461` / tree `52797356…44ae`，runtime identity `4e52fbf6…87a2`，runtime capsule `ed26993a…caf5`。本轮只读验证 actual authority，没有修改 r2、r1、source、disposition 或 tracked protocol commitment；Provider、`codex exec`、experiment arm 调用保持 `0`，没有进入 Task 3/4。

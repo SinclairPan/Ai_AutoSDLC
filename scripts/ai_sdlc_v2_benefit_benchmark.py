@@ -20,6 +20,7 @@ from ai_sdlc.benefit_benchmark import (
     start_run,
     start_service_transaction,
     transition_run_phase,
+    validate_execution_authorization,
     validate_protocol,
     verify_receipt,
     verify_summary,
@@ -88,17 +89,20 @@ def main() -> int:
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate")
     validate.add_argument("--protocol", type=Path, required=True)
+    validate.add_argument("--authorization", type=Path)
     run_start = commands.add_parser("start-run")
     run_start.add_argument("--ledger", type=Path, required=True)
     run_start.add_argument("--protocol", type=Path, required=True)
     run_start.add_argument("--contract", type=Path, required=True)
     run_start.add_argument("--run-id", required=True)
+    run_start.add_argument("--authorization", type=Path, required=True)
     phase_transition = commands.add_parser("transition-phase")
     phase_transition.add_argument("--ledger", type=Path, required=True)
     phase_transition.add_argument("--protocol", type=Path, required=True)
     phase_transition.add_argument("--contract", type=Path, required=True)
     phase_transition.add_argument("--run-id", required=True)
     phase_transition.add_argument("--next-phase", required=True)
+    phase_transition.add_argument("--authorization", type=Path, required=True)
     reserve = commands.add_parser("reserve-attempt")
     reserve.add_argument("--ledger", type=Path, required=True)
     reserve.add_argument("--protocol", type=Path, required=True)
@@ -114,6 +118,7 @@ def main() -> int:
     reserve.add_argument("--candidate-digest")
     reserve.add_argument("--finding-digest")
     reserve.add_argument("--repair-digest")
+    reserve.add_argument("--authorization", type=Path, required=True)
     complete = commands.add_parser("complete-attempt")
     complete.add_argument("--ledger", type=Path, required=True)
     complete.add_argument("--protocol", type=Path, required=True)
@@ -131,6 +136,7 @@ def main() -> int:
     complete.add_argument("--output-tokens", type=int)
     complete.add_argument("--reasoning-output-tokens", type=int)
     complete.add_argument("--raw-provider-output-sha256")
+    complete.add_argument("--authorization", type=Path, required=True)
     service_start = commands.add_parser("start-service-transaction")
     service_start.add_argument("--ledger", type=Path, required=True)
     service_start.add_argument("--protocol", type=Path, required=True)
@@ -138,6 +144,7 @@ def main() -> int:
     service_start.add_argument("--attempt-id", required=True)
     service_start.add_argument("--event-type", required=True)
     service_start.add_argument("--transaction-id", required=True)
+    service_start.add_argument("--authorization", type=Path, required=True)
     service_event = commands.add_parser("complete-service-transaction")
     service_event.add_argument("--ledger", type=Path, required=True)
     service_event.add_argument("--protocol", type=Path, required=True)
@@ -146,12 +153,14 @@ def main() -> int:
     service_event.add_argument("--event-type", required=True)
     service_event.add_argument("--transaction-id", required=True)
     service_event.add_argument("--evidence", type=Path, required=True)
+    service_event.add_argument("--authorization", type=Path, required=True)
     seal_evidence = commands.add_parser("seal-run-evidence")
     seal_evidence.add_argument("--ledger", type=Path, required=True)
     seal_evidence.add_argument("--protocol", type=Path, required=True)
     seal_evidence.add_argument("--contract", type=Path, required=True)
     seal_evidence.add_argument("--run-id", required=True)
     seal_evidence.add_argument("--workspace-root", type=Path, required=True)
+    seal_evidence.add_argument("--authorization", type=Path, required=True)
     receipt = commands.add_parser("verify-receipt")
     receipt.add_argument("--receipt", type=Path, required=True)
     receipt.add_argument("--protocol", type=Path, required=True)
@@ -175,12 +184,25 @@ def main() -> int:
                     "protocol.evidence-contract-pending",
                 }
             ]
+            authorization_issues = (
+                validate_execution_authorization(protocol, arguments.authorization)
+                if arguments.authorization is not None
+                else []
+            )
+            explicitly_authorized = (
+                arguments.authorization is not None
+                and not issues
+                and not authorization_issues
+            )
             _emit(
                 {
-                    "execution_ready": not issues,
-                    "experiment_authorized": False,
-                    "issues": [_issue_payload(issue) for issue in issues],
-                    "provider_authorized": False,
+                    "execution_ready": explicitly_authorized,
+                    "experiment_authorized": explicitly_authorized,
+                    "issues": [
+                        _issue_payload(issue)
+                        for issue in (*issues, *authorization_issues)
+                    ],
+                    "provider_authorized": explicitly_authorized,
                     "structurally_valid": not structural_issues,
                     "task2_commitment_bound": not any(
                         issue.code
@@ -193,13 +215,14 @@ def main() -> int:
                     ),
                 }
             )
-            return 1 if structural_issues else 0
+            return 1 if structural_issues or authorization_issues else 0
         if arguments.command == "start-run":
             start_run(
                 arguments.ledger,
                 _protocol(arguments.protocol),
                 arguments.contract,
                 run_id=arguments.run_id,
+                authorization_path=arguments.authorization,
             )
             _emit({"run_id": arguments.run_id, "started": True})
             return 0
@@ -210,6 +233,7 @@ def main() -> int:
                 arguments.contract,
                 run_id=arguments.run_id,
                 next_phase=arguments.next_phase,
+                authorization_path=arguments.authorization,
             )
             _emit({"next_phase": arguments.next_phase, "run_id": arguments.run_id})
             return 0
@@ -231,6 +255,7 @@ def main() -> int:
                     repair_digest=arguments.repair_digest,
                 ),
                 arguments.contract,
+                authorization_path=arguments.authorization,
             )
             _emit(
                 {
@@ -267,6 +292,7 @@ def main() -> int:
                     raw_provider_output_sha256=arguments.raw_provider_output_sha256,
                 ),
                 arguments.contract,
+                authorization_path=arguments.authorization,
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
@@ -278,6 +304,7 @@ def main() -> int:
                 attempt_id=arguments.attempt_id,
                 event_type=arguments.event_type,
                 transaction_id=arguments.transaction_id,
+                authorization_path=arguments.authorization,
             )
             _emit({"attempt_id": arguments.attempt_id, "started": True})
             return 0
@@ -290,6 +317,7 @@ def main() -> int:
                 event_type=arguments.event_type,
                 transaction_id=arguments.transaction_id,
                 evidence=_json_object(arguments.evidence, "service evidence"),
+                authorization_path=arguments.authorization,
             )
             _emit({"attempt_id": arguments.attempt_id, "recorded": True})
             return 0
@@ -300,6 +328,7 @@ def main() -> int:
                 arguments.contract,
                 run_id=arguments.run_id,
                 workspace_root=arguments.workspace_root,
+                authorization_path=arguments.authorization,
             )
             _emit({"run_id": arguments.run_id, "sealed": True})
             return 0
