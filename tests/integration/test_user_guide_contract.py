@@ -33,17 +33,17 @@ def test_guide_lists_every_runtime_adapter_in_both_scenarios() -> None:
 def test_guide_pins_published_assets_and_stable_output_contract() -> None:
     text = guide_text()
     for asset in (
-        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
+        "ai-sdlc-offline-3.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-3.0.0-linux-amd64.tar.gz",
     ):
         assert asset in text
-        assert f"releases/download/v2.0.0/{asset}" in text
+        assert f"releases/download/v3.0.0/{asset}" in text
         assert f"{asset}.sha256" in text
     assert "releases/download/v1.0.4/" not in text
     for anchor in (
         "Offline installation completed",
-        "2.0.0",
+        "3.0.0",
         "Initialized AI-SDLC project",
         "当前结果 / Result",
         "下一步 / Next",
@@ -69,3 +69,17 @@ def test_guide_contains_copyable_recovery_paths() -> None:
         "open gates",
     ):
         assert symptom in text
+
+
+def test_windows_update_contract_prefers_supported_entrypoints() -> None:
+    text = guide_text()
+
+    for marker in (
+        "外部 stable shim 与 `python -m ai_sdlc`",
+        "Windows 运行时目录内的 direct `Scripts\\ai-sdlc.exe`",
+        "零安装并让当前业务命令继续一次",
+        "$ModulePython -m ai_sdlc",
+        "新终端中的裸 `ai-sdlc`",
+    ):
+        assert marker in text
+    assert "$DirectCli" not in text

@@ -1947,7 +1947,6 @@ def _no_current_frontend_evidence_guidance() -> LoopNextActionGuidance:
         safety=LoopNextActionSafety.WRITES_PROJECT_ARTIFACTS,
         evidence=[str(CURRENT_FRONTEND_EVIDENCE_PATH).replace("\\", "/")],
         alternatives=[
-            "ai-sdlc program browser-gate-probe --execute",
             "ai-sdlc loop frontend-evidence start --wi specs/<work-item> --dry-run",
         ],
     )
@@ -2061,7 +2060,6 @@ def _frontend_evidence_blocked_guidance(
         safety=LoopNextActionSafety.BLOCKED,
         evidence=evidence or [str(CURRENT_FRONTEND_EVIDENCE_PATH).replace("\\", "/")],
         alternatives=[
-            "ai-sdlc program browser-gate-probe --execute",
             "Inspect or remove malformed frontend-evidence loop artifacts.",
         ],
     )
@@ -2589,7 +2587,7 @@ def _guidance_for_frontend_evidence_loop(
         )
     if loop_run.status == LoopStatus.NEEDS_FIX:
         return LoopNextActionGuidance(
-            command="ai-sdlc program browser-gate-probe --execute",
+            command="ai-sdlc loop frontend-evidence capture --execute",
             reason="Frontend browser gate evidence has blockers or needs a recheck.",
             requires_model=False,
             writes_artifacts=True,

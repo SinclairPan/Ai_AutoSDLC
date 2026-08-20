@@ -1,12 +1,12 @@
-# AI-SDLC 2.0.0 离线发布检查清单
+# AI-SDLC 3.0.0 离线发布检查清单
 
-当前源码与公开稳定版本均为 `2.0.0` / `v2.0.0`。以下条目用于候选构建、Draft Release 复验和发布后验证。
+当前源码与公开稳定版本均为 `3.0.0` / `v3.0.0`。以下条目用于候选构建、Draft Release 复验和发布后验证。
 
 ## 版本与源码
 
-- [ ] `pyproject.toml` 为 `2.0.0`；
-- [ ] 两个 `ai_sdlc/__init__.py` 回退版本均为 `2.0.0`；
-- [ ] `uv.lock` 中本项目版本为 `2.0.0`；
+- [ ] `pyproject.toml` 为 `3.0.0`；
+- [ ] 两个 `ai_sdlc/__init__.py` 回退版本均为 `3.0.0`；
+- [ ] `uv.lock` 中本项目版本为 `3.0.0`；
 - [ ] Git 地址为 `https://github.com/SinclairPan/Ai_AutoSDLC`；
 - [ ] 工作树只包含本次授权变更。
 
@@ -42,7 +42,7 @@
 - [ ] Windows 解压与 `install_offline.ps1 -AddToPath` 成功；
 - [ ] macOS 解压与 `install_offline.sh --add-to-path` 成功；
 - [ ] Linux 解压与 `install_offline.sh --add-to-path` 成功；
-- [ ] 三个平台 `ai-sdlc --version` 输出 `2.0.0`；
+- [ ] 三个平台 `ai-sdlc --version` 输出 `3.0.0`；
 - [ ] 三个平台 `ai-sdlc --help` 成功；
 - [ ] Codex + PowerShell 初始化成功；
 - [ ] `ai-sdlc adapter status` 成功；
@@ -51,7 +51,7 @@
 ## 发布与复验
 
 - [ ] README、用户指南和打包说明中的包名一致；
-- [ ] 精确 main SHA 上存在 annotated tag `v2.0.0` 和全新的空 Draft Release；
+- [ ] 精确 main SHA 上存在 annotated tag `v3.0.0` 和全新的空 Draft Release；
 - [ ] `release-build` 仅在 `upload_to_release` 为字符串 `"true"` 时，把已通过 smoke 的六个文件上传到该 Draft；
 - [ ] Draft 制品 smoke 通过后才发布为 latest，发布后再次运行 smoke 与用户指南 E2E；
 - [ ] 平台工作流 artifact 完整；

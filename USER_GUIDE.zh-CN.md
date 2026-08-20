@@ -1,12 +1,12 @@
-# AI-SDLC 2.0.0 中文用户指南
+# AI-SDLC 3.0.0 中文用户指南
 
 AI-SDLC 会把项目规则、需求澄清、技术方案、任务执行、质量门禁和交付证据接入你实际使用的 AI 开发工具。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 当前公开稳定版本为 `v2.0.0`。本指南只提供经过跨平台 smoke 与 GitHub Release 验证的公开安装路径；从 `v1.0.2` 升级请先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
+> 当前公开稳定版本为 `v3.0.0`。本指南只提供经过跨平台 smoke 与 GitHub Release 验证的公开安装路径；从 `v2.0.0` 升级请先阅读 [v3 迁移说明](docs/v3-migration.zh-CN.md)，从 `v1.0.2` 跨大版本升级还应先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
 
-安装版 `ai-sdlc` 在每次执行实际业务命令前读取更新缓存；缓存过期时才会进行一次短超时联网检查，同一成功缓存周期不会重复联网。TTY 终端发现更新时会询问是否先升级；确认后完成升级并精确重新执行原命令。非 TTY、Codex、Cursor、Claude Code 和 `--json` 路径只在 stderr 输出一行 `AI_SDLC_UPDATE_NOTICE` 结构化提示，不污染业务 stdout 或 JSON。拒绝、断网、超时或检查失败都不会阻断当前命令；可设置 `AI_SDLC_DISABLE_UPDATE_CHECK=1` 关闭检查。`self-update`、帮助、补全和源码/`uv run` 开发环境不会自动覆盖当前安装。
+安装版 `ai-sdlc` 在每次执行实际业务命令前读取更新缓存；缓存过期时才会进行一次短超时联网检查，同一成功缓存周期不会重复联网。外部 stable shim 与 `python -m ai_sdlc` 入口在 TTY 终端发现更新时会询问是否先升级；确认后完成升级并精确重新执行原命令。Windows 运行时目录内的 direct `Scripts\ai-sdlc.exe` 只输出可执行迁移提示、零安装并让当前业务命令继续一次；显式 direct self-update 不修改安装且非零退出。非 TTY、Codex、Cursor、Claude Code 和 `--json` 路径只在 stderr 输出一行 `AI_SDLC_UPDATE_NOTICE` 结构化提示，不污染业务 stdout 或 JSON。拒绝、断网、超时或检查失败都不会阻断当前命令；可设置 `AI_SDLC_DISABLE_UPDATE_CHECK=1` 关闭检查。`self-update`、帮助、补全和源码/`uv run` 开发环境不会自动覆盖当前安装。
 
 本指南只包含两条完整路径：
 
@@ -31,11 +31,11 @@ AI-SDLC 会把项目规则、需求澄清、技术方案、任务执行、质量
 $ErrorActionPreference = "Stop"
 $ProjectRoot = Join-Path $HOME "projects\my-new-project"
 $InstallRoot = Join-Path $HOME "AI-SDLC"
-$DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v2.0.0-download"
-$BundleName = "ai-sdlc-offline-2.0.0-windows-amd64"
+$DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v3.0.0-download"
+$BundleName = "ai-sdlc-offline-3.0.0-windows-amd64"
 $PackageName = "$BundleName.zip"
-$PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip"
-$ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256"
+$PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-windows-amd64.zip"
+$ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-windows-amd64.zip.sha256"
 
 New-Item -ItemType Directory -Force -Path $ProjectRoot, $InstallRoot, $DownloadRoot | Out-Null
 $PackagePath = Join-Path $DownloadRoot $PackageName
@@ -58,19 +58,19 @@ try {
 } finally {
   Pop-Location
 }
-$DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
-& $DirectCli --version
+$ModulePython = Join-Path $BundleRoot ".venv\Scripts\python.exe"
+& $ModulePython -m ai_sdlc --version
 ```
 
 成功时会看到这些稳定内容：
 
 ```text
-SHA256 verified: ai-sdlc-offline-2.0.0-windows-amd64.zip
+SHA256 verified: ai-sdlc-offline-3.0.0-windows-amd64.zip
 Result
   Offline installation completed. The installer created the runtime and installed AI-SDLC.
 Next
-Direct shim:
-2.0.0
+Supported command:
+3.0.0
 ```
 
 安装器还会显示一条 `Codex + PowerShell project init` 示例。那只是一个专用示例；你不需要因此选择 Codex，继续使用下面的通用交互式命令即可。
@@ -79,7 +79,7 @@ Direct shim:
 
 ```powershell
 Set-Location $ProjectRoot
-& $DirectCli init .
+& $ModulePython -m ai_sdlc init .
 ```
 
 命令会停下来让你选择 AI 代理入口和 Shell。选择方法见本章 1.4。
@@ -88,14 +88,15 @@ Set-Location $ProjectRoot
 
 ```powershell
 $ProjectRoot = Join-Path $HOME "projects\my-new-project"
-$DirectCli = Join-Path $HOME "AI-SDLC\ai-sdlc-offline-2.0.0-windows-amd64\.venv\Scripts\ai-sdlc.exe"
 Set-Location $ProjectRoot
-& $DirectCli init .
+ai-sdlc init .
 ```
+
+`-AddToPath` 会让新终端的裸 `ai-sdlc` 命令指向运行时外的 stable shim，这是 Windows 上支持即时自更新和原命令重放的常规入口。当前安装窗口中的 `$ModulePython -m ai_sdlc ...` 是同样受支持的 bootstrap 路径。运行时内的 `Scripts\ai-sdlc.exe` 只作诊断 / 兼容 fallback：它在活动期间不会原地升级。
 
 ### 1.2 macOS（Apple Silicon）
 
-以下命令在 Terminal 的 zsh 或 bash 中执行。v2.0.0 的正式 macOS 离线包适用于 Apple Silicon。
+以下命令在 Terminal 的 zsh 或 bash 中执行。v3.0.0 的正式 macOS 离线包适用于 Apple Silicon。
 
 复制并执行：
 
@@ -104,10 +105,10 @@ set -e
 PROJECT_ROOT="$HOME/projects/my-new-project"
 INSTALL_ROOT="$HOME/Applications/AI-SDLC"
 DOWNLOAD_ROOT="$(mktemp -d)"
-BUNDLE_NAME="ai-sdlc-offline-2.0.0-macos-arm64"
+BUNDLE_NAME="ai-sdlc-offline-3.0.0-macos-arm64"
 PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
-PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz"
-CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-macos-arm64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-macos-arm64.tar.gz.sha256"
 
 mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -124,12 +125,12 @@ DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
 成功时会看到这些稳定内容：
 
 ```text
-ai-sdlc-offline-2.0.0-macos-arm64.tar.gz: OK
+ai-sdlc-offline-3.0.0-macos-arm64.tar.gz: OK
 当前结果 / Result
   离线安装完成。安装脚本已创建运行环境并安装 AI-SDLC。
   Offline installation completed. The installer created the runtime and installed AI-SDLC.
 下一步 / Next
-2.0.0
+3.0.0
 ```
 
 初始化空项目：
@@ -145,7 +146,7 @@ cd "$PROJECT_ROOT"
 
 ```bash
 PROJECT_ROOT="$HOME/projects/my-new-project"
-DIRECT_CLI="$HOME/Applications/AI-SDLC/ai-sdlc-offline-2.0.0-macos-arm64/.venv/bin/ai-sdlc"
+DIRECT_CLI="$HOME/Applications/AI-SDLC/ai-sdlc-offline-3.0.0-macos-arm64/.venv/bin/ai-sdlc"
 cd "$PROJECT_ROOT"
 "$DIRECT_CLI" init .
 ```
@@ -161,10 +162,10 @@ set -e
 PROJECT_ROOT="$HOME/projects/my-new-project"
 INSTALL_ROOT="$HOME/.local/share/AI-SDLC"
 DOWNLOAD_ROOT="$(mktemp -d)"
-BUNDLE_NAME="ai-sdlc-offline-2.0.0-linux-amd64"
+BUNDLE_NAME="ai-sdlc-offline-3.0.0-linux-amd64"
 PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
-PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz"
-CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha256"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-linux-amd64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-linux-amd64.tar.gz.sha256"
 
 mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -181,12 +182,12 @@ DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
 成功时会看到这些稳定内容：
 
 ```text
-ai-sdlc-offline-2.0.0-linux-amd64.tar.gz: OK
+ai-sdlc-offline-3.0.0-linux-amd64.tar.gz: OK
 当前结果 / Result
   离线安装完成。安装脚本已创建运行环境并安装 AI-SDLC。
   Offline installation completed. The installer created the runtime and installed AI-SDLC.
 下一步 / Next
-2.0.0
+3.0.0
 ```
 
 初始化空项目：
@@ -202,7 +203,7 @@ cd "$PROJECT_ROOT"
 
 ```bash
 PROJECT_ROOT="$HOME/projects/my-new-project"
-DIRECT_CLI="$HOME/.local/share/AI-SDLC/ai-sdlc-offline-2.0.0-linux-amd64/.venv/bin/ai-sdlc"
+DIRECT_CLI="$HOME/.local/share/AI-SDLC/ai-sdlc-offline-3.0.0-linux-amd64/.venv/bin/ai-sdlc"
 cd "$PROJECT_ROOT"
 "$DIRECT_CLI" init .
 ```
@@ -305,11 +306,11 @@ ai-sdlc run
 $ErrorActionPreference = "Stop"
 $ProjectRoot = (Get-Location).Path
 $InstallRoot = Join-Path $HOME "AI-SDLC"
-$DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v2.0.0-download"
-$BundleName = "ai-sdlc-offline-2.0.0-windows-amd64"
+$DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v3.0.0-download"
+$BundleName = "ai-sdlc-offline-3.0.0-windows-amd64"
 $PackageName = "$BundleName.zip"
-$PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip"
-$ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256"
+$PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-windows-amd64.zip"
+$ChecksumUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-windows-amd64.zip.sha256"
 
 $GitCommand = Get-Command git -ErrorAction SilentlyContinue
 if ($GitCommand) {
@@ -341,8 +342,8 @@ try {
 } finally {
   Pop-Location
 }
-$DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
-& $DirectCli --version
+$ModulePython = Join-Path $BundleRoot ".venv\Scripts\python.exe"
+& $ModulePython -m ai_sdlc --version
 ```
 
 如果 `git status` 显示 `not a git repository`，AI-SDLC 仍可初始化；先确认当前目录确实是目标项目根目录。存在未提交改动时可以继续，但建议先确认这些改动属于你当前要保留的工作。
@@ -350,34 +351,35 @@ $DirectCli = Join-Path $BundleRoot ".venv\Scripts\ai-sdlc.exe"
 成功安装时会看到：
 
 ```text
-SHA256 verified: ai-sdlc-offline-2.0.0-windows-amd64.zip
+SHA256 verified: ai-sdlc-offline-3.0.0-windows-amd64.zip
 Offline installation completed. The installer created the runtime and installed AI-SDLC.
-Direct shim:
-2.0.0
+Supported command:
+3.0.0
 ```
 
 安装器显示的 `Codex + PowerShell project init` 只是专用示例；仍然执行下面的通用命令，在菜单中选择自己的 AI 工具：
 
 ```powershell
 Set-Location $ProjectRoot
-& $DirectCli init .
+& $ModulePython -m ai_sdlc init .
 ```
 
 完成适配器和 Shell 选择后，接入已有任务资料：
 
 ```powershell
-& $DirectCli adopt .
+& $ModulePython -m ai_sdlc adopt .
 ```
 
 如果终端已关闭，重新打开后执行：
 
 ```powershell
 $ProjectRoot = (Get-Location).Path
-$DirectCli = Join-Path $HOME "AI-SDLC\ai-sdlc-offline-2.0.0-windows-amd64\.venv\Scripts\ai-sdlc.exe"
 Set-Location $ProjectRoot
-& $DirectCli init .
-& $DirectCli adopt .
+ai-sdlc init .
+ai-sdlc adopt .
 ```
+
+新终端中的裸 `ai-sdlc` 是由 `-AddToPath` 安装的外部 stable shim，是 Windows 常规入口。当前安装窗口如果尚未刷新 PATH，继续使用 `$ModulePython -m ai_sdlc ...`；不要把运行时内的 `Scripts\ai-sdlc.exe` 当作可原地自更新的常规命令。
 
 ### 2.2 macOS（Apple Silicon）
 
@@ -388,10 +390,10 @@ set -e
 PROJECT_ROOT="$PWD"
 INSTALL_ROOT="$HOME/Applications/AI-SDLC"
 DOWNLOAD_ROOT="$(mktemp -d)"
-BUNDLE_NAME="ai-sdlc-offline-2.0.0-macos-arm64"
+BUNDLE_NAME="ai-sdlc-offline-3.0.0-macos-arm64"
 PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
-PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz"
-CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-macos-arm64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-macos-arm64.tar.gz.sha256"
 
 if ! git status --short --branch; then
   printf '%s\n' "当前目录不是 Git 仓库；确认项目目录后继续安装。"
@@ -413,9 +415,9 @@ DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
 成功安装时会看到：
 
 ```text
-ai-sdlc-offline-2.0.0-macos-arm64.tar.gz: OK
+ai-sdlc-offline-3.0.0-macos-arm64.tar.gz: OK
 Offline installation completed. The installer created the runtime and installed AI-SDLC.
-2.0.0
+3.0.0
 ```
 
 初始化并接入已有项目：
@@ -432,7 +434,7 @@ cd "$PROJECT_ROOT"
 
 ```bash
 PROJECT_ROOT="$PWD"
-DIRECT_CLI="$HOME/Applications/AI-SDLC/ai-sdlc-offline-2.0.0-macos-arm64/.venv/bin/ai-sdlc"
+DIRECT_CLI="$HOME/Applications/AI-SDLC/ai-sdlc-offline-3.0.0-macos-arm64/.venv/bin/ai-sdlc"
 cd "$PROJECT_ROOT"
 "$DIRECT_CLI" init .
 "$DIRECT_CLI" adopt .
@@ -447,10 +449,10 @@ set -e
 PROJECT_ROOT="$PWD"
 INSTALL_ROOT="$HOME/.local/share/AI-SDLC"
 DOWNLOAD_ROOT="$(mktemp -d)"
-BUNDLE_NAME="ai-sdlc-offline-2.0.0-linux-amd64"
+BUNDLE_NAME="ai-sdlc-offline-3.0.0-linux-amd64"
 PACKAGE_NAME="$BUNDLE_NAME.tar.gz"
-PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz"
-CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha256"
+PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-linux-amd64.tar.gz"
+CHECKSUM_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/ai-sdlc-offline-3.0.0-linux-amd64.tar.gz.sha256"
 
 if ! git status --short --branch; then
   printf '%s\n' "当前目录不是 Git 仓库；确认项目目录后继续安装。"
@@ -472,9 +474,9 @@ DIRECT_CLI="$BUNDLE_ROOT/.venv/bin/ai-sdlc"
 成功安装时会看到：
 
 ```text
-ai-sdlc-offline-2.0.0-linux-amd64.tar.gz: OK
+ai-sdlc-offline-3.0.0-linux-amd64.tar.gz: OK
 Offline installation completed. The installer created the runtime and installed AI-SDLC.
-2.0.0
+3.0.0
 ```
 
 初始化并接入已有项目：
@@ -491,7 +493,7 @@ cd "$PROJECT_ROOT"
 
 ```bash
 PROJECT_ROOT="$PWD"
-DIRECT_CLI="$HOME/.local/share/AI-SDLC/ai-sdlc-offline-2.0.0-linux-amd64/.venv/bin/ai-sdlc"
+DIRECT_CLI="$HOME/.local/share/AI-SDLC/ai-sdlc-offline-3.0.0-linux-amd64/.venv/bin/ai-sdlc"
 cd "$PROJECT_ROOT"
 "$DIRECT_CLI" init .
 "$DIRECT_CLI" adopt .
@@ -558,7 +560,7 @@ open gates 表示项目还缺少需求、设计、任务或验证证据，不等
    ai-sdlc adopt . --prefer "支付回调"
    ```
 
-   当前终端找不到裸命令时，Windows 使用 `& $DirectCli adopt . --prefer "支付回调"`，macOS/Linux 使用 `"$DIRECT_CLI" adopt . --prefer "支付回调"`。
+   当前终端找不到裸命令时，Windows 使用 `& $ModulePython -m ai_sdlc adopt . --prefer "支付回调"`，macOS/Linux 使用 `"$DIRECT_CLI" adopt . --prefer "支付回调"`。
 3. `已识别任务` 为 0，或者项目没有任务资料：不需要反复执行 `adopt`；直接在所选 AI 工具中说明当前目标、范围和验收标准。
 
 ### 2.6 把增量需求交给所选 AI 工具
@@ -585,7 +587,7 @@ open gates 表示项目还缺少需求、设计、任务或验证证据，不等
 确认下载地址中包含完整版本和资产名：
 
 ```text
-https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/
+https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.0/
 ```
 
 然后重新执行所在平台的两条下载命令。不要把地址改成分支地址。
@@ -622,12 +624,12 @@ powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $BundleRoot "inst
 
 ### 当前终端提示找不到 `ai-sdlc`
 
-安装脚本写入 PATH 后，当前窗口可能还没有刷新。成功路径直接使用包内命令，不依赖 PATH：
+安装脚本写入 PATH 后，当前窗口可能还没有刷新。Windows 当前窗口使用包内 Python 模块入口，新终端优先使用裸 `ai-sdlc` stable shim：
 
 Windows：
 
 ```powershell
-& $DirectCli --version
+& $ModulePython -m ai_sdlc --version
 ```
 
 macOS/Linux：
@@ -636,11 +638,11 @@ macOS/Linux：
 "$DIRECT_CLI" --version
 ```
 
-输出应为 `2.0.0`。
+输出应为 `3.0.0`。
 
 ### 出现 `No module named ai_sdlc`
 
-这通常表示执行了系统 Python，而不是离线包自带运行环境。不要另外拼装 pip 命令；回到本章对应小节，重新设置 `$DirectCli` 或 `DIRECT_CLI`，再使用包内命令。
+这通常表示执行了系统 Python，而不是离线包自带运行环境。不要另外拼装 pip 命令；回到本章对应小节，Windows 重新设置 `$ModulePython` 并使用 `& $ModulePython -m ai_sdlc ...`，macOS/Linux 重新设置 `DIRECT_CLI`。
 
 ### 移动或删除了安装目录
 

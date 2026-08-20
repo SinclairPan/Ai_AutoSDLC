@@ -221,7 +221,7 @@ def run_default_browser_gate_probe(
                 artifact_root_rel=artifact_root_rel,
                 diagnostic_code="playwright_runtime_unavailable",
                 warning=(
-                    "Playwright runtime is not available on this host. Install Playwright and its browsers for this frontend host, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                    "Playwright runtime is not available on this host. Install Playwright and its browsers for this frontend host, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
                 ),
             )
         except subprocess.TimeoutExpired:
@@ -230,7 +230,7 @@ def run_default_browser_gate_probe(
                 artifact_root_rel=artifact_root_rel,
                 diagnostic_code="browser_probe_timeout",
                 warning=(
-                    "Browser gate probe timed out before completion. Confirm the frontend host is ready, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                    "Browser gate probe timed out before completion. Confirm the frontend host is ready, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
                 ),
             )
     stdout = completed.stdout.strip()
@@ -1723,31 +1723,31 @@ def _diagnostic_warning_messages(codes: Iterable[str]) -> list[str]:
     for code in codes:
         if code == "playwright_runtime_unavailable":
             messages.append(
-                "Playwright runtime is not available on this host. Install Playwright and its browsers for this frontend host, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "Playwright runtime is not available on this host. Install Playwright and its browsers for this frontend host, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "browser_launch_failed":
             messages.append(
-                "Browser launch failed before the probe could complete. Restore the frontend browser runtime, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "Browser launch failed before the probe could complete. Restore the frontend browser runtime, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "navigation_failed":
             messages.append(
-                "Browser navigation failed before the probe could complete. Confirm the browser entry exists and is loadable, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "Browser navigation failed before the probe could complete. Confirm the browser entry exists and is loadable, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "browser_entry_unavailable":
             messages.append(
-                "The managed frontend target did not resolve to a loadable browser entry. Materialize a browser entry such as `index.html`, or point the apply artifact at a navigable URL, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "The managed frontend target did not resolve to a loadable browser entry. Materialize a browser entry such as `index.html`, or point the apply artifact at a navigable URL, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "browser_probe_timeout":
             messages.append(
-                "Browser gate probe timed out before completion. Confirm the frontend host is ready, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "Browser gate probe timed out before completion. Confirm the frontend host is ready, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "vite_dev_server_unavailable":
             messages.append(
-                "The generated Vue3 frontend dev server did not become ready. Confirm Vite dependencies are installed in managed/frontend, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "The generated Vue3 frontend dev server did not become ready. Confirm Vite dependencies are installed in managed/frontend, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "playwright_runner_script_missing":
             messages.append(
-                "Playwright probe runner is missing from this installation. Restore the AI-SDLC runner assets, then re-run `uv run ai-sdlc program browser-gate-probe --execute`."
+                "Playwright probe runner is missing from this installation. Restore the AI-SDLC runner assets, then re-run `ai-sdlc loop frontend-evidence capture --execute`."
             )
         elif code == "playwright_probe_evidence_missing":
             messages.append("Shared Playwright artifacts were not fully captured.")
