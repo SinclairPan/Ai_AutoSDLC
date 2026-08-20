@@ -166,8 +166,12 @@ def _write_sealed_test_root(root: Path) -> Path:
     (root / "intent-map.json").write_bytes(intent_bytes)
     runtime = fixture_module.evaluator_python_runtime_identity()
     runtime_sha256 = fixture_module.evaluator_runtime_identity_sha256(runtime)
+    capsule = fixture_module.evaluator_runtime_capsule_manifest(
+        Path(str(runtime["path"])), str(runtime["version"])
+    )
+    capsule_sha256 = fixture_module.evaluator_runtime_capsule_sha256(capsule)
     manifest = {
-        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v3",
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v4",
         "lock_id": "unit-test-only",
         "entries": entries,
         "intent_map": {
@@ -175,6 +179,7 @@ def _write_sealed_test_root(root: Path) -> Path:
             "sha256": sha256(intent_bytes).hexdigest(),
         },
         "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule_sha256": capsule_sha256,
     }
     manifest_bytes = json.dumps(
         manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")
@@ -183,7 +188,7 @@ def _write_sealed_test_root(root: Path) -> Path:
     (root / "candidate-commitments.json").write_text(
         json.dumps(
             {
-                "schema": "ai-sdlc-v2-benefit-candidate-commitments/v2",
+                "schema": "ai-sdlc-v2-benefit-candidate-commitments/v3",
                 "lock_id": "unit-test-only",
                 "source_head": "0" * 40,
                 "source_tree_sha": "1" * 40,
@@ -198,6 +203,8 @@ def _write_sealed_test_root(root: Path) -> Path:
                 "source_root_tree_sha256": "7" * 64,
                 "evaluator_python_runtime": runtime,
                 "evaluator_python_runtime_sha256": runtime_sha256,
+                "evaluator_runtime_capsule": capsule,
+                "evaluator_runtime_capsule_sha256": capsule_sha256,
             },
             sort_keys=True,
             separators=(",", ":"),
@@ -205,6 +212,205 @@ def _write_sealed_test_root(root: Path) -> Path:
         encoding="utf-8",
     )
     return root
+
+
+def _write_test_runtime_capsule(root: Path) -> Path:
+    launcher = root / "bin" / "python3.14"
+    libpython = root / "lib" / "libpython3.14.dylib"
+    stdlib = root / "lib" / "python3.14"
+    dynload = stdlib / "lib-dynload"
+    for directory in (launcher.parent, dynload):
+        directory.mkdir(parents=True, mode=0o755, exist_ok=True)
+    launcher.write_bytes(b"test-launcher")
+    launcher.chmod(0o755)
+    libpython.write_bytes(b"test-libpython")
+    libpython.chmod(0o755)
+    (stdlib / "json.py").write_bytes(b"test-stdlib")
+    (dynload / "_datetime.so").write_bytes(b"test-dynload")
+    return launcher
+
+
+def test_fix_round7_runtime_capsule_binds_actual_dependency_closure() -> None:
+    runtime = fixture_module.evaluator_python_runtime_identity()
+    capsule = fixture_module.evaluator_runtime_capsule_manifest(
+        Path(str(runtime["path"])), str(runtime["version"])
+    )
+    entries = {item["path"]: item for item in capsule["entries"]}
+
+    assert set(capsule) == {
+        "schema",
+        "root",
+        "launcher",
+        "libpython",
+        "stdlib",
+        "dynload",
+        "entries",
+    }
+    assert capsule["launcher"] in entries
+    assert capsule["libpython"] in entries
+    assert capsule["stdlib"] in entries
+    assert capsule["dynload"] in entries
+    assert len(entries) > 100
+    assert all(
+        {
+            "path",
+            "type",
+            "device",
+            "inode",
+            "uid",
+            "gid",
+            "mode",
+            "nlink",
+            "size",
+            "ctime_ns",
+            "mtime_ns",
+        }
+        <= set(item)
+        for item in entries.values()
+    )
+    assert (
+        fixture_module.evaluator_runtime_capsule_sha256(capsule)
+        == sha256(
+            json.dumps(capsule, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+    )
+
+
+def test_fix_round7_capsule_detects_libpython_and_stdlib_drift_with_same_launcher(
+    tmp_path: Path,
+) -> None:
+    launcher = _write_test_runtime_capsule(tmp_path / "runtime")
+    before = fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3")
+    launcher_sha256 = sha256(launcher.read_bytes()).hexdigest()
+
+    libpython = launcher.parents[1] / "lib" / "libpython3.14.dylib"
+    libpython.write_bytes(b"changed-libpython")
+    after_lib = fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3")
+    assert fixture_module.evaluator_runtime_capsule_sha256(
+        after_lib
+    ) != fixture_module.evaluator_runtime_capsule_sha256(before)
+    assert sha256(launcher.read_bytes()).hexdigest() == launcher_sha256
+
+    libpython.write_bytes(b"test-libpython")
+    restored = fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3")
+    stdlib = launcher.parents[1] / "lib" / "python3.14" / "json.py"
+    stdlib.write_bytes(b"changed-stdlib")
+    after_stdlib = fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3")
+    assert fixture_module.evaluator_runtime_capsule_sha256(
+        after_stdlib
+    ) != fixture_module.evaluator_runtime_capsule_sha256(restored)
+    assert sha256(launcher.read_bytes()).hexdigest() == launcher_sha256
+
+
+def test_fix_round7_capsule_fingerprint_rejects_path_replacement_during_read(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "capsule"
+    root.mkdir()
+    target = root / "library.py"
+    target.write_bytes(b"original")
+    displaced = root / "displaced.py"
+    original_read = fixture_module.os.read
+    replaced = False
+
+    def racing_read(descriptor: int, size: int) -> bytes:
+        nonlocal replaced
+        chunk = original_read(descriptor, size)
+        if chunk and not replaced:
+            target.rename(displaced)
+            target.write_bytes(b"replacement")
+            replaced = True
+        return chunk
+
+    monkeypatch.setattr(fixture_module.os, "read", racing_read)
+
+    with pytest.raises(fixture_module.EvaluatorNoGoError, match="capsule-drift"):
+        fixture_module._runtime_capsule_entry(root, target)
+
+
+def test_fix_round7_adapter_revalidates_capsule_after_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = tmp_path / "protected" / "sealed"
+    sealed.mkdir(parents=True)
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source = candidate / "candidate.py"
+    source.write_text("pass\n", encoding="utf-8")
+    capsule = tmp_path / "runtime"
+    capsule.mkdir()
+    before = fixture_module.EvaluatorRuntimeBinding(
+        Path("/test/runtime/python"), capsule, "1" * 64
+    )
+    after = fixture_module.EvaluatorRuntimeBinding(
+        Path("/test/runtime/python"), capsule, "2" * 64
+    )
+    bindings = iter((before, after))
+    monkeypatch.setattr(
+        fixture_module,
+        "_load_bound_evaluator_runtime",
+        lambda *_args: next(bindings),
+    )
+    monkeypatch.setattr(
+        fixture_module,
+        "run_provider_isolated",
+        lambda _profile, argv, **_kwargs: subprocess.CompletedProcess(
+            list(argv), 0, '{"allowed":false,"status":"pending"}', ""
+        ),
+    )
+
+    with pytest.raises(fixture_module.EvaluatorNoGoError, match="capsule-drift"):
+        fixture_module._run_candidate_adapter(
+            candidate, sealed, source=source, scenario={}
+        )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_fix_round7_system_runtime_capsule_is_readable_but_not_writable(
+    tmp_path: Path,
+) -> None:
+    sealed = tmp_path / "protected" / "sealed"
+    control = tmp_path / "control"
+    raw = tmp_path / "raw"
+    run = tmp_path / "run"
+    other = tmp_path / "other"
+    mirror = tmp_path / "runtime-mirror"
+    for path in (sealed, control, raw, run, other):
+        path.mkdir(parents=True)
+    launcher = _write_test_runtime_capsule(mirror)
+    before = fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3")
+    target = mirror / "lib" / "python3.14" / "json.py"
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=(),
+        write_protected_roots=(mirror,),
+        other_run_roots=(other,),
+        argv=("/bin/cat", str(target)),
+        environment={"PATH": "/usr/bin:/bin"},
+    )
+
+    readable = fixture_module.run_provider_isolated(profile, ["/bin/cat", str(target)])
+    attempts = (
+        ["/bin/sh", "-c", f'printf x >> "{target}"'],
+        ["/bin/mv", str(target), str(target.with_name("renamed.py"))],
+        ["/usr/bin/touch", str(mirror / "created.py")],
+        ["/usr/bin/touch", str(mirror / "bin" / "created")],
+        ["/bin/chmod", "0600", str(target)],
+        ["/bin/chmod", "0700", str(mirror)],
+        ["/bin/mv", str(mirror), str(mirror.with_name("runtime-renamed"))],
+    )
+    results = [fixture_module.run_provider_isolated(profile, argv) for argv in attempts]
+    if any("sandbox_apply: Operation not permitted" in item.stderr for item in results):
+        pytest.skip("nested sandbox blocks exact write-only profile")
+
+    assert readable.returncode == 0
+    assert all(item.returncode != 0 for item in results)
+    assert (
+        fixture_module.evaluator_runtime_capsule_manifest(launcher, "3.14.3") == before
+    )
 
 
 def test_fix_round6_runtime_is_external_canonical_and_frozen() -> None:
@@ -1080,6 +1286,14 @@ def test_fix_round5_system_candidate_profile_denies_every_production_git_surface
         candidate=candidate,
         sealed_root=sealed,
         raw_results=raw,
+        runtime_capsule_root=Path(
+            str(
+                fixture_module.evaluator_runtime_capsule_manifest(
+                    fixture_module.EVALUATOR_PYTHON,
+                    str(fixture_module.evaluator_python_runtime_identity()["version"]),
+                )["root"]
+            )
+        ),
         argv=["/usr/bin/true"],
     )
 

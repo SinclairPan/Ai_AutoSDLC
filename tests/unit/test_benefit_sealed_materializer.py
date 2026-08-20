@@ -570,6 +570,16 @@ def _stable_unit_isolation_attestation(
                 "evaluator_python_runtime_sha256": fixture_module.evaluator_runtime_identity_sha256(
                     fixture_module.evaluator_python_runtime_identity()
                 ),
+                "evaluator_runtime_capsule_sha256": fixture_module.evaluator_runtime_capsule_sha256(
+                    fixture_module.evaluator_runtime_capsule_manifest(
+                        fixture_module.EVALUATOR_PYTHON,
+                        str(
+                            fixture_module.evaluator_python_runtime_identity()[
+                                "version"
+                            ]
+                        ),
+                    )
+                ),
                 "profile_sha256": "2" * 64,
                 "checks": {
                     "direct": True,
@@ -580,6 +590,7 @@ def _stable_unit_isolation_attestation(
                     "other_run": True,
                     "add_dir": True,
                     "protected_roots": 2,
+                    "write_protected_roots": 1,
                 },
             }
         ),
@@ -1124,6 +1135,7 @@ def test_fix_round3_system_publication_requires_real_final_path_canary(
         "other_run": True,
         "add_dir": True,
         "protected_roots": 7,
+        "write_protected_roots": 1,
     }
     assert (
         result.file_sha256["isolation-attestation.json"]
@@ -1221,6 +1233,7 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
         "entries",
         "intent_map",
         "evaluator_python_runtime_sha256",
+        "evaluator_runtime_capsule_sha256",
     }
     assert [item["fixture_id"] for item in manifest["entries"]] == list(
         materializer.FIXTURE_IDS
@@ -1259,6 +1272,29 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
     assert runtime_sha256 == manifest["evaluator_python_runtime_sha256"]
     assert runtime_sha256 == commitments["evaluator_python_runtime_sha256"]
     assert runtime_sha256 == receipt["evaluator_python_runtime_sha256"]
+    capsule_sha256 = fixture_module.evaluator_runtime_capsule_sha256(
+        commitments["evaluator_runtime_capsule"]
+    )
+    assert capsule_sha256 == manifest["evaluator_runtime_capsule_sha256"]
+    assert capsule_sha256 == commitments["evaluator_runtime_capsule_sha256"]
+    assert capsule_sha256 == receipt["evaluator_runtime_capsule_sha256"]
+
+
+def test_fix_round7_final_profile_write_protects_runtime_capsule(
+    tmp_path: Path,
+) -> None:
+    policy = _default_policy_with_test_canary_roots(tmp_path)
+    profile = materializer._build_final_isolation_profile(policy)
+    capsule = fixture_module.evaluator_runtime_capsule_manifest(
+        fixture_module.EVALUATOR_PYTHON,
+        str(fixture_module.evaluator_python_runtime_identity()["version"]),
+    )
+
+    assert Path(str(capsule["root"])) in profile.write_protected_roots
+    assert f'(deny file-write* (subpath "{capsule["root"]}"))' in profile.sandbox_text
+    assert f'(deny file-read* file-write* (subpath "{capsule["root"]}"))' not in (
+        profile.sandbox_text
+    )
 
 
 def test_fix_round6_production_target_is_monotonic_r2_and_refuses_r1() -> None:

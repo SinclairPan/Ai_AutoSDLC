@@ -63,6 +63,30 @@ _RUNTIME_COMMITMENT_KEYS = {
     "source_root_tree_sha256",
     "evaluator_python_runtime",
     "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule",
+    "evaluator_runtime_capsule_sha256",
+}
+_RUNTIME_CAPSULE_KEYS = {
+    "schema",
+    "root",
+    "launcher",
+    "libpython",
+    "stdlib",
+    "dynload",
+    "entries",
+}
+_RUNTIME_CAPSULE_ENTRY_KEYS = {
+    "path",
+    "type",
+    "device",
+    "inode",
+    "uid",
+    "gid",
+    "mode",
+    "nlink",
+    "size",
+    "ctime_ns",
+    "mtime_ns",
 }
 _SEALED_PHRASE_MARKERS = (
     "SEALED_RUBRIC_PHRASE",
@@ -162,6 +186,7 @@ class ProviderIsolationProfile:
     control_root: Path
     raw_results_root: Path
     protected_roots: tuple[Path, ...]
+    write_protected_roots: tuple[Path, ...]
     other_run_roots: tuple[Path, ...]
     argv: tuple[str, ...]
     environment: Mapping[str, str]
@@ -188,6 +213,13 @@ class EvaluatorNoGoError(RuntimeError):
     def __init__(self, code: str) -> None:
         self.code = code
         super().__init__(code)
+
+
+@dataclass(frozen=True)
+class EvaluatorRuntimeBinding:
+    executable: Path
+    capsule_root: Path
+    capsule_sha256: str
 
 
 _BROWSER_PROGRAM_KEYS = {"schema", "scenarios"}
@@ -816,6 +848,169 @@ def evaluator_python_runtime_identity(
         json.JSONDecodeError,
     ) as error:
         raise EvaluatorNoGoError("runtime-identity") from error
+
+
+def _runtime_capsule_entry(root: Path, path: Path) -> Mapping[str, object]:
+    try:
+        metadata = path.lstat()
+        canonical = path.resolve(strict=True)
+        if (
+            canonical != path
+            or stat.S_ISLNK(metadata.st_mode)
+            or not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode))
+            or metadata.st_uid not in {0, os.geteuid()}
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-security")
+        record: dict[str, object] = {
+            "path": "." if path == root else path.relative_to(root).as_posix(),
+            "type": "directory" if stat.S_ISDIR(metadata.st_mode) else "file",
+            "device": metadata.st_dev,
+            "inode": metadata.st_ino,
+            "uid": metadata.st_uid,
+            "gid": metadata.st_gid,
+            "mode": stat.S_IMODE(metadata.st_mode),
+            "nlink": metadata.st_nlink,
+            "size": metadata.st_size,
+            "ctime_ns": metadata.st_ctime_ns,
+            "mtime_ns": metadata.st_mtime_ns,
+        }
+        if stat.S_ISREG(metadata.st_mode):
+            descriptor = os.open(
+                path, os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                opened = os.fstat(descriptor)
+                digest = sha256()
+                while chunk := os.read(descriptor, 1024 * 1024):
+                    digest.update(chunk)
+                closed = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            stable = (
+                metadata.st_dev,
+                metadata.st_ino,
+                metadata.st_mode,
+                metadata.st_uid,
+                metadata.st_gid,
+                metadata.st_nlink,
+                metadata.st_size,
+                metadata.st_ctime_ns,
+                metadata.st_mtime_ns,
+            )
+            if stable != (
+                opened.st_dev,
+                opened.st_ino,
+                opened.st_mode,
+                opened.st_uid,
+                opened.st_gid,
+                opened.st_nlink,
+                opened.st_size,
+                opened.st_ctime_ns,
+                opened.st_mtime_ns,
+            ) or stable != (
+                closed.st_dev,
+                closed.st_ino,
+                closed.st_mode,
+                closed.st_uid,
+                closed.st_gid,
+                closed.st_nlink,
+                closed.st_size,
+                closed.st_ctime_ns,
+                closed.st_mtime_ns,
+            ):
+                raise EvaluatorNoGoError("runtime-capsule-drift")
+            record["sha256"] = digest.hexdigest()
+        return record
+    except EvaluatorNoGoError:
+        raise
+    except (OSError, ValueError) as error:
+        raise EvaluatorNoGoError("runtime-capsule-security") from error
+
+
+def evaluator_runtime_capsule_sha256(capsule: Mapping[str, object]) -> str:
+    """Return the digest of one closed canonical runtime dependency capsule."""
+    if set(capsule) != _RUNTIME_CAPSULE_KEYS:
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    entries = capsule.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    paths: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, Mapping):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        expected = _RUNTIME_CAPSULE_ENTRY_KEYS | (
+            {"sha256"} if entry.get("type") == "file" else set()
+        )
+        if set(entry) != expected or not isinstance(entry.get("path"), str):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        paths.append(str(entry["path"]))
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        raise EvaluatorNoGoError("runtime-capsule-binding")
+    return sha256(_canonical_json_bytes(capsule)).hexdigest()
+
+
+def evaluator_runtime_capsule_manifest(
+    runtime_path: Path,
+    python_version: str,
+    *,
+    expected_sha256: str | None = None,
+) -> Mapping[str, object]:
+    """Fingerprint the launcher, libpython and complete stdlib dependency closure."""
+    try:
+        runtime = runtime_path.resolve(strict=True)
+        if runtime != runtime_path:
+            raise EvaluatorNoGoError("runtime-capsule-security")
+        version_parts = python_version.split(".")
+        if (
+            len(version_parts) < 2
+            or not version_parts[0].isdigit()
+            or not version_parts[1].isdigit()
+        ):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        abi = f"{version_parts[0]}.{version_parts[1]}"
+        root = runtime.parent.parent
+        libpython = root / "lib" / f"libpython{abi}.dylib"
+        stdlib = root / "lib" / f"python{abi}"
+        dynload = stdlib / "lib-dynload"
+        required = (
+            root,
+            runtime.parent,
+            runtime,
+            root / "lib",
+            libpython,
+            stdlib,
+            dynload,
+        )
+        paths = set(required)
+        for item in stdlib.rglob("*"):
+            paths.add(item)
+        entries = [
+            _runtime_capsule_entry(root, item)
+            for item in sorted(
+                paths,
+                key=lambda value: (
+                    "." if value == root else value.relative_to(root).as_posix()
+                ),
+            )
+        ]
+        capsule: Mapping[str, object] = {
+            "schema": "ai-sdlc-v2-benefit-runtime-capsule/v1",
+            "root": str(root),
+            "launcher": runtime.relative_to(root).as_posix(),
+            "libpython": libpython.relative_to(root).as_posix(),
+            "stdlib": stdlib.relative_to(root).as_posix(),
+            "dynload": dynload.relative_to(root).as_posix(),
+            "entries": entries,
+        }
+        digest = evaluator_runtime_capsule_sha256(capsule)
+        if expected_sha256 is not None and digest != expected_sha256:
+            raise EvaluatorNoGoError("runtime-capsule-drift")
+        return capsule
+    except EvaluatorNoGoError:
+        raise
+    except (OSError, ValueError) as error:
+        raise EvaluatorNoGoError("runtime-capsule-security") from error
 
 
 def _tree_digest(root: Path) -> str:
@@ -1486,6 +1681,7 @@ def _load_sealed_payload(fixture_id: str, sealed_root: Path) -> Mapping[str, obj
                 "entries",
                 "intent_map",
                 "evaluator_python_runtime_sha256",
+                "evaluator_runtime_capsule_sha256",
             }
         ),
     }:
@@ -1495,6 +1691,7 @@ def _load_sealed_payload(fixture_id: str, sealed_root: Path) -> Mapping[str, obj
         "ai-sdlc-v2-benefit-sealed-manifest/v1",
         "ai-sdlc-v2-benefit-sealed-manifest/v2",
         "ai-sdlc-v2-benefit-sealed-manifest/v3",
+        "ai-sdlc-v2-benefit-sealed-manifest/v4",
     }:
         raise ValueError("sealed manifest schema is invalid")
     entries = manifest["entries"]
@@ -1597,7 +1794,9 @@ print(json.dumps({"allowed":getattr(result,"allowed",None),"reason":getattr(resu
 """
 
 
-def _load_bound_evaluator_runtime(sealed_root: Path, candidate: Path) -> Path:
+def _load_bound_evaluator_runtime(
+    sealed_root: Path, candidate: Path
+) -> EvaluatorRuntimeBinding:
     """Revalidate the exact external runtime committed by the sealed compiler."""
     try:
         manifest_path = sealed_root / "sealed-manifest.json"
@@ -1614,12 +1813,13 @@ def _load_bound_evaluator_runtime(sealed_root: Path, candidate: Path) -> Path:
                 "entries",
                 "intent_map",
                 "evaluator_python_runtime_sha256",
+                "evaluator_runtime_capsule_sha256",
             }
-            or manifest.get("schema") != "ai-sdlc-v2-benefit-sealed-manifest/v3"
+            or manifest.get("schema") != "ai-sdlc-v2-benefit-sealed-manifest/v4"
             or not isinstance(commitments, Mapping)
             or set(commitments) != _RUNTIME_COMMITMENT_KEYS
             or commitments.get("schema")
-            != "ai-sdlc-v2-benefit-candidate-commitments/v2"
+            != "ai-sdlc-v2-benefit-candidate-commitments/v3"
             or commitments.get("lock_id") != manifest.get("lock_id")
             or commitments.get("sealed_manifest_sha256")
             != sha256(manifest_bytes).hexdigest()
@@ -1633,6 +1833,14 @@ def _load_bound_evaluator_runtime(sealed_root: Path, candidate: Path) -> Path:
             "evaluator_python_runtime_sha256"
         ) or commitment != manifest.get("evaluator_python_runtime_sha256"):
             raise EvaluatorNoGoError("runtime-binding")
+        capsule = commitments.get("evaluator_runtime_capsule")
+        if not isinstance(capsule, Mapping):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        capsule_commitment = evaluator_runtime_capsule_sha256(capsule)
+        if capsule_commitment != commitments.get(
+            "evaluator_runtime_capsule_sha256"
+        ) or capsule_commitment != manifest.get("evaluator_runtime_capsule_sha256"):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
         runtime_path = identity.get("path")
         runtime_sha256 = identity.get("sha256")
         if not isinstance(runtime_path, str) or not isinstance(runtime_sha256, str):
@@ -1648,7 +1856,19 @@ def _load_bound_evaluator_runtime(sealed_root: Path, candidate: Path) -> Path:
         )
         if current != identity:
             raise EvaluatorNoGoError("runtime-identity")
-        return Path(runtime_path)
+        current_capsule = evaluator_runtime_capsule_manifest(
+            Path(runtime_path),
+            str(identity.get("version")),
+            expected_sha256=capsule_commitment,
+        )
+        if current_capsule != capsule:
+            raise EvaluatorNoGoError("runtime-capsule-drift")
+        capsule_root = current_capsule.get("root")
+        if not isinstance(capsule_root, str):
+            raise EvaluatorNoGoError("runtime-capsule-binding")
+        return EvaluatorRuntimeBinding(
+            Path(runtime_path), Path(capsule_root), capsule_commitment
+        )
     except EvaluatorNoGoError:
         raise
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
@@ -1660,6 +1880,7 @@ def _build_candidate_isolation_profile(
     candidate: Path,
     sealed_root: Path,
     raw_results: Path,
+    runtime_capsule_root: Path,
     argv: Sequence[str],
 ) -> ProviderIsolationProfile:
     control_root = _BENCHMARK_ROOT.parent.parent
@@ -1673,6 +1894,7 @@ def _build_candidate_isolation_profile(
         environment={"PATH": os.environ.get("PATH", "")},
         raw_results_root=raw_results,
         protected_roots=git_surfaces,
+        write_protected_roots=(runtime_capsule_root,),
     )
 
 
@@ -1687,7 +1909,7 @@ def _run_candidate_adapter(
         raise EvaluatorNoGoError("adapter-platform")
     runtime = _load_bound_evaluator_runtime(sealed_root, candidate)
     argv = [
-        str(runtime),
+        str(runtime.executable),
         "-I",
         "-c",
         _SECURITY_ADAPTER,
@@ -1700,6 +1922,7 @@ def _run_candidate_adapter(
         candidate=candidate,
         sealed_root=sealed_root,
         raw_results=raw_results,
+        runtime_capsule_root=runtime.capsule_root,
         argv=argv,
     )
     if not profile.executable:
@@ -1720,6 +1943,9 @@ def _run_candidate_adapter(
         raise EvaluatorNoGoError("adapter-output") from None
     if not isinstance(parsed, Mapping) or "adapter_error" in parsed:
         raise EvaluatorNoGoError("adapter-output")
+    rebound = _load_bound_evaluator_runtime(sealed_root, candidate)
+    if rebound != runtime:
+        raise EvaluatorNoGoError("runtime-capsule-drift")
     return parsed
 
 
@@ -2640,6 +2866,24 @@ def _deny_rule_for_protected_root(
     return None
 
 
+def _deny_write_rule_for_root(
+    root: Path, *, index: int, issues: list[BenchmarkIssue]
+) -> str | None:
+    try:
+        metadata = root.lstat()
+    except OSError:
+        issues.append(
+            BenchmarkIssue("isolation.write-root-scan", f"write-root-{index}")
+        )
+        return None
+    if not stat.S_ISDIR(metadata.st_mode):
+        issues.append(
+            BenchmarkIssue("isolation.write-root-type", f"write-root-{index}")
+        )
+        return None
+    return f'  (deny file-write* (subpath "{_seatbelt_literal(root)}"))'
+
+
 def build_provider_isolation_profile(
     *,
     run_root: Path,
@@ -2650,6 +2894,7 @@ def build_provider_isolation_profile(
     environment: Mapping[str, str],
     raw_results_root: Path,
     protected_roots: Sequence[Path] = (),
+    write_protected_roots: Sequence[Path] = (),
 ) -> ProviderIsolationProfile:
     """Create a fail-closed macOS Provider profile plus link/env/add-dir preflight."""
     run = run_root.resolve(strict=True)
@@ -2662,6 +2907,18 @@ def build_provider_isolation_profile(
         _resolve_extra_protected_root(Path(path), index=index, issues=issues)
         for index, path in enumerate(protected_roots)
     )
+    write_protected = tuple(
+        _resolve_extra_protected_root(Path(path), index=index, issues=issues)
+        for index, path in enumerate(write_protected_roots)
+    )
+    for index, root in enumerate(write_protected):
+        try:
+            if not stat.S_ISDIR(root.lstat().st_mode):
+                raise OSError("write protection root is not a directory")
+        except OSError:
+            issues.append(
+                BenchmarkIssue("isolation.write-root-type", f"write-root-{index}")
+            )
     protected = tuple(
         dict.fromkeys(
             (
@@ -2685,6 +2942,17 @@ def build_provider_isolation_profile(
             issues.append(BenchmarkIssue("isolation.root-overlap", "protected-in-run"))
         except ValueError:
             pass
+    for root in write_protected:
+        try:
+            run.relative_to(root)
+            issues.append(BenchmarkIssue("isolation.root-overlap", "run-in-write-root"))
+        except ValueError:
+            pass
+        try:
+            root.relative_to(run)
+            issues.append(BenchmarkIssue("isolation.root-overlap", "write-root-in-run"))
+        except ValueError:
+            pass
     for key, value in environment.items():
         if key != "PATH" and _contains_path(value, protected):
             issues.append(BenchmarkIssue("isolation.environment", key))
@@ -2697,7 +2965,13 @@ def build_provider_isolation_profile(
         if (rule := _deny_rule_for_protected_root(path, index=index, issues=issues))
         is not None
     )
-    sandbox_text = f"(version 1)\n(allow default)\n{deny_rules}\n"
+    write_deny_rules = "\n".join(
+        rule
+        for index, path in enumerate(write_protected)
+        if (rule := _deny_write_rule_for_root(path, index=index, issues=issues))
+        is not None
+    )
+    sandbox_text = f"(version 1)\n(allow default)\n{deny_rules}\n{write_deny_rules}\n"
     executable = sys.platform == "darwin" and not issues
     return ProviderIsolationProfile(
         run_root=run,
@@ -2705,6 +2979,7 @@ def build_provider_isolation_profile(
         control_root=control,
         raw_results_root=raw_results,
         protected_roots=extra_protected,
+        write_protected_roots=write_protected,
         other_run_roots=other,
         argv=tuple(argv),
         environment={"PATH": environment.get("PATH", "")},
@@ -2730,6 +3005,7 @@ def run_provider_isolated(
         control_root=profile.control_root,
         raw_results_root=profile.raw_results_root,
         protected_roots=profile.protected_roots,
+        write_protected_roots=profile.write_protected_roots,
         other_run_roots=profile.other_run_roots,
         argv=argv,
         environment=requested_environment,

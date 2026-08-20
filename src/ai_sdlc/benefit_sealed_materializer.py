@@ -32,6 +32,8 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     derive_repo_git_surfaces,
     evaluate_fixture,
     evaluator_python_runtime_identity,
+    evaluator_runtime_capsule_manifest,
+    evaluator_runtime_capsule_sha256,
     evaluator_runtime_identity_sha256,
     load_fixture_manifest,
     prepare_fixture,
@@ -139,6 +141,8 @@ CANDIDATE_COMMITMENT_KEYS = {
     "source_root_tree_sha256",
     "evaluator_python_runtime",
     "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule",
+    "evaluator_runtime_capsule_sha256",
 }
 RECEIPT_KEYS = {
     "schema",
@@ -158,6 +162,7 @@ RECEIPT_KEYS = {
     "isolation_probe_state",
     "source_root_tree_sha256",
     "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule_sha256",
 }
 
 
@@ -1171,6 +1176,10 @@ def compile_source_bundle(
             )
         )
         runtime_sha256 = evaluator_runtime_identity_sha256(runtime_identity)
+        runtime_capsule = evaluator_runtime_capsule_manifest(
+            Path(str(runtime_identity["path"])), str(runtime_identity["version"])
+        )
+        runtime_capsule_sha256 = evaluator_runtime_capsule_sha256(runtime_capsule)
     except EvaluatorNoGoError as error:
         raise MaterializationError("runtime-identity") from error
     intent_bytes = _canonical_json_bytes(source["intent_map"])
@@ -1187,16 +1196,17 @@ def compile_source_bundle(
         payload_commitments.append({"fixture_id": fixture_id, "sha256": digest})
     intent_sha = _digest_bytes(intent_bytes)
     manifest = {
-        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v3",
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v4",
         "lock_id": policy.target.name,
         "entries": entries,
         "intent_map": {"path": "intent-map.json", "sha256": intent_sha},
         "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule_sha256": runtime_capsule_sha256,
     }
     manifest_bytes = _canonical_json_bytes(manifest)
     files["sealed-manifest.json"] = manifest_bytes
     commitments = {
-        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v2",
+        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v3",
         "lock_id": policy.target.name,
         "source_head": bindings.source_head,
         "source_tree_sha": bindings.source_tree_sha,
@@ -1211,11 +1221,13 @@ def compile_source_bundle(
         "source_root_tree_sha256": source_root_tree_sha256,
         "evaluator_python_runtime": runtime_identity,
         "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule": runtime_capsule,
+        "evaluator_runtime_capsule_sha256": runtime_capsule_sha256,
     }
     commitment_bytes = _canonical_json_bytes(commitments)
     files["candidate-commitments.json"] = commitment_bytes
     receipt = {
-        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v2",
+        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v3",
         "publication_state": "published-pending-isolation",
         "isolation_probe_state": "pending",
         "target_lock_id": policy.target.name,
@@ -1232,6 +1244,7 @@ def compile_source_bundle(
         "candidate_commitments_sha256": _digest_bytes(commitment_bytes),
         "source_root_tree_sha256": source_root_tree_sha256,
         "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule_sha256": runtime_capsule_sha256,
     }
     files["materialization-receipt.json"] = _canonical_json_bytes(receipt)
     if tuple(files) != _OUTPUT_ORDER:
@@ -1269,7 +1282,7 @@ def _validate_candidate_commitments(
             for fixture_id in FIXTURE_IDS
         ]
         if (
-            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v2"
+            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v3"
             or raw["lock_id"] != manifest["lock_id"]
             or raw["sealed_manifest_sha256"] != _digest_bytes(manifest_bytes)
             or raw["intent_map_sha256"] != _digest_file(root / "intent-map.json")
@@ -1287,6 +1300,12 @@ def _validate_candidate_commitments(
             != manifest["evaluator_python_runtime_sha256"]
             or receipt["evaluator_python_runtime_sha256"]
             != raw["evaluator_python_runtime_sha256"]
+            or evaluator_runtime_capsule_sha256(raw["evaluator_runtime_capsule"])
+            != raw["evaluator_runtime_capsule_sha256"]
+            or raw["evaluator_runtime_capsule_sha256"]
+            != manifest["evaluator_runtime_capsule_sha256"]
+            or receipt["evaluator_runtime_capsule_sha256"]
+            != raw["evaluator_runtime_capsule_sha256"]
         ):
             raise MaterializationError("candidate-commitments")
     except MaterializationError:
@@ -1720,6 +1739,12 @@ def _build_final_isolation_profile(
     policy: MaterializerPolicy,
 ) -> ProviderIsolationProfile:
     git_surfaces = derive_repo_git_surfaces(policy.repo_root)
+    runtime_identity = evaluator_python_runtime_identity(
+        forbidden_roots=(policy.repo_root, policy.target)
+    )
+    runtime_capsule = evaluator_runtime_capsule_manifest(
+        Path(str(runtime_identity["path"])), str(runtime_identity["version"])
+    )
     protected_roots = (
         *git_surfaces,
         policy.source_root,
@@ -1733,6 +1758,7 @@ def _build_final_isolation_profile(
         control_root=policy.repo_root,
         raw_results_root=policy.raw_results_root,
         protected_roots=protected_roots,
+        write_protected_roots=(Path(str(runtime_capsule["root"])),),
         other_run_roots=policy.other_run_roots,
         argv=("/usr/bin/true",),
         environment={"PATH": os.environ.get("PATH", "")},
@@ -1744,6 +1770,7 @@ def _run_final_isolation_canary(
     *,
     pending_receipt_sha256: str,
     evaluator_python_runtime_sha256: str | None = None,
+    expected_runtime_capsule_sha256: str | None = None,
 ) -> bytes:
     for root in (
         policy.canary_run_root,
@@ -1753,7 +1780,7 @@ def _run_final_isolation_canary(
         _assert_private_directory(root, "isolation-root")
     try:
         profile = _build_final_isolation_profile(policy)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, EvaluatorNoGoError) as error:
         raise MaterializationError("isolation-profile") from error
     if not profile.executable or profile.issues:
         raise MaterializationError("isolation-profile")
@@ -1768,10 +1795,18 @@ def _run_final_isolation_canary(
             )
         )
         current_runtime_sha256 = evaluator_runtime_identity_sha256(current_runtime)
+        current_capsule = evaluator_runtime_capsule_manifest(
+            Path(str(current_runtime["path"])), str(current_runtime["version"])
+        )
+        current_capsule_sha256 = evaluator_runtime_capsule_sha256(current_capsule)
         if evaluator_python_runtime_sha256 is None:
             evaluator_python_runtime_sha256 = current_runtime_sha256
         if current_runtime_sha256 != evaluator_python_runtime_sha256:
             raise MaterializationError("runtime-identity")
+        if expected_runtime_capsule_sha256 is None:
+            expected_runtime_capsule_sha256 = current_capsule_sha256
+        if current_capsule_sha256 != expected_runtime_capsule_sha256:
+            raise MaterializationError("runtime-capsule-drift")
     except EvaluatorNoGoError as error:
         raise MaterializationError("runtime-identity") from error
     try:
@@ -1796,6 +1831,7 @@ def _run_final_isolation_canary(
                 "sandbox_text": profile.sandbox_text,
                 "argv": list(profile.argv),
                 "protected_root_count": len(profile.protected_roots),
+                "write_protected_root_count": len(profile.write_protected_roots),
                 "other_run_root_count": len(profile.other_run_roots),
             }
         )
@@ -1806,6 +1842,7 @@ def _run_final_isolation_canary(
             "state": "validated",
             "pending_receipt_sha256": pending_receipt_sha256,
             "evaluator_python_runtime_sha256": evaluator_python_runtime_sha256,
+            "evaluator_runtime_capsule_sha256": expected_runtime_capsule_sha256,
             "profile_sha256": profile_sha256,
             "checks": {
                 "direct": probe.direct,
@@ -1816,6 +1853,7 @@ def _run_final_isolation_canary(
                 "other_run": probe.other_run,
                 "add_dir": probe.add_dir,
                 "protected_roots": len(probe.protected_root_results),
+                "write_protected_roots": len(profile.write_protected_roots),
             },
         }
     )
@@ -2001,6 +2039,9 @@ def _publish_compiled(
             evaluator_python_runtime_sha256=json.loads(
                 compiled.files["candidate-commitments.json"]
             )["evaluator_python_runtime_sha256"],
+            expected_runtime_capsule_sha256=json.loads(
+                compiled.files["candidate-commitments.json"]
+            )["evaluator_runtime_capsule_sha256"],
         )
         attestation_sha256 = _write_final_attestation(
             parent_fd,

@@ -362,3 +362,36 @@ git diff --check: clean
 完整 scratch 的耗时包含冻结的两次 frontend baseline timeout；两者均按预期 fail closed。独立 security 专项证明六个 Oracle 在两套 fresh candidate 上都由同一仓外冻结 runtime 真实执行，结果 byte-stable 且 baseline non-delivery，不含 `adapter_error`。
 
 最终只读门禁：invalid r1 inode `402612600`、identity-tree SHA256 `9701e5fa4ebc55aeb2911d8eee8c97af9b618a9bfeac48ac8d9bfcfa8144dc30` 未变；r2 target absent；tracked protocol 四项均为 `pending-unbound`；Provider、`codex exec`、experiment arm 调用为 `0`。本轮未重试 materialize，未删除或替换 r1，未修改 external source、旧 root 或 stale raw-results canary。
+
+## Fix Round 7：冻结 Python 运行时依赖胶囊并阻断候选写入
+
+### Critical 与 fresh RED
+
+- Fix 基线：`4851ba2ee605295ec38e3f15d0f7ed6a25c2f77b`，起点 clean。
+- FixR6 只冻结了 49,968-byte launcher；macOS `@rpath/libpython3.14.dylib`、完整 stdlib、`lib-dynload` 与 import machinery 未纳入承诺。旧 Seatbelt profile 也未禁止候选修改这些仓外、用户可写的依赖，因此存在“launcher 身份不变、解释器语义已变”的 Critical 空隙。
+- 六项 FixR7 focused 测试先在旧实现上真实 RED：依赖闭包与 closed metadata 缺失、libpython/stdlib 漂移不可见、adapter 无 post-launch 复验、runtime mirror 可写、最终 profile 无 runtime write-only deny，以及材料化产物未绑定 capsule。
+
+### Closed capsule、双向复验与 write-only isolation
+
+- 从冻结 launcher 与 Python major/minor 派生 canonical runtime prefix、`libpython`、stdlib、`lib-dynload`，并对完整 stdlib tree 建立排序、无重复、closed canonical manifest。每项绑定 relative path、type、device、inode、uid、gid、mode、nlink、size、ctime_ns、mtime_ns，regular file 另绑定 SHA256；读取前后的 `lstat` / `fstat` 不一致立即 NO-GO。
+- sealed manifest v4、candidate commitments v3、materialization receipt v3 与 isolation attestation 贯穿绑定 capsule digest；candidate commitments 保存完整 closed capsule，评估端同时复核 manifest、commitments 与当前实际依赖树。
+- 每次 security adapter launch 前加载并复算 capsule，launch 后再次从 sealed commitments 独立加载、复算并比较。任何 launcher、libpython、stdlib、dynload 或 metadata 漂移均抛出 `EvaluatorNoGoError`，整轮 NO-GO；FixR6 的 adapter nonzero/71/timeout/parse error 硬阻断保持不变。
+- candidate、通用 provider 与 final materializer profile 对 runtime capsule root 添加 `file-write*` deny，同时保留 read/exec；`run_provider_isolated` 刷新 profile 时继续携带该 write-only surface。普通 protected roots 的 read/write deny、Git surfaces、r1/r2/disposition/source 合同均未削弱。
+- system-outside 临时 runtime mirror 使用同一生产 profile 验证：依赖读取成功，而 append、内部 rename、root/bin create、file/root chmod、root rename 全部被 macOS Seatbelt 拒绝；前后 capsule manifest byte-equivalent。另有读中 path replacement 回归，证明被打开 inode 或路径 metadata 漂移不能静默通过。
+
+### FixR7 门禁
+
+```text
+fresh RED: 6 failed
+FixR7 focused: 5 passed, 1 nested-sandbox skip
+fixture + materializer related: 125 passed, 11 skipped
+benefit + fixture + materializer related: 488 passed, 11 skipped
+system-outside runtime mirror + six security oracles × two fresh + exact Git surfaces: 3 passed in 6.29s
+system-outside strengthened runtime mirror: 1 passed in 0.32s
+system-outside complete Chrome + Seatbelt scratch: 1 passed in 250.34s
+Ruff check: All checks passed
+Ruff format: 4 files already formatted
+git diff --check: clean
+```
+
+完整 scratch 继续包含两次冻结 frontend baseline timeout，均按原合同 fail closed；六个 security Oracle 均经同一 capsule-bound 仓外 runtime 真实执行，无 `adapter_error`。本轮仍未准备或物化 r2，未触碰 invalid r1、任何 source、旧 root、stale canary 或 protocol；Provider、`codex exec`、experiment arm 调用保持 `0`。
