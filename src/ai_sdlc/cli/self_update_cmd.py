@@ -576,23 +576,25 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
 
 
 def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
-    try:
-        requested_launcher = Path(sys.argv[0])
-        if requested_launcher.is_symlink():
-            raise SelfUpdateError("the active Windows launcher must not be a link")
-        launcher = requested_launcher.resolve(strict=True)
-        python_dir = Path(sys.executable).resolve(strict=True).parent
-    except OSError as exc:
-        raise SelfUpdateError("cannot resolve the active Windows runtime") from exc
+    launcher = Path(os.path.abspath(sys.argv[0]))
+    if launcher.is_symlink():
+        raise SelfUpdateError("the active Windows launcher must not be a link")
+    if not launcher.is_file():
+        raise SelfUpdateError("the active Windows launcher is not a file")
+
+    runtime_python = Path(os.path.abspath(sys.executable))
+    if not runtime_python.is_file():
+        raise SelfUpdateError("the active Windows Python runtime is not a file")
+    python_dir = runtime_python.parent
 
     launcher_name = launcher.name.lower()
     allowed_dirs = {
-        os.path.normcase(str(python_dir)),
-        os.path.normcase(str(python_dir / "Scripts")),
+        _windows_path_key(python_dir),
+        _windows_path_key(python_dir / "Scripts"),
     }
     if launcher_name not in _WINDOWS_LAUNCHER_NAMES:
         raise SelfUpdateError("the active Windows command is not ai-sdlc.exe")
-    if os.path.normcase(str(launcher.parent)) in allowed_dirs:
+    if _windows_path_key(launcher.parent) in allowed_dirs:
         return launcher, _release_windows_runtime_launcher(launcher)
 
     marker = launcher.with_name("ai-sdlc-runtime.txt")
@@ -602,13 +604,25 @@ def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
         marker_lines = marker.read_text(encoding="utf-8").splitlines()
         if len(marker_lines) != 1 or not marker_lines[0].strip():
             raise SelfUpdateError("the Windows runtime marker is malformed")
-        marked_python = Path(marker_lines[0].strip()).resolve(strict=True)
-        runtime_python = Path(sys.executable).resolve(strict=True)
+        marked_python = Path(os.path.abspath(marker_lines[0].strip()))
     except OSError as exc:
         raise SelfUpdateError("cannot resolve the Windows runtime marker") from exc
-    if os.path.normcase(str(marked_python)) != os.path.normcase(str(runtime_python)):
+    if not marked_python.is_file():
+        raise SelfUpdateError("the Windows runtime marker target is not a file")
+    if _windows_path_key(marked_python) != _windows_path_key(runtime_python):
         raise SelfUpdateError("the Windows runtime marker does not match this runtime")
     return launcher, None
+
+
+def _windows_path_key(path: Path) -> str:
+    """生成非严格路径键，避免解析正在运行的 Windows 可执行文件。"""
+
+    absolute = os.path.abspath(os.fspath(path))
+    try:
+        canonical = os.path.realpath(absolute)
+    except OSError as exc:
+        raise SelfUpdateError("cannot normalize the Windows runtime path") from exc
+    return os.path.normcase(canonical)
 
 
 def _release_windows_runtime_launcher(launcher: Path) -> Path:

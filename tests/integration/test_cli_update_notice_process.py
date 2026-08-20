@@ -816,6 +816,65 @@ def test_external_windows_launcher_requires_matching_runtime_marker(
         self_update_cmd._prepare_windows_launcher_update()
 
 
+def test_runtime_owned_windows_launcher_does_not_require_strict_resolve(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    scripts = tmp_path / "运行 时" / "Scripts"
+    scripts.mkdir(parents=True)
+    runtime = scripts / "python.exe"
+    runtime.write_bytes(b"python")
+    launcher = scripts / "ai-sdlc.exe"
+    launcher.write_bytes(b"launcher")
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        self_update_cmd.sys,
+        "argv",
+        [str(launcher.relative_to(tmp_path)), "status"],
+    )
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
+    monkeypatch.setattr(
+        Path,
+        "resolve",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("strict resolve is unavailable for the live launcher")
+        ),
+    )
+
+    prepared, backup = self_update_cmd._prepare_windows_launcher_update()
+
+    assert prepared == launcher
+    assert backup is not None
+    assert backup.is_file()
+    assert not launcher.exists()
+
+
+@pytest.mark.parametrize("missing_runtime", [False, True])
+def test_windows_launcher_file_validation_fails_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_runtime: bool,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    scripts = tmp_path / "runtime" / "Scripts"
+    scripts.mkdir(parents=True)
+    runtime = scripts / "python.exe"
+    launcher = scripts / "ai-sdlc.exe"
+    if missing_runtime:
+        launcher.write_bytes(b"launcher")
+    else:
+        runtime.write_bytes(b"python")
+        launcher.mkdir()
+    monkeypatch.setattr(self_update_cmd.sys, "argv", [str(launcher), "status"])
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
+
+    with pytest.raises(self_update_cmd.SelfUpdateError):
+        self_update_cmd._prepare_windows_launcher_update()
+
+
 def test_windows_launcher_cleanup_never_receives_replay_handoff(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
