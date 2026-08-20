@@ -128,40 +128,50 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
             )
 
         state, channel, platform = route_id.split("|")
-        required_text = [
-            "ai-sdlc",
-            "-m ai_sdlc",
-            "当前结果 / Result",
-            "下一步 / Next",
-        ]
-        if state == "new":
-            required_text.append("init .")
-        else:
-            required_text.extend(("init .", "adopt ."))
+        installer_name, path_flag = {
+            ("online", "windows-amd64"): ("install_online.ps1", "-AddToPath"),
+            ("online", "macos-arm64"): ("install_online.sh", "--add-to-path"),
+            ("online", "linux-amd64"): ("install_online.sh", "--add-to-path"),
+            ("offline", "windows-amd64"): ("install_offline.ps1", "-AddToPath"),
+            ("offline", "macos-arm64"): ("install_offline.sh", "--add-to-path"),
+            ("offline", "linux-amd64"): ("install_offline.sh", "--add-to-path"),
+        }[(channel, platform)]
+        step_requirements: dict[str, tuple[str, ...]] = {
+            "prerequisites": (platform,),
+            "acquire": (installer_name,),
+            "install": (installer_name, path_flag),
+            "initialize": ("ai-sdlc", "-m ai_sdlc", "init ."),
+            "success": ("当前结果 / Result", "下一步 / Next"),
+        }
         if channel == "online":
-            required_text.extend(
-                {
-                    "windows-amd64": ("install_online.ps1", "-AddToPath"),
-                    "macos-arm64": ("install_online.sh", "--add-to-path"),
-                    "linux-amd64": ("install_online.sh", "--add-to-path"),
-                }[platform]
-            )
+            step_requirements["verify"] = ("--version",)
         else:
-            required_text.append("install_offline")
-        if channel == "offline":
-            required_text.append(".sha256")
-            required_text.append(
+            step_requirements["verify"] = (
+                ".sha256",
                 {
                     "windows-amd64": "Get-FileHash",
                     "macos-arm64": "shasum -a 256",
                     "linux-amd64": "sha256sum",
-                }[platform]
+                }[platform],
             )
-        for marker in required_text:
-            if marker not in section:
-                findings.append(
-                    Finding("guide-route-content-missing", f"{route_id}: {marker}")
-                )
+        if state == "existing":
+            step_requirements["initialize"] += ("adopt .",)
+
+        for step, markers in step_requirements.items():
+            step_text = step_sections.get(step, "")
+            for marker in markers:
+                if marker not in step_text:
+                    findings.append(
+                        Finding(
+                            "guide-route-step-content-missing",
+                            f"{route_id}:{step}: {marker}",
+                        )
+                    )
+
+        if state == "existing":
+            initialize_text = step_sections.get("initialize", "")
+            if initialize_text.rfind("init .") > initialize_text.find("adopt ."):
+                findings.append(Finding("guide-route-initialize-order", route_id))
         recovery_text = step_sections.get("recover", "")
         if not re.search(r"失败|错误|不可用|停止", recovery_text):
             findings.append(Finding("guide-route-recovery-empty", route_id))

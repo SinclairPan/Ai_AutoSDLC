@@ -110,7 +110,8 @@ def test_existing_route_requires_initialization_before_adoption() -> None:
     findings = validate_guide_text(guide, version=(3, 0, 1))
 
     assert any(
-        finding.marker == "guide-route-content-missing" and "init ." in finding.excerpt
+        finding.marker == "guide-route-step-content-missing"
+        and "initialize: init ." in finding.excerpt
         for finding in findings
     )
 
@@ -125,7 +126,59 @@ def test_windows_online_route_rejects_posix_installer() -> None:
     findings = validate_guide_text(guide, version=(3, 0, 1))
 
     assert any(
-        finding.marker == "guide-route-content-missing"
-        and "windows-amd64: install_online.ps1" in finding.excerpt
+        finding.marker == "guide-route-step-content-missing"
+        and "windows-amd64:acquire: install_online.ps1" in finding.excerpt
+        for finding in findings
+    )
+
+
+def test_windows_offline_route_rejects_posix_installer() -> None:
+    guide = _complete_guide().replace(
+        "install_offline.ps1 -AddToPath",
+        "install_offline.sh --add-to-path",
+        2,
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-step-content-missing"
+        and "windows-amd64:acquire: install_offline.ps1" in finding.excerpt
+        for finding in findings
+    )
+
+
+def test_existing_route_requires_init_before_adopt() -> None:
+    route_id = "existing|online|windows-amd64"
+    route = _complete_route(route_id)
+    guide = _complete_guide().replace(
+        route,
+        route.replace(
+            "ai-sdlc init .\npython -m ai_sdlc init .\nai-sdlc adopt .",
+            "ai-sdlc adopt .\nai-sdlc init .\npython -m ai_sdlc init .",
+        ),
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(finding.marker == "guide-route-initialize-order" for finding in findings)
+
+
+def test_required_content_must_stay_in_its_declared_step() -> None:
+    guide = _complete_guide().replace(
+        "适用平台：windows-amd64\n"
+        "<!-- AI-SDLC-USER-GUIDE-STEP: acquire -->\n"
+        "获取 install_online.ps1 -AddToPath",
+        "适用平台：windows-amd64，获取 install_online.ps1 -AddToPath\n"
+        "<!-- AI-SDLC-USER-GUIDE-STEP: acquire -->\n"
+        "参见前置条件",
+        1,
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-step-content-missing"
+        and "windows-amd64:acquire: install_online.ps1" in finding.excerpt
         for finding in findings
     )
