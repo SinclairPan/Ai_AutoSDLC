@@ -947,6 +947,30 @@ def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() 
     assert '"--shell"' not in driver
     assert "import ai_sdlc" not in driver
 
+    init_contract = driver.split("def _verify_interactive_init", 1)[1].split(
+        "def _run_requirement_and_workitem_flow", 1
+    )[0]
+    for required in (
+        "基于项目已有技术栈、约束和交付目标给出一个推荐方案",
+        "至少一个可选 / 自定义方案",
+        "明确区分“规范正文”“可选建议”“已经落地”",
+        "等待用户明确确认",
+        "通用规则不得硬编码框架、组件库、provider 或 style pack",
+        "只有项目事实或用户明确选择才能确定具体方案",
+    ):
+        assert required in init_contract
+    assert "forbidden_agent_tokens" in init_contract
+    assert "if token in agents_text" in init_contract
+    for forbidden in (
+        "进入实现前必须先给出技术栈 / 组件库建议",
+        "program solution-confirm --dry-run --mode advanced",
+        "public-primevue",
+        "enterprise-vue2",
+        "modern-saas",
+        "data-console",
+    ):
+        assert forbidden in init_contract
+
 
 def test_windows_clean_user_e2e_uses_real_codex_cli_and_archives_adapter_files() -> (
     None

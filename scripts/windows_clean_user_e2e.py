@@ -336,9 +336,26 @@ def _verify_interactive_init(
     _assert_contains(
         agents_text,
         "若需求涉及前端需求、UI、页面、组件、浏览器交互或前端工程",
+        "基于项目已有技术栈、约束和交付目标给出一个推荐方案",
+        "至少一个可选 / 自定义方案",
+        "明确区分“规范正文”“可选建议”“已经落地”",
+        "等待用户明确确认",
+        "通用规则不得硬编码框架、组件库、provider 或 style pack",
+        "只有项目事实或用户明确选择才能确定具体方案",
+    )
+    forbidden_agent_tokens = (
         "进入实现前必须先给出技术栈 / 组件库建议",
         "program solution-confirm --dry-run --mode advanced",
+        "public-primevue",
+        "enterprise-vue2",
+        "modern-saas",
+        "data-console",
     )
+    stale_tokens = [token for token in forbidden_agent_tokens if token in agents_text]
+    if stale_tokens:
+        raise AssertionError(
+            f"Codex canonical AGENTS.md 包含旧固定栈指导: {stale_tokens}"
+        )
     _archive_codex_adapter_files(project_root, evidence_root)
 
 

@@ -207,32 +207,32 @@ def test_loop_status_human_runs_update_notice(
     calls: list[bool] = []
     monkeypatch.setattr(
         "ai_sdlc.cli.main.maybe_render_update_notice",
-        lambda: calls.append(True),
+        lambda *, machine_output: calls.append(machine_output),
     )
 
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
         result = runner.invoke(app, ["loop", "status"])
 
     assert result.exit_code == 0
-    assert calls == [True]
+    assert calls == [False]
 
 
-def test_loop_status_json_remains_notice_free(tmp_path: Path, monkeypatch) -> None:
+def test_loop_status_json_runs_machine_update_notice(
+    tmp_path: Path, monkeypatch
+) -> None:
     (tmp_path / ".ai-sdlc").mkdir()
     monkeypatch.setattr(sys, "argv", ["ai-sdlc", "loop", "status", "--json"])
-
-    def unexpected_notice() -> None:
-        raise AssertionError("JSON Loop output must not render an update notice")
-
+    calls: list[bool] = []
     monkeypatch.setattr(
         "ai_sdlc.cli.main.maybe_render_update_notice",
-        unexpected_notice,
+        lambda *, machine_output: calls.append(machine_output),
     )
 
     with patch("ai_sdlc.cli.loop_cmd.find_project_root", return_value=tmp_path):
         result = runner.invoke(app, ["loop", "status", "--json"])
 
     assert result.exit_code == 0
+    assert calls == [True]
     payload = json.loads(result.output)
     assert payload["status"] == "no_current"
     assert payload["result"] == "No current loop."

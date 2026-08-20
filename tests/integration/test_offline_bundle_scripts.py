@@ -1762,9 +1762,11 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "hash -r 2>/dev/null || true" in offline_ps1
     assert "stableShimRuntimePath" in offline_ps1
     assert "Test-DirectoryHasAiSdlc" not in offline_ps1
-    assert "Direct shim" in offline_ps1
+    assert "Direct shim compatibility" in offline_ps1
+    assert "$nextCommand = $stableInitCommand" in offline_ps1
+    assert "$nextCommand = $moduleInitCommand" in offline_ps1
     assert "Codex + PowerShell project init" in offline_ps1
-    assert '{1}{2}{1} init .' in offline_ps1
+    assert "cd YOUR_PROJECT_PATH; ai-sdlc init ." in offline_ps1
     assert "--agent-target codex --shell powershell" in offline_ps1
 
     assert "winget install --id Python.Python.3.11" in online_ps1
@@ -1810,13 +1812,17 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert 'foreach ($profileName in ($profileNames | Select-Object -Unique))' in online_ps1
     assert "hash -r 2>/dev/null || true" in online_ps1
     assert "Test-DirectoryHasAiSdlc" not in online_ps1
-    assert "Direct shim" in online_ps1
+    assert "Direct shim compatibility" in online_ps1
+    assert "$nextCommand = $stableInitCommand" in online_ps1
+    assert "$nextCommand = $moduleInitCommand" in online_ps1
     assert "Codex + PowerShell project init" in online_ps1
-    assert '{1}{2}{1} init .' in online_ps1
+    assert "cd YOUR_PROJECT_PATH; ai-sdlc init ." in online_ps1
     assert "--agent-target codex --shell powershell" in online_ps1
 
 
-def test_windows_install_guidance_is_safe_for_windows_powershell_parser() -> None:
+def test_windows_install_guidance_is_safe_for_windows_powershell_parser(
+    tmp_path: Path,
+) -> None:
     offline_ps1 = (_OFFLINE_DIR / "install_offline.ps1").read_text(encoding="utf-8")
     online_ps1 = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
 
@@ -1833,6 +1839,49 @@ def test_windows_install_guidance_is_safe_for_windows_powershell_parser() -> Non
     assert "$doubleQuote = [char]34" in offline_ps1
     assert "Write-Host \"  $callOperator '$resolvedCliExe' --help\"" not in offline_ps1
     assert "Write-Host \"  $callOperator '$resolvedVenvPython' -m ai_sdlc --help\"" not in offline_ps1
+    expected_help_guidance = (
+        "Write-Host ('  & {0}{1}{0} -m ai_sdlc --help' "
+        "-f $doubleQuote, $resolvedVenvPython)"
+    )
+    assert expected_help_guidance in offline_ps1
+    assert expected_help_guidance in online_ps1
+
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        pytest.skip("PowerShell is required for the quoted-path parser regression")
+
+    runtime_dir = tmp_path / "runtime with spaces"
+    runtime_dir.mkdir()
+    if os.name == "nt":
+        fake_python = runtime_dir / "python.cmd"
+        fake_python.write_text(
+            '@echo off\r\nif "%1 %2 %3"=="-m ai_sdlc --help" exit /b 0\r\nexit /b 23\r\n',
+            encoding="utf-8",
+        )
+    else:
+        fake_python = runtime_dir / "python"
+        fake_python.write_text(
+            '#!/bin/sh\n[ "$1 $2 $3" = "-m ai_sdlc --help" ]\n',
+            encoding="utf-8",
+        )
+        fake_python.chmod(0o755)
+
+    escaped_python = str(fake_python).replace("'", "''")
+    result = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"$resolvedVenvPython = '{escaped_python}'; "
+            '& "$resolvedVenvPython" -m ai_sdlc --help',
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_user_guide_documents_published_assets_and_two_new_user_paths() -> None:

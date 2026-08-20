@@ -216,3 +216,32 @@ def test_slimming_never_participates_in_status_close_or_commit_decisions() -> No
         for function_name in function_names:
             assert function_name in functions
             assert "slimming" not in functions[function_name]
+
+
+def test_generic_normal_path_guidance_has_no_fixed_product_stack_or_self_release() -> (
+    None
+):
+    paths = (
+        _ROOT / "AGENTS.md",
+        _SRC / "adapters" / "codex" / "AI-SDLC.md",
+        _SRC / "adapters" / "claude_code" / "AI-SDLC.md",
+        _SRC / "adapters" / "cursor" / "rules" / "ai-sdlc.md",
+        _SRC / "adapters" / "vscode" / "AI-SDLC.md",
+        _SRC / "rules" / "pipeline.md",
+    )
+    forbidden = (
+        "public-primevue",
+        "enterprise-vue2",
+        "primevue + @primeuix/themes",
+        "stage show <阶段名>",
+        "竞赛",
+        "比赛",
+    )
+
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        if path == _ROOT / "AGENTS.md":
+            text = text.partition("## Local Repository PR Protocol")[0]
+        lowered = text.lower()
+        assert all(token not in lowered for token in forbidden), path
+        assert "Applicable Rules" in text, path

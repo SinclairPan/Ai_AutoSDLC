@@ -2894,13 +2894,11 @@ def test_frontend_solution_confirmation_instruction_blocks_missing_pipeline_guar
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any("frontend solution confirmation instruction" in x for x in blockers)
-    assert any("技术栈 / 组件库建议" in x for x in blockers)
-    assert any("provider_id=public-primevue" in x for x in blockers)
-    assert any("企业后台" in x for x in blockers)
-    assert any("高级可选方案" in x for x in blockers)
+    assert any("项目已有技术栈" in x for x in blockers)
+    assert any("一个推荐方案" in x for x in blockers)
+    assert any("至少一个可选 / 自定义方案" in x for x in blockers)
     assert any("规范正文" in x for x in blockers)
-    assert any("program solution-confirm --dry-run --mode advanced" in x for x in blockers)
-    assert any("--provider-id" in x for x in blockers)
+    assert any("Applicable Rules" in x for x in blockers)
 
 
 def test_frontend_solution_confirmation_instruction_accepts_required_pipeline_guard(
@@ -2913,29 +2911,13 @@ def test_frontend_solution_confirmation_instruction_accepts_required_pipeline_gu
     rules_dir.mkdir(parents=True, exist_ok=True)
     (rules_dir / "pipeline.md").write_text(
         "# 流水线总控规则\n\n"
-        "前端需求进入实现前必须先给出技术栈 / 组件库建议，等待用户明确确认。"
-        "确认前不得进入 execute。"
-        "确认后才允许 program solution-confirm --execute --yes。"
-        "普通新前端需求首个推荐必须是 frontend_stack=vue3 / "
-        "provider_id=public-primevue / style_pack_id=modern-saas。"
-        "默认展示 PrimeVue + @primeuix/themes + primeicons、"
-        "definePreset(Aura) + #1770e6 + darkModeSelector=false、"
-        "Vite + TypeScript + UnoCSS + CSS Variables、"
-        "Pinia + Vue Router + Axios + vee-validate + zod + vue-i18n、"
-        "Playwright + ESLint + Prettier + husky + lint-staged + commitlint。"
-            "前端规范输出必须区分规范正文、可选建议、已经落地。"
-            "主题必须同时覆盖 primary / surface / highlight，"
-            "theme.ts 是主题预设唯一入口，"
-            "浅色页面中的普通信息载体必须与页面主体保持同一视觉体系，"
-            "新项目默认使用 pages/，"
-            "不得同时新建 pages/ 和 views/。"
-        "企业后台、中后台、管理台、表格、表单、审批流、工作台等场景词"
-        "不得被当成 Vue2 信号。"
-        "方案建议必须保留高级可选方案，覆盖 data-console、high-clarity、"
-        "macos-glass 等风格。"
-        "可用 program solution-confirm --dry-run --mode advanced 查看，"
-        "并用 --frontend-stack、--provider-id、--style-pack-id 自定义选择。"
-        "框架自带 Vue2 企业级组件库默认使用 enterprise-vue2。\n",
+        "前端需求进入实现前必须基于项目已有技术栈给出一个推荐方案，"
+        "并同时提供至少一个可选 / 自定义方案，等待用户明确确认。"
+        "确认前不得进入 execute、不得生成前端实现代码。"
+        "输出必须区分规范正文、可选建议、已经落地。"
+        "通用规则不得硬编码框架、组件库、provider 或 style pack。"
+        "正常路径直接使用 Applicable Rules，"
+        "不要求用户手动执行 `rules show` 或 `stage show`。\n",
         encoding="utf-8",
     )
 
@@ -2944,7 +2926,7 @@ def test_frontend_solution_confirmation_instruction_accepts_required_pipeline_gu
     assert not any("frontend solution confirmation instruction" in x for x in blockers)
 
 
-def test_frontend_solution_confirmation_instruction_blocks_stale_vitest_default_tooling(
+def test_frontend_solution_confirmation_instruction_blocks_fixed_stack_defaults(
     tmp_path: Path,
 ) -> None:
     mem = tmp_path / ".ai-sdlc" / "memory"
@@ -2954,34 +2936,21 @@ def test_frontend_solution_confirmation_instruction_blocks_stale_vitest_default_
     rules_dir.mkdir(parents=True, exist_ok=True)
     (rules_dir / "pipeline.md").write_text(
         "# 流水线总控规则\n\n"
-        "前端需求进入实现前必须先给出技术栈 / 组件库建议，等待用户明确确认。"
-        "确认前不得进入 execute。"
-        "确认后才允许 program solution-confirm --execute --yes。"
-        "普通新前端需求首个推荐必须是 frontend_stack=vue3 / "
-        "provider_id=public-primevue / style_pack_id=modern-saas。"
-        "默认展示 PrimeVue + @primeuix/themes + primeicons、"
-        "definePreset(Aura) + #1770e6 + darkModeSelector=false、"
-        "Vite + TypeScript + UnoCSS + CSS Variables、"
-        "Pinia + Vue Router + Axios + vee-validate + zod + vue-i18n、"
-        "Vitest + Playwright + ESLint + Prettier + husky + lint-staged + commitlint。"
-        "前端规范输出必须区分规范正文、可选建议、已经落地。"
-        "主题必须同时覆盖 primary / surface / highlight，"
-        "theme.ts 是主题预设唯一入口，新项目默认使用 pages/，"
-        "不得同时新建 pages/ 和 views/。"
-        "企业后台、中后台、管理台、表格、表单、审批流、工作台等场景词"
-        "不得被当成 Vue2 信号。"
-        "方案建议必须保留高级可选方案，覆盖 data-console、high-clarity、"
-        "macos-glass 等风格。"
-        "可用 program solution-confirm --dry-run --mode advanced 查看，"
-        "并用 --frontend-stack、--provider-id、--style-pack-id 自定义选择。"
-        "框架自带 Vue2 企业级组件库默认使用 enterprise-vue2。\n",
+        "前端需求进入实现前必须基于项目已有技术栈给出一个推荐方案，"
+        "并同时提供至少一个可选 / 自定义方案，等待用户明确确认。"
+        "确认前不得进入 execute、不得生成前端实现代码。"
+        "输出必须区分规范正文、可选建议、已经落地。"
+        "通用规则不得硬编码框架、组件库、provider 或 style pack。"
+        "正常路径直接使用 Applicable Rules，"
+        "不要求用户手动执行 `rules show` 或 `stage show`。"
+        "但这里又固定 provider_id=public-primevue。\n",
         encoding="utf-8",
     )
 
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any(
-        "stale default tooling" in x and "Vitest + Playwright" in x
+        "stale default tooling" in x and "provider_id=public-primevue" in x
         for x in blockers
     )
 

@@ -1,5 +1,10 @@
 # 代码审查协议
 
+<!-- ai-sdlc:normal-path:start -->
+提交前由独立 Reviewer 审查当前精确候选，优先报告可复现的正确性、回归、安全和维护性问题。
+审查通过后若候选 tree 变化，结果立即 stale；代码精简性建议只作 advisory，不得改变 verdict。
+<!-- ai-sdlc:normal-path:end -->
+
 > 本规则在 EXECUTE 阶段的每个批次提交前激活。每次 git commit 之前，AI 必须对本批次的代码变更执行自审查。
 > **跳过审查 = 跳过质量。没有例外。**
 

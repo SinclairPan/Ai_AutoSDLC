@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
@@ -95,6 +96,42 @@ def test_run_renders_current_review_aware_route(tmp_path: Path) -> None:
     assert "implementation / impl-1 (needs_review)" in result.output
     assert "Next: Run bounded implementation experts." in result.output
     assert "review-result-missing" in result.output
+    assert "Applicable Rules" in result.output
+    assert "tdd" in result.output
+    assert "verification" in result.output
+    assert "没有失败的测试，就不能写生产代码" not in result.output
+
+
+def test_run_json_returns_route_and_bounded_rule_context(tmp_path: Path) -> None:
+    _init_project_repo(tmp_path)
+    routed = LoopRouteResult(
+        status=LoopRouteStatus.ROUTED,
+        result="Current delivery Loop: implementation impl-1 (needs_fix).",
+        current_loop=LoopRouteItem(
+            loop_type=LoopType.IMPLEMENTATION,
+            loop_id="impl-1",
+            status=LoopStatus.NEEDS_FIX,
+            next_action="Fix the implementation finding.",
+        ),
+        next_action="Fix the implementation finding.",
+        blockers=["important finding"],
+    )
+
+    with (
+        patch("ai_sdlc.cli.run_cmd.find_project_root", return_value=tmp_path),
+        patch("ai_sdlc.cli.run_cmd.route_five_loops", return_value=routed),
+    ):
+        result = runner.invoke(app, ["run", "--json"])
+
+    assert result.exit_code == 0
+    payload = json.loads(result.stdout)
+    assert payload["status"] == "routed"
+    assert payload["current_loop"]["loop_type"] == "implementation"
+    assert [item["name"] for item in payload["applicable_rules"]] == [
+        "debugging",
+        "verification",
+    ]
+    assert len(payload["applicable_rules"]) == 2
 
 
 def test_run_confirm_mode_returns_migration_blocker_without_routing(

@@ -48,6 +48,10 @@ def test_python_m_ai_sdlc_help_exits_zero() -> None:
     assert result.returncode == 0, result.stderr
     combined = f"{result.stdout}\n{result.stderr}"
     assert "ai-sdlc" in combined.lower() or "SDLC" in combined
+    assert "  loop\n" in combined
+    assert "  pr-review\n" in combined
+    assert "  rules\n" not in combined
+    assert "  telemetry\n" not in combined
 
 
 def test_python_m_ai_sdlc_version_exits_zero() -> None:
@@ -97,7 +101,9 @@ def test_python_m_ai_sdlc_subcommand_help_is_not_shadowed() -> None:
     assert "truth" in combined
 
 
-def test_source_checkout_module_invocation_prefers_local_src_without_pythonpath() -> None:
+def test_source_checkout_module_invocation_prefers_local_src_without_pythonpath() -> (
+    None
+):
     result = subprocess.run(
         [
             sys.executable,

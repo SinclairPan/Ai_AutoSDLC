@@ -65,7 +65,7 @@ class TestWorkitemLinkStatus:
         assert "linked_wi_id" in result.output
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            st = runner.invoke(app, ["status"])
+            st = runner.invoke(app, ["status", "--details"])
         assert st.exit_code == 0
         assert "Linked WI ID" in st.output
         assert "001-sample-work-item" in st.output
@@ -73,7 +73,9 @@ class TestWorkitemLinkStatus:
         assert ".cursor/plans/foo.plan.md" in st.output
         assert "Last synced (plan)" in st.output
 
-    def test_workitem_link_requires_arg(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_workitem_link_requires_arg(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         init_project(tmp_path)
         _checkpoint(tmp_path)
         monkeypatch.chdir(tmp_path)
@@ -89,7 +91,7 @@ class TestWorkitemLinkStatus:
         monkeypatch.chdir(tmp_path)
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            st = runner.invoke(app, ["status"])
+            st = runner.invoke(app, ["status", "--details"])
         assert st.exit_code == 0
         assert "Linked WI ID" not in st.output
 
@@ -151,7 +153,7 @@ class TestWorkitemLinkStatus:
         )
 
         with patch("ai_sdlc.cli.commands.find_project_root", return_value=tmp_path):
-            st = runner.invoke(app, ["status"])
+            st = runner.invoke(app, ["status", "--details"])
         assert st.exit_code == 0
         assert "Latest Reviewer Decision" in st.output
         assert "pre_close:approve -> WI-2026-777" in st.output

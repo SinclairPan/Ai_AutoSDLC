@@ -375,17 +375,20 @@ $resolvedVenvPython = (Resolve-Path -LiteralPath $venvPython).Path
 $cliExe = Join-Path $VenvPath "Scripts\ai-sdlc.exe"
 $resolvedCliExe = (Resolve-Path -LiteralPath $cliExe).Path
 $cliDir = Split-Path -Parent $resolvedCliExe
-$callOperator = [char]38
 $doubleQuote = [char]34
-$directInitCommand = 'cd YOUR_PROJECT_PATH; {0} {1}{2}{1} init .' -f $callOperator, $doubleQuote, $resolvedCliExe
-$codexPowerShellInitCommand = 'cd YOUR_PROJECT_PATH; {0} {1}{2}{1} init . --agent-target codex --shell powershell' -f $callOperator, $doubleQuote, $resolvedCliExe
+$stableInitCommand = 'cd YOUR_PROJECT_PATH; ai-sdlc init .'
+$stableCodexInitCommand = 'cd YOUR_PROJECT_PATH; ai-sdlc init . --agent-target codex --shell powershell'
+$moduleInitCommand = 'cd YOUR_PROJECT_PATH; Start-Process -Wait -NoNewWindow -FilePath {0}{1}{0} -ArgumentList ''-m'', ''ai_sdlc'', ''init'', ''.''' -f $doubleQuote, $resolvedVenvPython
+$moduleCodexInitCommand = 'cd YOUR_PROJECT_PATH; Start-Process -Wait -NoNewWindow -FilePath {0}{1}{0} -ArgumentList ''-m'', ''ai_sdlc'', ''init'', ''.'', ''--agent-target'', ''codex'', ''--shell'', ''powershell''' -f $doubleQuote, $resolvedVenvPython
 if ($AddToPath) {
   $commandShimDir = Install-AiSdlcCommandShim -CliExe $resolvedCliExe -RuntimePython $resolvedVenvPython
   Repair-AiSdlcCommandPath $commandShimDir
   Update-GitBashProfilePath $commandShimDir
-  $nextCommand = $directInitCommand
+  $nextCommand = $stableInitCommand
+  $codexPowerShellInitCommand = $stableCodexInitCommand
 } else {
-  $nextCommand = 'cd YOUR_PROJECT_PATH; Start-Process -Wait -NoNewWindow -FilePath {0}{1}{0} -ArgumentList ''-m'', ''ai_sdlc'', ''init'', ''.''' -f $doubleQuote, $resolvedVenvPython
+  $nextCommand = $moduleInitCommand
+  $codexPowerShellInitCommand = $moduleCodexInitCommand
 }
 
 Write-Host ""
@@ -401,9 +404,9 @@ if ($AddToPath) {
 } else {
   Write-Host "Use the full command above, or rerun with -AddToPath for new terminals."
 }
-Write-Host "Direct shim:"
-Write-Host ('  {0} {1}{2}{1} init .' -f $callOperator, $doubleQuote, $resolvedCliExe)
+Write-Host "Supported command:"
+Write-Host "  $nextCommand"
+Write-Host "Direct shim compatibility: runtime-local ai-sdlc.exe remains callable, but use the supported command above for updates."
 Write-Host "Codex + PowerShell project init:"
 Write-Host "  $codexPowerShellInitCommand"
-Write-Host ('  {0} {1}{2}{1} --help' -f $callOperator, $doubleQuote, $resolvedCliExe)
-Write-Host ('  {0} {1}{2}{1} -m ai_sdlc --help' -f $callOperator, $doubleQuote, $resolvedVenvPython)
+Write-Host ('  & {0}{1}{0} -m ai_sdlc --help' -f $doubleQuote, $resolvedVenvPython)

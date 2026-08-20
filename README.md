@@ -11,8 +11,9 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 | 能力 | 说明 |
 | --- | --- |
 | 项目初始化与接入 | `init` 为新项目建立规则、状态与代理入口；`adopt` 在不修改业务文件的前提下识别已有项目事实。 |
+| 命令前升级提示 | 安装版在业务命令执行前检查缓存；TTY 可确认升级，Agent/非 TTY 通过 stderr 获得稳定单行提示，JSON stdout 不受污染。 |
 | Codex 项目适配 | 以 `AGENTS.md` 作为项目级指令入口，可持久化 Codex 与 PowerShell、Bash、Zsh 或 Cmd 偏好。 |
-| 可恢复流水线 | checkpoint 记录执行阶段、开放门禁和下一步动作，支持 `status`、`recover` 与 `run --dry-run`。 |
+| 可恢复流水线 | checkpoint 记录执行阶段、开放门禁和下一步动作；`status` 默认只显示 Result、Next、Blockers，详细诊断进入 `--details`。 |
 | Loop Engineering | 内置 requirement、design-contract、implementation、frontend-evidence、local-pr-review 五类闭环。 |
 | 动态专家复核 | 每个 Loop 的实质结果由当前代理按内容选择最多两名只读专家；只允许一轮修复复审，不持久化专家权威。 |
 | 精简建议 | 对代码体积和复杂度给出非阻断建议；建议不改变 Loop 状态，也不阻止 close。 |
@@ -63,7 +64,7 @@ ai-sdlc init . --agent-target codex --shell powershell
 - 写入 PowerShell 作为项目命令偏好；
 - 自动执行一次安全预演，并明确展示仍需处理的门禁。
 
-初始化完成后，按命令输出中的 `Result / Next` 进入 Codex 对话并提交需求。`adapter status`、`status` 和 `run --dry-run` 用于异常排查，无需在正常初始化后重复执行。
+初始化完成后，按命令输出中的 `Result / Next` 进入 Codex 对话并提交需求。正常推进使用 `ai-sdlc run`：它返回当前五 Loop 路由以及最多两个 `Applicable Rules` 片段。`adapter status`、`status --details` 和 `run --dry-run` 仅用于需要时的排查。
 
 已有项目可先运行只读接入：
 
@@ -79,9 +80,12 @@ ai-sdlc index .
 
 ```powershell
 ai-sdlc status
-ai-sdlc rules show
+ai-sdlc run
+ai-sdlc run --json
 ai-sdlc verify constraints
 ```
+
+`status` 默认只显示 Result、Next 和 Blockers；`status --details` 保留完整人类诊断表，`status --json` 保留详细机器合同。Agent 直接使用 `run` 返回的有界规则正文，不需要手动加载完整规则库。
 
 ### 2. 运行工程闭环
 
@@ -129,6 +133,10 @@ ai-sdlc run
 ```
 
 两个入口都只读取五个 Loop 的当前 Result、Next 和 Blockers，不执行任务、不写 checkpoint，也不自动提交。旧 `--mode confirm` 与 `--acknowledge-execute-batch` 仅返回迁移提示，不再启动七阶段执行器。
+
+### 命令前升级提示
+
+安装版 CLI 在业务命令执行前使用本地缓存判断是否有新版本。TTY 用户可确认先升级再精确重放原命令；非 TTY、Codex、Cursor 和 Claude Code 获得 stderr 中的一行 `AI_SDLC_UPDATE_NOTICE` 结构化提示，原命令继续执行。`--json` 的 stdout 始终保持可解析。拒绝升级、离线、超时或检查失败不会阻断原命令；`self-update`、帮助、补全以及源码/`uv run` 开发环境不会触发自动覆盖安装。
 
 ### 4. 恢复工作
 

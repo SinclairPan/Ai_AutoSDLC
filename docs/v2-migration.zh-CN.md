@@ -32,3 +32,11 @@ ai-sdlc init .
 ```
 
 版本输出必须为 `2.0.0`。公开安装和离线包校验命令见 `USER_GUIDE.zh-CN.md`。
+
+## 正常命令路径
+
+- `ai-sdlc run` 是五 Loop 的只读正常入口，并直接返回当前 Loop 最多两个适用规则片段；不再要求手动执行 `rules show` 或 `stage show`。
+- `ai-sdlc status` 默认只显示 Result、Next、Blockers；原详细表移至 `status --details`，原机器合同仍由 `status --json` 提供。
+- 顶层帮助只展示正常用户命令；历史/高级命令仍可按原命令名显式调用，本轮没有物理删除这些模块。
+- 安装版发现更新时，TTY 可确认升级并重放原业务命令；Agent、非 TTY 和 JSON 路径只在 stderr 获得一行结构化提示。离线、拒绝或检查失败时原命令继续。
+- 通用前端规则不再固定 PrimeVue、Vue2 或 style pack；实现前仍必须根据项目事实给出一个推荐方案和至少一个可选 / 自定义方案，并等待用户确认。

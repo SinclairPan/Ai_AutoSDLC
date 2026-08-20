@@ -24,7 +24,7 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 扫描语言、依赖、测试、入口和风险；
 - 为 Codex 生成 `AGENTS.md` 项目入口；
 - 持久化 PowerShell、Bash、Zsh、Cmd 或自动选择；
-- 安装版 CLI 在普通人类可读命令前提供非阻断的新版本提示，并且只在用户明确确认后执行升级。
+- 安装版 CLI 在业务命令前读取更新缓存：TTY 仅在用户明确确认后升级并重放原命令；Agent、非 TTY 和 JSON 路径只在 stderr 输出稳定单行提示，不污染业务 stdout。
 
 ### 流水线与恢复
 
@@ -46,6 +46,10 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 框架只在原 Loop 目录保存固定的 `review-outcome-round-1.json`，修复后至多再保存 `review-outcome-round-2.json`，用于防止缺失结果、角色不完整和摘要漂移。它不保存专家上下文或长期身份，也不创建 session、ledger、certificate、attestation、authority/store 或第三轮结果。
 
 代码精简只提供非阻断建议。它不改变 Loop 状态，不产生强制修复、receipt、例外或 No-Go，也不阻止 close。
+
+正常用户入口 `ai-sdlc run` 只读取当前五 Loop 真值，并返回 Result、Next、Blockers 和当前 Loop 最多两个内置规则片段。选择只依赖结构化 Loop 类型与状态，不扫描需求关键词、不联网、不写项目状态，也不建立规则平台。通用规则不得硬编码具体前端框架、组件库、provider 或 style pack；前端实现前只要求根据项目事实给出推荐方案、可选方案并等待用户确认。
+
+`ai-sdlc status` 默认只显示 Result、Next、Blockers；旧详细人类诊断保留在 `--details`，详细机器合同保留在 `--json`。顶层帮助只展示正常用户入口，历史/高级命令保持可直接调用但不占用默认命令列表。
 
 ### 质量治理
 

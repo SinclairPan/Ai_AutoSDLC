@@ -21,22 +21,10 @@ def _emit_ascii_module_help() -> None:
         "  doctor\n"
         "  status\n"
         "  recover\n"
-        "  index\n"
-        "  scan\n"
-        "  refresh\n"
         "  run\n"
         "  adapter\n"
-        "  gate\n"
-        "  rules\n"
-        "  studio\n"
-        "  stage\n"
-        "  program\n"
-        "  host-runtime\n"
         "  workitem\n"
         "  verify\n"
-        "  telemetry\n"
-        "  provenance\n"
-        "  trace\n"
         "  loop\n"
         "  pr-review\n"
         "  self-update\n"
@@ -44,9 +32,7 @@ def _emit_ascii_module_help() -> None:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 1 or (
-        len(sys.argv) == 2 and sys.argv[1] in {"--help", "-h"}
-    ):
+    if len(sys.argv) == 1 or (len(sys.argv) == 2 and sys.argv[1] in {"--help", "-h"}):
         _emit_ascii_module_help()
         raise SystemExit(0)
     if len(sys.argv) == 2 and sys.argv[1] == "--version":
