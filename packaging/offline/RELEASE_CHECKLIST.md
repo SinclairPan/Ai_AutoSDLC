@@ -12,6 +12,8 @@
 
 ## 质量门禁
 
+- [ ] 若候选版本高于 `3.0.0`，用户手册 12 路径合同检查通过；
+- [ ] `uv run python scripts/validate_user_guide_standard.py .` 通过；
 - [ ] `uv run pytest -q` 通过；
 - [ ] `uv run ruff check src tests scripts` 通过；
 - [ ] `uv run ai-sdlc verify constraints` 通过；
