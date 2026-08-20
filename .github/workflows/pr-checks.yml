@@ -50,7 +50,8 @@ jobs:
           tests/unit/test_workitem_scaffold.py
           tests/unit/test_packaging_config.py
           tests/integration/test_cli_init.py
-          tests/integration/test_cli_program.py
+          tests/integration/test_frontend_delivery_normal_path.py
+          tests/integration/test_cli_root_surface.py
           tests/integration/test_github_workflows.py
           tests/integration/test_cli_workitem_init.py
           -q

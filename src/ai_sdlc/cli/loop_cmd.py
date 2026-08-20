@@ -272,7 +272,7 @@ def design_contract_check(
     work_item: str = typer.Option(
         "",
         "--wi",
-        help="Work item directory or formal doc path, for example specs/123-name.",
+        help="Work item directory or formal doc path, for example specs/001-feature.",
     ),
     requirement_loop_id: str = typer.Option(
         "",
@@ -367,7 +367,7 @@ def implementation_start(
     work_item: str = typer.Option(
         "",
         "--wi",
-        help="Work item directory or formal doc path, for example specs/123-name.",
+        help="Work item directory or formal doc path, for example specs/001-feature.",
     ),
     design_contract_loop_id: str = typer.Option(
         "",
@@ -537,7 +537,7 @@ def frontend_evidence_solution_confirm(
     work_item: str = typer.Option(
         "",
         "--wi",
-        help="Work item directory, for example specs/123-name.",
+        help="Work item directory, for example specs/001-feature.",
     ),
     frontend_stack: str = typer.Option(
         "",
@@ -663,7 +663,7 @@ def frontend_evidence_start(
     work_item: str = typer.Option(
         "",
         "--wi",
-        help="Work item directory or formal doc path, for example specs/123-name.",
+        help="Work item directory or formal doc path, for example specs/001-feature.",
     ),
     implementation_loop_id: str = typer.Option(
         "",
@@ -740,7 +740,7 @@ def frontend_evidence_skip(
     work_item: str = typer.Option(
         "",
         "--wi",
-        help="Work item directory or formal doc path, for example specs/123-name.",
+        help="Work item directory or formal doc path, for example specs/001-feature.",
     ),
     implementation_loop_id: str = typer.Option(
         "",

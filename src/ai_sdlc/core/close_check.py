@@ -9,22 +9,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import yaml
 from pydantic import ValidationError
 
 from ai_sdlc.branch.git_client import GitClient, GitError
 from ai_sdlc.core.plan_check import resolve_plan_path_from_wi, run_plan_check
 from ai_sdlc.core.pr_review_models import ReviewFindings, ReviewPack, ReviewRun
 from ai_sdlc.core.pr_review_service import CURRENT_REVIEW_PATH
-from ai_sdlc.core.reviewer_gate import (
-    ReviewerGateOutcomeKind,
-    evaluate_reviewer_gate,
-)
 from ai_sdlc.core.workitem_traceability import (
     analyze_completion_truth,
     evaluate_work_item_branch_lifecycle,
 )
-from ai_sdlc.models.work import WorkItemStatus
 from ai_sdlc.utils.helpers import find_project_root
 
 REQUIRED_LOG_MARKERS = (
@@ -48,9 +42,7 @@ VERIFICATION_PROFILE_REQUIRED_COMMANDS: dict[
 ] = {
     "docs-only": ("uv run ai-sdlc verify constraints",),
     "rules-only": ("uv run ai-sdlc verify constraints",),
-    "truth-only": (
-        "uv run ai-sdlc verify constraints",
-    ),
+    "truth-only": ("uv run ai-sdlc verify constraints",),
     "code-change": (
         "uv run pytest",
         "uv run ruff check",
@@ -234,8 +226,6 @@ def _path_allowed_for_docs_profile(path: str) -> bool:
 
 def _path_allowed_for_truth_profile(path: str) -> bool:
     normalized = path.strip().replace("\\", "/")
-    if normalized == "program-manifest.yaml":
-        return True
     if normalized.startswith(".ai-sdlc/"):
         return True
     if normalized.startswith("specs/") and normalized.endswith(".md"):
@@ -326,39 +316,6 @@ def _git_closure_violation(root: Path, log_text: str) -> str | None:
     return None
 
 
-def _manifest_payload_without_truth_snapshot(text: str) -> dict[str, Any] | None:
-    payload = yaml.safe_load(text)
-    if not isinstance(payload, dict):
-        return None
-    normalized = dict(payload)
-    normalized.pop("truth_snapshot", None)
-    return normalized
-
-
-def _is_truth_snapshot_only_manifest_drift(root: Path) -> bool:
-    manifest_rel = "program-manifest.yaml"
-    manifest_path = root / manifest_rel
-    if not manifest_path.is_file():
-        return False
-    try:
-        current_payload = _manifest_payload_without_truth_snapshot(
-            manifest_path.read_text(encoding="utf-8")
-        )
-    except OSError:
-        return False
-    if current_payload is None:
-        return False
-    try:
-        git = GitClient(root)
-        head_text = git._run("show", f"HEAD:{manifest_rel}")
-    except GitError:
-        return False
-    head_payload = _manifest_payload_without_truth_snapshot(head_text)
-    if head_payload is None:
-        return False
-    return current_payload == head_payload
-
-
 def _has_uncommitted_changes_excluding_allowed(root: Path) -> bool:
     client = GitClient(root)
     status = client._run("status", "--porcelain", "--untracked-files=all")
@@ -374,18 +331,9 @@ def _has_uncommitted_changes_excluding_allowed(root: Path) -> bool:
         if " -> " in path:
             path = path.split(" -> ", 1)[1]
         normalized = path.strip().replace("\\", "/")
-        if (
-            normalized == "program-manifest.yaml"
-            and _is_truth_snapshot_only_manifest_drift(root)
-        ):
-            continue
         if normalized not in allowed:
             return True
     return False
-
-
-def _requires_formal_reviewer_gate(wi_dir: Path) -> bool:
-    return wi_dir.name.startswith("003-")
 
 
 def run_branch_check(*, cwd: Path | None, wi: Path) -> BranchCheckResult:
@@ -549,38 +497,15 @@ def run_close_check(
             if review_evidence_ok
             else "review evidence missing"
         )
-        formal_review_ok = True
-        formal_review_detail = ""
-        if _requires_formal_reviewer_gate(wi_dir):
-            gate = evaluate_reviewer_gate(
-                root, wi_dir.name, WorkItemStatus.DEV_REVIEWED
-            )
-            formal_review_ok = gate.outcome == ReviewerGateOutcomeKind.ALLOW
-            if not formal_review_ok:
-                checkpoint_label = (
-                    gate.checkpoint.value if gate.checkpoint is not None else "n/a"
-                )
-                formal_review_detail = (
-                    f"formal reviewer gate {gate.outcome.value} at {checkpoint_label}: "
-                    f"{gate.reason}"
-                )
-            else:
-                formal_review_detail = (
-                    f"formal reviewer gate approved at {gate.checkpoint.value}"
-                )
-        review_ok = review_evidence_ok and formal_review_ok
-        review_detail = review_gate_detail
-        if formal_review_detail:
-            review_detail = f"{review_gate_detail}; {formal_review_detail}"
         checks.append(
             {
                 "name": "review_gate",
-                "ok": review_ok,
-                "detail": review_detail,
+                "ok": review_evidence_ok,
+                "detail": review_gate_detail,
             }
         )
-        if not review_ok:
-            blockers.append(f"BLOCKER: Review Gate failed: {review_detail}.")
+        if not review_evidence_ok:
+            blockers.append(f"BLOCKER: Review Gate failed: {review_gate_detail}.")
         verification_profile_violation = _verification_profile_violation(log_text)
         verification_profile_ok = verification_profile_violation is None
         checks.append(

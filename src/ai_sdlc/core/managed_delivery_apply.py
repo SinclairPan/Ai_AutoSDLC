@@ -1,4 +1,4 @@
-"""Managed delivery apply runtime for work item 123."""
+"""Managed frontend delivery apply runtime."""
 
 from __future__ import annotations
 

@@ -10,15 +10,6 @@ from ai_sdlc.core.frontend_contract_verification import (
     FRONTEND_CONTRACT_CHECK_OBJECTS,
     FRONTEND_CONTRACT_SOURCE_NAME,
 )
-from ai_sdlc.core.frontend_gate_verification import (
-    FRONTEND_GATE_CHECK_OBJECTS,
-    FRONTEND_GATE_SOURCE_NAME,
-)
-from ai_sdlc.core.release_gate import (
-    ReleaseGateCheck,
-    ReleaseGateReport,
-    build_release_gate_governance_payload,
-)
 from ai_sdlc.gates.extra_gates import KnowledgeGate, ParallelGate, PostmortemGate
 from ai_sdlc.gates.pipeline_gates import (
     CloseGate,
@@ -48,23 +39,6 @@ def _frontend_contract_summary_payload(
     return {
         "source_name": FRONTEND_CONTRACT_SOURCE_NAME,
         "check_objects": list(FRONTEND_CONTRACT_CHECK_OBJECTS),
-        "blockers": list(blockers),
-        "coverage_gaps": list(coverage_gaps),
-        "advisory_checks": [],
-        "gate_verdict": gate_verdict,
-        "gate_checks": [],
-    }
-
-
-def _frontend_gate_summary_payload(
-    *,
-    gate_verdict: str = "PASS",
-    blockers: tuple[str, ...] = (),
-    coverage_gaps: tuple[str, ...] = (),
-) -> dict[str, object]:
-    return {
-        "source_name": FRONTEND_GATE_SOURCE_NAME,
-        "check_objects": list(FRONTEND_GATE_CHECK_OBJECTS),
         "blockers": list(blockers),
         "coverage_gaps": list(coverage_gaps),
         "advisory_checks": [],
@@ -134,9 +108,13 @@ class TestInitGate:
 
         result = InitGate().check({"root": str(initialized_project_dir)})
         assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "constitution_principles" and not c.passed for c in result.checks)
+        assert any(
+            c.name == "constitution_principles" and not c.passed for c in result.checks
+        )
 
-    def test_fail_when_tech_stack_has_no_source(self, initialized_project_dir: Path) -> None:
+    def test_fail_when_tech_stack_has_no_source(
+        self, initialized_project_dir: Path
+    ) -> None:
         tech_stack = (
             initialized_project_dir / ".ai-sdlc" / "profiles" / "tech-stack.yml"
         )
@@ -144,7 +122,9 @@ class TestInitGate:
 
         result = InitGate().check({"root": str(initialized_project_dir)})
         assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "tech_stack_source" and not c.passed for c in result.checks)
+        assert any(
+            c.name == "tech_stack_source" and not c.passed for c in result.checks
+        )
 
 
 class TestRefineGate:
@@ -185,7 +165,9 @@ class TestRefineGate:
         result = RefineGate().check({"spec_dir": str(spec_dir)})
         assert result.verdict == GateVerdict.RETRY
 
-    def test_fail_when_user_story_has_no_acceptance_scenario(self, tmp_path: Path) -> None:
+    def test_fail_when_user_story_has_no_acceptance_scenario(
+        self, tmp_path: Path
+    ) -> None:
         spec_dir = tmp_path / "specs"
         spec_dir.mkdir()
         (spec_dir / "spec.md").write_text(
@@ -194,7 +176,10 @@ class TestRefineGate:
         )
         result = RefineGate().check({"spec_dir": str(spec_dir)})
         assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "acceptance_scenarios_present" and not c.passed for c in result.checks)
+        assert any(
+            c.name == "acceptance_scenarios_present" and not c.passed
+            for c in result.checks
+        )
 
     def test_fail_when_scenario_is_only_mentioned_in_body(self, tmp_path: Path) -> None:
         spec_dir = tmp_path / "specs"
@@ -205,7 +190,10 @@ class TestRefineGate:
         )
         result = RefineGate().check({"spec_dir": str(spec_dir)})
         assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "acceptance_scenarios_present" and not c.passed for c in result.checks)
+        assert any(
+            c.name == "acceptance_scenarios_present" and not c.passed
+            for c in result.checks
+        )
 
 
 class TestPRDGate:
@@ -243,10 +231,7 @@ class TestDecomposeGate:
         spec_dir = tmp_path / "specs"
         spec_dir.mkdir()
         (spec_dir / "tasks.md").write_text(
-            "### Task 1.1 — 示例\n"
-            "- **依赖**：无\n"
-            "- **验收标准（AC）**：\n"
-            "  1. 示例\n"
+            "### Task 1.1 — 示例\n- **依赖**：无\n- **验收标准（AC）**：\n  1. 示例\n"
         )
         result = DecomposeGate().check({"spec_dir": str(spec_dir)})
         assert result.verdict == GateVerdict.PASS
@@ -278,7 +263,10 @@ class TestVerifyGate:
             }
         )
         assert result.verdict == GateVerdict.PASS
-        assert any(c.name == "verification_surface_declared" and c.passed for c in result.checks)
+        assert any(
+            c.name == "verification_surface_declared" and c.passed
+            for c in result.checks
+        )
 
     def test_passes_with_frontend_contract_summary_payload(self) -> None:
         result = VerifyGate().check(
@@ -307,33 +295,6 @@ class TestVerifyGate:
             for c in result.checks
         )
 
-    def test_passes_with_frontend_gate_summary_payload(self) -> None:
-        result = VerifyGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (),
-                "coverage_gaps": (),
-                "frontend_gate_verification": _frontend_gate_summary_payload(),
-            }
-        )
-
-        assert result.verdict == GateVerdict.PASS
-        assert any(
-            c.name == "frontend_gate_summary_declared" and c.passed
-            for c in result.checks
-        )
-        assert any(
-            c.name == "frontend_gate_status_clear" and c.passed
-            for c in result.checks
-        )
-
     def test_fail_critical(self) -> None:
         result = VerifyGate().check({"critical_issues": 1, "high_issues": 0})
         assert result.verdict == GateVerdict.RETRY
@@ -341,68 +302,6 @@ class TestVerifyGate:
     def test_fail_too_many_high(self) -> None:
         result = VerifyGate().check({"critical_issues": 0, "high_issues": 5})
         assert result.verdict == GateVerdict.RETRY
-
-    def test_retries_when_frontend_gate_summary_surfaces_071_visual_a11y_issue_review(
-        self,
-    ) -> None:
-        result = VerifyGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (
-                    "BLOCKER: visual / a11y issues detected; review and disposition required",
-                ),
-                "coverage_gaps": ("frontend_visual_a11y_issue_review",),
-                "frontend_gate_verification": _frontend_gate_summary_payload(
-                    gate_verdict="RETRY",
-                    blockers=(
-                        "BLOCKER: visual / a11y issues detected; review and disposition required",
-                    ),
-                    coverage_gaps=("frontend_visual_a11y_issue_review",),
-                ),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        status_check = next(c for c in result.checks if c.name == "frontend_gate_status_clear")
-        assert "frontend_visual_a11y_issue_review" in status_check.message
-        assert "frontend_visual_a11y_evidence_stable_empty" not in status_check.message
-
-    def test_retries_when_frontend_gate_summary_surfaces_071_visual_a11y_stable_empty(
-        self,
-    ) -> None:
-        result = VerifyGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (
-                    "BLOCKER: stable empty evidence requires explicit review",
-                ),
-                "coverage_gaps": ("frontend_visual_a11y_evidence_stable_empty",),
-                "frontend_gate_verification": _frontend_gate_summary_payload(
-                    gate_verdict="RETRY",
-                    blockers=("BLOCKER: stable empty evidence requires explicit review",),
-                    coverage_gaps=("frontend_visual_a11y_evidence_stable_empty",),
-                ),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        status_check = next(c for c in result.checks if c.name == "frontend_gate_status_clear")
-        assert "frontend_visual_a11y_evidence_stable_empty" in status_check.message
-        assert "frontend_visual_a11y_issue_review" not in status_check.message
 
 
 class TestVerificationGate:
@@ -412,7 +311,7 @@ class TestVerificationGate:
                 "verification_check_objects": (
                     "required_governance_files",
                     "required_governance_files",
-                    "release_gate_evidence",
+                    "release_identity_evidence",
                 ),
                 "verification_sources": (
                     "verify constraints",
@@ -427,7 +326,7 @@ class TestVerificationGate:
             c for c in result.checks if c.name == "verification_check_objects_declared"
         )
         assert objects_check.message.count("required_governance_files") == 1
-        assert objects_check.message.count("release_gate_evidence") == 1
+        assert objects_check.message.count("release_identity_evidence") == 1
 
     def test_blocks_when_constraint_blockers_exist(self) -> None:
         result = VerificationGate().check(
@@ -440,7 +339,10 @@ class TestVerificationGate:
         )
         assert result.stage == "verification"
         assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "constraint_blockers_clear" and not c.passed for c in result.checks)
+        assert any(
+            c.name == "constraint_blockers_clear" and not c.passed
+            for c in result.checks
+        )
 
     def test_deduplicates_constraint_blockers_and_coverage_gap_messages(self) -> None:
         result = VerificationGate().check(
@@ -455,7 +357,7 @@ class TestVerificationGate:
                 "coverage_gaps": (
                     "frontend_contract_observations",
                     "frontend_contract_observations",
-                    "frontend_gate_policy_artifacts",
+                    "frontend_contract_runtime_policy",
                 ),
             }
         )
@@ -463,11 +365,13 @@ class TestVerificationGate:
         blocker_check = next(
             c for c in result.checks if c.name == "constraint_blockers_clear"
         )
-        coverage_check = next(c for c in result.checks if c.name == "coverage_gaps_clear")
+        coverage_check = next(
+            c for c in result.checks if c.name == "coverage_gaps_clear"
+        )
         assert blocker_check.message.count("BLOCKER: missing constitution") == 1
         assert blocker_check.message.count("BLOCKER: missing backlog") == 1
         assert coverage_check.message.count("frontend_contract_observations") == 1
-        assert coverage_check.message.count("frontend_gate_policy_artifacts") == 1
+        assert coverage_check.message.count("frontend_contract_runtime_policy") == 1
 
     def test_retries_when_frontend_contract_source_has_no_summary_payload(self) -> None:
         result = VerificationGate().check(
@@ -561,7 +465,9 @@ class TestVerificationGate:
         )
 
         objects_check = next(
-            c for c in result.checks if c.name == "frontend_contract_check_objects_linked"
+            c
+            for c in result.checks
+            if c.name == "frontend_contract_check_objects_linked"
         )
         assert objects_check.message.count("unknown-object") == 1
 
@@ -594,125 +500,14 @@ class TestVerificationGate:
             for c in result.checks
         )
 
-    def test_retries_when_frontend_gate_source_has_no_summary_payload(self) -> None:
-        result = VerificationGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (),
-                "coverage_gaps": (),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        assert any(
-            c.name == "frontend_gate_summary_declared" and not c.passed
-            for c in result.checks
-        )
-
-    def test_retries_when_frontend_gate_summary_reports_gap(self) -> None:
-        result = VerificationGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (),
-                "coverage_gaps": (),
-                "frontend_gate_verification": _frontend_gate_summary_payload(
-                    gate_verdict="RETRY",
-                    blockers=(
-                        "BLOCKER: frontend gate policy artifacts unavailable: governance/frontend/gates not found",
-                    ),
-                    coverage_gaps=("frontend_gate_policy_artifacts",),
-                ),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        assert any(
-            c.name == "frontend_gate_status_clear" and not c.passed
-            for c in result.checks
-        )
-
-    def test_retries_when_frontend_gate_summary_surfaces_071_visual_a11y_issue_review(
-        self,
-    ) -> None:
-        result = VerificationGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (
-                    "BLOCKER: visual / a11y issues detected; review and disposition required",
-                ),
-                "coverage_gaps": ("frontend_visual_a11y_issue_review",),
-                "frontend_gate_verification": _frontend_gate_summary_payload(
-                    gate_verdict="RETRY",
-                    blockers=(
-                        "BLOCKER: visual / a11y issues detected; review and disposition required",
-                    ),
-                    coverage_gaps=("frontend_visual_a11y_issue_review",),
-                ),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        status_check = next(c for c in result.checks if c.name == "frontend_gate_status_clear")
-        assert "frontend_visual_a11y_issue_review" in status_check.message
-        assert "frontend_visual_a11y_evidence_stable_empty" not in status_check.message
-
-    def test_retries_when_frontend_gate_summary_surfaces_071_visual_a11y_stable_empty(
-        self,
-    ) -> None:
-        result = VerificationGate().check(
-            {
-                "verification_check_objects": (
-                    "required_governance_files",
-                    *FRONTEND_GATE_CHECK_OBJECTS,
-                ),
-                "verification_sources": (
-                    "verify constraints",
-                    FRONTEND_GATE_SOURCE_NAME,
-                ),
-                "constraint_blockers": (
-                    "BLOCKER: stable empty evidence requires explicit review",
-                ),
-                "coverage_gaps": ("frontend_visual_a11y_evidence_stable_empty",),
-                "frontend_gate_verification": _frontend_gate_summary_payload(
-                    gate_verdict="RETRY",
-                    blockers=("BLOCKER: stable empty evidence requires explicit review",),
-                    coverage_gaps=("frontend_visual_a11y_evidence_stable_empty",),
-                ),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        status_check = next(c for c in result.checks if c.name == "frontend_gate_status_clear")
-        assert "frontend_visual_a11y_evidence_stable_empty" in status_check.message
-        assert "frontend_visual_a11y_issue_review" not in status_check.message
-
 
 class TestReviewGate:
     def test_requires_review_evidence(self) -> None:
         result = ReviewGate().check({"review_recorded": False})
         assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "review_evidence_present" and not c.passed for c in result.checks)
+        assert any(
+            c.name == "review_evidence_present" and not c.passed for c in result.checks
+        )
 
     def test_passes_with_review_evidence(self) -> None:
         result = ReviewGate().check({"review_recorded": True})
@@ -765,200 +560,6 @@ class TestExecuteGate:
         )
         assert result.verdict == GateVerdict.PASS
 
-    def test_stays_local_and_advisory_only_even_with_provenance_phase1_payload(self) -> None:
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "execution_status": "completed",
-                "committed": True,
-                "logged": True,
-                "provenance_phase1": {
-                    "decision_result": "block",
-                    "enforced": False,
-                },
-            }
-        )
-        assert result.verdict == GateVerdict.PASS
-
-
-def test_release_gate_governance_payload_reuses_gate_capable_minimum_fields() -> None:
-    report = ReleaseGateReport(
-        source_path="specs/003-cross-cutting-authoring-and-extension-contracts/release-gate-evidence.md",
-        overall_verdict="BLOCK",
-        checks=(
-            ReleaseGateCheck(
-                name="portability",
-                verdict="BLOCK",
-                evidence_source="tests/integration/test_cli_module_invocation.py",
-                reason="portability gate escalated to BLOCK",
-            ),
-        ),
-    )
-
-    closed = build_release_gate_governance_payload(
-        report,
-        decision_subject="release:003-cross-cutting-authoring-and-extension-contracts",
-        evidence_refs=(report.source_path,),
-    )
-    advisory = build_release_gate_governance_payload(
-        report,
-        decision_subject="release:003-cross-cutting-authoring-and-extension-contracts",
-        evidence_refs=(report.source_path,),
-        source_closure_status="incomplete",
-    )
-
-    assert closed["decision_result"] == "block"
-    assert closed["source_closure_status"] == "closed"
-    assert closed["observer_version"] == "v1"
-    assert advisory["decision_result"] == "advisory"
-    assert advisory["source_closure_status"] == "incomplete"
-
-    def test_fail_tests(self) -> None:
-        result = ExecuteGate().check(
-            {"tests_passed": False, "committed": True, "logged": True}
-        )
-        assert result.verdict == GateVerdict.RETRY
-
-    def test_fail_without_build_success(self) -> None:
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "build_succeeded": False,
-                "committed": True,
-                "logged": True,
-            }
-        )
-        assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "build_succeeded" and not c.passed for c in result.checks)
-
-    def test_log_before_commit_pass(self) -> None:
-        """BR-032: log timestamp <= commit timestamp."""
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "committed": True,
-                "logged": True,
-                "log_timestamp": "2026-03-21T10:00:00",
-                "commit_timestamp": "2026-03-21T10:00:01",
-            }
-        )
-        assert result.verdict == GateVerdict.PASS
-
-    def test_log_before_commit_fail(self) -> None:
-        """BR-032: fails when commit happens before log."""
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "committed": True,
-                "logged": True,
-                "log_timestamp": "2026-03-21T10:00:02",
-                "commit_timestamp": "2026-03-21T10:00:01",
-            }
-        )
-        assert result.verdict == GateVerdict.RETRY
-
-    def test_log_before_commit_skip_when_absent(self) -> None:
-        """BR-032: check skipped when timestamps not provided."""
-        result = ExecuteGate().check(
-            {"tests_passed": True, "committed": True, "logged": True}
-        )
-        assert result.verdict == GateVerdict.PASS
-        assert all(c.name != "log_before_commit" for c in result.checks)
-
-    def test_fail_when_decompose_prerequisite_missing_acceptance(
-        self, tmp_path: Path
-    ) -> None:
-        spec_dir = tmp_path / "specs" / "001"
-        spec_dir.mkdir(parents=True)
-        (spec_dir / "tasks.md").write_text("### Task 1.1\n- **依赖**：无\n", encoding="utf-8")
-
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "committed": True,
-                "logged": True,
-                "spec_dir": str(spec_dir),
-            }
-        )
-        assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "decompose_prerequisite" and not c.passed for c in result.checks)
-
-    def test_pass_when_decompose_prerequisite_ok(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "specs" / "001"
-        spec_dir.mkdir(parents=True)
-        (spec_dir / "tasks.md").write_text(
-            "### Task 1.1\n- **依赖**：无\n- **验收标准（AC）**：\n  1. 示例\n",
-            encoding="utf-8",
-        )
-
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "committed": True,
-                "logged": True,
-                "spec_dir": str(spec_dir),
-            }
-        )
-        assert result.verdict == GateVerdict.PASS
-        assert any(c.name == "decompose_prerequisite" and c.passed for c in result.checks)
-
-    def test_fail_when_target_task_is_doc_first(self, tmp_path: Path) -> None:
-        spec_dir = tmp_path / "specs" / "001"
-        spec_dir.mkdir(parents=True)
-        (spec_dir / "tasks.md").write_text(
-            "### Task 6.44 — 先 spec-plan-tasks 后实现\n"
-            "- **依赖**：Task 6.43\n"
-            "- **验收标准（AC）**：\n"
-            "  1. 先更新 specs\n",
-            encoding="utf-8",
-        )
-
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "build_succeeded": True,
-                "committed": True,
-                "logged": True,
-                "spec_dir": str(spec_dir),
-                "target_task_id": "T644",
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        assert any(c.name == "doc_first_prerequisite" and not c.passed for c in result.checks)
-
-    def test_fail_when_target_doc_first_task_touches_forbidden_paths(
-        self, tmp_path: Path
-    ) -> None:
-        spec_dir = tmp_path / "specs" / "001"
-        spec_dir.mkdir(parents=True)
-        (spec_dir / "tasks.md").write_text(
-            "### Task 6.44 — 仅文档：冻结需求\n"
-            "- **依赖**：Task 6.43\n"
-            "- **验收标准（AC）**：\n"
-            "  1. 仅更新文档\n",
-            encoding="utf-8",
-        )
-
-        result = ExecuteGate().check(
-            {
-                "tests_passed": True,
-                "build_succeeded": True,
-                "committed": True,
-                "logged": True,
-                "spec_dir": str(spec_dir),
-                "target_task_id": "6.44",
-                "changed_files": ("src/ai_sdlc/core/verify_constraints.py",),
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        assert any(
-            c.name == "doc_first_prerequisite"
-            and "verify_constraints.py" in c.message
-            for c in result.checks
-        )
-
 
 class TestCloseGate:
     def test_pass(self, tmp_path: Path) -> None:
@@ -1005,105 +606,6 @@ class TestCloseGate:
 
 
 class TestDoneGate:
-    def test_blocks_when_program_truth_audit_is_not_ready(self, tmp_path: Path) -> None:
-        summary = tmp_path / "development-summary.md"
-        summary.write_text("# Summary\n", encoding="utf-8")
-
-        result = DoneGate().check(
-            {
-                "root": str(tmp_path),
-                "all_tasks_complete": True,
-                "tests_passed": True,
-                "review_recorded": True,
-                "summary_path": str(summary),
-                "program_truth_audit_required": True,
-                "program_truth_audit_ready": False,
-                "program_truth_audit_detail": "migration pending: 3; release targets blocked",
-                "program_truth_audit_next_actions": [
-                    "python -m ai_sdlc program truth sync --execute --yes"
-                ],
-            }
-        )
-
-        assert result.verdict == GateVerdict.RETRY
-        assert any(
-            c.name == "program_truth_audit_ready" and not c.passed
-            for c in result.checks
-        )
-        assert any(
-            "python -m ai_sdlc program truth sync --execute --yes" in c.message
-            for c in result.checks
-            if c.name == "program_truth_audit_ready"
-        )
-
-    def test_program_truth_audit_message_surfaces_frontend_inheritance_risk(
-        self, tmp_path: Path
-    ) -> None:
-        summary = tmp_path / "development-summary.md"
-        summary.write_text("# Summary\n", encoding="utf-8")
-
-        result = DoneGate().check(
-            {
-                "root": str(tmp_path),
-                "all_tasks_complete": True,
-                "tests_passed": True,
-                "review_recorded": True,
-                "summary_path": str(summary),
-                "program_truth_audit_required": True,
-                "program_truth_audit_ready": False,
-                "program_truth_audit_state": "blocked",
-                "program_truth_audit_detail": "capability_blocked: frontend-mainline-delivery (blocked)",
-                "program_truth_audit_frontend_inheritance_status": {
-                    "generation": "not_inherited",
-                    "quality": "not_inherited",
-                },
-                "program_truth_audit_next_actions": [
-                    "python -m ai_sdlc program generation-constraints-handoff"
-                ],
-            }
-        )
-
-        check = next(c for c in result.checks if c.name == "program_truth_audit_ready")
-        assert check.passed is False
-        assert "codegen not inherited yet (risk)" in check.message
-        assert "wrong component library" in check.message
-        assert "wrong standard" in check.message
-        assert "generation-constraints-handoff" in check.message
-
-    def test_program_truth_audit_message_deduplicates_next_actions(
-        self, tmp_path: Path
-    ) -> None:
-        summary = tmp_path / "development-summary.md"
-        summary.write_text("# Summary\n", encoding="utf-8")
-
-        result = DoneGate().check(
-            {
-                "root": str(tmp_path),
-                "all_tasks_complete": True,
-                "tests_passed": True,
-                "review_recorded": True,
-                "summary_path": str(summary),
-                "program_truth_audit_required": True,
-                "program_truth_audit_ready": False,
-                "program_truth_audit_detail": "migration pending: 3; release targets blocked",
-                "program_truth_audit_next_actions": [
-                    "python -m ai_sdlc program truth sync --execute --yes",
-                    "python -m ai_sdlc program truth sync --execute --yes",
-                    "python -m ai_sdlc program generation-constraints-handoff",
-                ],
-            }
-        )
-
-        check = next(c for c in result.checks if c.name == "program_truth_audit_ready")
-        assert check.passed is False
-        assert (
-            check.message.count(
-                "python -m ai_sdlc program truth sync --execute --yes"
-            )
-            == 1
-        )
-        assert "python -m ai_sdlc program generation-constraints-handoff" in check.message
-
     def test_blocks_when_knowledge_refresh_is_pending(self, tmp_path: Path) -> None:
         summary = tmp_path / "development-summary.md"
         summary.write_text("# Summary\n", encoding="utf-8")

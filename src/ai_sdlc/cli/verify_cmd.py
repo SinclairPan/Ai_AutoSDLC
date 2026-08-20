@@ -80,7 +80,6 @@ def verify_constraints(
                         "sources": [report.source_name],
                         "check_objects": list(report.check_objects),
                         "coverage_gaps": list(report.coverage_gaps),
-                        "release_gate": report.release_gate,
                     },
                     "decision": "block" if effective_blockers else "allow",
                 },
@@ -96,39 +95,7 @@ def verify_constraints(
             console.print("[green]verify constraints: no BLOCKERs.[/green]")
             for advisory in _string_list(advisories):
                 console.print(f"[yellow]{advisory}[/yellow]")
-            if report.release_gate is not None:
-                verdict = str(report.release_gate.get("overall_verdict", "UNKNOWN"))
-                console.print(f"[cyan]release gate: {verdict}[/cyan]")
     raise typer.Exit(code=1 if effective_blockers else 0)
-
-
-def _render_frontend_contract_summary(summary: object) -> None:
-    _render_frontend_summary("frontend contract verification", summary)
-
-
-def _render_frontend_gate_summary(summary: object) -> None:
-    _render_frontend_summary("frontend gate verification", summary)
-
-
-def _render_frontend_summary(label: str, summary: object) -> None:
-    if not isinstance(summary, dict):
-        return
-
-    verdict = str(summary.get("gate_verdict", "UNKNOWN")).strip() or "UNKNOWN"
-    coverage_gaps = _string_list(summary.get("coverage_gaps", ()))
-    blockers = _string_list(summary.get("blockers", ()))
-    details: list[str] = []
-    diagnostic_summary = _frontend_diagnostic_summary(summary)
-    if diagnostic_summary:
-        details.append(diagnostic_summary)
-    if coverage_gaps:
-        details.append("coverage gaps: " + ", ".join(coverage_gaps[:3]))
-    elif verdict != "PASS" and blockers:
-        details.append("blockers: " + "; ".join(blockers[:1]))
-    suffix = f" ({'; '.join(details)})" if details else ""
-    style = "green" if verdict == "PASS" else "yellow"
-    console.print(f"[{style}]{label}: {verdict}{suffix}[/{style}]")
-    typer.echo(f"{label}: {verdict}{suffix}")
 
 
 def _string_list(value: object) -> list[str]:
@@ -140,47 +107,3 @@ def _string_list(value: object) -> list[str]:
         if text and text not in items:
             items.append(text)
     return items
-
-
-def _frontend_diagnostic_summary(summary: dict[str, object]) -> str:
-    diagnostic = _frontend_diagnostic_payload(summary)
-    if not diagnostic:
-        return ""
-
-    status = str(diagnostic.get("diagnostic_status", "")).strip()
-    if not status:
-        return ""
-
-    projection = diagnostic.get("policy_projection", {})
-    if not isinstance(projection, dict):
-        projection = {}
-
-    projection_fields: list[str] = []
-    coverage_effect = str(projection.get("coverage_effect", "")).strip()
-    if coverage_effect:
-        projection_fields.append(f"coverage={coverage_effect}")
-    report_family_member = str(projection.get("report_family_member", "")).strip()
-    if report_family_member:
-        projection_fields.append(f"report={report_family_member}")
-    blocker_class = str(projection.get("blocker_class", "")).strip()
-    if blocker_class:
-        projection_fields.append(f"blocker={blocker_class}")
-
-    if not projection_fields:
-        return f"diagnostic: {status}"
-    return f"diagnostic: {status}; projection: {', '.join(projection_fields)}"
-
-
-def _frontend_diagnostic_payload(summary: dict[str, object]) -> dict[str, object]:
-    diagnostic = summary.get("diagnostic")
-    if isinstance(diagnostic, dict):
-        return diagnostic
-
-    upstream = summary.get("upstream_contract_verification")
-    if not isinstance(upstream, dict):
-        return {}
-
-    diagnostic = upstream.get("diagnostic")
-    if isinstance(diagnostic, dict):
-        return diagnostic
-    return {}

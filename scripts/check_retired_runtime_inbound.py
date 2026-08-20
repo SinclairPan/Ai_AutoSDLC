@@ -157,6 +157,14 @@ def _resolve_imports(module: str, path: Path, known: set[str]) -> set[str]:
                 candidates.append(base)
                 candidates.extend(f"{base}.{alias.name}" for alias in node.names)
         for candidate in candidates:
+            # Keep retired targets visible even after their source file has been
+            # physically deleted. Otherwise the resolver collapses the import to
+            # the nearest surviving parent package and the Stage B guard becomes
+            # blind to a dangling production dependency.
+            if _family_for_module(candidate) is not None:
+                imported.add(candidate)
+                imported.update(_parent_packages(candidate, known))
+                continue
             if candidate in known:
                 imported.add(candidate)
                 imported.update(_parent_packages(candidate, known))

@@ -27,7 +27,6 @@ def _report(*, blockers: tuple[str, ...]) -> SimpleNamespace:
         profile=verify_cmd_module.ConstraintProfile.PROJECT,
         check_objects=(),
         coverage_gaps=(),
-        release_gate=None,
     )
 
 
@@ -47,9 +46,10 @@ def test_verify_constraints_terminal_deduplicates_blockers_without_writes(
     )
 
     try:
-        with verify_cmd_module.console.capture() as capture, pytest.raises(
-            typer.Exit
-        ) as exc_info:
+        with (
+            verify_cmd_module.console.capture() as capture,
+            pytest.raises(typer.Exit) as exc_info,
+        ):
             verify_cmd_module.verify_constraints(
                 as_json=False,
                 profile=verify_cmd_module.ConstraintProfile.PROJECT,

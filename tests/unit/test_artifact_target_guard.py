@@ -39,7 +39,7 @@ def test_detect_misplaced_formal_artifacts_finds_formal_spec_in_superpowers(
     misplaced.parent.mkdir(parents=True, exist_ok=True)
     misplaced.write_text(
         "# 功能规格：Misplaced\n\n"
-        "**功能编号**：`073-demo`\n"
+        "**功能编号**：`sample-demo`\n"
         "**创建日期**：2026-04-07\n"
         "**状态**：草稿\n",
         encoding="utf-8",
@@ -91,7 +91,9 @@ def test_evaluate_formal_artifact_target_guard_deduplicates_source_summary_lists
     tmp_path: Path,
 ) -> None:
     for idx in range(2):
-        misplaced = tmp_path / "docs" / "superpowers" / "plans" / f"formal-plan-{idx}.md"
+        misplaced = (
+            tmp_path / "docs" / "superpowers" / "plans" / f"formal-plan-{idx}.md"
+        )
         misplaced.parent.mkdir(parents=True, exist_ok=True)
         misplaced.write_text(
             "# 实施计划：Misplaced\n\n"
@@ -106,7 +108,9 @@ def test_evaluate_formal_artifact_target_guard_deduplicates_source_summary_lists
     result = evaluate_formal_artifact_target_guard(tmp_path)
 
     assert result.reason_codes == ["misplaced_formal_artifact_detected"]
-    assert len(result.sample_entries) == len({entry["path"] for entry in result.sample_entries})
+    assert len(result.sample_entries) == len(
+        {entry["path"] for entry in result.sample_entries}
+    )
 
 
 def test_evaluate_formal_artifact_target_guard_collects_first_three_unique_sample_entries(
@@ -124,7 +128,9 @@ def test_evaluate_formal_artifact_target_guard_collects_first_three_unique_sampl
         encoding="utf-8",
     )
     for idx in range(1, 5):
-        misplaced = tmp_path / "docs" / "superpowers" / "plans" / f"formal-plan-{idx}.md"
+        misplaced = (
+            tmp_path / "docs" / "superpowers" / "plans" / f"formal-plan-{idx}.md"
+        )
         misplaced.write_text(
             "# 实施计划：Misplaced\n\n"
             "```text\n"

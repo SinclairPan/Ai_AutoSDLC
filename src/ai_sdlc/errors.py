@@ -4,17 +4,7 @@ from __future__ import annotations
 
 
 class ProjectNotInitializedError(Exception):
-    """Raised when an operation requires an initialized project but one is not found.
-
-    Corresponds to BR-003: existing_project_uninitialized must block Studio calls.
-    """
-
-
-class StudioRoutingError(Exception):
-    """Raised when a work item is routed to an incompatible Studio.
-
-    Corresponds to BR-033: production_issue must not be routed to PRD Studio.
-    """
+    """Raised when an operation requires an initialized project but none is found."""
 
 
 class RefreshRequiredError(Exception):

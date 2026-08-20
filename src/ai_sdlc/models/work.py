@@ -20,6 +20,7 @@ def _dedupe_items_by_text(value: object) -> list[object]:
         unique.append(item)
     return unique
 
+
 # ---------------------------------------------------------------------------
 # Enums (from work_item)
 # ---------------------------------------------------------------------------
@@ -303,7 +304,7 @@ class PrdReviewerDecision(BaseModel):
 
 
 class IncidentBrief(BaseModel):
-    """Input to the Incident Studio: structured incident report."""
+    """Structured incident report."""
 
     phenomenon: str
     impact_scope: str = ""
@@ -315,7 +316,7 @@ class IncidentBrief(BaseModel):
 
 
 class IncidentAnalysis(BaseModel):
-    """Output from Incident Studio: root cause analysis."""
+    """Root cause analysis for an incident."""
 
     work_item_id: str
     summary: str
@@ -345,7 +346,7 @@ class IncidentTask(BaseModel):
 
 
 class IncidentFixPlan(BaseModel):
-    """Output from Incident Studio: fix plan with tasks."""
+    """Incident fix plan with tasks."""
 
     work_item_id: str
     strategy: str
@@ -365,6 +366,7 @@ class PostmortemRecord(BaseModel):
     lessons_learned: list[str] = []
     action_items: list[str] = []
     prevention_measures: list[str] = []
+
 
 # ---------------------------------------------------------------------------
 # Change request models (from change_request)
@@ -520,7 +522,7 @@ class ExecutionPath(BaseModel):
 
 
 class MaintenanceBrief(BaseModel):
-    """Input to the Maintenance Brief Studio."""
+    """Structured maintenance brief."""
 
     description: str
     impact_scope: list[str] = []
@@ -534,7 +536,7 @@ class MaintenanceBrief(BaseModel):
 
 
 class MaintenancePlan(BaseModel):
-    """Output from the Maintenance Brief Studio."""
+    """Maintenance plan derived from a brief."""
 
     work_item_id: str
     brief_summary: str

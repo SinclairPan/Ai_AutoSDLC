@@ -108,6 +108,36 @@ def test_scanner_models_function_local_imports(tmp_path: Path) -> None:
     ]
 
 
+def test_scanner_preserves_missing_retired_function_local_targets(
+    tmp_path: Path,
+) -> None:
+    core_package = tmp_path / "core_init.py"
+    core_package.write_text("", encoding="utf-8")
+    sources = (
+        "def load_legacy():\n    import ai_sdlc.core.program_service\n",
+        "def load_legacy():\n    from ai_sdlc.core import program_service\n",
+    )
+
+    for index, source in enumerate(sources):
+        entry = tmp_path / f"entry_{index}.py"
+        entry.write_text(source, encoding="utf-8")
+        graph = _build_graph(
+            {
+                "retained.entry": entry,
+                "ai_sdlc.core": core_package,
+            }
+        )
+
+        violations = _scan_graph(graph, roots=("retained.entry",))
+
+        assert len(violations) == 1
+        assert violations[0]["family"] == "program"
+        assert violations[0]["chain"] == [
+            "retained.entry",
+            "ai_sdlc.core.program_service",
+        ]
+
+
 def test_retained_roots_do_not_load_planned_deletions_in_fresh_process() -> None:
     prefixes = sorted(
         {

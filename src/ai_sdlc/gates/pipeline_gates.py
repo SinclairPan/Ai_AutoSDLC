@@ -10,9 +10,6 @@ from pathlib import Path
 from typing import Any
 
 from ai_sdlc.core.frontend_contract_verification import FRONTEND_CONTRACT_SOURCE_NAME
-from ai_sdlc.core.frontend_inheritance_truth import (
-    summarize_frontend_inheritance_status_for_display,
-)
 from ai_sdlc.gates.extra_gates import PostmortemGate
 from ai_sdlc.gates.task_ac_checks import (
     doc_first_execute_blocker,
@@ -21,8 +18,6 @@ from ai_sdlc.gates.task_ac_checks import (
 from ai_sdlc.models.gate import GateCheck, GateResult, GateVerdict
 from ai_sdlc.models.state import ExecutionStatus
 from ai_sdlc.utils.helpers import AI_SDLC_DIR
-
-FRONTEND_GATE_SOURCE_NAME = "frontend gate verification"
 
 
 def _dedupe_text_items(values: list[Any]) -> list[str]:
@@ -120,13 +115,17 @@ class InitGate:
             )
         )
 
-        tech_content = tech_stack.read_text(encoding="utf-8") if tech_stack.exists() else ""
+        tech_content = (
+            tech_stack.read_text(encoding="utf-8") if tech_stack.exists() else ""
+        )
         has_source = "source:" in tech_content.lower() or "来源:" in tech_content
         checks.append(
             GateCheck(
                 name="tech_stack_source",
                 passed=has_source,
-                message="" if has_source else "tech-stack.yml missing source attribution",
+                message=""
+                if has_source
+                else "tech-stack.yml missing source attribution",
             )
         )
 
@@ -185,7 +184,7 @@ class RefineGate:
                     passed=not has_clarification,
                     message=""
                     if not has_clarification
-                        else "Found NEEDS_CLARIFICATION markers",
+                    else "Found NEEDS_CLARIFICATION markers",
                 )
             )
 
@@ -360,9 +359,13 @@ class VerificationGate:
         blockers = _string_tuple(context.get("constraint_blockers", ()))
         coverage_gaps = _string_tuple(context.get("coverage_gaps", ()))
         frontend_contract_payload = context.get("frontend_contract_verification")
-        frontend_gate_payload = context.get("frontend_gate_verification")
 
-        if sources or objects or "constraint_blockers" in context or "coverage_gaps" in context:
+        if (
+            sources
+            or objects
+            or "constraint_blockers" in context
+            or "coverage_gaps" in context
+        ):
             surface_ok = bool(sources) and bool(objects)
             checks.append(
                 GateCheck(
@@ -420,18 +423,9 @@ class VerificationGate:
                         payload=frontend_contract_payload,
                     )
                 )
-            if _frontend_gate_summary_requested(
-                sources=sources,
-                payload=frontend_gate_payload,
-            ):
-                checks.extend(
-                    _frontend_gate_gate_checks(
-                        sources=sources,
-                        objects=objects,
-                        payload=frontend_gate_payload,
-                    )
-                )
-            verdict = GateVerdict.PASS if all(c.passed for c in checks) else GateVerdict.RETRY
+            verdict = (
+                GateVerdict.PASS if all(c.passed for c in checks) else GateVerdict.RETRY
+            )
             return GateResult(stage="verification", verdict=verdict, checks=checks)
 
         critical = context.get("critical_issues", 0)
@@ -551,9 +545,7 @@ def _frontend_contract_gate_checks(
             message=""
             if summary_declared and not unlinked_objects
             else "frontend contract verification summary objects missing from verification_check_objects: "
-            + ", ".join(
-                _dedupe_text_items(list(unlinked_objects or payload_objects))
-            ),
+            + ", ".join(_dedupe_text_items(list(unlinked_objects or payload_objects))),
         ),
         GateCheck(
             name="frontend_contract_status_clear",
@@ -561,109 +553,6 @@ def _frontend_contract_gate_checks(
             message=""
             if status_clear
             else _summarize_frontend_contract_status(
-                gate_verdict=payload_gate_verdict,
-                blockers=payload_blockers,
-                coverage_gaps=payload_coverage_gaps,
-            ),
-        ),
-    ]
-
-
-def _frontend_gate_summary_requested(
-    *,
-    sources: tuple[str, ...],
-    payload: object,
-) -> bool:
-    return FRONTEND_GATE_SOURCE_NAME in sources or isinstance(payload, dict)
-
-
-def _frontend_gate_gate_checks(
-    *,
-    sources: tuple[str, ...],
-    objects: tuple[str, ...],
-    payload: object,
-) -> list[GateCheck]:
-    if not isinstance(payload, dict):
-        return [
-            GateCheck(
-                name="frontend_gate_summary_declared",
-                passed=False,
-                message=(
-                    "frontend gate verification source declared but summary payload missing"
-                ),
-            ),
-            GateCheck(
-                name="frontend_gate_source_linked",
-                passed=FRONTEND_GATE_SOURCE_NAME in sources,
-                message=""
-                if FRONTEND_GATE_SOURCE_NAME in sources
-                else "frontend gate verification summary missing from verification_sources",
-            ),
-            GateCheck(
-                name="frontend_gate_status_clear",
-                passed=False,
-                message="frontend gate verification summary payload missing",
-            ),
-        ]
-
-    payload_source = str(payload.get("source_name", "")).strip()
-    payload_objects = _string_tuple(payload.get("check_objects", ()))
-    payload_blockers = _string_tuple(payload.get("blockers", ()))
-    payload_coverage_gaps = _string_tuple(payload.get("coverage_gaps", ()))
-    payload_gate_verdict = str(payload.get("gate_verdict", "")).strip()
-
-    summary_declared = (
-        bool(payload_source) and bool(payload_objects) and bool(payload_gate_verdict)
-    )
-    missing_payload_fields = [
-        field_name
-        for field_name, present in (
-            ("source_name", bool(payload_source)),
-            ("check_objects", bool(payload_objects)),
-            ("gate_verdict", bool(payload_gate_verdict)),
-        )
-        if not present
-    ]
-    source_linked = payload_source in sources
-    unlinked_objects = [name for name in payload_objects if name not in objects]
-    status_clear = (
-        payload_gate_verdict == GateVerdict.PASS.value
-        and not payload_blockers
-        and not payload_coverage_gaps
-    )
-
-    return [
-        GateCheck(
-            name="frontend_gate_summary_declared",
-            passed=summary_declared,
-            message=""
-            if summary_declared
-            else "frontend gate verification summary missing fields: "
-            + ", ".join(_dedupe_text_items(missing_payload_fields)),
-        ),
-        GateCheck(
-            name="frontend_gate_source_linked",
-            passed=source_linked,
-            message=""
-            if source_linked
-            else "frontend gate verification summary not linked to verification_sources",
-        ),
-        GateCheck(
-            name="frontend_gate_check_objects_linked",
-            passed=summary_declared and not unlinked_objects,
-            message=""
-            if summary_declared and not unlinked_objects
-            else "frontend gate verification summary objects missing from verification_check_objects: "
-            + ", ".join(
-                _dedupe_text_items(list(unlinked_objects or payload_objects))
-            ),
-        ),
-        GateCheck(
-            name="frontend_gate_status_clear",
-            passed=status_clear,
-            message=""
-            if status_clear
-            else _summarize_frontend_gate_status(
                 gate_verdict=payload_gate_verdict,
                 blockers=payload_blockers,
                 coverage_gaps=payload_coverage_gaps,
@@ -693,40 +582,14 @@ def _summarize_frontend_contract_status(
     if gate_verdict:
         details.append(f"gate_verdict={gate_verdict}")
     if blockers:
-        details.append(
-            "blockers=" + "; ".join(_dedupe_text_items(list(blockers))[:2])
-        )
+        details.append("blockers=" + "; ".join(_dedupe_text_items(list(blockers))[:2]))
     if coverage_gaps:
         details.append(
-            "coverage_gaps="
-            + ", ".join(_dedupe_text_items(list(coverage_gaps))[:3])
+            "coverage_gaps=" + ", ".join(_dedupe_text_items(list(coverage_gaps))[:3])
         )
     if details:
         return "frontend contract verification not clear: " + " | ".join(details)
     return "frontend contract verification not clear"
-
-
-def _summarize_frontend_gate_status(
-    *,
-    gate_verdict: str,
-    blockers: tuple[str, ...],
-    coverage_gaps: tuple[str, ...],
-) -> str:
-    details: list[str] = []
-    if gate_verdict:
-        details.append(f"gate_verdict={gate_verdict}")
-    if blockers:
-        details.append(
-            "blockers=" + "; ".join(_dedupe_text_items(list(blockers))[:2])
-        )
-    if coverage_gaps:
-        details.append(
-            "coverage_gaps="
-            + ", ".join(_dedupe_text_items(list(coverage_gaps))[:3])
-        )
-    if details:
-        return "frontend gate verification not clear: " + " | ".join(details)
-    return "frontend gate verification not clear"
 
 
 class ReviewGate:
@@ -808,9 +671,7 @@ class ExecuteGate:
                     )
                 )
                 target_task = str(
-                    context.get("target_task_id")
-                    or context.get("current_task")
-                    or ""
+                    context.get("target_task_id") or context.get("current_task") or ""
                 ).strip()
                 if target_task:
                     blocker = doc_first_execute_blocker(
@@ -933,43 +794,6 @@ class DoneGate:
             )
         )
 
-        truth_required = context.get("program_truth_audit_required", False)
-        if truth_required:
-            truth_ready = context.get("program_truth_audit_ready", False)
-            truth_detail = context.get("program_truth_audit_detail", "")
-            truth_state = str(context.get("program_truth_audit_state", "")).strip()
-            truth_inheritance_status = context.get(
-                "program_truth_audit_frontend_inheritance_status", {}
-            )
-            truth_next_actions = _dedupe_text_items(
-                list(context.get("program_truth_audit_next_actions", []) or [])
-            )
-            truth_message = str(truth_detail or "Program truth audit is not ready")
-            if truth_state:
-                truth_message = f"state={truth_state}; {truth_message}"
-            if isinstance(truth_inheritance_status, dict) and truth_inheritance_status:
-                inheritance_summary = summarize_frontend_inheritance_status_for_display(
-                    truth_inheritance_status
-                )
-                if inheritance_summary:
-                    truth_message += f"; inheritance: {inheritance_summary}"
-                inheritance_risk = _done_gate_frontend_inheritance_risk_note(
-                    truth_inheritance_status
-                )
-                if inheritance_risk:
-                    truth_message += f"; risk: {inheritance_risk}"
-            if not truth_ready and truth_next_actions:
-                truth_message += "; next action: " + " ; ".join(
-                    _dedupe_text_items(list(truth_next_actions))[:2]
-                )
-            checks.append(
-                GateCheck(
-                    name="program_truth_audit_ready",
-                    passed=bool(truth_ready),
-                    message="" if truth_ready else truth_message,
-                )
-            )
-
         summary_path = context.get("summary_path")
         if isinstance(summary_path, str) and summary_path.strip():
             summary = Path(summary_path)
@@ -1017,21 +841,6 @@ class DoneGate:
         all_passed = all(c.passed for c in checks)
         verdict = GateVerdict.PASS if all_passed else GateVerdict.RETRY
         return GateResult(stage="done", verdict=verdict, checks=checks)
-
-
-def _done_gate_frontend_inheritance_risk_note(
-    inheritance_status: dict[str, Any],
-) -> str:
-    generation_state = str(inheritance_status.get("generation", "")).strip()
-    quality_state = str(inheritance_status.get("quality", "")).strip()
-    if generation_state == "not_inherited" or quality_state == "not_inherited":
-        return (
-            "continuing may generate against the wrong component library or validate "
-            "against the wrong standard"
-        )
-    if generation_state == "blocked" or quality_state == "blocked":
-        return "later code generation or frontend tests remain blocked"
-    return ""
 
 
 def _all_user_stories_have_scenarios(content: str) -> bool:

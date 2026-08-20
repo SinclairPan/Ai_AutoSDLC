@@ -88,7 +88,6 @@ VERIFICATION_PROFILE_SURFACES: dict[Path, tuple[str, ...]] = {
         "truth-only",
         "code-change",
         "uv run ai-sdlc verify constraints",
-        "python -m ai_sdlc program truth sync --dry-run",
         "uv run pytest",
         "uv run ruff check",
     ),
@@ -343,7 +342,6 @@ ADAPTER_TEMPLATE_COMMENT_POLICY_REQUIRED_TOKENS = (
     "维护契约",
     "docstring",
 )
-FEATURE_CONTRACT_SURFACE_OBJECT = "feature_contract_surfaces"
 FRAMEWORK_DEFECT_BACKLOG_REQUIRED_FIELDS = (
     "现象",
     "触发场景",
@@ -382,889 +380,16 @@ VERIFICATION_GATE_OBJECTS = (
     "reconcile_smoke_contract",
     "doc_first_surfaces",
     "verification_profiles",
-    FEATURE_CONTRACT_SURFACE_OBJECT,
     "branch_lifecycle",
     "checkpoint_spec_dir",
     "tasks_acceptance",
     "skip_registry_mapping",
 )
-FRONTEND_SOLUTION_CONFIRMATION_SOURCE_NAME = (
-    "frontend solution confirmation verification"
-)
-FRONTEND_SOLUTION_CONFIRMATION_COVERAGE_GAP = (
-    "frontend_solution_confirmation_consistency"
-)
-FRONTEND_THEME_TOKEN_GOVERNANCE_SOURCE_NAME = (
-    "frontend theme token governance verification"
-)
-FRONTEND_THEME_TOKEN_GOVERNANCE_COVERAGE_GAP = (
-    "frontend_theme_token_governance_consistency"
-)
-FRONTEND_QUALITY_PLATFORM_SOURCE_NAME = (
-    "frontend quality platform verification"
-)
-FRONTEND_QUALITY_PLATFORM_COVERAGE_GAP = (
-    "frontend_quality_platform_consistency"
-)
-FRONTEND_PROVIDER_EXPANSION_SOURCE_NAME = (
-    "frontend provider expansion verification"
-)
-FRONTEND_PROVIDER_EXPANSION_COVERAGE_GAP = (
-    "frontend_provider_expansion_consistency"
-)
-FRONTEND_PROVIDER_RUNTIME_ADAPTER_SOURCE_NAME = (
-    "frontend provider runtime adapter verification"
-)
-FRONTEND_PROVIDER_RUNTIME_ADAPTER_COVERAGE_GAP = (
-    "frontend_provider_runtime_adapter_consistency"
-)
-FRONTEND_CROSS_PROVIDER_CONSISTENCY_SOURCE_NAME = (
-    "frontend cross provider consistency verification"
-)
-FRONTEND_CROSS_PROVIDER_CONSISTENCY_COVERAGE_GAP = (
-    "frontend_cross_provider_consistency"
-)
-FRONTEND_PUBLIC_PRIMEVUE_IMPORT_BOUNDARY_SOURCE_NAME = (
-    "frontend public-primevue import boundary verification"
-)
-FRONTEND_PUBLIC_PRIMEVUE_IMPORT_BOUNDARY_CHECK_OBJECTS = (
-    "frontend_public_primevue_import_boundary",
-)
-FRONTEND_PUBLIC_PRIMEVUE_IMPORT_BOUNDARY_IMPORT_RE = re.compile(
-    r"""(?x)
-    (?:import\s+(?:type\s+)?[^;]*?\s+from\s*|import\s*\()\s*
-    ["']primevue/
-    """
-)
-FRONTEND_PUBLIC_PRIMEVUE_IMPORT_BOUNDARY_EXTENSIONS = frozenset(
-    {".js", ".jsx", ".ts", ".tsx", ".vue"}
-)
-FRONTEND_PUBLIC_PRIMEVUE_DEFAULT_RECOMMENDATION = (
-    "vue3",
-    "public-primevue",
-    "modern-saas",
-)
-FRONTEND_PUBLIC_PRIMEVUE_REQUIRED_TEMPLATE_FILES = (
-    Path("index.html"),
-    Path("package.json"),
-    Path("uno.config.ts"),
-    Path("vite.config.ts"),
-    Path("src") / "App.vue",
-    Path("src") / "main.ts",
-    Path("src") / "theme.ts",
-    Path("src") / "api" / "client.ts",
-    Path("src") / "api" / "interceptors.ts",
-    Path("src") / "api" / "types.ts",
-    Path("src") / "components" / "base" / "BaseButton.vue",
-    Path("src") / "components" / "base" / "BaseTable.vue",
-    Path("src") / "components" / "base" / "BaseDialog.vue",
-    Path("src") / "components" / "base" / "BaseForm.vue",
-    Path("src") / "i18n" / "index.ts",
-    Path("src") / "plugins" / "primevue.ts",
-    Path("src") / "router" / "index.ts",
-    Path("src") / "stores" / "app.ts",
-    Path("src") / "styles" / "variables.css",
-    Path("src") / "styles" / "main.css",
-    Path("src") / "transform" / "index.ts",
-)
-FRONTEND_PUBLIC_PRIMEVUE_SMOKE_PAGE_TEMPLATE_FILES = (
-    Path("src") / "pages" / "ManagedDeliverySmoke.vue",
-    Path("src") / "views" / "ManagedDeliverySmoke.vue",
-)
-FRONTEND_EVIDENCE_CLASS_ALLOWED_VALUES = (
-    "framework_capability",
-    "consumer_adoption",
-)
-FRONTEND_EVIDENCE_CLASS_CONTRACT_REF = (
-    "specs/085-frontend-evidence-class-verify-first-runtime-cut-baseline/spec.md"
-)
-FRONTEND_EVIDENCE_CLASS_MIN_SEQUENCE = 82
-FRONTEND_EVIDENCE_CLASS_KEY = "frontend_evidence_class"
-FRONTEND_EVIDENCE_CLASS_PROBLEM_FAMILY = (
-    "frontend_evidence_class_authoring_malformed"
-)
-_FRONTEND_EVIDENCE_CLASS_BODY_DECL_RE = re.compile(
-    r'(?m)^[ \t]*frontend_evidence_class\s*:\s*(["\']?)(?P<value>[A-Za-z_-]*)\1\s*$'
-)
-_FRONTEND_EVIDENCE_CLASS_DUPLICATE_RE = re.compile(
-    r"(?m)^[ \t]*frontend_evidence_class\s*:"
-)
-FRONTEND_SOLUTION_CONFIRMATION_CHECK_OBJECTS = (
-    "frontend_provider_profile_artifacts",
-    "frontend_solution_style_pack_artifacts",
-    "frontend_solution_install_strategy_artifacts",
-    "frontend_solution_snapshot_artifacts",
-    FRONTEND_SOLUTION_CONFIRMATION_COVERAGE_GAP,
-)
-FRONTEND_THEME_TOKEN_GOVERNANCE_CHECK_OBJECTS = (
-    "frontend_theme_governance_manifest_artifacts",
-    "frontend_theme_token_mapping_artifacts",
-    "frontend_theme_override_policy_artifacts",
-    "frontend_theme_style_editor_boundary_artifacts",
-    FRONTEND_THEME_TOKEN_GOVERNANCE_COVERAGE_GAP,
-)
-FRONTEND_QUALITY_PLATFORM_CHECK_OBJECTS = (
-    "frontend_quality_platform_manifest_artifacts",
-    "frontend_quality_platform_handoff_schema_artifacts",
-    "frontend_quality_platform_coverage_matrix_artifacts",
-    "frontend_quality_platform_evidence_platform_artifacts",
-    "frontend_quality_platform_interaction_flow_artifacts",
-    "frontend_quality_platform_truth_surfacing_artifacts",
-    "frontend_quality_platform_verdict_artifacts",
-    FRONTEND_QUALITY_PLATFORM_COVERAGE_GAP,
-)
-FRONTEND_PROVIDER_EXPANSION_CHECK_OBJECTS = (
-    "frontend_provider_expansion_manifest_artifacts",
-    "frontend_provider_expansion_handoff_schema_artifacts",
-    "frontend_provider_expansion_truth_surfacing_artifacts",
-    "frontend_provider_expansion_choice_surface_policy_artifacts",
-    "frontend_provider_expansion_react_boundary_artifacts",
-    FRONTEND_PROVIDER_EXPANSION_COVERAGE_GAP,
-)
-FRONTEND_PROVIDER_RUNTIME_ADAPTER_CHECK_OBJECTS = (
-    "frontend_provider_runtime_adapter_manifest_artifacts",
-    "frontend_provider_runtime_adapter_handoff_schema_artifacts",
-    "frontend_provider_runtime_adapter_targets_artifacts",
-    "frontend_provider_runtime_adapter_scaffold_artifacts",
-    "frontend_provider_runtime_adapter_boundary_receipt_artifacts",
-    FRONTEND_PROVIDER_RUNTIME_ADAPTER_COVERAGE_GAP,
-)
-FRONTEND_CROSS_PROVIDER_CONSISTENCY_CHECK_OBJECTS = (
-    "frontend_cross_provider_consistency_manifest_artifacts",
-    "frontend_cross_provider_consistency_handoff_schema_artifacts",
-    "frontend_cross_provider_consistency_truth_surfacing_artifacts",
-    "frontend_cross_provider_consistency_readiness_gate_artifacts",
-    "frontend_cross_provider_consistency_pair_diff_summary_artifacts",
-    "frontend_cross_provider_consistency_pair_certification_artifacts",
-    "frontend_cross_provider_consistency_pair_evidence_index_artifacts",
-    FRONTEND_CROSS_PROVIDER_CONSISTENCY_COVERAGE_GAP,
-)
-
-
-@dataclass(frozen=True, slots=True)
-class FeatureContractEvidence:
-    """One evidence entry required to satisfy a feature-contract surface."""
-
-    relative_paths: tuple[Path, ...]
-    required_tokens: tuple[str, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "relative_paths",
-            tuple(dict.fromkeys(self.relative_paths)),
-        )
-        object.__setattr__(
-            self,
-            "required_tokens",
-            tuple(dict.fromkeys(self.required_tokens)),
-        )
-
-
-@dataclass(frozen=True, slots=True)
-class FeatureContractSurface:
-    """Minimal work-item scoped feature-contract surface requirement."""
-
-    label: str
-    evidence_entries: tuple[FeatureContractEvidence, ...]
-
-    def __post_init__(self) -> None:
-        object.__setattr__(
-            self,
-            "evidence_entries",
-            tuple(dict.fromkeys(self.evidence_entries)),
-        )
-
-
-FRAMEWORK_003_FEATURE_CONTRACT_WORK_ITEM_ID = (
-    "003-cross-cutting-authoring-and-extension-contracts"
-)
-
-FEATURE_CONTRACT_SURFACES: dict[str, tuple[FeatureContractSurface, ...]] = {
-    "003": (
-        # The 003 work item is intentionally scoped to the four missing contract groups
-        # called out in the task plan. Each surface is satisfied by one of the listed
-        # code files containing the required contract markers.
-        FeatureContractSurface(
-            label="draft_prd/final_prd",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "models" / "work.py",),
-                    required_tokens=("draft_prd", "final_prd"),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="reviewer decision",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "models" / "work.py",),
-                    required_tokens=("reviewer_decision", "approve", "revise", "block"),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "core" / "reviewer_gate.py",),
-                    required_tokens=(
-                        "ALLOW",
-                        "DENY_MISSING",
-                        "DENY_REVISE",
-                        "DENY_BLOCK",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "core" / "state_machine.py",),
-                    required_tokens=(
-                        "transition_work_item",
-                        "ReviewerGateOutcomeKind",
-                        "InvalidTransitionError",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "core" / "close_check.py",),
-                    required_tokens=(
-                        "evaluate_reviewer_gate",
-                        "DEV_REVIEWED",
-                        "review_gate",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="backend delegation/fallback",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "backends" / "native.py",),
-                    required_tokens=("backend_capability", "delegation", "fallback"),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "backends" / "routing.py",),
-                    required_tokens=(
-                        "BackendRoutingCoordinator",
-                        "generate_spec",
-                        "generate_plan",
-                        "generate_tasks",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(Path("src") / "ai_sdlc" / "generators" / "doc_gen.py",),
-                    required_tokens=(
-                        "backend_registry",
-                        "requested_backend",
-                        "backend_policy",
-                        "backend_decisions",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="release-gate evidence",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("specs")
-                        / "003-cross-cutting-authoring-and-extension-contracts"
-                        / "release-gate-evidence.md",
-                    ),
-                    required_tokens=("release_gate_evidence", "PASS", "WARN", "BLOCK"),
-                ),
-            ),
-        ),
-    ),
-    "189": (
-        FeatureContractSurface(
-            label="local PR review CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "pr_review_cmd.py",
-                    ),
-                    required_tokens=(
-                        "pr_review_doctor",
-                        "pr_review_start",
-                        "pr_review_status",
-                        "pr_review_fix",
-                        "pr_review_rerun",
-                        "pr_review_close",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="local PR review provider isolation",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_provider.py",
-                    ),
-                    required_tokens=(
-                        "ProviderRunnerInvocation",
-                        "run_provider_command",
-                        "run_mock_reviewer",
-                        "code_egress",
-                        "allowlist",
-                        "_is_reviewed_dirty_status_for_launch",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="local PR review schema policy artifacts",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_pack.py",
-                    ),
-                    required_tokens=(
-                        "review-pack.json",
-                        "redaction-report.json",
-                        "model-resolution.json",
-                        "source-resolution.json",
-                        "diff.patch",
-                        "_diff_git_paths",
-                        "_diff_file_blobs",
-                        "_normalize_patch_path",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_policy.py",
-                    ),
-                    required_tokens=(
-                        "loop-policy.yaml",
-                        "current session/current CLI agent",
-                        "Explicit model service is unavailable",
-                        "code_egress",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="local PR review source adapter and model fallback boundary",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_models.py",
-                    ),
-                    required_tokens=(
-                        "DiffSourceDescriptor",
-                        "SourceAdapterResolution",
-                        "source_access_status",
-                        "model_unavailable_reason",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "pr_review_source.py",
-                    ),
-                    required_tokens=(
-                        "local-git-range",
-                        "local-staged",
-                        "local-unstaged",
-                        "Start local PR review from patch file",
-                        "patch_file_not_found",
-                        "git_head_unavailable",
-                        "SCM PR/MR diff source adapter is not implemented in P0",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_policy.py",
-                    ),
-                    required_tokens=(
-                        "current-first local agent contract",
-                        "Explicit model service is unavailable or not connected",
-                        "provider_default_model",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="local PR review user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "ai-sdlc pr-review doctor",
-                        "ai-sdlc pr-review start",
-                        "model current",
-                        "DiffSource",
-                        "local-staged",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("docs") / "pull-request-checklist.zh.md",
-                    ),
-                    required_tokens=(
-                        "本地 PR review",
-                        "DiffSource",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="local PR review P2 enterprise fail-closed boundaries",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("specs")
-                        / "189-loop-engine-local-adversarial-pr-review"
-                        / "plan.md",
-                    ),
-                    required_tokens=(
-                        "多 reviewer",
-                        "artifact 签名",
-                        "远端 PR inline comments",
-                        "fail-closed",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("specs")
-                        / "189-loop-engine-local-adversarial-pr-review"
-                        / "tasks.md",
-                    ),
-                    required_tokens=(
-                        "T91",
-                        "不得在无企业身份",
-                        "GitHub/GitLab/Gitee/self-hosted SCM",
-                        "fail-closed",
-                    ),
-                ),
-            ),
-        ),
-    ),
-    "190": (
-        FeatureContractSurface(
-            label="loop status/list core readers",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_status.py",
-                    ),
-                    required_tokens=(
-                        "get_loop_status",
-                        "list_loops",
-                        "current-review.json",
-                        "review-run.json",
-                        "malformed_count",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="loop status/list CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "loop_cmd.py",
-                    ),
-                    required_tokens=(
-                        "loop_status",
-                        "loop_list",
-                        "get_loop_status",
-                        "list_loops",
-                        "json_output",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="loop status/list read-only user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "ai-sdlc loop status",
-                        "ai-sdlc loop list",
-                        "read-only artifact index",
-                        "do not call GPT",
-                        "Claude, DeepSeek",
-                        "GLM, Codex",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("docs") / "pull-request-checklist.zh.md",
-                    ),
-                    required_tokens=(
-                        "Loop status/list",
-                        "只读读取",
-                        "不得发起模型请求",
-                        "不能替代本地对抗 review agent",
-                    ),
-                ),
-            ),
-        ),
-    ),
-    "191": (
-        FeatureContractSurface(
-            label="loop next guidance core readers",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_status.py",
-                    ),
-                    required_tokens=(
-                        "LoopNextActionGuidance",
-                        "next_guidance",
-                        "requires_model",
-                        "writes_artifacts",
-                        "writes_code",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="loop next guidance CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "loop_cmd.py",
-                    ),
-                    required_tokens=(
-                        "Next command",
-                        "Model call",
-                        "Writes artifacts",
-                        "Writes code",
-                        "_emit_guidance",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="loop next guidance read-only user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "next guidance",
-                        "does not execute",
-                        "does not call any model",
-                        "local independent review agent",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("docs") / "pull-request-checklist.zh.md",
-                    ),
-                    required_tokens=(
-                        "Next Action Guidance",
-                        "只读推导",
-                        "不得执行下一步命令",
-                        "不得发起模型请求",
-                    ),
-                ),
-            ),
-        ),
-    ),
-    "192": (
-        FeatureContractSurface(
-            label="requirement loop core runtime",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "requirement_loop.py",
-                    ),
-                    required_tokens=(
-                        "RequirementIntake",
-                        "RequirementFreeze",
-                        "start_requirement_loop",
-                        "freeze_requirement_loop",
-                        "CURRENT_REQUIREMENT_PATH",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="requirement loop status and CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_status.py",
-                    ),
-                    required_tokens=(
-                        "RequirementLoopSummary",
-                        "_get_requirement_loop_status",
-                        "_list_requirement_loops",
-                        "current-requirement.json",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "loop_cmd.py",
-                    ),
-                    required_tokens=(
-                        "requirement_app",
-                        "requirement_start",
-                        "requirement_freeze",
-                        "--type",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="requirement loop user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "ai-sdlc loop requirement start",
-                        "ai-sdlc loop status --type requirement",
-                        "ai-sdlc loop review --type requirement",
-                        "ai-sdlc loop requirement freeze --loop-id <loop-id> "
-                        "--expect-review-digest <input_digest> --yes",
-                        "design-contract",
-                    ),
-                ),
-            ),
-        ),
-    ),
-    "193": (
-        FeatureContractSurface(
-            label="design-contract loop core runtime",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "design_contract_loop.py",
-                    ),
-                    required_tokens=(
-                        "check_design_contract_loop",
-                        "close_design_contract_loop",
-                        "CURRENT_DESIGN_CONTRACT_PATH",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src")
-                        / "ai_sdlc"
-                        / "core"
-                        / "design_contract_models.py",
-                    ),
-                    required_tokens=(
-                        "DesignContractInput",
-                        "DesignContractReport",
-                        "DesignContractClose",
-                        "DesignContractCheckOptions",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="design-contract loop status and CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_status.py",
-                    ),
-                    required_tokens=(
-                        "DesignContractLoopSummary",
-                        "_get_design_contract_loop_status",
-                        "_list_design_contract_loops",
-                        "current-design-contract.json",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "loop_cmd.py",
-                    ),
-                    required_tokens=(
-                        "design_contract_app",
-                        "design_contract_check",
-                        "design_contract_close",
-                        "--type",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="design-contract loop user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "ai-sdlc loop design-contract check",
-                        "ai-sdlc loop status --type design-contract",
-                        "ai-sdlc loop review --type design-contract",
-                        "ai-sdlc loop design-contract close --loop-id <loop-id> "
-                        "--expect-review-digest <input_digest> --yes",
-                        "implementation loop",
-                    ),
-                ),
-            ),
-        ),
-    ),
-    "194": (
-        FeatureContractSurface(
-            label="implementation loop core runtime",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "implementation_loop.py",
-                    ),
-                    required_tokens=(
-                        "start_implementation_loop",
-                        "record_implementation_progress",
-                        "close_implementation_loop",
-                        "CURRENT_IMPLEMENTATION_PATH",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src")
-                        / "ai_sdlc"
-                        / "core"
-                        / "implementation_models.py",
-                    ),
-                    required_tokens=(
-                        "ImplementationInput",
-                        "ImplementationReport",
-                        "ImplementationClose",
-                        "ImplementationStartOptions",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="implementation loop status and CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_status.py",
-                    ),
-                    required_tokens=(
-                        "ImplementationLoopSummary",
-                        "_get_implementation_loop_status",
-                        "_list_implementation_loops",
-                        "current-implementation.json",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "loop_cmd.py",
-                    ),
-                    required_tokens=(
-                        "implementation_app",
-                        "implementation_start",
-                        "implementation_record",
-                        "implementation_close",
-                        "--type",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="implementation loop user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "ai-sdlc loop implementation start",
-                        "ai-sdlc loop status --type implementation",
-                        "ai-sdlc loop implementation record",
-                        "ai-sdlc loop review --type implementation",
-                        "ai-sdlc loop implementation close --loop-id <loop-id> "
-                        "--expect-review-digest <input_digest> --yes",
-                        "frontend-evidence",
-                        "local-pr-review",
-                    ),
-                ),
-            ),
-        ),
-    ),
-    "195": (
-        FeatureContractSurface(
-            label="frontend-evidence loop core runtime",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "frontend_evidence_loop.py",
-                    ),
-                    required_tokens=(
-                        "start_frontend_evidence_loop",
-                        "close_frontend_evidence_loop",
-                        "CURRENT_FRONTEND_EVIDENCE_PATH",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src")
-                        / "ai_sdlc"
-                        / "core"
-                        / "frontend_evidence_models.py",
-                    ),
-                    required_tokens=(
-                        "FrontendEvidenceInput",
-                        "FrontendEvidenceSnapshot",
-                        "FrontendEvidenceReport",
-                        "FrontendEvidenceClose",
-                        "FrontendEvidenceStartOptions",
-                        "FrontendEvidenceDoctorOptions",
-                        "FrontendEvidenceDoctorResult",
-                        "FrontendEvidenceProviderCheck",
-                        "FrontendEvidenceSkipOptions",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="frontend-evidence loop status and CLI",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "core" / "loop_status.py",
-                    ),
-                    required_tokens=(
-                        "FrontendEvidenceLoopSummary",
-                        "_get_frontend_evidence_loop_status",
-                        "_list_frontend_evidence_loops",
-                        "current-frontend-evidence.json",
-                    ),
-                ),
-                FeatureContractEvidence(
-                    relative_paths=(
-                        Path("src") / "ai_sdlc" / "cli" / "loop_cmd.py",
-                    ),
-                    required_tokens=(
-                        "frontend_evidence_app",
-                        "frontend_evidence_doctor",
-                        "frontend_evidence_start",
-                        "frontend_evidence_close",
-                        "frontend_evidence_skip",
-                        "--provider",
-                        "--reason",
-                        "--allow-warnings",
-                        "--type",
-                    ),
-                ),
-            ),
-        ),
-        FeatureContractSurface(
-            label="frontend-evidence loop user docs",
-            evidence_entries=(
-                FeatureContractEvidence(
-                    relative_paths=(Path("README.md"),),
-                    required_tokens=(
-                        "ai-sdlc loop frontend-evidence doctor --provider auto",
-                        "ai-sdlc loop frontend-evidence start",
-                        "ai-sdlc loop status --type frontend-evidence",
-                        "ai-sdlc loop review --type frontend-evidence",
-                        "ai-sdlc loop frontend-evidence close --loop-id <loop-id> "
-                        "--expect-review-digest <input_digest> --yes",
-                        "ai-sdlc loop frontend-evidence skip",
-                        "ai-sdlc program browser-gate-probe --execute",
-                        "--allow-warnings",
-                        "local-pr-review",
-                    ),
-                ),
-            ),
-        ),
-    ),
-}
 
 
 @dataclass(frozen=True, slots=True)
 class ConstraintReport:
-    """Structured verify-constraints result for telemetry evidence capture."""
+    """Structured read-only verify-constraints result."""
 
     root: str
     source_name: str
@@ -1273,7 +398,6 @@ class ConstraintReport:
     gate_name: str = "Verification Gate"
     check_objects: tuple[str, ...] = PROJECT_VERIFICATION_GATE_OBJECTS
     coverage_gaps: tuple[str, ...] = ()
-    release_gate: dict[str, object] | None = None
     evidence_kinds: tuple[str, ...] = ("event", "structured_report")
 
     def __post_init__(self) -> None:
@@ -1298,27 +422,12 @@ def _dedupe_text_items(values: object) -> list[str]:
     return deduped
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def build_constraint_report(
     root: Path,
     *,
     profile: ConstraintProfile = ConstraintProfile.PROJECT,
 ) -> ConstraintReport:
     """Build a structured report for verify constraints."""
-    checkpoint = load_checkpoint(root)
     if profile is ConstraintProfile.PROJECT:
         return ConstraintReport(
             root=str(root),
@@ -1328,7 +437,6 @@ def build_constraint_report(
             check_objects=PROJECT_VERIFICATION_GATE_OBJECTS,
             blockers=tuple(collect_constraint_blockers(root, profile=profile)),
             coverage_gaps=(),
-            release_gate=None,
         )
 
     return ConstraintReport(
@@ -1338,8 +446,7 @@ def build_constraint_report(
         profile=profile,
         check_objects=VERIFICATION_GATE_OBJECTS,
         blockers=tuple(collect_constraint_blockers(root, profile=profile)),
-        coverage_gaps=_feature_contract_coverage_gaps(root, checkpoint),
-        release_gate=None,
+        coverage_gaps=(),
     )
 
 
@@ -1348,7 +455,7 @@ def build_verification_gate_context(
     *,
     profile: ConstraintProfile = ConstraintProfile.PROJECT,
 ) -> dict[str, object]:
-    """Build the explicit Verification Gate context consumed by runner and gate CLI."""
+    """Build the explicit Verification Gate context consumed by read-only callers."""
     report = build_constraint_report(root, profile=profile)
     if profile is ConstraintProfile.PROJECT:
         governance = build_verification_governance_bundle(
@@ -1361,9 +468,10 @@ def build_verification_gate_context(
             "verification_profile": profile.value,
             "verification_sources": (report.source_name,),
             "verification_check_objects": report.check_objects,
-            "constraint_blockers": report.blockers if decision_result == "block" else (),
+            "constraint_blockers": report.blockers
+            if decision_result == "block"
+            else (),
             "coverage_gaps": report.coverage_gaps if decision_result == "block" else (),
-            "release_gate": None,
             "verification_governance": governance,
         }
 
@@ -1379,7 +487,6 @@ def build_verification_gate_context(
         "verification_check_objects": report.check_objects,
         "constraint_blockers": report.blockers if decision_result == "block" else (),
         "coverage_gaps": report.coverage_gaps if decision_result == "block" else (),
-        "release_gate": None,
         "verification_governance": governance,
     }
 
@@ -1457,8 +564,7 @@ def collect_constraint_blockers(
     constitution = root / CONSTITUTION_REL
     if not constitution.is_file():
         blockers.append(
-            "BLOCKER: missing required governance file "
-            f"{CONSTITUTION_REL.as_posix()}"
+            f"BLOCKER: missing required governance file {CONSTITUTION_REL.as_posix()}"
         )
 
     blockers.extend(_formal_artifact_target_blockers(root))
@@ -1515,190 +621,7 @@ def collect_constraint_blockers(
 
     blockers.extend(_skip_registry_mapping_blockers(root, spec_path, cp))
     blockers.extend(_branch_lifecycle_blockers(root, spec_path))
-    if profile is ConstraintProfile.SELF_DEVELOPMENT:
-        blockers.extend(_frontend_evidence_class_blockers(spec_path))
-        blockers.extend(_feature_contract_blockers(root, cp))
     return _dedupe_text_items(blockers)
-
-
-def _frontend_evidence_class_blockers(spec_dir: Path) -> list[str]:
-    spec_path = spec_dir / "spec.md"
-    if not spec_path.is_file() or not _is_frontend_evidence_class_subject(spec_dir.name):
-        return []
-
-    body, footer = _split_markdown_footer(spec_path.read_text(encoding="utf-8"))
-    if footer is None:
-        return [
-            _frontend_evidence_class_authoring_blocker(
-                spec_path=spec_path,
-                error_kind="missing_footer_key",
-                human_remediation_hint=(
-                    "add footer metadata with frontend_evidence_class to spec.md"
-                ),
-            )
-        ]
-
-    duplicate_count = len(_FRONTEND_EVIDENCE_CLASS_DUPLICATE_RE.findall(footer))
-    if duplicate_count > 1:
-        return [
-            _frontend_evidence_class_authoring_blocker(
-                spec_path=spec_path,
-                error_kind="duplicate_key",
-                human_remediation_hint=(
-                    "keep exactly one frontend_evidence_class entry in the spec footer"
-                ),
-            )
-        ]
-
-    try:
-        payload = yaml.safe_load(footer) or {}
-    except yaml.YAMLError:
-        payload = {}
-    if not isinstance(payload, dict):
-        payload = {}
-
-    if FRONTEND_EVIDENCE_CLASS_KEY not in payload:
-        return [
-            _frontend_evidence_class_authoring_blocker(
-                spec_path=spec_path,
-                error_kind="missing_footer_key",
-                human_remediation_hint=(
-                    "declare frontend_evidence_class in the spec footer metadata"
-                ),
-            )
-        ]
-
-    value = payload.get(FRONTEND_EVIDENCE_CLASS_KEY)
-    normalized_value = str(value).strip() if value is not None else ""
-    if not normalized_value:
-        return [
-            _frontend_evidence_class_authoring_blocker(
-                spec_path=spec_path,
-                error_kind="empty_value",
-                human_remediation_hint=(
-                    "set frontend_evidence_class to framework_capability or consumer_adoption"
-                ),
-            )
-        ]
-
-    if normalized_value not in FRONTEND_EVIDENCE_CLASS_ALLOWED_VALUES:
-        return [
-            _frontend_evidence_class_authoring_blocker(
-                spec_path=spec_path,
-                error_kind="invalid_value",
-                human_remediation_hint=(
-                    "use frontend_evidence_class values framework_capability or consumer_adoption"
-                ),
-            )
-        ]
-
-    body_values = [
-        match.group("value").strip()
-        for match in _FRONTEND_EVIDENCE_CLASS_BODY_DECL_RE.finditer(body)
-        if match.group("value").strip()
-    ]
-    if any(candidate != normalized_value for candidate in body_values):
-        return [
-            _frontend_evidence_class_authoring_blocker(
-                spec_path=spec_path,
-                error_kind="body_footer_conflict",
-                human_remediation_hint=(
-                    "align any body declaration with the canonical footer value"
-                ),
-            )
-        ]
-
-    return []
-
-
-def collect_frontend_evidence_class_blockers(spec_dir: Path) -> list[str]:
-    """Return WI-scoped frontend evidence authoring blockers for a specific spec dir."""
-    return _frontend_evidence_class_blockers(spec_dir)
-
-
-def _is_frontend_evidence_class_subject(spec_dir_name: str) -> bool:
-    match = re.fullmatch(r"(?P<seq>\d{3})-(?P<slug>[a-z0-9-]+)", spec_dir_name.strip())
-    if match is None:
-        return False
-    if int(match.group("seq")) < FRONTEND_EVIDENCE_CLASS_MIN_SEQUENCE:
-        return False
-    return "frontend" in match.group("slug").split("-")
-
-
-def _split_markdown_footer(text: str) -> tuple[str, str | None]:
-    return split_terminal_markdown_footer(text)
-
-
-def split_terminal_markdown_footer(text: str) -> tuple[str, str | None]:
-    stripped = text.rstrip()
-    lines = stripped.splitlines()
-    delimiter_indexes = _markdown_footer_delimiter_indexes(lines)
-    if len(delimiter_indexes) < 2 or delimiter_indexes[-1] != len(lines) - 1:
-        return stripped, None
-
-    opening_index = delimiter_indexes[-2]
-    body = "\n".join(lines[:opening_index]).rstrip()
-    footer = "\n".join(lines[opening_index + 1 : -1])
-    return body, footer
-
-
-def _markdown_footer_delimiter_indexes(lines: list[str]) -> list[int]:
-    indexes: list[int] = []
-    active_fence: tuple[str, int] | None = None
-
-    for index, line in enumerate(lines):
-        fence = _markdown_fence_marker(line)
-        if active_fence is None:
-            if fence is not None:
-                active_fence = fence
-                continue
-            if line == "---":
-                indexes.append(index)
-            continue
-
-        if _markdown_fence_closes(line, active_fence):
-            active_fence = None
-
-    return indexes
-
-
-def _markdown_fence_marker(line: str) -> tuple[str, int] | None:
-    stripped = line.lstrip(" \t")
-    if not stripped:
-        return None
-    if stripped.startswith("```"):
-        return ("`", len(stripped) - len(stripped.lstrip("`")))
-    if stripped.startswith("~~~"):
-        return ("~", len(stripped) - len(stripped.lstrip("~")))
-    return None
-
-
-def _markdown_fence_closes(line: str, active_fence: tuple[str, int]) -> bool:
-    fence_char, fence_len = active_fence
-    stripped = line.lstrip(" \t").rstrip()
-    if not stripped or stripped[0] != fence_char:
-        return False
-
-    run_len = len(stripped) - len(stripped.lstrip(fence_char))
-    return run_len >= fence_len and not stripped[run_len:].strip()
-
-
-def _frontend_evidence_class_authoring_blocker(
-    *,
-    spec_path: Path,
-    error_kind: str,
-    human_remediation_hint: str,
-) -> str:
-    return (
-        "BLOCKER: "
-        f"problem_family={FRONTEND_EVIDENCE_CLASS_PROBLEM_FAMILY} "
-        "detection_surface=verify constraints "
-        f"spec_path={spec_path.as_posix()} "
-        f"error_kind={error_kind} "
-        f"source_of_truth_path={spec_path.as_posix()}#footer "
-        f"expected_contract_ref={FRONTEND_EVIDENCE_CLASS_CONTRACT_REF} "
-        f"human_remediation_hint={human_remediation_hint}"
-    )
 
 
 def _branch_lifecycle_blockers(root: Path, spec_path: Path) -> list[str]:
@@ -1720,213 +643,6 @@ def _branch_lifecycle_blockers(root: Path, spec_path: Path) -> list[str]:
     return _dedupe_text_items(list(result.blockers))
 
 
-def _feature_contract_blockers(root: Path, checkpoint: Checkpoint | None) -> list[str]:
-    """Validate the active work-item feature-contract surfaces."""
-    gaps = _feature_contract_coverage_gaps(root, checkpoint)
-    if not gaps:
-        return []
-
-    work_item_id = _effective_feature_contract_wi_id(checkpoint)
-    return _dedupe_text_items(
-        [
-            "BLOCKER: "
-            f"{work_item_id or 'active work item'} feature-contract surface missing: {gap}"
-            for gap in gaps
-        ]
-    )
-
-
-def _feature_contract_coverage_gaps(
-    root: Path,
-    checkpoint: Checkpoint | None,
-) -> tuple[str, ...]:
-    """Return missing feature-contract coverage labels for the active work item."""
-    if checkpoint is None or checkpoint.feature is None:
-        return ()
-
-    surfaces = _feature_contract_surfaces_for_checkpoint(checkpoint)
-    if not surfaces:
-        return ()
-
-    gaps = [
-        surface.label
-        for surface in surfaces
-        if not _feature_contract_surface_present(root, surface)
-    ]
-    return tuple(gaps)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _feature_contract_surfaces_for_checkpoint(
-    checkpoint: Checkpoint | None,
-) -> tuple[FeatureContractSurface, ...]:
-    """Return the work-item-scoped feature-contract registry."""
-    if _is_framework_003_feature_contract_work_item(checkpoint):
-        return FEATURE_CONTRACT_SURFACES["003"]
-    work_item_id = _effective_feature_contract_wi_id(checkpoint)
-    if _is_189_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["189"]
-    if _is_190_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["190"]
-    if _is_191_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["191"]
-    if _is_192_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["192"]
-    if _is_193_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["193"]
-    if _is_194_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["194"]
-    if _is_195_work_item(work_item_id):
-        return FEATURE_CONTRACT_SURFACES["195"]
-    return ()
-
-
-def _feature_contract_surface_present(
-    root: Path,
-    surface: FeatureContractSurface,
-) -> bool:
-    """Return True when all required evidence entries are present."""
-    return all(
-        _feature_contract_evidence_present(root, evidence)
-        for evidence in surface.evidence_entries
-    )
-
-
-def _feature_contract_evidence_present(
-    root: Path,
-    evidence: FeatureContractEvidence,
-) -> bool:
-    """Return True when one evidence entry's required tokens exist in a file."""
-    for rel in evidence.relative_paths:
-        path = root / rel
-        if not path.is_file():
-            continue
-        text = path.read_text(encoding="utf-8")
-        if all(token in text for token in evidence.required_tokens):
-            return True
-    return False
-
-
-def _is_framework_003_feature_contract_work_item(
-    checkpoint: Checkpoint | None,
-) -> bool:
-    """Return True only for Ai_AutoSDLC's framework-owned 003 contract WI."""
-    if checkpoint is None or checkpoint.feature is None:
-        return False
-
-    canonical = FRAMEWORK_003_FEATURE_CONTRACT_WORK_ITEM_ID
-    return _effective_wi_id_for_registry(checkpoint).strip() == canonical
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-def _is_189_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "189" or normalized.startswith("189-") or normalized.startswith("189/")
-
-
-def _is_190_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "190" or normalized.startswith("190-") or normalized.startswith("190/")
-
-
-def _is_191_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "191" or normalized.startswith("191-") or normalized.startswith("191/")
-
-
-def _is_192_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "192" or normalized.startswith("192-") or normalized.startswith("192/")
-
-
-def _is_193_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "193" or normalized.startswith("193-") or normalized.startswith("193/")
-
-
-def _is_194_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "194" or normalized.startswith("194-") or normalized.startswith("194/")
-
-
-def _is_195_work_item(work_item_id: str) -> bool:
-    normalized = work_item_id.strip()
-    return normalized == "195" or normalized.startswith("195-") or normalized.startswith("195/")
-
-
-def _effective_feature_contract_wi_id(checkpoint: Checkpoint | None) -> str:
-    """Resolve the active work-item id for feature-contract coverage."""
-    if checkpoint is None:
-        return ""
-    return _effective_wi_id_for_registry(checkpoint)
-
-
 def _merge_unique_strings(
     primary: tuple[str, ...],
     secondary: tuple[str, ...],
@@ -1936,10 +652,6 @@ def _merge_unique_strings(
         if item and item not in merged:
             merged.append(item)
     return tuple(merged)
-
-
-
-
 
 
 def _string_tuple(value: object) -> tuple[str, ...]:
@@ -2002,16 +714,6 @@ def _load_json_mapping(path: Path) -> dict[str, object]:
     return payload
 
 
-
-
-
-
-
-
-
-
-
-
 def _doc_first_surface_blockers(root: Path) -> list[str]:
     """Validate the repo-wide rule surfaces for doc-first / requirements-first flow."""
     present_texts = {
@@ -2032,7 +734,7 @@ def _doc_first_surface_blockers(root: Path) -> list[str]:
         path = root / rel
         if not path.is_file():
             blockers.append(
-                "BLOCKER: doc-first rule surface missing: " f"{rel.as_posix()}"
+                f"BLOCKER: doc-first rule surface missing: {rel.as_posix()}"
             )
             continue
         text = path.read_text(encoding="utf-8")
@@ -2057,7 +759,7 @@ def _verification_profile_blockers(root: Path) -> list[str]:
         path = root / rel
         if not path.is_file():
             blockers.append(
-                "BLOCKER: verification profile surface missing: " f"{rel.as_posix()}"
+                f"BLOCKER: verification profile surface missing: {rel.as_posix()}"
             )
             continue
         text = path.read_text(encoding="utf-8")
@@ -2083,8 +785,7 @@ def _feature_regression_guard_blockers(root: Path) -> list[str]:
         path = root / rel
         if not path.is_file():
             blockers.append(
-                "BLOCKER: feature regression guard surface missing: "
-                f"{rel.as_posix()}"
+                f"BLOCKER: feature regression guard surface missing: {rel.as_posix()}"
             )
             continue
         text = path.read_text(encoding="utf-8")
@@ -2340,13 +1041,17 @@ def _adapter_template_cli_path_blockers(root: Path) -> list[str]:
         if not path.is_file():
             continue
         text = path.read_text(encoding="utf-8")
-        missing = [token for token in AGENTS_CLI_PATH_REQUIRED_TOKENS if token not in text]
+        missing = [
+            token for token in AGENTS_CLI_PATH_REQUIRED_TOKENS if token not in text
+        ]
         if missing:
             blockers.append(
                 "BLOCKER: adapter template CLI path missing required current-flow "
                 f"markers in {rel.as_posix()}: {', '.join(missing)}"
             )
-        forbidden = [token for token in AGENTS_CLI_PATH_FORBIDDEN_TOKENS if token in text]
+        forbidden = [
+            token for token in AGENTS_CLI_PATH_FORBIDDEN_TOKENS if token in text
+        ]
         if forbidden:
             blockers.append(
                 "BLOCKER: adapter template CLI path regressed to old manual startup "
@@ -2386,9 +1091,7 @@ def _frontend_solution_confirmation_instruction_blockers_for_rels(
     rels: tuple[Path, ...],
 ) -> list[str]:
     """Validate frontend confirmation markers for selected instruction files."""
-    existing_rels = [
-        rel for rel in rels if (root / rel).is_file()
-    ]
+    existing_rels = [rel for rel in rels if (root / rel).is_file()]
     if not existing_rels:
         return []
     has_adapter_or_agents = any(rel != PIPELINE_RULE_REL for rel in existing_rels)
@@ -2562,8 +1265,16 @@ def _skip_registry_mapping_blockers(
     fr_refs = sorted(set(re.findall(r"\bFR-\d{3}\b", scoped_blob)))
     task_refs = sorted(set(re.findall(r"\bTask\s+\d+\.\d+\b", scoped_blob)))
 
-    spec_text = (spec_dir / "spec.md").read_text(encoding="utf-8") if (spec_dir / "spec.md").is_file() else ""
-    tasks_text = (spec_dir / "tasks.md").read_text(encoding="utf-8") if (spec_dir / "tasks.md").is_file() else ""
+    spec_text = (
+        (spec_dir / "spec.md").read_text(encoding="utf-8")
+        if (spec_dir / "spec.md").is_file()
+        else ""
+    )
+    tasks_text = (
+        (spec_dir / "tasks.md").read_text(encoding="utf-8")
+        if (spec_dir / "tasks.md").is_file()
+        else ""
+    )
     mapped_text = spec_text + "\n" + tasks_text
 
     unmapped_fr = [x for x in fr_refs if x not in mapped_text]

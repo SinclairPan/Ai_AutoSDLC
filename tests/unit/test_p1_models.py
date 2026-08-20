@@ -6,7 +6,6 @@ from ai_sdlc.errors import (
     GovernanceNotFrozenError,
     ProjectNotInitializedError,
     RefreshRequiredError,
-    StudioRoutingError,
 )
 from ai_sdlc.models.scanner import (
     ApiEndpoint,
@@ -434,10 +433,6 @@ class TestErrors:
         err = ProjectNotInitializedError("not initialized")
         assert "not initialized" in str(err)
 
-    def test_studio_routing_error(self) -> None:
-        err = StudioRoutingError("production_issue cannot use PRD Studio")
-        assert "PRD Studio" in str(err)
-
     def test_refresh_required(self) -> None:
         err = RefreshRequiredError("Level 2 refresh pending")
         assert "Level 2" in str(err)
@@ -445,16 +440,3 @@ class TestErrors:
     def test_governance_not_frozen(self) -> None:
         err = GovernanceNotFrozenError("governance not frozen")
         assert "governance" in str(err)
-
-
-class TestStudioProtocol:
-    def test_protocol_compliance(self) -> None:
-        from ai_sdlc.studios.router import StudioProtocol
-
-        class MockStudio:
-            def process(self, input_data: object, context: dict | None = None) -> dict:
-                return {"artifact": "value"}
-
-        studio: StudioProtocol = MockStudio()
-        result = studio.process("test input")
-        assert result["artifact"] == "value"

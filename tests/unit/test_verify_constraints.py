@@ -6,25 +6,12 @@ import subprocess
 from pathlib import Path
 
 import pytest
-import yaml
 
 import ai_sdlc.core.verify_constraints as verify_constraints_module
 from ai_sdlc.context.state import save_checkpoint
-from ai_sdlc.core.frontend_contract_drift import PageImplementationObservation
-from ai_sdlc.core.frontend_contract_observation_provider import (
-    build_frontend_contract_observation_artifact,
-    write_frontend_contract_observation_artifact,
-)
-from ai_sdlc.core.frontend_visual_a11y_evidence_provider import (
-    FrontendVisualA11yEvidenceEvaluation,
-    build_frontend_visual_a11y_evidence_artifact,
-    write_frontend_visual_a11y_evidence_artifact,
-)
 from ai_sdlc.core.verify_constraints import (
     ConstraintProfile,
     ConstraintReport,
-    FeatureContractEvidence,
-    FeatureContractSurface,
 )
 from ai_sdlc.core.verify_constraints import (
     build_constraint_report as _build_constraint_report,
@@ -34,67 +21,6 @@ from ai_sdlc.core.verify_constraints import (
 )
 from ai_sdlc.core.verify_constraints import (
     collect_constraint_blockers as _collect_constraint_blockers,
-)
-from ai_sdlc.generators.frontend_cross_provider_consistency_artifacts import (
-    materialize_frontend_cross_provider_consistency_artifacts,
-)
-from ai_sdlc.generators.frontend_gate_policy_artifacts import (
-    materialize_frontend_gate_policy_artifacts,
-)
-from ai_sdlc.generators.frontend_generation_constraint_artifacts import (
-    materialize_frontend_generation_constraint_artifacts,
-)
-from ai_sdlc.generators.frontend_provider_expansion_artifacts import (
-    materialize_frontend_provider_expansion_artifacts,
-)
-from ai_sdlc.generators.frontend_provider_profile_artifacts import (
-    materialize_frontend_provider_profile_artifacts,
-)
-from ai_sdlc.generators.frontend_provider_runtime_adapter_artifacts import (
-    materialize_frontend_provider_runtime_adapter_artifacts,
-)
-from ai_sdlc.generators.frontend_quality_platform_artifacts import (
-    materialize_frontend_quality_platform_artifacts,
-)
-from ai_sdlc.generators.frontend_solution_confirmation_artifacts import (
-    materialize_frontend_solution_confirmation_artifacts,
-)
-from ai_sdlc.generators.frontend_theme_token_governance_artifacts import (
-    materialize_frontend_theme_token_governance_artifacts,
-)
-from ai_sdlc.models.frontend_cross_provider_consistency import (
-    build_p2_frontend_cross_provider_consistency_baseline,
-)
-from ai_sdlc.models.frontend_gate_policy import (
-    build_mvp_frontend_gate_policy,
-    build_p1_frontend_gate_policy_visual_a11y_foundation,
-)
-from ai_sdlc.models.frontend_generation_constraints import (
-    build_mvp_frontend_generation_constraints,
-)
-from ai_sdlc.models.frontend_page_ui_schema import (
-    build_p2_frontend_page_ui_schema_baseline,
-)
-from ai_sdlc.models.frontend_provider_expansion import (
-    build_p3_frontend_provider_expansion_baseline,
-)
-from ai_sdlc.models.frontend_provider_profile import (
-    build_mvp_enterprise_vue2_provider_profile,
-    build_mvp_public_primevue_provider_profile,
-)
-from ai_sdlc.models.frontend_provider_runtime_adapter import (
-    build_p3_target_project_adapter_scaffold_baseline,
-)
-from ai_sdlc.models.frontend_quality_platform import (
-    build_p2_frontend_quality_platform_baseline,
-)
-from ai_sdlc.models.frontend_solution_confirmation import (
-    build_builtin_install_strategies,
-    build_builtin_style_pack_manifests,
-    build_mvp_solution_snapshot,
-)
-from ai_sdlc.models.frontend_theme_token_governance import (
-    build_p2_frontend_theme_token_governance_baseline,
 )
 from ai_sdlc.models.state import Checkpoint, FeatureInfo
 
@@ -150,7 +76,7 @@ def _write_consumer_checkpoint(root: Path, work_item_id: str) -> None:
 
 @pytest.mark.parametrize(
     "work_item_id",
-    ("012", "018", "073", "148", "149", "150", "151", "153", "189"),
+    ("consumer-alpha", "consumer-beta"),
 )
 def test_project_profile_ignores_framework_work_item_number_collisions(
     tmp_path: Path,
@@ -171,16 +97,11 @@ def test_project_profile_ignores_framework_work_item_number_collisions(
         "framework_defect_backlog",
         "reconcile_smoke_contract",
         "verification_profiles",
-        "feature_contract_surfaces",
-        "frontend_solution_confirmation_consistency",
     }
     assert report.profile is verify_constraints_module.ConstraintProfile.PROJECT
-    assert report.release_gate is None
     assert not (self_only_objects & set(report.check_objects))
     assert not any(
-        key.startswith("frontend_")
-        for key in context
-        if key.endswith("_verification")
+        key.startswith("frontend_") for key in context if key.endswith("_verification")
     )
     assert context["verification_profile"] == "project"
 
@@ -205,13 +126,14 @@ def test_project_profile_keeps_consumer_agents_frontend_confirmation_rule(
     )
 
     assert any(
-        "frontend solution confirmation instruction drift" in item
-        for item in blockers
+        "frontend solution confirmation instruction drift" in item for item in blockers
     )
     assert any("AGENTS.md" in item for item in blockers)
 
 
-def test_self_development_profile_keeps_framework_report_objects(tmp_path: Path) -> None:
+def test_self_development_profile_keeps_framework_report_objects(
+    tmp_path: Path,
+) -> None:
     memory = tmp_path / ".ai-sdlc" / "memory"
     memory.mkdir(parents=True, exist_ok=True)
     (memory / "constitution.md").write_text(
@@ -224,7 +146,9 @@ def test_self_development_profile_keeps_framework_report_objects(tmp_path: Path)
         profile=verify_constraints_module.ConstraintProfile.SELF_DEVELOPMENT,
     )
 
-    assert report.profile is verify_constraints_module.ConstraintProfile.SELF_DEVELOPMENT
+    assert (
+        report.profile is verify_constraints_module.ConstraintProfile.SELF_DEVELOPMENT
+    )
     assert {
         "framework_defect_backlog",
         "reconcile_smoke_contract",
@@ -232,309 +156,11 @@ def test_self_development_profile_keeps_framework_report_objects(tmp_path: Path)
     }.issubset(report.check_objects)
 
 
-def test_feature_contract_runtime_objects_canonicalize_evidence_sets() -> None:
-    evidence = FeatureContractEvidence(
-        relative_paths=(
-            Path("src/ai_sdlc/models/work.py"),
-            Path("src/ai_sdlc/models/work.py"),
-        ),
-        required_tokens=("draft_prd", "draft_prd", "final_prd"),
-    )
-    surface = FeatureContractSurface(
-        label="draft_prd/final_prd",
-        evidence_entries=(evidence, evidence),
-    )
-
-    assert evidence.relative_paths == (Path("src/ai_sdlc/models/work.py"),)
-    assert evidence.required_tokens == ("draft_prd", "final_prd")
-    assert surface.evidence_entries == (evidence,)
-
-
-def test_189_feature_contract_surfaces_keep_only_local_review_boundaries() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="189-loop-engine-local-adversarial-pr-review",
-            spec_dir="specs/189-loop-engine-local-adversarial-pr-review",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["189"]
-    labels = {surface.label for surface in surfaces}
-    assert "local PR review source adapter and model fallback boundary" in labels
-    tokens = {
-        token
-        for surface in surfaces
-        for evidence in surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "latest-attestation.json" not in tokens
-    assert "finding-history.json" not in tokens
-    assert "pr_review_attest" not in tokens
-
-
-def test_190_feature_contract_surfaces_cover_loop_status_list_read_only_docs() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="190-loop-engine-status-list-baseline",
-            spec_dir="specs/190-loop-engine-status-list-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["190"]
-    labels = {surface.label for surface in surfaces}
-    assert "loop status/list core readers" in labels
-    assert "loop status/list CLI" in labels
-    assert "loop status/list read-only user docs" in labels
-    docs_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "loop status/list read-only user docs"
-    )
-    doc_tokens = {
-        token
-        for evidence in docs_surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "ai-sdlc loop status" in doc_tokens
-    assert "ai-sdlc loop list" in doc_tokens
-    assert "不得发起模型请求" in doc_tokens
-    assert "不能替代本地对抗 review agent" in doc_tokens
-
-
-def test_191_feature_contract_surfaces_cover_loop_next_guidance_docs() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="191-loop-engine-next-action-guidance-baseline",
-            spec_dir="specs/191-loop-engine-next-action-guidance-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["191"]
-    labels = {surface.label for surface in surfaces}
-    assert "loop next guidance core readers" in labels
-    assert "loop next guidance CLI" in labels
-    assert "loop next guidance read-only user docs" in labels
-    docs_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "loop next guidance read-only user docs"
-    )
-    doc_tokens = {
-        token
-        for evidence in docs_surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "next guidance" in doc_tokens
-    assert "does not execute" in doc_tokens
-    assert "Next Action Guidance" in doc_tokens
-    assert "只读推导" in doc_tokens
-
-
-def test_192_feature_contract_surfaces_cover_requirement_loop_runtime() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="192-loop-engine-requirement-loop-runtime",
-            spec_dir="specs/192-loop-engine-requirement-loop-runtime",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["192"]
-    labels = {surface.label for surface in surfaces}
-    assert "requirement loop core runtime" in labels
-    assert "requirement loop status and CLI" in labels
-    assert "requirement loop user docs" in labels
-    docs_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "requirement loop user docs"
-    )
-    doc_tokens = {
-        token
-        for evidence in docs_surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "ai-sdlc loop requirement start" in doc_tokens
-    assert (
-        "ai-sdlc loop requirement freeze --loop-id <loop-id> "
-        "--expect-review-digest <input_digest> --yes"
-    ) in doc_tokens
-    assert "ai-sdlc loop review --type requirement" in doc_tokens
-    assert "ai-sdlc loop requirement freeze --yes" not in doc_tokens
-    assert "design-contract" in doc_tokens
-
-
-def test_193_feature_contract_surfaces_cover_design_contract_loop_runtime() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="193-loop-engine-design-contract-loop-runtime",
-            spec_dir="specs/193-loop-engine-design-contract-loop-runtime",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["193"]
-    labels = {surface.label for surface in surfaces}
-    assert "design-contract loop core runtime" in labels
-    assert "design-contract loop status and CLI" in labels
-    assert "design-contract loop user docs" in labels
-    docs_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "design-contract loop user docs"
-    )
-    doc_tokens = {
-        token
-        for evidence in docs_surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "ai-sdlc loop design-contract check" in doc_tokens
-    assert (
-        "ai-sdlc loop design-contract close --loop-id <loop-id> "
-        "--expect-review-digest <input_digest> --yes"
-    ) in doc_tokens
-    assert "ai-sdlc loop review --type design-contract" in doc_tokens
-    assert "ai-sdlc loop design-contract close --yes" not in doc_tokens
-    assert "implementation loop" in doc_tokens
-
-
-def test_194_feature_contract_surfaces_cover_implementation_loop_runtime() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="194-loop-engine-implementation-loop-runtime",
-            spec_dir="specs/194-loop-engine-implementation-loop-runtime",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["194"]
-    labels = {surface.label for surface in surfaces}
-    assert "implementation loop core runtime" in labels
-    assert "implementation loop status and CLI" in labels
-    assert "implementation loop user docs" in labels
-    docs_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "implementation loop user docs"
-    )
-    doc_tokens = {
-        token
-        for evidence in docs_surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "ai-sdlc loop implementation start" in doc_tokens
-    assert (
-        "ai-sdlc loop implementation close --loop-id <loop-id> "
-        "--expect-review-digest <input_digest> --yes"
-    ) in doc_tokens
-    assert "ai-sdlc loop review --type implementation" in doc_tokens
-    assert "ai-sdlc loop implementation close --yes" not in doc_tokens
-    assert "frontend-evidence" in doc_tokens
-    assert "local-pr-review" in doc_tokens
-
-
-def test_195_feature_contract_surfaces_cover_frontend_evidence_loop_runtime() -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="195-loop-engine-frontend-evidence-loop-runtime",
-            spec_dir="specs/195-loop-engine-frontend-evidence-loop-runtime",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    surfaces = verify_constraints_module._feature_contract_surfaces_for_checkpoint(
-        checkpoint
-    )
-
-    assert surfaces == verify_constraints_module.FEATURE_CONTRACT_SURFACES["195"]
-    labels = {surface.label for surface in surfaces}
-    assert "frontend-evidence loop core runtime" in labels
-    assert "frontend-evidence loop status and CLI" in labels
-    assert "frontend-evidence loop user docs" in labels
-    docs_surface = next(
-        surface
-        for surface in surfaces
-        if surface.label == "frontend-evidence loop user docs"
-    )
-    doc_tokens = {
-        token
-        for evidence in docs_surface.evidence_entries
-        for token in evidence.required_tokens
-    }
-    assert "ai-sdlc loop frontend-evidence doctor --provider auto" in doc_tokens
-    assert "ai-sdlc loop frontend-evidence start" in doc_tokens
-    assert (
-        "ai-sdlc loop frontend-evidence close --loop-id <loop-id> "
-        "--expect-review-digest <input_digest> --yes"
-    ) in doc_tokens
-    assert "ai-sdlc loop review --type frontend-evidence" in doc_tokens
-    assert "ai-sdlc loop frontend-evidence close --yes" not in doc_tokens
-    assert "ai-sdlc loop frontend-evidence skip" in doc_tokens
-    assert "ai-sdlc program browser-gate-probe --execute" in doc_tokens
-    assert "--allow-warnings" in doc_tokens
-
-
-
-
-
-
-
-
 def _write_framework_backlog(root: Path, entry_body: str) -> None:
     path = root / "docs" / "framework-defect-backlog.zh-CN.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
-        "# 框架缺陷待办池\n\n"
-        "## FD-2026-03-26-001 | 示例条目\n\n"
-        f"{entry_body}",
+        f"# 框架缺陷待办池\n\n## FD-2026-03-26-001 | 示例条目\n\n{entry_body}",
         encoding="utf-8",
     )
 
@@ -555,7 +181,7 @@ def _write_verification_profile_docs(
     if include_rules_only:
         verification += "- `rules-only`：至少执行 `uv run ai-sdlc verify constraints`\n"
     verification += (
-        "- `truth-only`：执行 `uv run ai-sdlc verify constraints`、`python -m ai_sdlc program truth sync --dry-run`\n"
+        "- `truth-only`：执行 `uv run ai-sdlc verify constraints`\n"
         "- `code-change`：执行 `uv run pytest`、`uv run ruff check`、`uv run ai-sdlc verify constraints`\n"
         "- 既有能力未退化：既有入口 / 既有选项 / 既有输出必须有回归证据，不能只验证新功能 happy path。\n"
     )
@@ -629,7 +255,10 @@ def _write_reconcile_smoke_contract_surfaces(
 
 
 def _write_doc_first_rule_surfaces(
-    root: Path, *, include_pipeline_terms: bool = True, include_skip_registry_terms: bool = True
+    root: Path,
+    *,
+    include_pipeline_terms: bool = True,
+    include_skip_registry_terms: bool = True,
 ) -> None:
     rules_dir = root / "src" / "ai_sdlc" / "rules"
     rules_dir.mkdir(parents=True, exist_ok=True)
@@ -654,722 +283,9 @@ def _write_doc_first_rule_surfaces(
         skip_registry += (
             "\n仅文档 / 仅需求沉淀任务必须先更新 spec.md / plan.md / tasks.md；"
             "禁止默认修改 `src/`、`tests/`。\n"
-    )
-    (rules_dir / "agent-skip-registry.zh.md").write_text(skip_registry, encoding="utf-8")
-
-
-def _write_003_feature_contract_surfaces(
-    root: Path,
-    *,
-    include_authoring: bool = True,
-    include_reviewer_model: bool = True,
-    include_reviewer_runtime: bool = True,
-    include_backend_contract: bool = True,
-    include_backend_runtime: bool = True,
-    include_release_gate: bool = True,
-    release_gate_verdict: str = "PASS",
-) -> None:
-    models_dir = root / "src" / "ai_sdlc" / "models"
-    models_dir.mkdir(parents=True, exist_ok=True)
-    work_markers: list[str] = []
-    if include_authoring:
-        work_markers.extend(["draft_prd = True", "final_prd = True"])
-    if include_reviewer_model:
-        work_markers.extend(
-            [
-                "reviewer_decision = True",
-                "approve = True",
-                "revise = True",
-                "block = True",
-            ]
         )
-    if work_markers:
-        (models_dir / "work.py").write_text(
-            "\"\"\"003 feature-contract surface.\"\"\"\n\n" + "\n".join(work_markers) + "\n",
-            encoding="utf-8",
-        )
-
-    if include_reviewer_runtime:
-        core_dir = root / "src" / "ai_sdlc" / "core"
-        core_dir.mkdir(parents=True, exist_ok=True)
-        (core_dir / "reviewer_gate.py").write_text(
-            "\"\"\"003 reviewer gate runtime surface.\"\"\"\n\n"
-            "ALLOW = True\n"
-            "DENY_MISSING = True\n"
-            "DENY_REVISE = True\n"
-            "DENY_BLOCK = True\n",
-            encoding="utf-8",
-        )
-
-        (core_dir / "state_machine.py").write_text(
-            "\"\"\"003 state machine runtime surface.\"\"\"\n\n"
-            "transition_work_item = True\n"
-            "ReviewerGateOutcomeKind = True\n"
-            "InvalidTransitionError = True\n",
-            encoding="utf-8",
-        )
-        (core_dir / "close_check.py").write_text(
-            "\"\"\"003 close check runtime surface.\"\"\"\n\n"
-            "evaluate_reviewer_gate = True\n"
-            "DEV_REVIEWED = True\n"
-            "review_gate = True\n",
-            encoding="utf-8",
-        )
-
-    if include_backend_contract:
-        backend_dir = root / "src" / "ai_sdlc" / "backends"
-        backend_dir.mkdir(parents=True, exist_ok=True)
-        (backend_dir / "native.py").write_text(
-            "\"\"\"003 backend contract surface.\"\"\"\n\n"
-            "backend_capability = True\n"
-            "delegation = True\n"
-            "fallback = True\n",
-            encoding="utf-8",
-        )
-
-    if include_backend_runtime:
-        backend_dir = root / "src" / "ai_sdlc" / "backends"
-        backend_dir.mkdir(parents=True, exist_ok=True)
-        (backend_dir / "routing.py").write_text(
-            "\"\"\"003 routing runtime surface.\"\"\"\n\n"
-            "BackendRoutingCoordinator = True\n"
-            "generate_spec = True\n"
-            "generate_plan = True\n"
-            "generate_tasks = True\n",
-            encoding="utf-8",
-        )
-        gen_dir = root / "src" / "ai_sdlc" / "generators"
-        gen_dir.mkdir(parents=True, exist_ok=True)
-        (gen_dir / "doc_gen.py").write_text(
-            "\"\"\"003 doc generator runtime surface.\"\"\"\n\n"
-            "backend_registry = True\n"
-            "requested_backend = True\n"
-            "backend_policy = True\n"
-            "backend_decisions = True\n",
-            encoding="utf-8",
-        )
-
-    if include_release_gate:
-        spec_dir = root / "specs" / "003-cross-cutting-authoring-and-extension-contracts"
-        spec_dir.mkdir(parents=True, exist_ok=True)
-        checks = [
-            {
-                "name": "recoverability",
-                "verdict": "PASS",
-                "evidence_source": "tests/integration/test_cli_recover.py",
-                "reason": "resume-pack rebuild and recover flows are covered",
-            },
-            {
-                "name": "portability",
-                "verdict": "PASS",
-                "evidence_source": "tests/integration/test_cli_module_invocation.py",
-                "reason": "module invocation fallback works without PATH assumptions",
-            },
-            {
-                "name": "multi_ide",
-                "verdict": "PASS",
-                "evidence_source": "tests/integration/test_cli_status.py",
-                "reason": "status/adapter surfaces keep IDE-aware behavior bounded",
-            },
-            {
-                "name": "stability",
-                "verdict": "PASS",
-                "evidence_source": "uv run pytest -q",
-                "reason": "focused regression suites are green",
-            },
-        ]
-        if release_gate_verdict in {"WARN", "BLOCK"}:
-            checks[1]["verdict"] = release_gate_verdict
-            checks[1]["reason"] = f"portability gate escalated to {release_gate_verdict}"
-        (spec_dir / "release-gate-evidence.md").write_text(
-            "# 003 release gate evidence\n\n"
-            "- release_gate_evidence: present\n"
-            "- PASS: supported\n"
-            "- WARN: supported\n"
-            "- BLOCK: supported\n\n"
-            "```json\n"
-            "{\n"
-            '  "release_gate_evidence": {\n'
-            f'    "overall_verdict": "{release_gate_verdict}",\n'
-            '    "checks": [\n'
-            + ",\n".join(
-                "      {\n"
-                f'        "name": "{check["name"]}",\n'
-                f'        "verdict": "{check["verdict"]}",\n'
-                f'        "evidence_source": "{check["evidence_source"]}",\n'
-                f'        "reason": "{check["reason"]}"\n'
-                "      }"
-                for check in checks
-            )
-            + "\n"
-            "    ]\n"
-            "  }\n"
-            "}\n"
-            "```\n",
-            encoding="utf-8",
-        )
-
-
-def _write_003_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "003-cross-cutting-authoring-and-extension-contracts"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="design",
-        feature=FeatureInfo(
-            id="003",
-            spec_dir="specs/003-cross-cutting-authoring-and-extension-contracts",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_downstream_003_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "003-agentops-framework-run"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="design",
-        feature=FeatureInfo(
-            id="003",
-            spec_dir="specs/003-agentops-framework-run",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-        linked_wi_id="003-agentops-framework-run",
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_012_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "012-frontend-contract-verify-integration"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="012",
-            spec_dir="specs/012-frontend-contract-verify-integration",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_018_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "018-frontend-gate-compatibility-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="018",
-            spec_dir="specs/018-frontend-gate-compatibility-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_073_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "073-frontend-p2-provider-style-solution-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="073",
-            spec_dir="specs/073-frontend-p2-provider-style-solution-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_148_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "148-frontend-p2-multi-theme-token-governance-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="148",
-            spec_dir="specs/148-frontend-p2-multi-theme-token-governance-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_149_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "149-frontend-p2-quality-platform-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="149",
-            spec_dir="specs/149-frontend-p2-quality-platform-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_151_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "151-frontend-p3-modern-provider-expansion-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="151",
-            spec_dir="specs/151-frontend-p3-modern-provider-expansion-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_150_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "150-frontend-p2-cross-provider-consistency-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="150",
-            spec_dir="specs/150-frontend-p2-cross-provider-consistency-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_153_checkpoint(root: Path) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / "153-frontend-p3-target-project-adapter-scaffold-baseline"
-    spec.mkdir(parents=True, exist_ok=True)
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id="153",
-            spec_dir="specs/153-frontend-p3-target-project-adapter-scaffold-baseline",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_frontend_evidence_class_checkpoint(
-    root: Path,
-    *,
-    wi_name: str,
-    spec_content: str,
-) -> None:
-    mem = root / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True, exist_ok=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-
-    spec = root / "specs" / wi_name
-    spec.mkdir(parents=True, exist_ok=True)
-    (spec / "spec.md").write_text(spec_content, encoding="utf-8")
-
-    cp = Checkpoint(
-        current_stage="verify",
-        feature=FeatureInfo(
-            id=wi_name.split("-", 1)[0],
-            spec_dir=f"specs/{wi_name}",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="main",
-        ),
-    )
-    save_checkpoint(root, cp)
-
-
-def _write_073_solution_confirmation_artifacts(
-    root: Path,
-    *,
-    snapshot_overrides: dict[str, object] | None = None,
-) -> None:
-    materialize_frontend_provider_profile_artifacts(
-        root,
-        build_mvp_enterprise_vue2_provider_profile(),
-    )
-    materialize_frontend_provider_profile_artifacts(
-        root,
-        build_mvp_public_primevue_provider_profile(),
-    )
-    materialize_frontend_solution_confirmation_artifacts(
-        root,
-        style_packs=build_builtin_style_pack_manifests(),
-        install_strategies=build_builtin_install_strategies(),
-        snapshot=build_mvp_solution_snapshot(**(snapshot_overrides or {})),
-    )
-
-
-def _write_148_theme_token_governance_artifacts(
-    root: Path,
-    *,
-    snapshot_overrides: dict[str, object] | None = None,
-) -> None:
-    snapshot = build_mvp_solution_snapshot(
-        requested_provider_id="enterprise-vue2",
-        effective_provider_id="enterprise-vue2",
-        recommended_provider_id="enterprise-vue2",
-        requested_style_pack_id="enterprise-default",
-        effective_style_pack_id="enterprise-default",
-        recommended_style_pack_id="enterprise-default",
-        requested_frontend_stack="vue2",
-        effective_frontend_stack="vue2",
-        recommended_frontend_stack="vue2",
-        style_fidelity_status="full",
-        **(snapshot_overrides or {}),
-    )
-    materialize_frontend_provider_profile_artifacts(
-        root,
-        build_mvp_enterprise_vue2_provider_profile(),
-    )
-    materialize_frontend_solution_confirmation_artifacts(
-        root,
-        style_packs=build_builtin_style_pack_manifests(),
-        install_strategies=build_builtin_install_strategies(),
-        snapshot=snapshot,
-    )
-    install_strategy = next(
-        strategy
-        for strategy in build_builtin_install_strategies()
-        if strategy.provider_id == snapshot.effective_provider_id
-    )
-    materialize_frontend_generation_constraint_artifacts(
-        root,
-        build_mvp_frontend_generation_constraints(
-            effective_provider_id=snapshot.effective_provider_id,
-            delivery_entry_id=(
-                f"{snapshot.effective_frontend_stack}-{snapshot.effective_provider_id}"
-            ),
-            component_library_packages=list(install_strategy.packages),
-            provider_theme_adapter_id=str(
-                snapshot.provider_theme_adapter_config.get("adapter_id", "")
-            ),
-            page_schema_ids=[
-                schema.page_schema_id
-                for schema in build_p2_frontend_page_ui_schema_baseline().page_schemas
-            ],
-        ),
-    )
-    materialize_frontend_theme_token_governance_artifacts(
-        root,
-        governance=build_p2_frontend_theme_token_governance_baseline(),
-    )
-
-
-def _write_149_quality_platform_artifacts(
-    root: Path,
-    *,
-    snapshot_overrides: dict[str, object] | None = None,
-) -> None:
-    _write_148_theme_token_governance_artifacts(root, snapshot_overrides=snapshot_overrides)
-    materialize_frontend_quality_platform_artifacts(
-        root,
-        platform=build_p2_frontend_quality_platform_baseline(),
-    )
-
-
-def _write_151_provider_expansion_artifacts(
-    root: Path,
-    *,
-    snapshot_overrides: dict[str, object] | None = None,
-) -> None:
-    snapshot_payload: dict[str, object] = {
-        "project_id": "151-demo",
-        "requested_provider_id": "public-primevue",
-        "effective_provider_id": "public-primevue",
-        "recommended_provider_id": "public-primevue",
-        "requested_style_pack_id": "modern-saas",
-        "effective_style_pack_id": "modern-saas",
-        "recommended_style_pack_id": "modern-saas",
-        "requested_frontend_stack": "vue3",
-        "effective_frontend_stack": "vue3",
-        "recommended_frontend_stack": "vue3",
-        "style_fidelity_status": "full",
-    }
-    snapshot_payload.update(snapshot_overrides or {})
-    materialize_frontend_solution_confirmation_artifacts(
-        root,
-        style_packs=build_builtin_style_pack_manifests(),
-        install_strategies=build_builtin_install_strategies(),
-        snapshot=build_mvp_solution_snapshot(**snapshot_payload),
-    )
-    materialize_frontend_provider_expansion_artifacts(
-        root,
-        expansion=build_p3_frontend_provider_expansion_baseline(),
-    )
-
-
-def _write_150_cross_provider_consistency_artifacts(root: Path) -> None:
-    _write_149_quality_platform_artifacts(root)
-    materialize_frontend_cross_provider_consistency_artifacts(
-        root,
-        consistency=build_p2_frontend_cross_provider_consistency_baseline(),
-    )
-
-
-def _write_153_provider_runtime_adapter_artifacts(
-    root: Path,
-    *,
-    snapshot_overrides: dict[str, object] | None = None,
-) -> None:
-    snapshot_payload: dict[str, object] = {
-        "project_id": "153-demo",
-        "requested_provider_id": "public-primevue",
-        "effective_provider_id": "public-primevue",
-        "recommended_provider_id": "public-primevue",
-        "requested_style_pack_id": "modern-saas",
-        "effective_style_pack_id": "modern-saas",
-        "recommended_style_pack_id": "modern-saas",
-        "requested_frontend_stack": "vue3",
-        "effective_frontend_stack": "vue3",
-        "recommended_frontend_stack": "vue3",
-        "style_fidelity_status": "full",
-    }
-    snapshot_payload.update(snapshot_overrides or {})
-    materialize_frontend_solution_confirmation_artifacts(
-        root,
-        style_packs=build_builtin_style_pack_manifests(),
-        install_strategies=build_builtin_install_strategies(),
-        snapshot=build_mvp_solution_snapshot(**snapshot_payload),
-    )
-    materialize_frontend_provider_runtime_adapter_artifacts(
-        root,
-        runtime_adapter=build_p3_target_project_adapter_scaffold_baseline(),
-    )
-
-
-def _inject_preview_field_into_solution_snapshots(root: Path) -> None:
-    memory_root = root / ".ai-sdlc" / "memory" / "frontend-solution-confirmation"
-    for path in (
-        memory_root / "latest.yaml",
-        memory_root / "versions" / "solution-snapshot-001.yaml",
-    ):
-        payload = yaml.safe_load(path.read_text(encoding="utf-8"))
-        assert isinstance(payload, dict)
-        payload["will_change_on_confirm"] = [
-            "frontend_stack",
-            "provider_id",
-            "style_pack_id",
-        ]
-        path.write_text(
-            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
-            encoding="utf-8",
-        )
-
-
-def _write_073_inconsistent_solution_confirmation_artifacts(root: Path) -> None:
-    _write_073_solution_confirmation_artifacts(
-        root,
-        snapshot_overrides={
-            "recommendation_source": "simple-mode",
-            "decision_status": "fallback_required",
-            "recommended_provider_id": "enterprise-vue2",
-            "recommended_style_pack_id": "macos-glass",
-            "requested_frontend_stack": "react",
-            "requested_provider_id": "enterprise-vue2",
-            "requested_style_pack_id": "macos-glass",
-            "effective_frontend_stack": "react",
-            "effective_provider_id": "enterprise-vue2",
-            "effective_style_pack_id": "macos-glass",
-            "provider_mode": "normal",
-            "fallback_reason_code": None,
-            "fallback_reason_text": None,
-            "style_fidelity_status": "full",
-            "style_degradation_reason_codes": [],
-            "user_overrode_recommendation": False,
-            "user_override_fields": [],
-        },
-    )
-    (
-        root
-        / "governance"
-        / "frontend"
-        / "solution"
-        / "style-packs"
-        / "macos-glass.yaml"
-    ).unlink()
-    _inject_preview_field_into_solution_snapshots(root)
-
-
-def _write_minimal_frontend_contract_page_artifacts(
-    root: Path, *, page_id: str = "user-create", recipe_id: str = "form-create"
-) -> None:
-    page_dir = root / "contracts" / "frontend" / "pages" / page_id
-    page_dir.mkdir(parents=True, exist_ok=True)
-    (page_dir / "page.metadata.yaml").write_text(
-        f"page_id: {page_id}\npage_type: form\n",
-        encoding="utf-8",
-    )
-    (page_dir / "page.recipe.yaml").write_text(
-        f"recipe_id: {recipe_id}\nrequired_regions:\n  - form\n",
-        encoding="utf-8",
-    )
-
-
-def _write_012_frontend_contract_observations(
-    root: Path,
-    *,
-    observations: list[PageImplementationObservation] | None = None,
-) -> None:
-    spec_dir = (
-        root
-        / "specs"
-        / "012-frontend-contract-verify-integration"
-    )
-    if observations is None:
-        observations = [
-            PageImplementationObservation(
-                page_id="user-create",
-                recipe_id="form-create",
-                i18n_keys=[],
-                validation_fields=[],
-                new_legacy_usages=[],
-            )
-        ]
-    artifact = build_frontend_contract_observation_artifact(
-        observations=observations,
-        provider_kind="manual",
-        provider_name="test-fixture",
-        generated_at="2026-04-02T14:30:00Z",
-    )
-    write_frontend_contract_observation_artifact(spec_dir, artifact)
-
-
-def _write_018_frontend_contract_observations(
-    root: Path,
-    *,
-    observations: list[PageImplementationObservation] | None = None,
-) -> None:
-    spec_dir = (
-        root
-        / "specs"
-        / "018-frontend-gate-compatibility-baseline"
-    )
-    if observations is None:
-        observations = [
-            PageImplementationObservation(
-                page_id="user-create",
-                recipe_id="form-create",
-                i18n_keys=[],
-                validation_fields=[],
-                new_legacy_usages=[],
-            )
-        ]
-    artifact = build_frontend_contract_observation_artifact(
-        observations=observations,
-        provider_kind="manual",
-        provider_name="test-fixture",
-        generated_at="2026-04-03T14:30:00Z",
-    )
-    write_frontend_contract_observation_artifact(spec_dir, artifact)
-
-
-def _write_018_frontend_visual_a11y_evidence(
-    root: Path,
-    evaluations: list[FrontendVisualA11yEvidenceEvaluation],
-) -> None:
-    spec_dir = (
-        root
-        / "specs"
-        / "018-frontend-gate-compatibility-baseline"
-    )
-    artifact = build_frontend_visual_a11y_evidence_artifact(
-        evaluations=evaluations,
-        provider_kind="manual",
-        provider_name="test-fixture",
-        generated_at="2026-04-07T14:00:00Z",
-    )
-    write_frontend_visual_a11y_evidence_artifact(spec_dir, artifact)
-
-
-def _write_018_gate_artifacts(root: Path) -> None:
-    materialize_frontend_gate_policy_artifacts(
-        root,
-        build_mvp_frontend_gate_policy(),
-    )
-    materialize_frontend_generation_constraint_artifacts(
-        root,
-        build_mvp_frontend_generation_constraints(),
-    )
-
-
-def _write_071_gate_artifacts(root: Path) -> None:
-    materialize_frontend_gate_policy_artifacts(
-        root,
-        build_p1_frontend_gate_policy_visual_a11y_foundation(),
-    )
-    materialize_frontend_generation_constraint_artifacts(
-        root,
-        build_mvp_frontend_generation_constraints(),
+    (rules_dir / "agent-skip-registry.zh.md").write_text(
+        skip_registry, encoding="utf-8"
     )
 
 
@@ -1396,7 +312,9 @@ def _init_git_repo(root: Path) -> None:
 
 def _commit_all(root: Path, message: str) -> None:
     subprocess.run(["git", "add", "."], cwd=root, check=True, capture_output=True)
-    subprocess.run(["git", "commit", "-m", message], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", message], cwd=root, check=True, capture_output=True
+    )
 
 
 def _create_branch_ahead_of_main(root: Path, branch_name: str) -> None:
@@ -1414,7 +332,9 @@ def _create_branch_ahead_of_main(root: Path, branch_name: str) -> None:
         check=True,
         capture_output=True,
     )
-    subprocess.run(["git", "checkout", "main"], cwd=root, check=True, capture_output=True)
+    subprocess.run(
+        ["git", "checkout", "main"], cwd=root, check=True, capture_output=True
+    )
 
 
 def _write_branch_lifecycle_fixture(
@@ -1452,10 +372,7 @@ def _write_branch_lifecycle_fixture(
     wi_dir = root / "specs" / wi_name
     wi_dir.mkdir(parents=True, exist_ok=True)
     (wi_dir / "tasks.md").write_text(
-        "### Task 1.1 — 示例\n"
-        "- **依赖**：无\n"
-        "- **验收标准（AC）**：\n"
-        "  1. 示例\n",
+        "### Task 1.1 — 示例\n- **依赖**：无\n- **验收标准（AC）**：\n  1. 示例\n",
         encoding="utf-8",
     )
     (wi_dir / "task-execution-log.md").write_text(
@@ -1503,12 +420,18 @@ def test_collect_constraint_blockers_deduplicates_cross_helper_duplicates(
     monkeypatch.setattr(
         verify_constraints_module,
         "_framework_defect_backlog_blockers",
-        lambda _: ["BLOCKER: duplicate helper blocker", "BLOCKER: duplicate helper blocker"],
+        lambda _: [
+            "BLOCKER: duplicate helper blocker",
+            "BLOCKER: duplicate helper blocker",
+        ],
     )
     monkeypatch.setattr(
         verify_constraints_module,
         "_formal_artifact_target_blockers",
-        lambda _: ["BLOCKER: duplicate helper blocker", "BLOCKER: distinct helper blocker"],
+        lambda _: [
+            "BLOCKER: duplicate helper blocker",
+            "BLOCKER: distinct helper blocker",
+        ],
     )
     monkeypatch.setattr(
         verify_constraints_module,
@@ -1585,163 +508,6 @@ def test_pass_constitution_and_spec_dir(tmp_path: Path) -> None:
         ),
     )
     save_checkpoint(tmp_path, cp)
-
-    assert collect_constraint_blockers(tmp_path) == []
-
-
-def test_frontend_evidence_class_missing_footer_key_blocks(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content="# Spec\n\nNo footer here.\n",
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any(
-        "problem_family=frontend_evidence_class_authoring_malformed" in item
-        and "error_kind=missing_footer_key" in item
-        for item in blockers
-    )
-
-
-def test_frontend_evidence_class_empty_value_blocks(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content="# Spec\n\n---\nfrontend_evidence_class: \"\"\n---\n",
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=empty_value" in item for item in blockers)
-
-
-def test_frontend_evidence_class_invalid_value_blocks(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content="# Spec\n\n---\nfrontend_evidence_class: framework\n---\n",
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=invalid_value" in item for item in blockers)
-
-
-def test_frontend_evidence_class_duplicate_key_blocks(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content=(
-            "# Spec\n\n---\n"
-            "frontend_evidence_class: framework_capability\n"
-            "frontend_evidence_class: consumer_adoption\n"
-            "---\n"
-        ),
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=duplicate_key" in item for item in blockers)
-
-
-def test_frontend_evidence_class_duplicate_key_blocks_when_indented(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content=(
-            "# Spec\n\n---\n"
-            "  frontend_evidence_class: framework_capability\n"
-            "  frontend_evidence_class: consumer_adoption\n"
-            "---\n"
-        ),
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=duplicate_key" in item for item in blockers)
-
-
-def test_frontend_evidence_class_body_footer_conflict_blocks(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content=(
-            "# Spec\n\n"
-            "```yaml\n"
-            "frontend_evidence_class: consumer_adoption\n"
-            "```\n\n"
-            "---\n"
-            "frontend_evidence_class: framework_capability\n"
-            "---\n"
-        ),
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=body_footer_conflict" in item for item in blockers)
-
-
-def test_frontend_evidence_class_valid_footer_passes(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content=(
-            "# Spec\n\n"
-            "```yaml\n"
-            "frontend_evidence_class: framework_capability\n"
-            "```\n\n"
-            "---\n"
-            "frontend_evidence_class: framework_capability\n"
-            "---\n"
-        ),
-    )
-
-    assert collect_constraint_blockers(tmp_path) == []
-
-
-def test_frontend_evidence_class_ignores_non_terminal_body_examples(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content=(
-            "# Spec\n\n"
-            "Example body block:\n\n"
-            "```md\n"
-            "---\n"
-            "frontend_evidence_class: framework_capability\n"
-            "---\n"
-            "```\n\n"
-            "Trailing body prose means this file still has no terminal footer.\n"
-        ),
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=missing_footer_key" in item for item in blockers)
-
-
-def test_frontend_evidence_class_body_example_at_eof_is_not_footer(
-    tmp_path: Path,
-) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="082-frontend-example",
-        spec_content=(
-            "# Spec\n\n"
-            "Body example only:\n\n"
-            "```md\n"
-            "---\n"
-            "frontend_evidence_class: framework_capability\n"
-            "---\n"
-            "```\n"
-        ),
-    )
-
-    blockers = collect_constraint_blockers(tmp_path)
-    assert any("error_kind=missing_footer_key" in item for item in blockers)
-
-
-def test_frontend_evidence_class_not_retroactive_before_082(tmp_path: Path) -> None:
-    _write_frontend_evidence_class_checkpoint(
-        tmp_path,
-        wi_name="071-frontend-legacy-example",
-        spec_content="# Spec\n\nNo footer here.\n",
-    )
 
     assert collect_constraint_blockers(tmp_path) == []
 
@@ -1834,46 +600,37 @@ def test_branch_lifecycle_blockers_deduplicate_helper_output(
     ]
 
 
-def test_feature_contract_blockers_deduplicate_repeated_gaps(monkeypatch) -> None:
-    checkpoint = Checkpoint(
-        current_stage="execute",
-        feature=FeatureInfo(
-            id="001",
-            spec_dir="specs/001-wi",
-            design_branch="d",
-            feature_branch="f",
-            current_branch="f",
-        ),
-    )
-
-    monkeypatch.setattr(
-        verify_constraints_module,
-        "_feature_contract_coverage_gaps",
-        lambda _root, _checkpoint: ("spec.md", "spec.md"),
-    )
-
-    assert verify_constraints_module._feature_contract_blockers(
-        Path("/tmp/project"), checkpoint
-    ) == ["BLOCKER: 001-wi feature-contract surface missing: spec.md"]
-
-
-def test_formal_artifact_target_blockers_deduplicate_repeated_violations(monkeypatch) -> None:
+def test_formal_artifact_target_blockers_deduplicate_repeated_violations(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         verify_constraints_module,
         "detect_misplaced_formal_artifacts",
         lambda _root: (
-            type("Violation", (), {"path": "docs/superpowers/spec.md", "artifact_kind": "spec"})(),
-            type("Violation", (), {"path": "docs/superpowers/spec.md", "artifact_kind": "spec"})(),
+            type(
+                "Violation",
+                (),
+                {"path": "docs/superpowers/spec.md", "artifact_kind": "spec"},
+            )(),
+            type(
+                "Violation",
+                (),
+                {"path": "docs/superpowers/spec.md", "artifact_kind": "spec"},
+            )(),
         ),
     )
 
-    assert verify_constraints_module._formal_artifact_target_blockers(Path("/tmp/project")) == [
+    assert verify_constraints_module._formal_artifact_target_blockers(
+        Path("/tmp/project")
+    ) == [
         "BLOCKER: misplaced formal artifact detected under docs/superpowers/*: "
         "docs/superpowers/spec.md (spec)"
     ]
 
 
-def test_backlog_breach_reference_blockers_deduplicate_repeated_violations(monkeypatch) -> None:
+def test_backlog_breach_reference_blockers_deduplicate_repeated_violations(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(
         verify_constraints_module,
         "collect_missing_backlog_entry_references",
@@ -2173,7 +930,7 @@ def test_verify_constraints_blocks_misplaced_formal_artifact_under_superpowers(
     misplaced.parent.mkdir(parents=True, exist_ok=True)
     misplaced.write_text(
         "# 功能规格：Misplaced\n\n"
-        "**功能编号**：`073-demo`\n"
+        "**功能编号**：`sample-demo`\n"
         "**创建日期**：2026-04-07\n"
         "**状态**：草稿\n",
         encoding="utf-8",
@@ -2193,8 +950,7 @@ def test_verify_constraints_blocks_missing_backlog_for_referenced_defect(
     spec_dir = tmp_path / "specs" / "117-formal-artifact-target-guard-baseline"
     spec_dir.mkdir(parents=True, exist_ok=True)
     (spec_dir / "spec.md").write_text(
-        "# 功能规格：Demo\n\n"
-        "承接 `FD-2026-04-07-002`。\n",
+        "# 功能规格：Demo\n\n承接 `FD-2026-04-07-002`。\n",
         encoding="utf-8",
     )
 
@@ -2275,8 +1031,7 @@ def test_release_docs_consistency_blocks_windows_smoke_without_current_init(
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any(
-        "release docs consistency drift" in item
-        and "windows-offline-smoke.yml" in item
+        "release docs consistency drift" in item and "windows-offline-smoke.yml" in item
         for item in blockers
     )
 
@@ -2595,7 +1350,9 @@ def test_verification_profile_docs_block_when_truth_only_profile_missing(
 
     verification_path = tmp_path / "src" / "ai_sdlc" / "rules" / "verification.md"
     verification_path.write_text(
-        verification_path.read_text(encoding="utf-8").replace("truth-only", "truth-profile"),
+        verification_path.read_text(encoding="utf-8").replace(
+            "truth-only", "truth-profile"
+        ),
         encoding="utf-8",
     )
 
@@ -2604,7 +1361,9 @@ def test_verification_profile_docs_block_when_truth_only_profile_missing(
     assert any("truth-only" in x for x in blockers)
 
 
-def test_verification_profile_docs_pass_when_both_surfaces_complete(tmp_path: Path) -> None:
+def test_verification_profile_docs_pass_when_both_surfaces_complete(
+    tmp_path: Path,
+) -> None:
     mem = tmp_path / ".ai-sdlc" / "memory"
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
@@ -2652,7 +1411,9 @@ def test_feature_regression_guard_blocks_when_review_surface_missing_old_capabil
     assert any("回归测试" in x for x in blockers)
 
 
-def test_feature_regression_guard_accepts_complete_rule_surfaces(tmp_path: Path) -> None:
+def test_feature_regression_guard_accepts_complete_rule_surfaces(
+    tmp_path: Path,
+) -> None:
     mem = tmp_path / ".ai-sdlc" / "memory"
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
@@ -2663,7 +1424,9 @@ def test_feature_regression_guard_accepts_complete_rule_surfaces(tmp_path: Path)
     assert not any("feature regression guard" in x for x in blockers)
 
 
-def test_doc_first_rule_surfaces_block_when_pipeline_terms_missing(tmp_path: Path) -> None:
+def test_doc_first_rule_surfaces_block_when_pipeline_terms_missing(
+    tmp_path: Path,
+) -> None:
     mem = tmp_path / ".ai-sdlc" / "memory"
     mem.mkdir(parents=True)
     (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
@@ -2821,271 +1584,6 @@ def test_doc_first_rule_surfaces_pass_with_consistent_terms_and_docs_scope(
     assert collect_constraint_blockers(tmp_path) == []
 
 
-def test_003_feature_contract_blocks_when_draft_prd_surfaces_missing(tmp_path: Path) -> None:
-    _write_003_checkpoint(tmp_path)
-    _write_003_feature_contract_surfaces(
-        tmp_path,
-        include_authoring=False,
-        include_reviewer_model=True,
-        include_reviewer_runtime=True,
-        include_backend_contract=True,
-        include_backend_runtime=True,
-        include_release_gate=True,
-    )
-
-    report = build_constraint_report(tmp_path)
-    assert report.coverage_gaps == (
-        "draft_prd/final_prd",
-    )
-    blockers = collect_constraint_blockers(tmp_path)
-    assert len(blockers) == 1
-    assert blockers[0].endswith("draft_prd/final_prd")
-
-
-def test_003_feature_contract_blocks_when_reviewer_surface_missing(tmp_path: Path) -> None:
-    _write_003_checkpoint(tmp_path)
-    _write_003_feature_contract_surfaces(
-        tmp_path,
-        include_authoring=True,
-        include_reviewer_model=True,
-        include_reviewer_runtime=False,
-        include_backend_contract=True,
-        include_backend_runtime=True,
-        include_release_gate=True,
-    )
-
-    report = build_constraint_report(tmp_path)
-    assert report.coverage_gaps == ("reviewer decision",)
-    blockers = collect_constraint_blockers(tmp_path)
-    assert len(blockers) == 1
-    assert blockers[0].endswith("reviewer decision")
-
-
-def test_003_feature_contract_blocks_when_backend_surface_missing(tmp_path: Path) -> None:
-    _write_003_checkpoint(tmp_path)
-    _write_003_feature_contract_surfaces(
-        tmp_path,
-        include_authoring=True,
-        include_reviewer_model=True,
-        include_reviewer_runtime=True,
-        include_backend_contract=True,
-        include_backend_runtime=False,
-        include_release_gate=True,
-    )
-
-    report = build_constraint_report(tmp_path)
-    assert report.coverage_gaps == ("backend delegation/fallback",)
-    blockers = collect_constraint_blockers(tmp_path)
-    assert len(blockers) == 1
-    assert blockers[0].endswith("backend delegation/fallback")
-
-
-def test_003_feature_contract_blocks_when_release_gate_surface_missing(
-    tmp_path: Path,
-) -> None:
-    _write_003_checkpoint(tmp_path)
-    _write_003_feature_contract_surfaces(
-        tmp_path,
-        include_authoring=True,
-        include_reviewer_model=True,
-        include_reviewer_runtime=True,
-        include_backend_contract=True,
-        include_backend_runtime=True,
-        include_release_gate=False,
-    )
-
-    report = build_constraint_report(tmp_path)
-    assert report.coverage_gaps == ("release-gate evidence",)
-    blockers = collect_constraint_blockers(tmp_path)
-    assert len(blockers) == 1
-    assert blockers[0].endswith("release-gate evidence")
-
-
-def test_003_feature_contract_blocks_when_feature_id_unknown_but_spec_dir_points_to_003(
-    tmp_path: Path,
-) -> None:
-    mem = tmp_path / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-    spec = tmp_path / "specs" / "003-cross-cutting-authoring-and-extension-contracts"
-    spec.mkdir(parents=True)
-    save_checkpoint(
-        tmp_path,
-        Checkpoint(
-            current_stage="design",
-            feature=FeatureInfo(
-                id="unknown",
-                spec_dir="specs/003-cross-cutting-authoring-and-extension-contracts",
-                design_branch="d",
-                feature_branch="f",
-                current_branch="main",
-            ),
-        ),
-    )
-    _write_003_feature_contract_surfaces(
-        tmp_path,
-        include_authoring=False,
-        include_reviewer_model=True,
-        include_reviewer_runtime=True,
-        include_backend_contract=True,
-        include_backend_runtime=True,
-        include_release_gate=True,
-    )
-
-    report = build_constraint_report(tmp_path)
-    assert report.coverage_gaps == ("draft_prd/final_prd",)
-
-
-def test_003_feature_contract_honors_linked_wi_id_precedence(
-    tmp_path: Path,
-) -> None:
-    mem = tmp_path / ".ai-sdlc" / "memory"
-    mem.mkdir(parents=True)
-    (mem / "constitution.md").write_text("# C\n", encoding="utf-8")
-    spec = tmp_path / "specs" / "003-cross-cutting-authoring-and-extension-contracts"
-    spec.mkdir(parents=True)
-    save_checkpoint(
-        tmp_path,
-        Checkpoint(
-            current_stage="design",
-            feature=FeatureInfo(
-                id="003",
-                spec_dir="specs/003-cross-cutting-authoring-and-extension-contracts",
-                design_branch="d",
-                feature_branch="f",
-                current_branch="main",
-            ),
-            linked_wi_id="004-relinked-work-item",
-        ),
-    )
-
-    report = build_constraint_report(tmp_path)
-
-    assert report.coverage_gaps == ()
-    assert report.release_gate is None
-    assert collect_constraint_blockers(tmp_path) == []
-
-
-def test_003_feature_contract_ignores_downstream_number_collision(
-    tmp_path: Path,
-) -> None:
-    _write_downstream_003_checkpoint(tmp_path)
-
-    report = build_constraint_report(tmp_path)
-
-    assert report.coverage_gaps == ()
-    assert report.release_gate is None
-    assert collect_constraint_blockers(tmp_path) == []
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def test_build_verification_gate_context_degrades_to_advisory_when_governance_is_incomplete(
     tmp_path: Path,
     monkeypatch,
@@ -3117,9 +1615,9 @@ def test_build_verification_gate_context_degrades_to_advisory_when_governance_is
 
     assert context["constraint_blockers"] == ()
     assert context["coverage_gaps"] == ()
-    assert context["verification_governance"]["gate_decision_payload"]["decision_result"] == (
-        "advisory"
-    )
+    assert context["verification_governance"]["gate_decision_payload"][
+        "decision_result"
+    ] == ("advisory")
     assert context["verification_governance"]["advisories"] == (
         "observer bundle incomplete",
     )
@@ -3140,20 +1638,14 @@ def test_collect_constraint_blockers_includes_active_work_item_branch_lifecycle_
 def test_collect_constraint_blockers_does_not_escalate_archived_branch_lifecycle(
     tmp_path: Path,
 ) -> None:
-    _write_branch_lifecycle_fixture(tmp_path, branch_disposition_status="archived(non-mainline evidence)")
+    _write_branch_lifecycle_fixture(
+        tmp_path, branch_disposition_status="archived(non-mainline evidence)"
+    )
     _create_branch_ahead_of_main(tmp_path, "archive/001-verify-archived")
 
     blockers = collect_constraint_blockers(tmp_path)
 
     assert all("branch lifecycle" not in item.lower() for item in blockers)
-
-
-
-
-
-
-
-
 
 
 def test_collect_constraint_blockers_ignores_unrelated_historical_branch_lifecycle(
