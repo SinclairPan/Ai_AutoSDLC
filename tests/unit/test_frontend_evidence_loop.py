@@ -238,7 +238,9 @@ def test_doctor_does_not_mark_declared_playwright_ready_without_runtime(
     assert result.status == "needs_user"
     assert result.recommended_provider == "playwright"
     assert "browser-gate-probe" not in result.next_action
-    assert result.next_guidance.command == "npm install -D @playwright/test"
+    assert result.next_guidance.command == (
+        "npm install -D @playwright/test pixelmatch pngjs"
+    )
     playwright = next(
         provider
         for provider in result.providers
@@ -249,11 +251,14 @@ def test_doctor_does_not_mark_declared_playwright_ready_without_runtime(
     assert playwright.node_available is True
     assert playwright.package_manager_available is True
     assert playwright.run_commands == []
-    assert "npm install -D @playwright/test" in playwright.install_commands
+    assert (
+        "npm install -D @playwright/test pixelmatch pngjs"
+        in playwright.install_commands
+    )
     assert "package.json declares Playwright" in playwright.evidence
 
 
-def test_doctor_marks_playwright_ready_only_when_runtime_is_installed(
+def test_doctor_does_not_mark_playwright_ready_without_visual_comparators(
     tmp_path: Path,
 ) -> None:
     (tmp_path / "package.json").write_text(
@@ -276,6 +281,34 @@ def test_doctor_marks_playwright_ready_only_when_runtime_is_installed(
             FrontendEvidenceDoctorOptions(root=tmp_path, provider="playwright")
         )
 
+    assert result.status == "needs_user"
+    playwright = next(
+        provider
+        for provider in result.providers
+        if provider.provider_id == "playwright"
+    )
+    assert playwright.available is False
+    assert playwright.run_commands == []
+
+
+def test_doctor_marks_playwright_ready_only_when_all_runtime_packages_exist(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "package.json").write_text(
+        json.dumps({"devDependencies": {"@playwright/test": "^1.45.0"}}),
+        encoding="utf-8",
+    )
+    for package_name in ("playwright", "pixelmatch", "pngjs"):
+        (tmp_path / "node_modules" / package_name).mkdir(parents=True)
+
+    with patch("ai_sdlc.core.frontend_evidence_loop.shutil.which") as which:
+        which.side_effect = lambda command: (
+            f"/usr/bin/{command}" if command in {"node", "npm"} else None
+        )
+        result = doctor_frontend_evidence_provider(
+            FrontendEvidenceDoctorOptions(root=tmp_path, provider="playwright")
+        )
+
     assert result.status == "ready"
     assert (
         result.next_guidance.command
@@ -292,6 +325,47 @@ def test_doctor_marks_playwright_ready_only_when_runtime_is_installed(
         "ai-sdlc loop frontend-evidence capture --execute"
     ]
     assert "node_modules/playwright" in playwright.evidence
+    assert "node_modules/pixelmatch" in playwright.evidence
+    assert "node_modules/pngjs" in playwright.evidence
+
+
+@pytest.mark.parametrize(
+    ("package_manager", "expected"),
+    (
+        (
+            "npm",
+            [
+                "npm install -D @playwright/test pixelmatch pngjs",
+                "npx playwright install chromium",
+            ],
+        ),
+        (
+            "pnpm",
+            [
+                "pnpm add -D @playwright/test pixelmatch pngjs",
+                "pnpm exec playwright install chromium",
+            ],
+        ),
+        (
+            "yarn",
+            [
+                "yarn add -D @playwright/test pixelmatch pngjs",
+                "yarn playwright install chromium",
+            ],
+        ),
+    ),
+)
+def test_playwright_install_commands_include_visual_comparators(
+    package_manager: str,
+    expected: list[str],
+) -> None:
+    assert (
+        frontend_evidence_loop_module._playwright_install_commands(
+            package_manager,
+            "chromium",
+        )
+        == expected
+    )
 
 
 def test_skip_frontend_evidence_loop_requires_confirmation(tmp_path: Path) -> None:

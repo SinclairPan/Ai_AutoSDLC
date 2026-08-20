@@ -2191,7 +2191,10 @@ def test_loop_frontend_evidence_doctor_playwright_provider_shows_install_command
 
     assert result.exit_code == 0
     assert "Recommended provider: playwright" in result.output
-    assert "optional install: npm install -D @playwright/test" in result.output
+    assert (
+        "optional install: npm install -D @playwright/test pixelmatch pngjs"
+        in result.output
+    )
     assert "optional install: npx playwright install chromium" in result.output
 
 
@@ -2492,12 +2495,7 @@ def _write_frontend_browser_gate_artifact(
         "recommended_next_steps": [],
     }
     artifact_path = (
-        root
-        / ".ai-sdlc"
-        / "memory"
-        / "frontend-delivery"
-        / "browser"
-        / "latest.yaml"
+        root / ".ai-sdlc" / "memory" / "frontend-delivery" / "browser" / "latest.yaml"
     )
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     artifact_path.write_text(

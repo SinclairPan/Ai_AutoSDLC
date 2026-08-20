@@ -108,6 +108,7 @@ _FRONTEND_EVIDENCE_SKIP_RISK = (
     "Frontend browser evidence was explicitly skipped because no local browser "
     "control provider was available. Continue only with human risk acceptance."
 )
+_PLAYWRIGHT_RUNTIME_PACKAGES = ("playwright", "pixelmatch", "pngjs")
 
 
 def start_frontend_evidence_loop(
@@ -829,14 +830,19 @@ def _playwright_provider_check(
     package_manager_available = bool(package_manager and shutil.which(package_manager))
     node_available = shutil.which("node") is not None
     package_declared = _package_json_declares_playwright(package_json)
-    playwright_runtime_path = _playwright_runtime_path(root, frontend_dir)
-    available = node_available and playwright_runtime_path is not None
+    runtime_paths = {
+        package_name: _node_runtime_module_path(root, frontend_dir, package_name)
+        for package_name in _PLAYWRIGHT_RUNTIME_PACKAGES
+    }
+    available = node_available and all(
+        runtime_path is not None for runtime_path in runtime_paths.values()
+    )
     install_commands = _playwright_install_commands(package_manager, browser)
     evidence = _playwright_provider_evidence(
         root,
         package_json,
         package_declared,
-        playwright_runtime_path,
+        runtime_paths,
         node_available,
         package_manager,
         package_manager_available,
@@ -873,7 +879,7 @@ def _playwright_provider_evidence(
     root: Path,
     package_json: Path,
     package_declared: bool,
-    runtime_path: Path | None,
+    runtime_paths: Mapping[str, Path | None],
     node_available: bool,
     package_manager: str,
     package_manager_available: bool,
@@ -883,8 +889,9 @@ def _playwright_provider_evidence(
         evidence.append(repo_relative_path(root, package_json))
     if package_declared:
         evidence.append("package.json declares Playwright")
-    if runtime_path is not None:
-        evidence.append(repo_relative_path(root, runtime_path))
+    for runtime_path in runtime_paths.values():
+        if runtime_path is not None:
+            evidence.append(repo_relative_path(root, runtime_path))
     if node_available:
         evidence.append("node executable found on PATH")
     if package_manager_available:
@@ -892,11 +899,15 @@ def _playwright_provider_evidence(
     return evidence
 
 
-def _playwright_runtime_path(root: Path, frontend_dir: Path) -> Path | None:
+def _node_runtime_module_path(
+    root: Path,
+    frontend_dir: Path,
+    package_name: str,
+) -> Path | None:
     current = frontend_dir.resolve()
     resolved_root = root.resolve()
     while True:
-        candidate = current / "node_modules" / "playwright"
+        candidate = current / "node_modules" / package_name
         if candidate.exists():
             return candidate
         if current == resolved_root:
@@ -948,16 +959,16 @@ def _playwright_install_commands(package_manager: str, browser: str) -> list[str
     resolved_browser = browser.strip() or "chromium"
     if package_manager == "pnpm":
         return [
-            "pnpm add -D @playwright/test",
+            "pnpm add -D @playwright/test pixelmatch pngjs",
             f"pnpm exec playwright install {resolved_browser}",
         ]
     if package_manager == "yarn":
         return [
-            "yarn add -D @playwright/test",
+            "yarn add -D @playwright/test pixelmatch pngjs",
             f"yarn playwright install {resolved_browser}",
         ]
     return [
-        "npm install -D @playwright/test",
+        "npm install -D @playwright/test pixelmatch pngjs",
         f"npx playwright install {resolved_browser}",
     ]
 
