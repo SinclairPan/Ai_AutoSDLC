@@ -85,6 +85,23 @@ When a Codex change is ready for mainline:
 - If review finds actionable issues, implement focused fixes on the same branch,
   rerun relevant local tests, push, re-request Codex review, and continue the
   heartbeat monitoring loop.
+- Required-check failures are not user-input blockers by default. Freeze the
+  exact head/base, identify the root cause, and, when judgment is needed, use at
+  most two local independent read-only reviewers. If the resulting fix is
+  focused, non-destructive, and within the current PR contract, implement it on
+  the same branch without asking for additional authorization, rerun
+  proportionate verification, push, and continue monitoring until green. This
+  includes directly caused CI consumer or test-harness contract migrations,
+  even when an earlier product repair round has already been used.
+- Heartbeat and automation prompts must encode that automatic repair loop; do
+  not use a blanket "any failure means report and stop" instruction. Escalate to
+  the user only when the repair requires a product or scope decision, expands
+  beyond the frozen PR contract, needs a destructive or release action, cannot
+  be reproduced or repaired safely, repeats without progress, or detects
+  unexpected head/base drift.
+- If GitHub Codex review is unavailable or quota-limited, use frozen exact-head
+  local independent review and keep the same repair/monitoring loop; quota
+  exhaustion alone is not a blocker.
 - If Codex review reports no actionable issues and all required checks pass,
   mark the PR ready when needed and merge it into `main`.
 - This protocol is a local development rule for this repository only; do not
