@@ -47,6 +47,8 @@ _REPLAY_BYPASS_ENV = "AI_SDLC_UPDATE_REPLAY_BYPASS"
 _SELF_UPDATE_REEXEC_ENV = "AI_SDLC_SELF_UPDATE_REEXEC"
 _REPLAY_HANDOFF_SCHEMA_VERSION = 1
 _MAX_REPLAY_HANDOFF_BYTES = 24 * 1024
+_WINDOWS_LAUNCHER_NAMES = {"ai-sdlc.exe", "ai_sdlc.exe"}
+_WINDOWS_LAUNCHER_CLEANUP_ATTEMPTS = 200
 _AUTO_REFRESH_FAILURES = {
     REFRESH_BACKOFF,
     REFRESH_NETWORK_ERROR,
@@ -207,6 +209,10 @@ def _consume_replay_handoff() -> ReplayRequest | None:
 
 
 def _replay_updated_command(request: ReplayRequest) -> None:
+    raise typer.Exit(_run_updated_command(request))
+
+
+def _run_updated_command(request: ReplayRequest) -> int:
     env = os.environ.copy()
     env.pop(_REPLAY_HANDOFF_ENV, None)
     env.pop(_SELF_UPDATE_REEXEC_ENV, None)
@@ -216,8 +222,8 @@ def _replay_updated_command(request: ReplayRequest) -> None:
         completed = subprocess.run(command, shell=False, env=env, check=False)
     except OSError as exc:
         notice_console.print(f"更新完成，但无法重新执行原命令：{exc}", markup=False)
-        raise typer.Exit(1) from exc
-    raise typer.Exit(completed.returncode)
+        return 1
+    return completed.returncode
 
 
 def _update_confirmation_prompt(current_version: str, latest_version: str) -> str:
@@ -512,6 +518,12 @@ def _release_asset_context(
 def _reexec_windows_launcher_if_needed(version: str) -> None:
     if not _should_reexec_windows_launcher():
         return
+    replay_request = _consume_replay_handoff()
+    try:
+        launcher, backup = _prepare_windows_launcher_update()
+    except SelfUpdateError as exc:
+        notice_console.print(f"无法准备 Windows 更新：{exc}", markup=False)
+        raise typer.Exit(1) from exc
     env = os.environ.copy()
     env[_SELF_UPDATE_REEXEC_ENV] = "1"
     command = [
@@ -531,9 +543,142 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
             check=False,
         )
     except OSError as exc:
+        if backup is not None:
+            _restore_windows_launcher_path(launcher, backup)
         notice_console.print(f"无法启动 Windows 更新进程：{exc}", markup=False)
         raise typer.Exit(1) from exc
-    raise typer.Exit(completed.returncode)
+
+    if completed.returncode != 0:
+        if backup is not None:
+            restored = _restore_windows_launcher_path(launcher, backup)
+            notice_console.print(
+                (
+                    "Windows 更新失败，已恢复原命令入口。"
+                    if restored
+                    else "Windows 更新失败，且无法恢复原命令入口。"
+                ),
+                markup=False,
+            )
+        raise typer.Exit(completed.returncode)
+
+    business_exit = (
+        _run_updated_command(replay_request) if replay_request is not None else 0
+    )
+    if backup is not None:
+        try:
+            _start_windows_launcher_cleanup(backup)
+        except OSError as exc:
+            notice_console.print(
+                f"更新已完成，但旧 Windows 命令入口将在下次启动时清理：{exc}",
+                markup=False,
+            )
+    raise typer.Exit(business_exit)
+
+
+def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
+    try:
+        requested_launcher = Path(sys.argv[0])
+        if requested_launcher.is_symlink():
+            raise SelfUpdateError("the active Windows launcher must not be a link")
+        launcher = requested_launcher.resolve(strict=True)
+        python_dir = Path(sys.executable).resolve(strict=True).parent
+    except OSError as exc:
+        raise SelfUpdateError("cannot resolve the active Windows runtime") from exc
+
+    launcher_name = launcher.name.lower()
+    allowed_dirs = {
+        os.path.normcase(str(python_dir)),
+        os.path.normcase(str(python_dir / "Scripts")),
+    }
+    if launcher_name not in _WINDOWS_LAUNCHER_NAMES:
+        raise SelfUpdateError("the active Windows command is not ai-sdlc.exe")
+    if os.path.normcase(str(launcher.parent)) in allowed_dirs:
+        return launcher, _release_windows_runtime_launcher(launcher)
+
+    marker = launcher.with_name("ai-sdlc-runtime.txt")
+    if marker.is_symlink() or not marker.is_file():
+        raise SelfUpdateError("the external ai-sdlc.exe has no trusted runtime marker")
+    try:
+        marker_lines = marker.read_text(encoding="utf-8").splitlines()
+        if len(marker_lines) != 1 or not marker_lines[0].strip():
+            raise SelfUpdateError("the Windows runtime marker is malformed")
+        marked_python = Path(marker_lines[0].strip()).resolve(strict=True)
+        runtime_python = Path(sys.executable).resolve(strict=True)
+    except OSError as exc:
+        raise SelfUpdateError("cannot resolve the Windows runtime marker") from exc
+    if os.path.normcase(str(marked_python)) != os.path.normcase(str(runtime_python)):
+        raise SelfUpdateError("the Windows runtime marker does not match this runtime")
+    return launcher, None
+
+
+def _release_windows_runtime_launcher(launcher: Path) -> Path:
+    """Move the active runtime launcher so pip can write the canonical path."""
+
+    prefix = f".{launcher.stem}-old-"
+    _remove_stale_windows_launchers(launcher.parent, prefix)
+    backup = launcher.with_name(f"{prefix}{os.getpid()}{launcher.suffix}")
+    ordinal = 0
+    while backup.exists():
+        ordinal += 1
+        backup = launcher.with_name(f"{prefix}{os.getpid()}-{ordinal}{launcher.suffix}")
+    try:
+        os.replace(launcher, backup)
+    except OSError as exc:
+        raise SelfUpdateError(
+            "cannot release the active Windows launcher for replacement"
+        ) from exc
+    return backup
+
+
+def _remove_stale_windows_launchers(directory: Path, prefix: str) -> None:
+    for candidate in directory.glob(f"{prefix}*.exe"):
+        try:
+            if candidate.is_symlink() or not candidate.is_file():
+                continue
+            candidate.unlink()
+        except OSError:
+            continue
+
+
+def _restore_windows_launcher_path(launcher: Path, backup: Path) -> bool:
+    if not backup.exists():
+        return False
+    try:
+        os.replace(backup, launcher)
+    except OSError as exc:
+        notice_console.print(
+            f"Windows 更新失败，且无法恢复原命令入口：{exc}", markup=False
+        )
+        return False
+    return True
+
+
+def _start_windows_launcher_cleanup(backup: Path) -> None:
+    cleanup_code = (
+        "import pathlib,sys,time\n"
+        "path=pathlib.Path(sys.argv[1])\n"
+        f"for _ in range({_WINDOWS_LAUNCHER_CLEANUP_ATTEMPTS}):\n"
+        " try:\n"
+        "  path.unlink(missing_ok=True)\n"
+        "  raise SystemExit(0)\n"
+        " except PermissionError:\n"
+        "  time.sleep(0.05)\n"
+        "raise SystemExit(1)\n"
+    )
+    env = os.environ.copy()
+    env.pop(_REPLAY_HANDOFF_ENV, None)
+    env.pop(_REPLAY_BYPASS_ENV, None)
+    env.pop(_SELF_UPDATE_REEXEC_ENV, None)
+    subprocess.Popen(
+        [sys.executable, "-c", cleanup_code, str(backup)],
+        shell=False,
+        env=env,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
 
 
 def _should_reexec_windows_launcher(
@@ -548,7 +693,7 @@ def _should_reexec_windows_launcher(
     if env_map.get(_SELF_UPDATE_REEXEC_ENV) == "1":
         return False
     launcher = PureWindowsPath(argv0).name.lower()
-    return launcher in {"ai-sdlc.exe", "ai_sdlc.exe"}
+    return launcher in _WINDOWS_LAUNCHER_NAMES
 
 
 def _download_asset(asset_url: str, archive_path: Path) -> None:

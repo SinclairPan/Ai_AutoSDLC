@@ -83,13 +83,17 @@ Program、Telemetry 和治理表。顶层帮助同时展示二十余个历史/�
 不得把原始 argv 写入缓存、日志或升级提示，避免泄漏业务参数与凭证。
 
 Windows console launcher 是同一 update→replay 状态机的一部分。`ai-sdlc.exe` 必须在安装前
-同步启动 `python -m ai_sdlc self-update install` 子进程并等待完成，禁止依赖 Windows 不可靠的
-进程内 `exec` 替换。初始进程必须先冻结原 executable 与 argv，并通过一次性、仅进程链可见的
-环境 handoff 交给 module updater；不得写临时文件。updater 启动后立即严格解析并从
-`os.environ` 删除 handoff，再执行安装；安装成功后由 updater 调用更新后的原 executable 与
-exact argv。module updater 的最终退出码必须由初始 launcher 原样传播。业务子进程只接收一次性
+区分 runtime-owned launcher 与安装器生成的 stable shim：前者原子改名以释放 canonical 路径；
+后者只有在本身为普通文件、相邻 `ai-sdlc-runtime.txt` 精确指向当前 `sys.executable` 时才可信，
+且不得改名。随后同步启动无 handoff 的 `python -m ai_sdlc self-update install` 子进程并等待
+完成；禁止依赖 Windows 不可靠的进程内 `exec` 替换。初始进程必须先冻结原 executable 与 argv，
+严格解析一次性环境 handoff 后只在内存中保留；不得写临时文件。module updater 只执行安装和
+验证，退出 0 才算安装成功；初始进程随后调用更新后的原 executable 与 exact argv，单独传播
+业务退出码，不能用 metadata 或 launcher 是否存在猜测子进程失败阶段。业务子进程只接收一次性
 bypass 标记，根回调必须在调用业务 handler 前消费并删除该标记，因此 handoff/bypass 都不会
-出现在实际业务命令环境中。
+出现在实际业务命令环境中。安装未形成新 launcher 时必须恢复旧 launcher；成功后只允许一个
+不携带业务 argv 的有界清理子进程在父进程退出后删除旧映像，下一次升级只可清理同目录受控命名
+的残留，不能扫描或治理其他安装路径。
 
 显式 `self-update` 命令不创建 replay handoff。自动升级 handoff 缺失/损坏、安装失败或重跑
 启动失败都必须非零退出；安装失败时不得执行原业务命令，任何路径都不得把“升级完成”当作

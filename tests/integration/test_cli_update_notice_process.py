@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -367,10 +368,12 @@ target._verify_bare_cli_version = lambda version: version
     assert updater[0]["handoff"] is True
 
 
+@pytest.mark.parametrize("use_stable_shim", [False, True])
 @pytest.mark.skipif(sys.platform != "win32", reason="real Windows wheel upgrade")
 def test_windows_launcher_can_upgrade_its_live_installed_wheel(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    use_stable_shim: bool,
 ) -> None:
     metadata = packaging_backend._load_metadata()
     assert metadata["version"] == "2.0.0"
@@ -419,6 +422,15 @@ def test_windows_launcher_can_upgrade_its_live_installed_wheel(
     )
     assert install_old.returncode == 0, install_old.stderr
     assert launcher.is_file(), launcher
+    command_launcher = launcher
+    if use_stable_shim:
+        stable_bin = tmp_path / "stable-bin"
+        stable_bin.mkdir()
+        command_launcher = stable_bin / "ai-sdlc.exe"
+        shutil.copy2(launcher, command_launcher)
+        (stable_bin / "ai-sdlc-runtime.txt").write_text(
+            f"{venv_python}\n", encoding="utf-8"
+        )
 
     project = tmp_path / "project"
     project.mkdir()
@@ -470,11 +482,11 @@ target._verify_bare_cli_version = lambda version: version
     env["AI_SDLC_REPLAY_TEST_WHEEL"] = str(new_wheel)
     env["PYTHONPATH"] = str(hooks)
     env["PATH"] = os.pathsep.join(
-        part for part in (str(launcher.parent), env.get("PATH", "")) if part
+        part for part in (str(command_launcher.parent), env.get("PATH", "")) if part
     )
 
     result = subprocess.run(
-        [str(launcher), "status"],
+        [str(command_launcher), "status"],
         cwd=project,
         env=env,
         input="y\n",
@@ -485,14 +497,14 @@ target._verify_bare_cli_version = lambda version: version
         check=False,
     )
 
-    assert result.returncode == 0, result.stderr
+    assert result.returncode == 0, result.stdout + result.stderr
     records = [json.loads(line) for line in process_log.read_text().splitlines()]
     business = [record for record in records if record["argv"][1:] == ["status"]]
     updater = [record for record in records if "self-update" in record["argv"]]
     assert [record["version"] for record in business] == ["1.0.0", "2.0.0"]
     assert len(updater) == 1
     assert updater[0]["version"] == "1.0.0"
-    assert updater[0]["handoff"] is True
+    assert updater[0]["handoff"] is False
     assert business[1]["handoff"] is False
     assert business[1]["bypass"] is True
     installed = subprocess.run(
@@ -507,6 +519,12 @@ target._verify_bare_cli_version = lambda version: version
     )
     assert installed.returncode == 0, installed.stderr
     assert installed.stdout.strip() == "2.0.0"
+    stale_launchers = list(launcher.parent.glob(".ai-sdlc-old-*.exe"))
+    deadline = time.monotonic() + 10
+    while stale_launchers and time.monotonic() < deadline:
+        time.sleep(0.05)
+        stale_launchers = list(launcher.parent.glob(".ai-sdlc-old-*.exe"))
+    assert stale_launchers == []
 
 
 def test_replay_handoff_and_bypass_are_consumed(
@@ -595,15 +613,40 @@ def test_windows_launcher_reexec_carries_the_process_only_handoff(
     from ai_sdlc.cli import self_update_cmd
 
     seen: dict[str, object] = {}
-    monkeypatch.setenv("AI_SDLC_UPDATE_REPLAY_HANDOFF", '{"process":"only"}')
+    request = self_update_cmd.ReplayRequest(
+        executable=r"C:\Python\Scripts\ai-sdlc.exe",
+        argv=("doctor", "--json"),
+    )
+    self_update_cmd._publish_replay_handoff(request)
     monkeypatch.setattr(
         self_update_cmd, "_should_reexec_windows_launcher", lambda: True
     )
     monkeypatch.setattr(self_update_cmd.sys, "executable", r"C:\Python\python.exe")
+    launcher = Path(r"C:\Python\Scripts\ai-sdlc.exe")
+    backup = Path(r"C:\Python\Scripts\.ai-sdlc-old-1.exe")
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_prepare_windows_launcher_update",
+        lambda: (launcher, backup),
+    )
+
+    calls: list[tuple[list[str], dict[str, object]]] = []
+    events: list[str] = []
+
+    def fake_cleanup(candidate: Path) -> None:
+        seen["cleanup"] = candidate
+        events.append("cleanup")
+
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_start_windows_launcher_cleanup",
+        fake_cleanup,
+    )
 
     def fake_run(command, **kwargs):
-        seen.update(command=command, kwargs=kwargs)
-        return subprocess.CompletedProcess(command, 17)
+        calls.append((command, kwargs))
+        events.append("install" if len(calls) == 1 else "replay")
+        return subprocess.CompletedProcess(command, 0 if len(calls) == 1 else 17)
 
     monkeypatch.setattr(self_update_cmd.subprocess, "run", fake_run)
 
@@ -611,18 +654,21 @@ def test_windows_launcher_reexec_carries_the_process_only_handoff(
         self_update_cmd._reexec_windows_launcher_if_needed("2.0.0")
 
     assert exc_info.value.exit_code == 17
-    assert seen["command"][-4:] == [
+    assert calls[0][0][-4:] == [
         "self-update",
         "install",
         "--version",
         "2.0.0",
     ]
-    kwargs = seen["kwargs"]
+    kwargs = calls[0][1]
     assert isinstance(kwargs, dict)
     assert kwargs["shell"] is False
     assert kwargs["check"] is False
     assert kwargs["env"]["AI_SDLC_SELF_UPDATE_REEXEC"] == "1"
-    assert kwargs["env"]["AI_SDLC_UPDATE_REPLAY_HANDOFF"] == '{"process":"only"}'
+    assert "AI_SDLC_UPDATE_REPLAY_HANDOFF" not in kwargs["env"]
+    assert calls[1][0] == [request.executable, *request.argv]
+    assert seen["cleanup"] == backup
+    assert events == ["install", "replay", "cleanup"]
 
 
 def test_windows_launcher_delegate_failure_is_nonzero(
@@ -632,6 +678,19 @@ def test_windows_launcher_delegate_failure_is_nonzero(
 
     monkeypatch.setattr(
         self_update_cmd, "_should_reexec_windows_launcher", lambda: True
+    )
+    launcher = Path(r"C:\Python\Scripts\ai-sdlc.exe")
+    backup = Path(r"C:\Python\Scripts\.ai-sdlc-old-1.exe")
+    restored: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_prepare_windows_launcher_update",
+        lambda: (launcher, backup),
+    )
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_restore_windows_launcher_path",
+        lambda current, previous: restored.append((current, previous)),
     )
     monkeypatch.setattr(
         self_update_cmd.subprocess,
@@ -645,6 +704,148 @@ def test_windows_launcher_delegate_failure_is_nonzero(
         self_update_cmd._reexec_windows_launcher_if_needed("2.0.0")
 
     assert exc_info.value.exit_code == 1
+    assert restored == [(launcher, backup)]
+
+
+def test_windows_replay_launch_failure_still_cleans_old_launcher(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    request = self_update_cmd.ReplayRequest("ai-sdlc", ("status",))
+    self_update_cmd._publish_replay_handoff(request)
+    monkeypatch.setattr(
+        self_update_cmd, "_should_reexec_windows_launcher", lambda: True
+    )
+    launcher = Path(r"C:\Python\Scripts\ai-sdlc.exe")
+    backup = Path(r"C:\Python\Scripts\.ai-sdlc-old-1.exe")
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_prepare_windows_launcher_update",
+        lambda: (launcher, backup),
+    )
+    calls = 0
+
+    def fake_run(command, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return subprocess.CompletedProcess(command, 0)
+        raise OSError("missing updated launcher")
+
+    cleaned: list[Path] = []
+    monkeypatch.setattr(self_update_cmd.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_start_windows_launcher_cleanup",
+        cleaned.append,
+    )
+
+    with pytest.raises(click.exceptions.Exit) as exc_info:
+        self_update_cmd._reexec_windows_launcher_if_needed("2.0.0")
+
+    assert exc_info.value.exit_code == 1
+    assert cleaned == [backup]
+
+
+def test_windows_launcher_failed_update_restores_original_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    launcher = Path(r"C:\Python\Scripts\ai-sdlc.exe")
+    backup = Path(r"C:\Python\Scripts\.ai-sdlc-old-1.exe")
+    restored: list[tuple[Path, Path]] = []
+    monkeypatch.setattr(
+        self_update_cmd, "_should_reexec_windows_launcher", lambda: True
+    )
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_prepare_windows_launcher_update",
+        lambda: (launcher, backup),
+    )
+    monkeypatch.setattr(
+        self_update_cmd.subprocess,
+        "run",
+        lambda command, **_kwargs: subprocess.CompletedProcess(command, 1),
+    )
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_restore_windows_launcher_path",
+        lambda current, previous: restored.append((current, previous)),
+    )
+
+    with pytest.raises(click.exceptions.Exit) as exc_info:
+        self_update_cmd._reexec_windows_launcher_if_needed("2.0.0")
+
+    assert exc_info.value.exit_code == 1
+    assert restored == [(launcher, backup)]
+
+
+def test_external_windows_launcher_requires_matching_runtime_marker(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    runtime = tmp_path / "runtime" / "python.exe"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"python")
+    stable = tmp_path / "stable" / "ai-sdlc.exe"
+    stable.parent.mkdir()
+    stable.write_bytes(b"launcher")
+    marker = stable.with_name("ai-sdlc-runtime.txt")
+    marker.write_text(f"{runtime}\n", encoding="utf-8")
+    monkeypatch.setattr(self_update_cmd.sys, "argv", [str(stable), "status"])
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
+
+    assert self_update_cmd._prepare_windows_launcher_update() == (stable, None)
+
+    marker.write_text(f"{tmp_path / 'other-python.exe'}\n", encoding="utf-8")
+    with pytest.raises(self_update_cmd.SelfUpdateError):
+        self_update_cmd._prepare_windows_launcher_update()
+
+    marker.write_text(f"{runtime}\n", encoding="utf-8")
+    original_is_symlink = Path.is_symlink
+    monkeypatch.setattr(
+        Path,
+        "is_symlink",
+        lambda candidate: candidate == stable or original_is_symlink(candidate),
+    )
+    with pytest.raises(self_update_cmd.SelfUpdateError):
+        self_update_cmd._prepare_windows_launcher_update()
+
+
+def test_windows_launcher_cleanup_never_receives_replay_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    seen: dict[str, object] = {}
+    monkeypatch.setenv("AI_SDLC_UPDATE_REPLAY_HANDOFF", '{"secret":"argv"}')
+    monkeypatch.setenv("AI_SDLC_UPDATE_REPLAY_BYPASS", "1")
+    monkeypatch.setenv("AI_SDLC_SELF_UPDATE_REEXEC", "1")
+    monkeypatch.setattr(self_update_cmd.sys, "executable", r"C:\Python\python.exe")
+
+    def fake_popen(command, **kwargs):
+        seen.update(command=command, kwargs=kwargs)
+        return object()
+
+    monkeypatch.setattr(self_update_cmd.subprocess, "Popen", fake_popen)
+    backup = Path(r"C:\Python\Scripts\.ai-sdlc-old-1.exe")
+
+    self_update_cmd._start_windows_launcher_cleanup(backup)
+
+    command = seen["command"]
+    assert isinstance(command, list)
+    assert command[-1] == str(backup)
+    assert "secret" not in " ".join(command)
+    kwargs = seen["kwargs"]
+    assert isinstance(kwargs, dict)
+    assert kwargs["shell"] is False
+    assert "AI_SDLC_UPDATE_REPLAY_HANDOFF" not in kwargs["env"]
+    assert "AI_SDLC_UPDATE_REPLAY_BYPASS" not in kwargs["env"]
+    assert "AI_SDLC_SELF_UPDATE_REEXEC" not in kwargs["env"]
 
 
 def test_malformed_auto_replay_handoff_fails_before_install(

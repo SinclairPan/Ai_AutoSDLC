@@ -58,16 +58,20 @@ Implementation:
 - render a deterministic `AI_SDLC_UPDATE_NOTICE {compact-json}` line to stderr for non-TTY/JSON;
 - keep TTY confirmation on stderr; decline and discovery failure continue the original command;
 - freeze the original executable and argv before installation; on POSIX, replay them after the install
-  returns; on Windows, extend `_reexec_windows_launcher_if_needed` so its `ai-sdlc.exe` synchronously
-  delegates to a module-updater child with a one-shot process-environment handoff, waits, and propagates
-  the child result instead of relying on in-process `exec` replacement;
-- make the module updater strictly parse and immediately remove that handoff, install, then run the
+  returns; on Windows, extend `_reexec_windows_launcher_if_needed` to distinguish a runtime-owned launcher
+  from a trusted stable shim whose sibling runtime marker matches `sys.executable`; atomically move aside
+  only the runtime-owned launcher, synchronously run a handoff-free module updater, and treat only exit 0
+  as an installed and verified update instead of relying on in-process `exec` replacement;
+- make the Windows parent strictly parse and remove the one-shot handoff before installation, then run the
   updated original executable with exact argv and `shell=False`; the replay child receives a one-shot
   bypass marker that the root callback removes before invoking the business handler;
-- propagate the replay exit code; missing/malformed auto-replay handoff, install failure or replay launch
-  failure must be nonzero and must never claim the business command completed;
+- keep updater and business replay as two explicit phases, propagate only the replay exit as the business
+  result, and ensure missing/malformed handoff, install failure or replay launch failure is nonzero without
+  claiming the business command completed;
 - explicit `self-update` does not create a replay handoff, and no handoff/argv may reach a file, cache,
   log, notice, persistent environment or the final business-handler environment;
+- restore the old Windows launcher when no committed replacement exists; after success, use only a
+  bounded one-shot cleanup child without business argv to delete the old image after its parent exits;
 - never serialize argv into notice/cache and never replay source/editable/`uv run` runtimes;
 - retain existing cache freshness, automatic timeout, failure backoff, explicit-check timeout and
   Release redirect validation.
