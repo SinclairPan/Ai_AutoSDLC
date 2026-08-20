@@ -148,105 +148,302 @@ class IsolationProbeResult:
     protected_root_results: tuple[tuple[str, bool], ...] = ()
 
 
-_FRONTEND_BROWSER_HARNESS = r'''<!doctype html>
-<html lang="zh-CN">
-<head><meta charset="UTF-8"><title>外部浏览器验收</title><link rel="icon" href="data:,"></head>
-<body>
-<main aria-labelledby="title">
-  <h1 id="title">发布风险工作台</h1>
-  <nav aria-label="风险等级筛选"><button type="button">全部</button><button type="button">高</button></nav>
-  <section id="workspace" aria-live="polite"></section>
-</main>
-<pre id="result">{"pending":true}</pre>
+_BROWSER_PROGRAM_KEYS = {"schema", "scenarios"}
+_BROWSER_SCENARIO_KEYS = {"id", "loader", "confirmer", "actions", "assertions"}
+_BROWSER_OUTCOME_KEYS = {
+    "resolve": {"type", "value"},
+    "reject": {"type"},
+    "deferred": {"type", "key"},
+}
+_BROWSER_ACTION_KEYS = {
+    "load": {"op", "handle", "await"},
+    "retry": {"op", "handle", "await"},
+    "resolve-load": {"op", "key", "value"},
+    "await": {"op", "handle"},
+    "render": {"op", "filter"},
+    "checkpoint": {"op", "name"},
+    "confirm": {"op", "risk_id", "handle", "await"},
+    "release-confirms": {"op"},
+    "await-all": {"op", "handles"},
+}
+_BROWSER_ASSERTION_KINDS = {
+    "json-equal",
+    "json-length",
+    "dom-text-contains",
+    "dom-count",
+    "dom-present",
+    "console-empty",
+    "basic-a11y",
+}
+
+
+def validate_frontend_browser_program(value: object) -> tuple[str, ...]:
+    """Validate a closed, data-only browser program without knowing its scenarios."""
+    program = _closed_object(value, _BROWSER_PROGRAM_KEYS, "browser program")
+    if program["schema"] != "ai-sdlc-v2-frontend-browser-program/v1":
+        raise ValueError("browser program schema is invalid")
+    scenarios = program["scenarios"]
+    if not isinstance(scenarios, list) or not scenarios:
+        raise ValueError("browser program scenarios are invalid")
+    identifiers: list[str] = []
+    for raw_scenario in scenarios:
+        scenario = _closed_object(
+            raw_scenario, _BROWSER_SCENARIO_KEYS, "browser scenario"
+        )
+        identifier = scenario["id"]
+        if not isinstance(identifier, str) or not identifier:
+            raise ValueError("browser scenario id is invalid")
+        identifiers.append(identifier)
+        loader = _closed_object(scenario["loader"], {"outcomes"}, "browser loader")
+        outcomes = loader["outcomes"]
+        if not isinstance(outcomes, list) or not outcomes:
+            raise ValueError("browser loader outcomes are invalid")
+        for raw_outcome in outcomes:
+            if not isinstance(raw_outcome, Mapping):
+                raise ValueError("browser loader outcome is invalid")
+            outcome_type = raw_outcome.get("type")
+            if outcome_type not in _BROWSER_OUTCOME_KEYS:
+                raise ValueError("browser loader outcome type is invalid")
+            _closed_object(
+                raw_outcome,
+                _BROWSER_OUTCOME_KEYS[str(outcome_type)],
+                "browser loader outcome",
+            )
+            if outcome_type == "deferred" and (
+                not isinstance(raw_outcome["key"], str) or not raw_outcome["key"]
+            ):
+                raise ValueError("browser deferred outcome key is invalid")
+        confirmer = _closed_object(scenario["confirmer"], {"mode"}, "browser confirmer")
+        if confirmer["mode"] not in {"immediate", "deferred"}:
+            raise ValueError("browser confirmer mode is invalid")
+        actions = scenario["actions"]
+        if not isinstance(actions, list) or not actions:
+            raise ValueError("browser actions are invalid")
+        deferred_keys = {
+            str(outcome["key"]) for outcome in outcomes if outcome["type"] == "deferred"
+        }
+        if len(deferred_keys) != sum(
+            outcome["type"] == "deferred" for outcome in outcomes
+        ):
+            raise ValueError("browser deferred outcome keys are duplicated")
+        handles: set[str] = set()
+        resolved_keys: set[str] = set()
+        checkpoints: set[str] = set()
+        loader_calls = 0
+        for raw_action in actions:
+            if not isinstance(raw_action, Mapping):
+                raise ValueError("browser action is invalid")
+            operation = raw_action.get("op")
+            if operation not in _BROWSER_ACTION_KEYS:
+                raise ValueError("browser action operation is invalid")
+            action = _closed_object(
+                raw_action,
+                _BROWSER_ACTION_KEYS[str(operation)],
+                "browser action",
+            )
+            for key in {"handle", "key", "name", "risk_id"} & set(action):
+                if not isinstance(action[key], str) or not action[key]:
+                    raise ValueError("browser action identifier is invalid")
+            if "await" in action and not isinstance(action["await"], bool):
+                raise ValueError("browser action await flag is invalid")
+            if "handles" in action and (
+                not isinstance(action["handles"], list)
+                or not action["handles"]
+                or not all(isinstance(item, str) and item for item in action["handles"])
+            ):
+                raise ValueError("browser action handles are invalid")
+            if operation == "render" and not isinstance(action["filter"], str):
+                raise ValueError("browser render filter is invalid")
+            if operation in {"load", "retry", "confirm"}:
+                handle = str(action["handle"])
+                if handle in handles:
+                    raise ValueError("browser action handles are duplicated")
+                handles.add(handle)
+                if operation in {"load", "retry"}:
+                    loader_calls += 1
+            elif operation == "resolve-load":
+                key = str(action["key"])
+                if key not in deferred_keys or key in resolved_keys:
+                    raise ValueError("browser deferred resolution is invalid")
+                resolved_keys.add(key)
+            elif operation == "await" and action["handle"] not in handles:
+                raise ValueError("browser awaited handle is unknown")
+            elif operation == "await-all" and any(
+                handle not in handles for handle in action["handles"]
+            ):
+                raise ValueError("browser awaited handles are unknown")
+            elif operation == "checkpoint":
+                name = str(action["name"])
+                if name in checkpoints:
+                    raise ValueError("browser checkpoint names are duplicated")
+                checkpoints.add(name)
+            elif operation == "release-confirms" and confirmer["mode"] != "deferred":
+                raise ValueError("browser confirm release mode is invalid")
+        if loader_calls != len(outcomes) or resolved_keys != deferred_keys:
+            raise ValueError("browser loader program is incomplete")
+        assertions = scenario["assertions"]
+        if not isinstance(assertions, list) or not assertions:
+            raise ValueError("browser assertions are invalid")
+        assertion_ids: list[str] = []
+        for raw_assertion in assertions:
+            assertion = _closed_object(
+                raw_assertion,
+                {"id", "kind", "target", "expected", "expose_as"},
+                "browser assertion",
+            )
+            if (
+                not isinstance(assertion["id"], str)
+                or not assertion["id"]
+                or assertion["kind"] not in _BROWSER_ASSERTION_KINDS
+                or assertion["expose_as"] is not None
+                and (
+                    not isinstance(assertion["expose_as"], str)
+                    or not assertion["expose_as"]
+                )
+            ):
+                raise ValueError("browser assertion fields are invalid")
+            kind = str(assertion["kind"])
+            target = assertion["target"]
+            expected = assertion["expected"]
+            if kind in {"json-equal", "json-length"} and (
+                not isinstance(target, list)
+                or not target
+                or not all(
+                    (isinstance(item, str) and item)
+                    or isinstance(item, int)
+                    and not isinstance(item, bool)
+                    and item >= 0
+                    for item in target
+                )
+            ):
+                raise ValueError("browser JSON assertion target is invalid")
+            if kind in {"dom-text-contains", "dom-count", "dom-present"} and (
+                not isinstance(target, str) or not target
+            ):
+                raise ValueError("browser DOM assertion target is invalid")
+            if kind == "json-length" and (
+                isinstance(expected, bool)
+                or not isinstance(expected, int)
+                or expected < 0
+            ):
+                raise ValueError("browser length assertion is invalid")
+            if kind == "dom-text-contains" and (
+                not isinstance(expected, list)
+                or not expected
+                or not all(isinstance(item, str) and item for item in expected)
+            ):
+                raise ValueError("browser text assertion is invalid")
+            if kind == "dom-count" and (
+                isinstance(expected, bool)
+                or not isinstance(expected, int)
+                or expected < 0
+            ):
+                raise ValueError("browser count assertion is invalid")
+            if kind in {"dom-present", "basic-a11y"} and not isinstance(expected, bool):
+                raise ValueError("browser boolean assertion is invalid")
+            if kind == "console-empty" and expected != []:
+                raise ValueError("browser console assertion is invalid")
+            assertion_ids.append(assertion["id"])
+        if len(assertion_ids) != len(set(assertion_ids)):
+            raise ValueError("browser assertion ids are duplicated")
+    if len(identifiers) != len(set(identifiers)):
+        raise ValueError("browser scenario ids are duplicated")
+    return tuple(identifiers)
+
+
+def _browser_interpreter_document() -> str:
+    return r"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><title>浏览器验收</title><link rel="icon" href="data:,"></head>
+<body><main aria-labelledby="title"><h1 id="title">交付工作台</h1><nav aria-label="数据筛选"><button type="button">全部</button></nav><section id="workspace" aria-live="polite"></section></main><pre id="result">{"pending":true}</pre>
 <script type="module">
 import { createRiskController } from "../src/release-state.mjs";
-const scenario=new URL(location.href).searchParams.get("scenario")||"normal";
 const errors=[];
 window.addEventListener("error",event=>errors.push(event.message));
 window.addEventListener("unhandledrejection",event=>errors.push(String(event.reason)));
-const sample=[
-  {id:"R-1",name:"鉴权回归",service:"release-api",level:"high",owner:"质量团队",confirmed:false},
-  {id:"R-2",name:"缓存预热",service:"risk-query",level:"medium",owner:"平台团队",confirmed:false},
-  {id:"R-3",name:"容量余量",service:"gateway",level:"low",owner:"运维团队",confirmed:false},
-];
-const outcomes=[];
-const delayed=[];
-if(scenario==="failure_recovery") outcomes.push("reject",sample);
-else if(scenario==="consecutive_failure_recovery") outcomes.push("reject","reject",sample);
-else if(scenario==="malformed_response") outcomes.push({id:"not-an-array"});
-else outcomes.push(sample);
+const program=await (await fetch("../browser-program.json",{cache:"no-store"})).json();
+const identifier=new URL(location.href).searchParams.get("scenario");
+const scenario=program.scenarios.find(item=>item.id===identifier);
+if(!scenario) throw new Error("unknown scenario");
+const outcomes=[...scenario.loader.outcomes];
+const deferredLoads=new Map();
+const confirmResolvers=[];
+const handles=new Map();
+const snapshots={};
 let loadCalls=0;
 let confirmCalls=0;
-const releaseConfirm=[];
 const loader=()=>{
   loadCalls+=1;
-  if(scenario==="delayed_race") return new Promise(resolve=>delayed.push(resolve));
   const outcome=outcomes.shift();
-  return outcome==="reject"?Promise.reject(new Error("unavailable")):Promise.resolve(outcome);
+  if(!outcome) return Promise.reject(new Error("missing outcome"));
+  if(outcome.type==="reject") return Promise.reject(new Error("unavailable"));
+  if(outcome.type==="deferred") return new Promise((resolve,reject)=>deferredLoads.set(outcome.key,{resolve,reject}));
+  return Promise.resolve(outcome.value);
 };
-const confirmer=()=>{confirmCalls+=1;return new Promise(resolve=>releaseConfirm.push(resolve));};
+const confirmer=()=>{
+  confirmCalls+=1;
+  if(scenario.confirmer.mode==="immediate") return Promise.resolve(true);
+  return new Promise(resolve=>confirmResolvers.push(resolve));
+};
 const controller=createRiskController(loader,confirmer);
-const behaviorChecks={};
-function render(level="all"){
+function render(filter="all"){
   const workspace=document.querySelector("#workspace");
-  const risks=Array.isArray(controller.state.risks)
-    ? controller.state.risks.filter(risk=>level==="all"||risk.level===level)
-    : [];
+  const risks=Array.isArray(controller.state.risks)?controller.state.risks.filter(item=>filter==="all"||item.level===filter):[];
   workspace.innerHTML=controller.state.error
     ? `<div role="alert">${controller.state.error}<button type="button" data-retry>重试</button></div>`
-    : `<table><caption>发布风险</caption><thead><tr><th>风险</th><th>服务</th><th>等级</th><th>负责人</th><th>状态</th></tr></thead><tbody>${risks.map(risk=>`<tr data-risk="${risk.id}"><td>${risk.name}</td><td>${risk.service}</td><td>${risk.level}</td><td>${risk.owner}</td><td><button type="button" data-confirm="${risk.id}" ${risk.confirmed?"disabled":""}>确认风险</button></td></tr>`).join("")}</tbody></table>`;
+    : `<table><caption>交付数据</caption><thead><tr><th>名称</th><th>服务</th><th>等级</th><th>负责人</th><th>状态</th></tr></thead><tbody>${risks.map(item=>`<tr data-item="${item.id}"><td>${item.name}</td><td>${item.service}</td><td>${item.level}</td><td>${item.owner}</td><td><button type="button" data-confirm="${item.id}" ${item.confirmed?"disabled":""}>确认</button></td></tr>`).join("")}</tbody></table>`;
 }
-let passed=false;
-if(scenario==="delayed_race"){
-  const first=controller.load();
-  const second=controller.load();
-  delayed[1]([{...sample[2],id:"NEW"}]);
-  await second;
-  delayed[0]([{...sample[0],id:"OLD"}]);
-  await first;
-  render();
-  passed=controller.state.risks?.[0]?.id==="NEW";
-}else{
-  await controller.load();
-  render();
-  if(scenario==="normal"){
-    render("high");
-    behaviorChecks.field_rendering=document.body.textContent.includes("release-api")&&document.body.textContent.includes("质量团队")&&document.body.textContent.includes("high");
-    behaviorChecks.filtering=document.querySelectorAll("tbody tr").length===1;
-    passed=behaviorChecks.field_rendering&&behaviorChecks.filtering;
-  }else if(scenario==="failure_recovery"){
-    const red=controller.state.error==="加载失败"&&typeof controller.retry==="function"&&document.querySelector("[role=alert] [data-retry]");
-    if(typeof controller.retry==="function") await controller.retry();
-    render();
-    passed=Boolean(red&&controller.state.error===null&&controller.state.risks.length===3);
-  }else if(scenario==="consecutive_failure_recovery"){
-    if(typeof controller.retry==="function") await controller.retry();
-    const stayedRecoverable=controller.state.error==="加载失败";
-    if(typeof controller.retry==="function") await controller.retry();
-    render();
-    passed=stayedRecoverable&&controller.state.error===null&&controller.state.risks.length===3;
-  }else if(scenario==="rapid_double_click"){
-    const first=controller.confirm("R-1");
-    const second=controller.confirm("R-1");
-    for(const release of releaseConfirm) release();
-    await Promise.all([first,second]);
-    render();
-    passed=confirmCalls===1&&controller.state.risks[0].confirmed===true;
-  }else if(scenario==="malformed_response"){
-    render();
-    passed=controller.state.error==="加载失败"&&controller.state.risks.length===0;
+for(const action of scenario.actions){
+  if(action.op==="load"||action.op==="retry"){
+    const promise=action.op==="load"?controller.load():controller.retry();
+    handles.set(action.handle,promise);
+    if(action.await) await promise;
+  }else if(action.op==="resolve-load"){
+    const deferred=deferredLoads.get(action.key);
+    if(!deferred) throw new Error("unknown deferred load");
+    deferred.resolve(action.value);
+  }else if(action.op==="await"){
+    await handles.get(action.handle);
+  }else if(action.op==="render"){
+    render(action.filter);
+  }else if(action.op==="checkpoint"){
+    snapshots[action.name]={state:JSON.parse(JSON.stringify(controller.state))};
+  }else if(action.op==="confirm"){
+    const promise=controller.confirm(action.risk_id);
+    handles.set(action.handle,promise);
+    if(action.await) await promise;
+  }else if(action.op==="release-confirms"){
+    for(const resolve of confirmResolvers.splice(0)) resolve(true);
+  }else if(action.op==="await-all"){
+    await Promise.all(action.handles.map(handle=>handles.get(handle)));
   }
 }
 const basicAccessibility=Boolean(document.querySelector("main[aria-labelledby]")&&document.querySelector("nav[aria-label]")&&(document.querySelector("table caption")||document.querySelector("[role=alert]")));
-document.querySelector("#result").textContent=JSON.stringify({scenario,passed,loadCalls,confirmCalls,console_errors:errors,basic_accessibility:basicAccessibility,behavior_checks:behaviorChecks});
-</script>
-</body>
-</html>
-'''
+const context={state:controller.state,snapshots,load_calls:loadCalls,confirm_calls:confirmCalls,console_errors:errors,basic_accessibility:basicAccessibility};
+const at=(root,path)=>path.reduce((value,part)=>value?.[part],root);
+const same=(left,right)=>JSON.stringify(left)===JSON.stringify(right);
+const behaviorChecks={};
+const assertionResults={};
+for(const assertion of scenario.assertions){
+  let passed=false;
+  if(assertion.kind==="json-equal") passed=same(at(context,assertion.target),assertion.expected);
+  else if(assertion.kind==="json-length") passed=at(context,assertion.target)?.length===assertion.expected;
+  else if(assertion.kind==="dom-text-contains") passed=assertion.expected.every(value=>document.querySelector(assertion.target)?.textContent?.includes(value));
+  else if(assertion.kind==="dom-count") passed=document.querySelectorAll(assertion.target).length===assertion.expected;
+  else if(assertion.kind==="dom-present") passed=Boolean(document.querySelector(assertion.target))===assertion.expected;
+  else if(assertion.kind==="console-empty") passed=errors.length===0;
+  else if(assertion.kind==="basic-a11y") passed=basicAccessibility===assertion.expected;
+  assertionResults[assertion.id]=passed;
+  if(assertion.expose_as) behaviorChecks[assertion.expose_as]=passed;
+}
+document.querySelector("#result").textContent=JSON.stringify({scenario:scenario.id,passed:Object.values(assertionResults).every(Boolean),load_calls:loadCalls,confirm_calls:confirmCalls,console_errors:errors,basic_accessibility:basicAccessibility,behavior_checks:behaviorChecks,assertions:assertionResults});
+</script></body></html>"""
 
 
-def run_frontend_browser_e2e(task_root: Path) -> Mapping[str, object]:
-    """Run the same-origin frozen scenarios in a real Chrome process."""
+def run_frontend_browser_e2e(
+    task_root: Path, browser_program: Mapping[str, object]
+) -> Mapping[str, object]:
+    """Execute only the supplied sealed data program in a real browser."""
+    scenario_ids = validate_frontend_browser_program(browser_program)
     root = task_root.resolve(strict=True)
     release_state = root / "src" / "release-state.mjs"
     if not release_state.is_file():
@@ -265,8 +462,16 @@ def run_frontend_browser_e2e(task_root: Path) -> Mapping[str, object]:
     evaluator_root = Path(evaluator_workspace.name)
     (evaluator_root / "tests").mkdir()
     (evaluator_root / "src").mkdir()
-    (evaluator_root / "tests" / "browser-harness.html").write_text(
-        _FRONTEND_BROWSER_HARNESS, encoding="utf-8"
+    (evaluator_root / "tests" / "browser-interpreter.html").write_text(
+        _browser_interpreter_document(), encoding="utf-8"
+    )
+    (evaluator_root / "browser-program.json").write_bytes(
+        json.dumps(
+            browser_program,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     )
     shutil.copy2(release_state, evaluator_root / "src" / "release-state.mjs")
 
@@ -282,14 +487,6 @@ def run_frontend_browser_e2e(task_root: Path) -> Mapping[str, object]:
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
-    scenarios = (
-        "normal",
-        "failure_recovery",
-        "consecutive_failure_recovery",
-        "delayed_race",
-        "rapid_double_click",
-        "malformed_response",
-    )
     observed: dict[str, bool] = {}
     console_errors: list[str] = []
     accessibility: list[bool] = []
@@ -298,7 +495,7 @@ def run_frontend_browser_e2e(task_root: Path) -> Mapping[str, object]:
         playwright_module = os.environ.get("AI_SDLC_BENCHMARK_PLAYWRIGHT_MODULE")
         if playwright_module:
             module = Path(playwright_module).resolve(strict=True)
-            adapter = r'''
+            adapter = r"""
 import { pathToFileURL } from "node:url";
 const [modulePath,browserPath,baseUrl,rawScenarios]=process.argv.slice(1);
 const { chromium }=await import(pathToFileURL(modulePath).href);
@@ -310,7 +507,7 @@ try {
     const browserErrors=[];
     page.on("console",message=>{if(message.type()==="error") browserErrors.push(message.text());});
     page.on("pageerror",error=>browserErrors.push(error.message));
-    await page.goto(`${baseUrl}/tests/browser-harness.html?scenario=${encodeURIComponent(scenario)}`,{waitUntil:"networkidle"});
+    await page.goto(`${baseUrl}/tests/browser-interpreter.html?scenario=${encodeURIComponent(scenario)}`,{waitUntil:"networkidle"});
     await page.waitForFunction(()=>!document.querySelector("#result")?.textContent?.includes('"pending":true'),null,{timeout:10000});
     const payload=JSON.parse(await page.locator("#result").textContent());
     payload.console_errors=[...(payload.console_errors||[]),...browserErrors];
@@ -319,7 +516,7 @@ try {
   }
 } finally { await browser.close(); }
 console.log(JSON.stringify(outputs));
-'''
+"""
             completed = subprocess.run(
                 [
                     "node",
@@ -329,7 +526,7 @@ console.log(JSON.stringify(outputs));
                     str(module),
                     str(browser),
                     f"http://127.0.0.1:{server.server_port}",
-                    json.dumps(scenarios),
+                    json.dumps(scenario_ids),
                 ],
                 capture_output=True,
                 text=True,
@@ -339,9 +536,9 @@ console.log(JSON.stringify(outputs));
             if completed.returncode != 0:
                 raise RuntimeError("Playwright browser acceptance process failed")
             payloads = json.loads(completed.stdout)
-            if not isinstance(payloads, list) or len(payloads) != len(scenarios):
+            if not isinstance(payloads, list) or len(payloads) != len(scenario_ids):
                 raise RuntimeError("Playwright browser acceptance output is invalid")
-            for scenario, payload in zip(scenarios, payloads, strict=True):
+            for scenario, payload in zip(scenario_ids, payloads, strict=True):
                 if not isinstance(payload, Mapping):
                     raise RuntimeError("Playwright browser scenario output is invalid")
                 observed[scenario] = payload.get("passed") is True
@@ -363,9 +560,9 @@ console.log(JSON.stringify(outputs));
                 "behavior_checks": behavior_checks,
             }
         with tempfile.TemporaryDirectory(prefix="ai-sdlc-browser-profile-") as profile:
-            for scenario in scenarios:
+            for scenario in scenario_ids:
                 url = (
-                    f"http://127.0.0.1:{server.server_port}/tests/browser-harness.html"
+                    f"http://127.0.0.1:{server.server_port}/tests/browser-interpreter.html"
                     f"?scenario={quote(scenario)}"
                 )
                 completed = subprocess.run(
@@ -530,7 +727,13 @@ def validate_frontend_runtime(
             "executable_identity_sha256"
         ) != _digest_file(browser_binary):
             issues.append(BenchmarkIssue("frontend.browser", "browser identity drift"))
-    except (AttributeError, OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (
+        AttributeError,
+        OSError,
+        TypeError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
         issues.append(BenchmarkIssue("frontend.environment", str(error)))
     return issues
 
@@ -540,14 +743,18 @@ def fixture_tree_digest(fixture_root: Path = _FIXTURE_ROOT) -> str:
     inputs: list[dict[str, str]] = []
     for fixture_id in FIXTURE_IDS:
         public = fixture_root / fixture_id / "public"
-        inputs.append({"fixture_id": fixture_id, "public_tree_sha256": _tree_digest(public)})
+        inputs.append(
+            {"fixture_id": fixture_id, "public_tree_sha256": _tree_digest(public)}
+        )
     for name in ("evidence-contract.template.json",):
         path = fixture_root / name
         inputs.append({"fixture_id": name, "public_tree_sha256": _digest_file(path)})
     return sha256(_canonical_json_bytes(inputs)).hexdigest()
 
 
-def load_fixture_manifest(path: Path = _FIXTURE_ROOT / "manifest.json") -> FixtureManifest:
+def load_fixture_manifest(
+    path: Path = _FIXTURE_ROOT / "manifest.json",
+) -> FixtureManifest:
     canonical_bytes = path.read_bytes()
     raw = _closed_object(
         json.loads(canonical_bytes),
@@ -596,8 +803,10 @@ def load_fixture_manifest(path: Path = _FIXTURE_ROOT / "manifest.json") -> Fixtu
                 "visible command",
             )
             argv = command["argv"]
-            if not isinstance(argv, list) or not argv or not all(
-                isinstance(item, str) and item for item in argv
+            if (
+                not isinstance(argv, list)
+                or not argv
+                or not all(isinstance(item, str) and item for item in argv)
             ):
                 raise ValueError("visible command argv must be non-empty strings")
             commands.append(
@@ -636,9 +845,7 @@ def load_fixture_manifest(path: Path = _FIXTURE_ROOT / "manifest.json") -> Fixtu
         fixture_ids=tuple(fixture_ids),
         fixtures=tuple(entries),
         canonical_sha256=str(raw["canonical_sha256"]),
-        evidence_contract_template_sha256=str(
-            raw["evidence_contract_template_sha256"]
-        ),
+        evidence_contract_template_sha256=str(raw["evidence_contract_template_sha256"]),
         canonical_bytes=canonical_bytes,
     )
 
@@ -649,24 +856,31 @@ def validate_fixture_manifest(
     issues: list[BenchmarkIssue] = []
     if manifest.schema != "ai-sdlc-v2-benefit-fixture-manifest/v1":
         issues.append(BenchmarkIssue("fixture.manifest.schema", "unexpected schema"))
-    if manifest.fixture_ids != FIXTURE_IDS or tuple(
-        item.fixture_id for item in manifest.fixtures
-    ) != FIXTURE_IDS:
+    if (
+        manifest.fixture_ids != FIXTURE_IDS
+        or tuple(item.fixture_id for item in manifest.fixtures) != FIXTURE_IDS
+    ):
         issues.append(
-            BenchmarkIssue("fixture.manifest.coverage", "fixture order must match protocol")
+            BenchmarkIssue(
+                "fixture.manifest.coverage", "fixture order must match protocol"
+            )
         )
     for entry in manifest.fixtures:
         public = fixture_root / entry.public_root
         try:
             public.relative_to(fixture_root)
             actual_tree = _tree_digest(public)
-            actual_input = _digest_file(public / "benchmark-task" / "input-contract.json")
+            actual_input = _digest_file(
+                public / "benchmark-task" / "input-contract.json"
+            )
         except (OSError, ValueError) as error:
             issues.append(BenchmarkIssue("fixture.manifest.path", str(error)))
             continue
         if actual_tree != entry.public_tree_sha256:
             issues.append(
-                BenchmarkIssue("fixture.manifest.tree", f"{entry.fixture_id} tree drift")
+                BenchmarkIssue(
+                    "fixture.manifest.tree", f"{entry.fixture_id} tree drift"
+                )
             )
         if actual_input != entry.input_contract_sha256:
             issues.append(
@@ -684,7 +898,9 @@ def validate_fixture_manifest(
             )
     try:
         if manifest.canonical_sha256 != fixture_tree_digest(fixture_root):
-            issues.append(BenchmarkIssue("fixture.manifest.digest", "fixture digest drift"))
+            issues.append(
+                BenchmarkIssue("fixture.manifest.digest", "fixture digest drift")
+            )
         template = fixture_root / "evidence-contract.template.json"
         if _digest_file(template) != manifest.evidence_contract_template_sha256:
             issues.append(
@@ -701,7 +917,9 @@ def validate_fixture_manifest(
 def _entry_for(fixture_id: str, manifest: FixtureManifest) -> FixtureManifestEntry:
     if fixture_id not in FIXTURE_IDS:
         raise ValueError("fixture id is not frozen")
-    entry = next((item for item in manifest.fixtures if item.fixture_id == fixture_id), None)
+    entry = next(
+        (item for item in manifest.fixtures if item.fixture_id == fixture_id), None
+    )
     if entry is None:
         raise ValueError("fixture manifest does not cover fixture")
     return entry
@@ -722,16 +940,26 @@ def _run_visible_commands(
             timeout=60,
             check=False,
         )
-        stream = completed.stdout if command.signature_stream == "stdout" else completed.stderr
+        stdout = re.sub(
+            r"(?m)^(Ran \d+ tests? in )\d+(?:\.\d+)?s$",
+            r"\g<1><elapsed>s",
+            completed.stdout,
+        )
+        stderr = re.sub(
+            r"(?m)^(Ran \d+ tests? in )\d+(?:\.\d+)?s$",
+            r"\g<1><elapsed>s",
+            completed.stderr,
+        )
+        stream = stdout if command.signature_stream == "stdout" else stderr
         results.append(
             VisibleCommandResult(
                 command_id=command.command_id,
                 argv=command.argv,
                 exit_code=completed.returncode,
-                stdout=completed.stdout,
-                stderr=completed.stderr,
-                stdout_sha256=sha256(completed.stdout.encode()).hexdigest(),
-                stderr_sha256=sha256(completed.stderr.encode()).hexdigest(),
+                stdout=stdout,
+                stderr=stderr,
+                stdout_sha256=sha256(stdout.encode()).hexdigest(),
+                stderr_sha256=sha256(stderr.encode()).hexdigest(),
                 expected_exit_code=command.expected_exit_code,
                 expected_signature=command.expected_signature,
                 matches_expected=(
@@ -1025,7 +1253,9 @@ class FrozenIntentApprovalService:
         self, run_id: str, approval_type: str, proposal_digest: str
     ) -> None:
         """Bind the controller-observed proposal before the Provider requests approval."""
-        if approval_type not in self._approvals or not _DIGEST.fullmatch(proposal_digest):
+        if approval_type not in self._approvals or not _DIGEST.fullmatch(
+            proposal_digest
+        ):
             raise ValueError("proposal registration is invalid")
         key = (run_id, approval_type)
         existing = self._expected_proposals.get(key)
@@ -1123,7 +1353,11 @@ def _load_sealed_payload(fixture_id: str, sealed_root: Path) -> Mapping[str, obj
 def _json_path_present(value: object, path: Sequence[object]) -> bool:
     current = value
     for part in path:
-        if not isinstance(part, str) or not isinstance(current, Mapping) or part not in current:
+        if (
+            not isinstance(part, str)
+            or not isinstance(current, Mapping)
+            or part not in current
+        ):
             return False
         current = current[part]
     return current not in (None, "", [], {})
@@ -1132,7 +1366,11 @@ def _json_path_present(value: object, path: Sequence[object]) -> bool:
 def _json_value_at(value: object, path: Sequence[object]) -> object:
     current = value
     for part in path:
-        if not isinstance(part, str) or not isinstance(current, Mapping) or part not in current:
+        if (
+            not isinstance(part, str)
+            or not isinstance(current, Mapping)
+            or part not in current
+        ):
             raise KeyError("JSON path is absent")
         current = current[part]
     return current
@@ -1145,13 +1383,18 @@ def _subset_matches(actual: object, expected: object) -> bool:
             for key, value in expected.items()
         )
     if isinstance(expected, list):
-        return isinstance(actual, list) and len(actual) == len(expected) and all(
-            _subset_matches(item, expected[index]) for index, item in enumerate(actual)
+        return (
+            isinstance(actual, list)
+            and len(actual) == len(expected)
+            and all(
+                _subset_matches(item, expected[index])
+                for index, item in enumerate(actual)
+            )
         )
     return actual == expected
 
 
-_SECURITY_ADAPTER = r'''
+_SECURITY_ADAPTER = r"""
 import importlib.util,json,sys
 from datetime import datetime
 source,raw=sys.argv[1:3]
@@ -1176,61 +1419,28 @@ except Exception as exc:
     error=type(exc).__name__
 events=[] if audit is None else [{"actor_id":getattr(item,"actor_id",None),"decision":getattr(item,"decision",None),"reason":getattr(item,"reason",None),"timestamp":getattr(item,"timestamp",None).isoformat() if getattr(item,"timestamp",None) else None} for item in audit]
 print(json.dumps({"allowed":getattr(result,"allowed",None),"reason":getattr(result,"reason",None),"status":request.status,"status_unchanged":request.status==before["status"],"audit_count":None if audit is None else len(audit),"audit_events":events,"error":error},sort_keys=True))
-'''
-
-
-_FRONTEND_ADAPTER = r'''
-import { pathToFileURL } from "node:url";
-const [source,raw]=process.argv.slice(1);
-const scenario=JSON.parse(raw);
-const module=await import(pathToFileURL(source).href+`?probe=${Date.now()}`);
-let loadCalls=0;
-let confirmCalls=0;
-const outcomes=[...(scenario.outcomes||[])];
-const deferred=[];
-const loader=()=>{
-  loadCalls+=1;
-  if(scenario.kind==="delayed_race") return new Promise((resolve,reject)=>deferred.push({resolve,reject}));
-  const outcome=outcomes.shift();
-  if(outcome?.type==="reject") return Promise.reject(new Error("unavailable"));
-  return Promise.resolve(outcome?.value);
-};
-let releaseConfirm;
-const confirmer=()=>{confirmCalls+=1; return new Promise((resolve)=>{releaseConfirm=resolve;});};
-const controller=module.createRiskController(loader,confirmer);
-if(scenario.kind==="failure_recovery") { await controller.load(); await controller.retry(); }
-if(scenario.kind==="malformed") { await controller.load(); }
-if(scenario.kind==="delayed_race") {
-  const first=controller.load(); const second=controller.load();
-  deferred[1].resolve(scenario.newer); await second;
-  deferred[0].resolve(scenario.older); await first;
-}
-if(scenario.kind==="double_submit") {
-  await controller.load();
-  const first=controller.confirm(scenario.risk_id); const second=controller.confirm(scenario.risk_id);
-  releaseConfirm(); await Promise.all([first,second]);
-}
-const state={...controller.state,confirming:[...(controller.state.confirming||[])]};
-console.log(JSON.stringify({state,loadCalls,confirmCalls,hasRetry:typeof controller.retry==="function"}));
-'''
+"""
 
 
 def _run_candidate_adapter(
     candidate: Path,
     sealed_root: Path,
     *,
-    runtime: str,
     source: Path,
     scenario: Mapping[str, object],
 ) -> Mapping[str, object]:
     if sys.platform != "darwin":
-        raise RuntimeError("sealed candidate evaluation requires the macOS deny-read profile")
-    if runtime == "python":
-        argv = [sys.executable, "-I", "-c", _SECURITY_ADAPTER, str(source), json.dumps(scenario)]
-    elif runtime == "node":
-        argv = ["node", "--input-type=module", "-e", _FRONTEND_ADAPTER, str(source), json.dumps(scenario)]
-    else:
-        raise ValueError("sealed candidate runtime is unsupported")
+        raise RuntimeError(
+            "sealed candidate evaluation requires the macOS deny-read profile"
+        )
+    argv = [
+        sys.executable,
+        "-I",
+        "-c",
+        _SECURITY_ADAPTER,
+        str(source),
+        json.dumps(scenario),
+    ]
     raw_results = candidate.parent / ".evaluation-raw-results"
     raw_results.mkdir(exist_ok=True)
     source_git = _BENCHMARK_ROOT.parent.parent / ".git"
@@ -1255,7 +1465,11 @@ def _run_candidate_adapter(
         parsed = json.loads(completed.stdout)
     except json.JSONDecodeError:
         return {"adapter_error": "candidate_output_invalid"}
-    return parsed if isinstance(parsed, Mapping) else {"adapter_error": "candidate_output_invalid"}
+    return (
+        parsed
+        if isinstance(parsed, Mapping)
+        else {"adapter_error": "candidate_output_invalid"}
+    )
 
 
 def _criterion_passes(
@@ -1263,6 +1477,7 @@ def _criterion_passes(
     sealed_root: Path,
     criterion: Mapping[str, object],
     runtime_cache: dict[str, Mapping[str, object]] | None = None,
+    browser_program: Mapping[str, object] | None = None,
 ) -> bool:
     kind = criterion.get("kind")
     if kind == "json_key_present":
@@ -1314,10 +1529,15 @@ def _criterion_passes(
                     "notification_failure": "retry_without_rollback",
                 }
             if relation == "version_guard_precedes_terminal_transition":
-                return isinstance(value, Mapping) and value.get("guard") == [
-                    "pending",
-                    "request_version_matches",
-                ] and value.get("effect") in {"approved", "rejected"}
+                return (
+                    isinstance(value, Mapping)
+                    and value.get("guard")
+                    == [
+                        "pending",
+                        "request_version_matches",
+                    ]
+                    and value.get("effect") in {"approved", "rejected"}
+                )
             return False
         if kind == "json_no_contradiction":
             forbidden = criterion.get("forbidden")
@@ -1331,8 +1551,7 @@ def _criterion_passes(
             and isinstance(expected, list)
             and value == expected
             and all(
-                isinstance(item, str)
-                and item.startswith(("python -m ", "npm run "))
+                isinstance(item, str) and item.startswith(("python -m ", "npm run "))
                 for item in value
             )
         )
@@ -1349,7 +1568,7 @@ def _criterion_passes(
             return False
         present = value in content
         return present if kind == "file_contains" else not present
-    if kind in {"frontend_scenario", "security_scenario", "security_oracle"}:
+    if kind in {"security_scenario", "security_oracle"}:
         relative = criterion.get("path")
         scenario = criterion.get("scenario")
         expected = criterion.get("expected")
@@ -1367,20 +1586,21 @@ def _criterion_passes(
         actual = _run_candidate_adapter(
             candidate,
             sealed_root,
-            runtime="node" if kind == "frontend_scenario" else "python",
             source=source,
             scenario=scenario,
         )
         return _subset_matches(actual, expected)
     if kind == "frontend_browser_suite":
         expected = criterion.get("expected")
-        if not isinstance(expected, Mapping):
+        if not isinstance(expected, Mapping) or browser_program is None:
             return False
         try:
             cache = runtime_cache if runtime_cache is not None else {}
             actual = cache.get("frontend_browser_suite")
             if actual is None:
-                actual = run_frontend_browser_e2e(candidate / "benchmark-task")
+                actual = run_frontend_browser_e2e(
+                    candidate / "benchmark-task", browser_program
+                )
                 cache["frontend_browser_suite"] = actual
         except (OSError, RuntimeError, ValueError):
             return False
@@ -1411,6 +1631,7 @@ def evaluate_fixture(
                 "fixture_id",
                 "criteria",
                 "held_out_variant_classes",
+                "browser_program",
             },
             "multi-tenant-security-review": {
                 "schema",
@@ -1438,16 +1659,53 @@ def evaluate_fixture(
             "json_key_present": {"id", "weight", "severity", "kind", "path"},
             "file_contains": {"id", "weight", "severity", "kind", "path", "value"},
             "file_not_contains": {"id", "weight", "severity", "kind", "path", "value"},
-            "frontend_scenario": {"id", "weight", "severity", "kind", "path", "scenario", "expected"},
-            "security_scenario": {"id", "weight", "severity", "kind", "path", "scenario", "expected"},
-            "security_oracle": {"id", "weight", "severity", "kind", "path", "root_cause", "scenario", "expected"},
+            "security_scenario": {
+                "id",
+                "weight",
+                "severity",
+                "kind",
+                "path",
+                "scenario",
+                "expected",
+            },
+            "security_oracle": {
+                "id",
+                "weight",
+                "severity",
+                "kind",
+                "path",
+                "root_cause",
+                "scenario",
+                "expected",
+            },
             "frontend_browser_suite": {"id", "weight", "severity", "kind", "expected"},
             "json_literal": {"id", "weight", "severity", "kind", "path", "expected"},
             "json_enum": {"id", "weight", "severity", "kind", "path", "allowed"},
-            "json_set_contains": {"id", "weight", "severity", "kind", "path", "expected"},
+            "json_set_contains": {
+                "id",
+                "weight",
+                "severity",
+                "kind",
+                "path",
+                "expected",
+            },
             "json_relation": {"id", "weight", "severity", "kind", "path", "relation"},
-            "json_no_contradiction": {"id", "weight", "severity", "kind", "path", "forbidden"},
-            "verification_command": {"id", "weight", "severity", "kind", "path", "expected"},
+            "json_no_contradiction": {
+                "id",
+                "weight",
+                "severity",
+                "kind",
+                "path",
+                "forbidden",
+            },
+            "verification_command": {
+                "id",
+                "weight",
+                "severity",
+                "kind",
+                "path",
+                "expected",
+            },
         }
         if (
             not isinstance(raw, Mapping)
@@ -1455,7 +1713,11 @@ def evaluate_fixture(
             or set(raw) != required_by_kind[kind]
         ):
             raise ValueError("sealed evaluator criterion surface is invalid")
-        if fixture_id == "multi-tenant-security-review" and payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2" and kind != "security_oracle":
+        if (
+            fixture_id == "multi-tenant-security-review"
+            and payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2"
+            and kind != "security_oracle"
+        ):
             raise ValueError("security scoring must use behavioral root-cause oracles")
         if kind == "security_oracle":
             root_cause = raw.get("root_cause")
@@ -1464,10 +1726,29 @@ def evaluate_fixture(
             root_causes.add(root_cause)
         identifier = str(raw["id"])
         weight = raw["weight"]
-        if isinstance(weight, bool) or not isinstance(weight, (int, float)) or weight <= 0:
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or weight <= 0
+        ):
             raise ValueError("sealed evaluator criterion weight is invalid")
         total_weight += float(weight)
-        passed = _criterion_passes(candidate_root, sealed, raw, runtime_cache)
+        browser_program = payload.get("browser_program")
+        if (
+            fixture_id == "frontend-recovery-delivery"
+            and payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2"
+        ):
+            try:
+                validate_frontend_browser_program(browser_program)
+            except ValueError as error:
+                raise ValueError("sealed browser program is invalid") from error
+        passed = _criterion_passes(
+            candidate_root,
+            sealed,
+            raw,
+            runtime_cache,
+            browser_program if isinstance(browser_program, Mapping) else None,
+        )
         if passed:
             satisfied.append(identifier)
             satisfied_weight += float(weight)
@@ -1475,9 +1756,10 @@ def evaluate_fixture(
             failed.append(identifier)
             if raw["severity"] in {"blocker", "important"}:
                 severe += 1
-    if fixture_id == "requirement-contract-ambiguity" and payload.get(
-        "schema"
-    ) == "ai-sdlc-v2-benefit-sealed-evaluator/v2":
+    if (
+        fixture_id == "requirement-contract-ambiguity"
+        and payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2"
+    ):
         required_kinds = {
             "json_literal",
             "json_enum",
@@ -1488,9 +1770,10 @@ def evaluate_fixture(
         }
         if {str(item["kind"]) for item in criteria} != required_kinds:
             raise ValueError("requirement rubric is not structurally complete")
-    if fixture_id == "frontend-recovery-delivery" and payload.get(
-        "schema"
-    ) == "ai-sdlc-v2-benefit-sealed-evaluator/v2":
+    if (
+        fixture_id == "frontend-recovery-delivery"
+        and payload.get("schema") == "ai-sdlc-v2-benefit-sealed-evaluator/v2"
+    ):
         if any(item.get("kind") != "frontend_browser_suite" for item in criteria):
             raise ValueError("frontend scoring must use real-browser behavior")
         if not {"FRD-AC001", "FRD-AC002", "FRD-AC006"}.issubset(
@@ -1520,7 +1803,8 @@ def evaluate_fixture(
                 finding_roots = {
                     str(item["root_cause"])
                     for item in findings
-                    if isinstance(item, Mapping) and isinstance(item.get("root_cause"), str)
+                    if isinstance(item, Mapping)
+                    and isinstance(item.get("root_cause"), str)
                 }
         except (OSError, json.JSONDecodeError):
             pass
@@ -1621,15 +1905,23 @@ def scan_candidate_for_sealed_leak(
             continue
         try:
             relative = _safe_relative(item.get("path"))
-            payload = json.loads((sealed_root_path / relative).read_text(encoding="utf-8"))
+            payload = json.loads(
+                (sealed_root_path / relative).read_text(encoding="utf-8")
+            )
         except (OSError, ValueError, json.JSONDecodeError):
             return [BenchmarkIssue("fixture.leak.scan-error", "sealed-payload")]
         collect(payload)
     phrase_markers = {item.encode() for item in _SEALED_PHRASE_MARKERS}
-    inventory = filenames | digests | payload_tokens | phrase_markers | {
-        sealed_root_path.as_posix().encode(),
-        f"file://{sealed_root_path.as_posix()}".encode(),
-    }
+    inventory = (
+        filenames
+        | digests
+        | payload_tokens
+        | phrase_markers
+        | {
+            sealed_root_path.as_posix().encode(),
+            f"file://{sealed_root_path.as_posix()}".encode(),
+        }
+    )
     try:
         protected_inodes = _protected_inodes(sealed_root_path)
     except OSError:
@@ -1688,9 +1980,7 @@ def scan_candidate_for_sealed_leak(
                         "fixture.leak.hardlink", opaque_location("candidate", relative)
                     )
                 )
-            scan_blob(
-                path.read_bytes(), opaque_location("candidate", relative)
-            )
+            scan_blob(path.read_bytes(), opaque_location("candidate", relative))
         except OSError:
             issues.append(
                 BenchmarkIssue(
@@ -1712,7 +2002,10 @@ def scan_candidate_for_sealed_leak(
             issues.append(BenchmarkIssue("fixture.leak.scan-error", "git-objects"))
         else:
             scan_blob(completed.stdout, "git:all-objects", git_object=True)
-        for git_path, label in ((git / "index", "git:index"), (git / "logs", "git:reflog")):
+        for git_path, label in (
+            (git / "index", "git:index"),
+            (git / "logs", "git:reflog"),
+        ):
             if git_path.is_file():
                 try:
                     scan_blob(git_path.read_bytes(), label, git_object=True)
@@ -1762,9 +2055,7 @@ def validate_sealed_commitments(
             == fixture_digest
         ):
             raise ValueError("fixture commitment pair is invalid")
-        evidence_digest = _digest_file(
-            public_root / "evidence-contract.template.json"
-        )
+        evidence_digest = _digest_file(public_root / "evidence-contract.template.json")
         if not (
             commitments["evidence_contract_template_sha256"]
             == commitments["evidence_contract_commitment"]
@@ -1779,11 +2070,15 @@ def validate_sealed_commitments(
             item["fixture_id"]: item["sha256"] for item in manifest_raw["entries"]
         }
         payloads = commitments["fixture_payloads"]
-        if not isinstance(payloads, list) or {
-            item.get("fixture_id"): item.get("sha256")
-            for item in payloads
-            if isinstance(item, Mapping)
-        } != manifest_entries:
+        if (
+            not isinstance(payloads, list)
+            or {
+                item.get("fixture_id"): item.get("sha256")
+                for item in payloads
+                if isinstance(item, Mapping)
+            }
+            != manifest_entries
+        ):
             raise ValueError("sealed payload commitments are invalid")
         intent = manifest_raw.get("intent_map")
         if (
@@ -1821,7 +2116,9 @@ def _link_issues(run_root: Path) -> list[BenchmarkIssue]:
     issues: list[BenchmarkIssue] = []
     try:
         for path in run_root.rglob("*"):
-            relative = sha256(path.relative_to(run_root).as_posix().encode()).hexdigest()[:12]
+            relative = sha256(
+                path.relative_to(run_root).as_posix().encode()
+            ).hexdigest()[:12]
             try:
                 if path.is_symlink():
                     target = path.resolve(strict=False)
@@ -1896,11 +2193,7 @@ def build_provider_isolation_profile(
         f'  (deny file-read* file-write* (subpath "{_seatbelt_literal(path)}"))'
         for path in deny_paths
     )
-    sandbox_text = (
-        "(version 1)\n"
-        "(allow default)\n"
-        f"{deny_rules}\n"
-    )
+    sandbox_text = f"(version 1)\n(allow default)\n{deny_rules}\n"
     executable = sys.platform == "darwin" and not issues
     return ProviderIsolationProfile(
         run_root=run,
@@ -1938,9 +2231,7 @@ def run_provider_isolated(
         environment=requested_environment,
     )
     if refreshed.issues:
-        return subprocess.CompletedProcess(
-            list(argv), 126, "", "ISOLATION_REFUSED\n"
-        )
+        return subprocess.CompletedProcess(list(argv), 126, "", "ISOLATION_REFUSED\n")
     return subprocess.run(
         ["/usr/bin/sandbox-exec", "-p", refreshed.sandbox_text, *argv],
         cwd=profile.run_root,
@@ -1992,8 +2283,7 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
     denied_roots = [_sandbox_denies(profile, target) for target in canaries]
     direct = all(denied_roots)
     protected_results = tuple(
-        (f"protected-root-{index}", denied)
-        for index, denied in enumerate(denied_roots)
+        (f"protected-root-{index}", denied) for index, denied in enumerate(denied_roots)
     )
     parent = _sandbox_denies(profile, profile.sealed_root.parent)
     sealed_file = canaries[0]
@@ -2006,20 +2296,20 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
     try:
         os.link(sealed_file, hardlink_path)
         hardlink_created = True
-    except OSError:
-        pass
+    except OSError as error:
+        symlink_path.unlink(missing_ok=True)
+        for path in created:
+            path.unlink(missing_ok=True)
+        raise RuntimeError("hardlink isolation canary is unavailable") from error
     try:
         symlink = _sandbox_denies(profile, symlink_path)
-        if hardlink_created:
-            hardlink_launch = run_provider_isolated(
-                profile, ["/bin/cat", str(hardlink_path)]
-            )
-            hardlink = (
-                hardlink_launch.returncode == 126
-                and "ISOLATION_REFUSED" in hardlink_launch.stderr
-            )
-        else:
-            hardlink = True
+        hardlink_launch = run_provider_isolated(
+            profile, ["/bin/cat", str(hardlink_path)]
+        )
+        hardlink = (
+            hardlink_launch.returncode == 126
+            and "ISOLATION_REFUSED" in hardlink_launch.stderr
+        )
     finally:
         symlink_path.unlink(missing_ok=True)
         if hardlink_created:
@@ -2041,13 +2331,16 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
         environment_launch.returncode == 126
         and "ISOLATION_REFUSED" in environment_launch.stderr
     )
-    add_dir_launch = run_provider_isolated(
-        profile,
-        ["/usr/bin/true", "--add-dir=../protected"],
+    add_dir_launches = (
+        run_provider_isolated(profile, ["/usr/bin/true", "--add-dir"]),
+        run_provider_isolated(
+            profile,
+            ["/usr/bin/true", "--add-dir=../protected"],
+        ),
     )
-    add_dir = (
-        add_dir_launch.returncode == 126
-        and "ISOLATION_REFUSED" in add_dir_launch.stderr
+    add_dir = all(
+        launch.returncode == 126 and "ISOLATION_REFUSED" in launch.stderr
+        for launch in add_dir_launches
     )
     for path in created:
         path.unlink(missing_ok=True)

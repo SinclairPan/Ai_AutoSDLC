@@ -186,3 +186,71 @@ npm run build: exit 0; Vite 7.3.6; 201 modules transformed
 ### 当前门禁
 
 Fix Round 2 的 tracked materializer 已具备复审候选条件，但当前仍不是 execution-ready：必须先完成独立复审并冻结本次 materializer commit。通过后由受信任控制方创建仓外 mode `0600` canonical sealed-source，fresh 读取 old-root fingerprint 与 source SHA，在 clean exact HEAD 上调用 hidden materialize CLI。物化成功后仍需单独验证新 root receipt/commitments；只有之后的父任务才可以决定是否绑定 tracked protocol。
+
+## Fix Round 3：密封浏览器程序与发布后最终隔离证明
+
+### 冻结范围与 RED
+
+- Fix 基线：`7f3ac42d432b34bb0a3ab565e91ba0b78f8c52e4`。
+- Provider、`codex exec`、正式实验继续为 `0`；未启动 Task 3 arms，未物化最终 r1，未绑定 tracked protocol，旧 root 未修改。
+- 首批 fresh FixR3 定向测试结果为 `4 failed / 4 passed`：真实暴露 production browser harness 明文、可信 source literal/FD 边界、pending receipt 和 root metadata fingerprint 缺口；intent 缺失/额外反例已由已有 closed schema 提前拒绝。
+- 其后补齐 source direct-child/mode、target exact mode、child identity/content/rename/owner drift、exact final profile、canary failure rollback、各 attestation write/fsync failure point和 CLI opaque success 反例，统一进入回归门禁。
+
+### 密封 browser program
+
+- tracked production source 已删除真实 held-out scenario 输入、顺序、通过 Oracle、旧固定浏览器 harness 和旧 frontend node adapter；production `src/ai_sdlc/**/*.py` 不再含六类真实场景标记或真实样例数据。
+- tracked evaluator 只保留 closed data-only DSL 校验器与通用解释器。scenario loader outcome、confirmer、action 和 assertion 均是 closed object；未知 operation/kind、重复 id、空 handle 或开放字段全部拒绝。
+- 正式 scenario definitions、inputs、Oracle 和顺序必须来自仓外 canonical sealed-source 的 `browser_program`；materializer 将其原样编译进 frontend sealed payload，evaluator 只从该 payload 执行。
+- 通用解释器在真实 Chrome 中按 sealed action 顺序执行 load/retry/deferred resolve/await/render/checkpoint/confirm/release，并从 JSON state、DOM、console 和 basic a11y 行为计算 assertion；production source 不知道正式 scenario 名称或 pass 条件。
+
+### 可信 source 与公开 intent taxonomy
+
+- production source base 固定为 `/private/tmp/ai-sdlc-v2-benefit-source`，source root 固定为其直属 `sealed-source/`；base/root 必须为 euid owner、非 symlink、同 device、exact `0700`。
+- CLI 只接受已打开的 `--sealed-source-fd`；source 必须是 source root 直属 regular `0600`、`nlink=1` 文件。任意 repo、candidate、run 或其他路径中的同内容文件都返回稳定 `source-security`。
+- source root 使用与旧 root 相同的新 canonical identity tree fingerprint，在编译、发布前和发布后重复比对；receipt/candidate commitments 绑定 source-root tree SHA，final Provider profile自动把 source root加入 deny-read surface。
+- requirement public service contract 增加 `approval_type=design-contract`；materializer 从 public requirement input 解析四个 question ID，并从 requirement/frontend service contracts 解析 `design-contract`、`frontend-solution`。source intent 空/额外/缺失/无关均拒绝。
+- scratch 对每个 approval 分别注册并实测 correct、wrong、zero、expired proposal，另实测 unknown approval；question 实测 known/unknown。事件仍只允许 automated service actor。
+
+### Identity tree 与原子两阶段成功
+
+- tree fingerprint 现绑定 root 和每个 child 的 type/device/inode/uid/gid/mode/nlink/size；regular file 再绑定 content SHA，symlink 绑定 target。root/child chmod、模拟 chown、rename、write 均产生不同摘要。
+- target protected parent 现在必须 exact `0700`，不再只拒绝 group/world write；pinned dirfd、same-device、exclusive rename、inode-bound quarantine 和逐 write/fsync failure injection 继续保留。
+- compiler 生成的 `materialization-receipt.json` 只能声明 `published-pending-isolation` / `pending`，不得预称 validated。
+- exclusive publish 与逐文件 postverify 完成后，materializer 才以**已发布的 exact final path**构建最终 Provider profile，显式覆盖 final root/parent、control repo、`.git`、trusted source root、raw results 和 other-run。
+- 同一最终 launch profile真实执行 direct/parent/control/`.git`/results/other-run/env/symlink/hardlink/`--add-dir` 拒绝。任一失败按已发布 inode 移入 `0700` quarantine 并清理，整体返回 NO-GO。
+- canary 全通过后，以 final root dirfd 和 `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` 写入独立 closed `isolation-attestation.json`，逐文件/目录/parent fsync 后复读验证。CLI 成功只输出 `status/count/receipt_sha256`，不输出 path、inode 或 lock id；该 receipt SHA 指向最终 attestation，而 pending receipt 保留可审计的两阶段边界。
+
+### FixR3 证据
+
+当前 tracked public fixture pair 为：
+
+```text
+fixture tree / manifest: 3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a
+manifest validation issues: []
+protocol paired fields: pending-unbound (4/4)
+final r1 root: absent
+old root inode: 400173643
+old root identity-tree SHA256: ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2
+```
+
+嵌套 sandbox 最新门禁：
+
+```text
+fixture + materializer focused: 94 passed, 6 skipped
+related benefit/fixture/materializer/site: 561 passed, 6 skipped
+Ruff check: All checks passed
+Ruff format: 5 files already formatted
+git diff --check: clean
+```
+
+system-outside 使用同一冻结 Playwright module、真实 Chrome 和 macOS Seatbelt，完整 fixture/materializer 统一批次实跑 `100 passed / 0 skipped in 124.97s`；其中包括 post-publication exact-final-path materializer canary，未以静态 profile 文本或“文件不存在”代替真实拒绝。为保证两次 fresh baseline/evaluation 的可重复性，可见命令输出只对 Python unittest 自带的非确定性耗时字段做规范化，不改变退出码、测试计数、失败内容或业务结果。
+
+同一预装依赖树的 frontend 回归：
+
+```text
+npm run lint: exit 0
+npm run format:check: exit 0
+npm run build: exit 0; Vite 7.3.6; 201 modules transformed
+```
+
+以上仍然只是 evaluator/materializer 健康证明，不是 Provider arms 的效益结果。FixR3 commit 通过独立复审、由父任务准备新的仓外正式 source 并实际物化 r1 之前，execution protocol 必须继续保持 pending。

@@ -14,11 +14,13 @@ from typer.testing import CliRunner
 
 import ai_sdlc.benefit_sealed_materializer as materializer
 import ai_sdlc.cli.benefit_evidence_cmd as benefit_evidence_cmd
+from ai_sdlc.benefit_benchmark_fixtures import IsolationProbeResult
 from ai_sdlc.benefit_sealed_materializer import (
     FINAL_LOCK_ID,
     CompiledMaterialization,
     FailureInjector,
     MaterializationError,
+    MaterializationResult,
     MaterializerPolicy,
     compile_source_bundle,
     fingerprint_tree,
@@ -28,6 +30,7 @@ from ai_sdlc.benefit_sealed_materializer import (
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 FIXTURE_ROOT = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "fixtures"
+REAL_FINAL_ISOLATION_CANARY = materializer._run_final_isolation_canary
 
 
 def _canonical(value: object) -> bytes:
@@ -49,6 +52,217 @@ def _security_scenario(**overrides: object) -> dict[str, object]:
     }
     scenario.update(overrides)
     return scenario
+
+
+def _test_browser_program() -> dict[str, object]:
+    risks = [
+        {
+            "id": "TEST-R1",
+            "name": "测试风险甲",
+            "service": "test-api",
+            "level": "high",
+            "owner": "测试团队",
+            "confirmed": False,
+        },
+        {
+            "id": "TEST-R2",
+            "name": "测试风险乙",
+            "service": "test-query",
+            "level": "medium",
+            "owner": "平台测试",
+            "confirmed": False,
+        },
+        {
+            "id": "TEST-R3",
+            "name": "测试风险丙",
+            "service": "test-gateway",
+            "level": "low",
+            "owner": "运维测试",
+            "confirmed": False,
+        },
+    ]
+
+    def assertion(
+        identifier: str,
+        kind: str,
+        target: object,
+        expected: object,
+        expose_as: str | None = None,
+    ) -> dict[str, object]:
+        return {
+            "id": identifier,
+            "kind": kind,
+            "target": target,
+            "expected": expected,
+            "expose_as": expose_as,
+        }
+
+    return {
+        "schema": "ai-sdlc-v2-frontend-browser-program/v1",
+        "scenarios": [
+            {
+                "id": "test-only-scenario-a",
+                "loader": {"outcomes": [{"type": "resolve", "value": risks}]},
+                "confirmer": {"mode": "deferred"},
+                "actions": [
+                    {"op": "load", "handle": "load-a", "await": True},
+                    {"op": "render", "filter": "high"},
+                ],
+                "assertions": [
+                    assertion("a-state", "json-equal", ["state", "error"], None),
+                    assertion("a-length", "json-length", ["state", "risks"], 3),
+                    assertion(
+                        "a-fields",
+                        "dom-text-contains",
+                        "body",
+                        ["test-api", "测试团队", "high"],
+                        "field_rendering",
+                    ),
+                    assertion("a-filter", "dom-count", "tbody tr", 1, "filtering"),
+                    assertion("a-console", "console-empty", "console_errors", []),
+                    assertion("a-a11y", "basic-a11y", "document", True),
+                ],
+            },
+            {
+                "id": "test-only-scenario-b",
+                "loader": {
+                    "outcomes": [
+                        {"type": "reject"},
+                        {"type": "resolve", "value": risks},
+                    ]
+                },
+                "confirmer": {"mode": "deferred"},
+                "actions": [
+                    {"op": "load", "handle": "load-b1", "await": True},
+                    {"op": "render", "filter": "all"},
+                    {"op": "checkpoint", "name": "failed"},
+                    {"op": "retry", "handle": "load-b2", "await": True},
+                    {"op": "render", "filter": "all"},
+                ],
+                "assertions": [
+                    assertion(
+                        "b-failed",
+                        "json-equal",
+                        ["snapshots", "failed", "state", "error"],
+                        "加载失败",
+                    ),
+                    assertion("b-final", "json-equal", ["state", "error"], None),
+                    assertion("b-length", "json-length", ["state", "risks"], 3),
+                ],
+            },
+            {
+                "id": "test-only-scenario-c",
+                "loader": {
+                    "outcomes": [
+                        {"type": "reject"},
+                        {"type": "reject"},
+                        {"type": "resolve", "value": risks},
+                    ]
+                },
+                "confirmer": {"mode": "deferred"},
+                "actions": [
+                    {"op": "load", "handle": "load-c1", "await": True},
+                    {"op": "retry", "handle": "load-c2", "await": True},
+                    {"op": "checkpoint", "name": "failed-twice"},
+                    {"op": "retry", "handle": "load-c3", "await": True},
+                    {"op": "render", "filter": "all"},
+                ],
+                "assertions": [
+                    assertion(
+                        "c-failed",
+                        "json-equal",
+                        ["snapshots", "failed-twice", "state", "error"],
+                        "加载失败",
+                    ),
+                    assertion("c-final", "json-equal", ["state", "error"], None),
+                    assertion("c-length", "json-length", ["state", "risks"], 3),
+                ],
+            },
+            {
+                "id": "test-only-scenario-d",
+                "loader": {
+                    "outcomes": [
+                        {"type": "deferred", "key": "older"},
+                        {"type": "deferred", "key": "newer"},
+                    ]
+                },
+                "confirmer": {"mode": "deferred"},
+                "actions": [
+                    {"op": "load", "handle": "load-d1", "await": False},
+                    {"op": "load", "handle": "load-d2", "await": False},
+                    {
+                        "op": "resolve-load",
+                        "key": "newer",
+                        "value": [{**risks[2], "id": "TEST-NEW"}],
+                    },
+                    {"op": "await", "handle": "load-d2"},
+                    {
+                        "op": "resolve-load",
+                        "key": "older",
+                        "value": [{**risks[0], "id": "TEST-OLD"}],
+                    },
+                    {"op": "await", "handle": "load-d1"},
+                    {"op": "render", "filter": "all"},
+                ],
+                "assertions": [
+                    assertion(
+                        "d-latest",
+                        "json-equal",
+                        ["state", "risks", 0, "id"],
+                        "TEST-NEW",
+                    )
+                ],
+            },
+            {
+                "id": "test-only-scenario-e",
+                "loader": {"outcomes": [{"type": "resolve", "value": risks}]},
+                "confirmer": {"mode": "deferred"},
+                "actions": [
+                    {"op": "load", "handle": "load-e", "await": True},
+                    {
+                        "op": "confirm",
+                        "risk_id": "TEST-R1",
+                        "handle": "confirm-e1",
+                        "await": False,
+                    },
+                    {
+                        "op": "confirm",
+                        "risk_id": "TEST-R1",
+                        "handle": "confirm-e2",
+                        "await": False,
+                    },
+                    {"op": "release-confirms"},
+                    {"op": "await-all", "handles": ["confirm-e1", "confirm-e2"]},
+                    {"op": "render", "filter": "all"},
+                ],
+                "assertions": [
+                    assertion("e-calls", "json-equal", ["confirm_calls"], 1),
+                    assertion(
+                        "e-confirmed",
+                        "json-equal",
+                        ["state", "risks", 0, "confirmed"],
+                        True,
+                    ),
+                ],
+            },
+            {
+                "id": "test-only-scenario-f",
+                "loader": {
+                    "outcomes": [{"type": "resolve", "value": {"unexpected": True}}]
+                },
+                "confirmer": {"mode": "deferred"},
+                "actions": [
+                    {"op": "load", "handle": "load-f", "await": True},
+                    {"op": "render", "filter": "all"},
+                ],
+                "assertions": [
+                    assertion("f-error", "json-equal", ["state", "error"], "加载失败"),
+                    assertion("f-empty", "json-length", ["state", "risks"], 0),
+                    assertion("f-a11y", "basic-a11y", "document", True),
+                ],
+            },
+        ],
+    }
 
 
 def _source_bundle(lock_id: str) -> dict[str, object]:
@@ -74,10 +288,19 @@ def _source_bundle(lock_id: str) -> dict[str, object]:
         "intent_map": {
             "schema": "ai-sdlc-v2-benefit-intent-map/v2",
             "questions": {
-                "test.contract-boundary": {
-                    "answer": {"mode": "test-only-fixed"},
+                question_id: {
+                    "answer": {"mode": f"test-only-answer-{index}"},
                     "delay_ms": 0,
                 }
+                for index, question_id in enumerate(
+                    (
+                        "release.emergency-authority",
+                        "release.withdraw-boundary",
+                        "notification.delivery-semantics",
+                        "audit.retention-window",
+                    ),
+                    start=1,
+                )
             },
             "approvals": ["design-contract", "frontend-solution"],
         },
@@ -140,11 +363,12 @@ def _source_bundle(lock_id: str) -> dict[str, object]:
                 "schema": "ai-sdlc-v2-benefit-sealed-evaluator/v2",
                 "fixture_id": "frontend-recovery-delivery",
                 "held_out_variant_classes": [
-                    "test-only-sequential-recovery",
-                    "test-only-response-order",
-                    "test-only-submit-race",
-                    "test-only-shape-guard",
+                    "test-only-class-one",
+                    "test-only-class-two",
+                    "test-only-class-three",
+                    "test-only-class-four",
                 ],
+                "browser_program": _test_browser_program(),
                 "criteria": [
                     {
                         "id": "FRD-AC001",
@@ -177,7 +401,12 @@ def _source_bundle(lock_id: str) -> dict[str, object]:
                         "severity": "blocker",
                         "kind": "frontend_browser_suite",
                         "expected": {
-                            "scenarios": {"consecutive_failure_recovery": True}
+                            "scenarios": {
+                                "test-only-scenario-c": True,
+                                "test-only-scenario-d": True,
+                                "test-only-scenario-e": True,
+                                "test-only-scenario-f": True,
+                            }
                         },
                     },
                 ],
@@ -212,7 +441,7 @@ def _source_bundle(lock_id: str) -> dict[str, object]:
 
 
 def _write_source(path: Path, lock_id: str) -> tuple[bytes, str]:
-    path.parent.mkdir(parents=True, mode=0o700)
+    path.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
     path.parent.chmod(0o700)
     data = _canonical(_source_bundle(lock_id))
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -265,8 +494,19 @@ def _policy(tmp_path: Path) -> tuple[MaterializerPolicy, str, Path]:
     old = protected / "old-lock"
     old.mkdir(mode=0o700)
     (old / "legacy.json").write_bytes(b'{"legacy":true}')
-    source = tmp_path / "secret" / "source.json"
+    source_base = tmp_path / "trusted-source-base"
+    source_base.mkdir(mode=0o700)
+    source_root = source_base / "sealed-source"
+    source_root.mkdir(mode=0o700)
+    source = source_root / "source.json"
     _, source_sha = _write_source(source, "test-lock-r1")
+    canary_base = tmp_path / "isolation-canary"
+    canary_base.mkdir(mode=0o700)
+    canary_run = canary_base / "run"
+    raw_results = canary_base / "raw-results"
+    other_run = canary_base / "other-run"
+    for path in (canary_run, raw_results, other_run):
+        path.mkdir(mode=0o700)
     policy = MaterializerPolicy(
         repo_root=repo,
         target=protected / "test-lock-r1",
@@ -274,11 +514,18 @@ def _policy(tmp_path: Path) -> tuple[MaterializerPolicy, str, Path]:
         legacy_root=old,
         expected_legacy_inode=old.stat().st_ino,
         forbidden_roots=(repo, repo / ".git", repo / "benchmarks"),
+        source_base=source_base,
+        source_root=source_root,
+        canary_run_root=canary_run,
+        raw_results_root=raw_results,
+        other_run_roots=(other_run,),
     )
     return policy, head, source
 
 
-def _compile_for_test(policy: MaterializerPolicy, head: str, source: Path) -> CompiledMaterialization:
+def _compile_for_test(
+    policy: MaterializerPolicy, head: str, source: Path
+) -> CompiledMaterialization:
     source_bytes = source.read_bytes()
     return compile_source_bundle(
         source_bytes,
@@ -288,34 +535,79 @@ def _compile_for_test(policy: MaterializerPolicy, head: str, source: Path) -> Co
     )
 
 
-def test_read_source_bundle_requires_canonical_secure_regular_file(tmp_path: Path) -> None:
+def _materialize_for_test(
+    source: Path, **kwargs: object
+) -> materializer.MaterializationResult:
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        return materialize_with_policy(source_fd=descriptor, **kwargs)
+    finally:
+        os.close(descriptor)
+
+
+def _read_source_for_test(source: Path, digest: str) -> bytes:
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        return read_source_bundle(source_fd=descriptor, expected_sha256=digest)
+    finally:
+        os.close(descriptor)
+
+
+@pytest.fixture(autouse=True)
+def _stable_unit_isolation_attestation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        materializer,
+        "_run_final_isolation_canary",
+        lambda _policy, *, pending_receipt_sha256: _canonical(
+            {
+                "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
+                "state": "validated",
+                "pending_receipt_sha256": pending_receipt_sha256,
+                "profile_sha256": "2" * 64,
+                "checks": {
+                    "direct": True,
+                    "parent": True,
+                    "symlink": True,
+                    "hardlink": True,
+                    "environment": True,
+                    "other_run": True,
+                    "add_dir": True,
+                    "protected_roots": 2,
+                },
+            }
+        ),
+    )
+
+
+def test_read_source_bundle_requires_canonical_secure_regular_file(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "secret" / "bundle.json"
     data, digest = _write_source(source, FINAL_LOCK_ID)
 
-    assert read_source_bundle(source_path=source, expected_sha256=digest) == data
+    assert _read_source_for_test(source, digest) == data
 
     source.chmod(0o640)
     with pytest.raises(MaterializationError, match="source-security"):
-        read_source_bundle(source_path=source, expected_sha256=digest)
+        _read_source_for_test(source, digest)
     source.chmod(0o600)
     alias = source.with_name("alias.json")
     os.link(source, alias)
     with pytest.raises(MaterializationError, match="source-security"):
-        read_source_bundle(source_path=source, expected_sha256=digest)
+        _read_source_for_test(source, digest)
     alias.unlink()
     symlink = source.with_name("link.json")
     symlink.symlink_to(source)
-    with pytest.raises(MaterializationError, match="source-open"):
-        read_source_bundle(source_path=symlink, expected_sha256=digest)
+    with pytest.raises(OSError):
+        _read_source_for_test(symlink, digest)
     with pytest.raises(MaterializationError, match="source-digest"):
-        read_source_bundle(source_path=source, expected_sha256="0" * 64)
+        _read_source_for_test(source, "0" * 64)
     source.write_bytes(data + b"\n")
     source.chmod(0o600)
     with pytest.raises(MaterializationError, match="source-canonical"):
-        read_source_bundle(
-            source_path=source,
-            expected_sha256=sha256(data + b"\n").hexdigest(),
-        )
+        _read_source_for_test(source, sha256(data + b"\n").hexdigest())
 
 
 def test_read_source_bundle_accepts_owned_fd_without_reopening(tmp_path: Path) -> None:
@@ -360,9 +652,11 @@ def test_source_fd_alias_inside_repository_is_rejected(
         text=True,
     ).stdout.strip()
     descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     try:
-        with pytest.raises(MaterializationError, match="source-overlap"):
+        with pytest.raises(MaterializationError, match="source-security"):
             materialize_with_policy(
                 source_fd=descriptor,
                 expected_source_sha256=digest,
@@ -396,6 +690,357 @@ def test_compile_rejects_open_or_incomplete_source_schema(tmp_path: Path) -> Non
             expected_head=head,
             policy=policy,
         )
+
+
+def test_fix_round3_production_sources_contain_no_hidden_browser_program() -> None:
+    production = b"\n".join(
+        path.read_bytes() for path in (REPO_ROOT / "src" / "ai_sdlc").rglob("*.py")
+    )
+
+    for hidden in (
+        b"_FRONTEND_BROWSER_HARNESS",
+        b"consecutive_failure_recovery",
+        b"delayed_race",
+        b"rapid_double_click",
+        b"malformed_response",
+        "鉴权回归".encode(),
+    ):
+        assert hidden not in production
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "open-action",
+        "unknown-handle",
+        "bad-assertion",
+        "missing-production-scenario",
+        "weak-public-ac",
+    ],
+)
+def test_fix_round3_browser_program_is_recursively_closed_and_executable(
+    tmp_path: Path, mutation: str
+) -> None:
+    policy, head, _source = _policy(tmp_path)
+    bundle = _source_bundle(policy.target.name)
+    scenario = bundle["payloads"]["frontend-recovery-delivery"]["browser_program"][
+        "scenarios"
+    ][0]
+    if mutation == "open-action":
+        scenario["actions"][0]["implementation_hint"] = "forbidden"
+    elif mutation == "unknown-handle":
+        scenario["actions"].insert(1, {"op": "await", "handle": "missing"})
+    elif mutation == "bad-assertion":
+        scenario["assertions"][0]["target"] = {"unexpected": True}
+    elif mutation == "missing-production-scenario":
+        bundle["payloads"]["frontend-recovery-delivery"]["browser_program"][
+            "scenarios"
+        ].pop()
+    else:
+        bundle["payloads"]["frontend-recovery-delivery"]["criteria"][0]["expected"] = {
+            "behavior_checks": {"filtering": True}
+        }
+    encoded = _canonical(bundle)
+
+    with pytest.raises(MaterializationError, match="source-schema"):
+        compile_source_bundle(
+            encoded,
+            expected_source_sha256=sha256(encoded).hexdigest(),
+            expected_head=head,
+            policy=policy,
+        )
+
+
+@pytest.mark.parametrize(
+    ("surface", "mutation"),
+    [
+        ("questions", "missing"),
+        ("questions", "extra"),
+        ("approvals", "missing"),
+        ("approvals", "extra"),
+    ],
+)
+def test_fix_round3_intent_exactly_matches_public_taxonomy(
+    tmp_path: Path, surface: str, mutation: str
+) -> None:
+    policy, head, _source = _policy(tmp_path)
+    bundle = _source_bundle("test-lock-r1")
+    if surface == "questions" and mutation == "missing":
+        bundle["intent_map"]["questions"].pop("audit.retention-window")
+    elif surface == "questions":
+        bundle["intent_map"]["questions"]["test-only-unrelated"] = {
+            "answer": "irrelevant",
+            "delay_ms": 0,
+        }
+    elif mutation == "missing":
+        bundle["intent_map"]["approvals"].remove("design-contract")
+    else:
+        bundle["intent_map"]["approvals"].append("test-only-unrelated")
+    encoded = _canonical(bundle)
+
+    with pytest.raises(MaterializationError, match="source-schema"):
+        compile_source_bundle(
+            encoded,
+            expected_source_sha256=sha256(encoded).hexdigest(),
+            expected_head=head,
+            policy=policy,
+        )
+
+
+def test_fix_round3_materialization_receipt_is_pending_before_final_canary(
+    tmp_path: Path,
+) -> None:
+    policy, head, source = _policy(tmp_path)
+    compiled = _compile_for_test(policy, head, source)
+    receipt = json.loads(compiled.files["materialization-receipt.json"])
+
+    assert receipt["publication_state"] == "published-pending-isolation"
+    assert receipt["isolation_probe_state"] == "pending"
+
+
+def test_fix_round3_trusted_source_base_is_literal_and_cli_is_fd_only() -> None:
+    assert (
+        Path("/private/tmp/ai-sdlc-v2-benefit-source")
+        == materializer.TRUSTED_SOURCE_BASE
+    )
+    help_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ai_sdlc",
+            "benefit-evidence",
+            "materialize-sealed",
+            "--help",
+        ],
+        cwd=REPO_ROOT,
+        env={**os.environ, "COLUMNS": "200"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    combined = help_result.stdout + help_result.stderr
+
+    assert help_result.returncode == 0
+    assert "--sealed-source-fd" in combined
+    assert "--sealed-source " not in combined
+
+
+def test_fix_round3_tree_fingerprint_binds_root_metadata(tmp_path: Path) -> None:
+    root = tmp_path / "fingerprint-root"
+    root.mkdir(mode=0o700)
+    (root / "value.txt").write_text("stable")
+    before = fingerprint_tree(root)
+
+    root.chmod(0o750)
+    after = fingerprint_tree(root)
+
+    assert after != before
+
+
+def test_fix_round3_tree_fingerprint_binds_child_identity_and_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "fingerprint-root"
+    root.mkdir(mode=0o700)
+    child = root / "value.txt"
+    child.write_text("stable")
+    before = fingerprint_tree(root)
+    child.chmod(0o640)
+    assert fingerprint_tree(root) != before
+    child.chmod(0o644)
+    child.write_text("changed")
+    changed = fingerprint_tree(root)
+    child.rename(root / "renamed.txt")
+    assert fingerprint_tree(root) != changed
+
+    real_lstat = Path.lstat
+
+    def simulated_owner(path: Path) -> os.stat_result:
+        observed = real_lstat(path)
+        if path == root:
+            values = list(observed)
+            values[4] = observed.st_uid + 1
+            return os.stat_result(values)
+        return observed
+
+    owner_before = fingerprint_tree(root)
+    monkeypatch.setattr(Path, "lstat", simulated_owner)
+    assert fingerprint_tree(root) != owner_before
+
+
+def test_fix_round3_source_must_be_direct_child_of_strict_trusted_root(
+    tmp_path: Path,
+) -> None:
+    policy, head, _source = _policy(tmp_path)
+    outside = tmp_path / "candidate" / "source.json"
+    data, digest = _write_source(outside, policy.target.name)
+    assert data
+    descriptor = os.open(outside, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        with pytest.raises(MaterializationError, match="source-security"):
+            materialize_with_policy(
+                source_fd=descriptor,
+                expected_source_sha256=digest,
+                expected_head=head,
+                expected_old_root_tree_sha256=fingerprint_tree(
+                    policy.legacy_root
+                ).sha256,
+                policy=policy,
+            )
+    finally:
+        os.close(descriptor)
+    policy.source_root.chmod(0o750)
+    with pytest.raises(MaterializationError, match="source-security"):
+        _materialize_for_test(
+            _source,
+            expected_source_sha256=sha256(_source.read_bytes()).hexdigest(),
+            expected_head=head,
+            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            policy=policy,
+        )
+
+
+def test_fix_round3_target_parent_requires_exact_private_mode(tmp_path: Path) -> None:
+    policy, head, source = _policy(tmp_path)
+    policy.target.parent.chmod(0o750)
+    with pytest.raises(MaterializationError, match="target-ancestor"):
+        _materialize_for_test(
+            source,
+            expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
+            expected_head=head,
+            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            policy=policy,
+        )
+
+
+def test_fix_round3_final_canary_uses_exact_published_and_protected_roots(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    policy.target.mkdir(mode=0o700)
+    captured: list[object] = []
+
+    def successful_probe(profile: object) -> IsolationProbeResult:
+        captured.append(profile)
+        return IsolationProbeResult(
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            (("protected-root-0", True), ("protected-root-1", True)),
+        )
+
+    monkeypatch.setattr(materializer, "probe_provider_isolation", successful_probe)
+    data = REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="3" * 64)
+    attestation = json.loads(data)
+    profile = captured[0]
+
+    assert profile.sealed_root == policy.target.resolve()
+    assert profile.control_root == policy.repo_root.resolve()
+    assert policy.source_root.resolve() in profile.protected_roots
+    assert (policy.repo_root / ".git").resolve() in profile.protected_roots
+    assert profile.raw_results_root == policy.raw_results_root.resolve()
+    assert profile.other_run_roots == tuple(
+        path.resolve() for path in policy.other_run_roots
+    )
+    assert attestation["state"] == "validated"
+    assert attestation["pending_receipt_sha256"] == "3" * 64
+
+
+def test_fix_round3_canary_failure_quarantines_published_target(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, head, source = _policy(tmp_path)
+    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        materializer,
+        "_run_final_isolation_canary",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            MaterializationError("isolation-canary")
+        ),
+    )
+
+    with pytest.raises(MaterializationError, match="isolation-canary"):
+        _materialize_for_test(
+            source,
+            expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
+            expected_head=head,
+            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            policy=policy,
+        )
+
+    assert not policy.target.exists()
+    assert not list(policy.target.parent.glob(f".{policy.target.name}.quarantine-*"))
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_fix_round3_system_publication_requires_real_final_path_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, head, source = _policy(tmp_path)
+    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        materializer, "_run_final_isolation_canary", REAL_FINAL_ISOLATION_CANARY
+    )
+    try:
+        result = _materialize_for_test(
+            source,
+            expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
+            expected_head=head,
+            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            policy=policy,
+        )
+    except MaterializationError as error:
+        if error.code == "isolation-canary":
+            pytest.skip("nested sandbox blocks exact final isolation profile")
+        raise
+
+    attestation = json.loads(
+        (policy.target / "isolation-attestation.json").read_bytes()
+    )
+    assert attestation["state"] == "validated"
+    assert attestation["checks"] == {
+        "direct": True,
+        "parent": True,
+        "symlink": True,
+        "hardlink": True,
+        "environment": True,
+        "other_run": True,
+        "add_dir": True,
+        "protected_roots": 7,
+    }
+    assert (
+        result.file_sha256["isolation-attestation.json"]
+        == sha256(
+            (policy.target / "isolation-attestation.json").read_bytes()
+        ).hexdigest()
+    )
+
+
+def test_fix_round3_source_root_drift_aborts_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, head, source = _policy(tmp_path)
+
+    def mutate_source_root(*_args: object, **_kwargs: object) -> None:
+        extra = policy.source_root / "unexpected.json"
+        extra.write_text("{}")
+        extra.chmod(0o600)
+
+    monkeypatch.setattr(materializer, "_validate_scratch", mutate_source_root)
+    with pytest.raises(MaterializationError, match="source-raced"):
+        _materialize_for_test(
+            source,
+            expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
+            expected_head=head,
+            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            policy=policy,
+        )
+
+    assert not policy.target.exists()
 
 
 @pytest.mark.parametrize(
@@ -467,18 +1112,28 @@ def test_compile_binds_all_receipt_and_commitment_inputs(tmp_path: Path) -> None
     assert receipt["target_lock_id"] == policy.target.name
     assert receipt["source_bundle_sha256"] == sha256(source.read_bytes()).hexdigest()
     assert receipt["materializer_sha256"] == materializer.materializer_sha256()
-    assert receipt["fixture_manifest_sha256"] == sha256(
-        (policy.repo_root / "benchmarks/ai-sdlc-v2-benefits/fixtures/manifest.json").read_bytes()
-    ).hexdigest()
-    assert receipt["evidence_contract_sha256"] == sha256(
-        (
-            policy.repo_root
-            / "benchmarks/ai-sdlc-v2-benefits/fixtures/evidence-contract.template.json"
-        ).read_bytes()
-    ).hexdigest()
-    assert receipt["candidate_commitments_sha256"] == sha256(
-        compiled.files["candidate-commitments.json"]
-    ).hexdigest()
+    assert (
+        receipt["fixture_manifest_sha256"]
+        == sha256(
+            (
+                policy.repo_root
+                / "benchmarks/ai-sdlc-v2-benefits/fixtures/manifest.json"
+            ).read_bytes()
+        ).hexdigest()
+    )
+    assert (
+        receipt["evidence_contract_sha256"]
+        == sha256(
+            (
+                policy.repo_root
+                / "benchmarks/ai-sdlc-v2-benefits/fixtures/evidence-contract.template.json"
+            ).read_bytes()
+        ).hexdigest()
+    )
+    assert (
+        receipt["candidate_commitments_sha256"]
+        == sha256(compiled.files["candidate-commitments.json"]).hexdigest()
+    )
 
 
 def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
@@ -486,11 +1141,13 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     _, digest = source.read_bytes(), sha256(source.read_bytes()).hexdigest()
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
 
     with pytest.raises(MaterializationError, match="source-head"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head="0" * 40,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -499,8 +1156,8 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
     dirty = policy.repo_root / "dirty.txt"
     dirty.write_text("dirty")
     with pytest.raises(MaterializationError, match="source-tree"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -514,17 +1171,28 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
     subprocess.run(["git", "add", "--all"], cwd=policy.repo_root, check=True)
     subprocess.run(
         [
-            "git", "-c", "user.name=t", "-c", "user.email=t@invalid",
-            "commit", "-qm", "invalid protocol",
-        ], cwd=policy.repo_root, check=True,
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@invalid",
+            "commit",
+            "-qm",
+            "invalid protocol",
+        ],
+        cwd=policy.repo_root,
+        check=True,
     )
     invalid_head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=policy.repo_root, check=True,
-        capture_output=True, text=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=policy.repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     with pytest.raises(MaterializationError, match="protocol-state"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=invalid_head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -535,19 +1203,30 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
     subprocess.run(["git", "add", "--all"], cwd=policy.repo_root, check=True)
     subprocess.run(
         [
-            "git", "-c", "user.name=t", "-c", "user.email=t@invalid",
-            "commit", "-qm", "restore protocol",
-        ], cwd=policy.repo_root, check=True,
+            "git",
+            "-c",
+            "user.name=t",
+            "-c",
+            "user.email=t@invalid",
+            "commit",
+            "-qm",
+            "restore protocol",
+        ],
+        cwd=policy.repo_root,
+        check=True,
     )
     valid_head = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=policy.repo_root, check=True,
-        capture_output=True, text=True,
+        ["git", "rev-parse", "HEAD"],
+        cwd=policy.repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
     ).stdout.strip()
     results = policy.repo_root / "benchmarks/ai-sdlc-v2-benefits/results"
     results.mkdir()
     with pytest.raises(MaterializationError, match="provider-state"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=valid_head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -561,11 +1240,13 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
     old_digest = fingerprint_tree(policy.legacy_root).sha256
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     policy.target.mkdir()
     with pytest.raises(MaterializationError, match="target-exists"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=old_digest,
@@ -574,8 +1255,8 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
     policy.target.rmdir()
     policy.target.parent.chmod(0o777)
     with pytest.raises(MaterializationError, match="target-ancestor"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=old_digest,
@@ -589,10 +1270,15 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
         legacy_root=policy.legacy_root,
         expected_legacy_inode=policy.expected_legacy_inode,
         forbidden_roots=(*policy.forbidden_roots, policy.target.parent),
+        source_base=policy.source_base,
+        source_root=policy.source_root,
+        canary_run_root=policy.canary_run_root,
+        raw_results_root=policy.raw_results_root,
+        other_run_roots=policy.other_run_roots,
     )
     with pytest.raises(MaterializationError, match="target-overlap"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=old_digest,
@@ -606,10 +1292,12 @@ def test_successful_publication_is_exclusive_closed_and_mode_locked(
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
     old_before = fingerprint_tree(policy.legacy_root)
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
 
-    result = materialize_with_policy(
-        source_path=source,
+    result = _materialize_for_test(
+        source,
         expected_source_sha256=digest,
         expected_head=head,
         expected_old_root_tree_sha256=old_before.sha256,
@@ -627,7 +1315,13 @@ def test_successful_publication_is_exclusive_closed_and_mode_locked(
         assert result.file_sha256[path.name] == sha256(path.read_bytes()).hexdigest()
     assert fingerprint_tree(policy.legacy_root) == old_before
     receipt = json.loads((policy.target / "materialization-receipt.json").read_text())
-    assert receipt["publication_state"] == "materialized-validated"
+    assert receipt["publication_state"] == "published-pending-isolation"
+    attestation = json.loads((policy.target / "isolation-attestation.json").read_text())
+    assert attestation["state"] == "validated"
+    assert (
+        attestation["pending_receipt_sha256"]
+        == result.file_sha256["materialization-receipt.json"]
+    )
     assert not list(policy.target.parent.glob(f".{policy.target.name}.staging-*"))
     assert not list(policy.target.parent.glob(f".{policy.target.name}.quarantine-*"))
 
@@ -638,7 +1332,9 @@ def test_publication_retries_short_writes_until_every_byte_is_durable(
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
     old_before = fingerprint_tree(policy.legacy_root)
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     real_write = os.write
     short_write_count = 0
 
@@ -650,8 +1346,8 @@ def test_publication_retries_short_writes_until_every_byte_is_durable(
         return real_write(descriptor, value)
 
     monkeypatch.setattr(materializer.os, "write", short_write)
-    result = materialize_with_policy(
-        source_path=source,
+    result = _materialize_for_test(
+        source,
         expected_source_sha256=digest,
         expected_head=head,
         expected_old_root_tree_sha256=old_before.sha256,
@@ -660,7 +1356,9 @@ def test_publication_retries_short_writes_until_every_byte_is_durable(
 
     assert short_write_count > 0
     for name, expected_digest in result.file_sha256.items():
-        assert sha256((policy.target / name).read_bytes()).hexdigest() == expected_digest
+        assert (
+            sha256((policy.target / name).read_bytes()).hexdigest() == expected_digest
+        )
 
 
 def test_staging_creation_is_relative_to_the_pinned_parent_descriptor(
@@ -668,7 +1366,9 @@ def test_staging_creation_is_relative_to_the_pinned_parent_descriptor(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         materializer.tempfile,
         "mkdtemp",
@@ -677,8 +1377,8 @@ def test_staging_creation_is_relative_to_the_pinned_parent_descriptor(
         ),
     )
 
-    result = materialize_with_policy(
-        source_path=source,
+    result = _materialize_for_test(
+        source,
         expected_source_sha256=digest,
         expected_head=head,
         expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -702,8 +1402,8 @@ def test_parent_path_replacement_after_pin_fails_before_publication(
     monkeypatch.setattr(materializer, "_validate_scratch", replace_parent)
 
     with pytest.raises(MaterializationError, match="target-raced"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -719,7 +1419,7 @@ def test_repository_preflight_precedes_protected_source_read(tmp_path: Path) -> 
 
     with pytest.raises(MaterializationError, match="source-head"):
         materialize_with_policy(
-            source_path=tmp_path / "secret-must-not-be-read.json",
+            source_fd=-1,
             expected_source_sha256="0" * 64,
             expected_head="0" * 40,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -768,11 +1468,13 @@ def test_prepublish_failure_removes_only_owned_staging(
     old_before = fingerprint_tree(policy.legacy_root)
     unrelated = policy.target.parent / ".unrelated-staging"
     unrelated.mkdir()
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
 
     with pytest.raises(MaterializationError, match="injected-failure"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=old_before.sha256,
@@ -786,7 +1488,17 @@ def test_prepublish_failure_removes_only_owned_staging(
     assert fingerprint_tree(policy.legacy_root) == old_before
 
 
-@pytest.mark.parametrize("failure_point", ["fsync-parent", "postverify"])
+@pytest.mark.parametrize(
+    "failure_point",
+    [
+        "fsync-parent",
+        "postverify",
+        "isolation-canary",
+        "write-attestation",
+        "fsync-attestation",
+        "fsync-final-dir",
+    ],
+)
 def test_postpublish_failure_quarantines_only_matching_target(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -795,11 +1507,13 @@ def test_postpublish_failure_quarantines_only_matching_target(
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
     old_before = fingerprint_tree(policy.legacy_root)
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
 
     with pytest.raises(MaterializationError, match="injected-failure"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=old_before.sha256,
@@ -817,7 +1531,9 @@ def test_cleanup_failure_is_explicit_no_go(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(
         materializer,
         "_quarantine_published",
@@ -825,8 +1541,8 @@ def test_cleanup_failure_is_explicit_no_go(
     )
 
     with pytest.raises(MaterializationError, match="cleanup-failed"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -840,12 +1556,14 @@ def test_renameatx_unavailable_is_fail_closed_before_publish(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     monkeypatch.setattr(materializer, "_rename_exclusive", None)
 
     with pytest.raises(MaterializationError, match="rename-unavailable"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -859,10 +1577,12 @@ def test_old_root_inode_and_tree_are_required_and_unchanged(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
-    monkeypatch.setattr(materializer, "_validate_scratch", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        materializer, "_validate_scratch", lambda *_args, **_kwargs: None
+    )
     with pytest.raises(MaterializationError, match="legacy-tree"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256="0" * 64,
@@ -875,10 +1595,15 @@ def test_old_root_inode_and_tree_are_required_and_unchanged(
         legacy_root=policy.legacy_root,
         expected_legacy_inode=policy.expected_legacy_inode + 1,
         forbidden_roots=policy.forbidden_roots,
+        source_base=policy.source_base,
+        source_root=policy.source_root,
+        canary_run_root=policy.canary_run_root,
+        raw_results_root=policy.raw_results_root,
+        other_run_roots=policy.other_run_roots,
     )
     with pytest.raises(MaterializationError, match="legacy-inode"):
-        materialize_with_policy(
-            source_path=source,
+        _materialize_for_test(
+            source,
             expected_source_sha256=digest,
             expected_head=head,
             expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
@@ -886,14 +1611,16 @@ def test_old_root_inode_and_tree_are_required_and_unchanged(
         )
 
 
-def test_materializer_errors_do_not_echo_source_path_or_plaintext(tmp_path: Path) -> None:
+def test_materializer_errors_do_not_echo_source_path_or_plaintext(
+    tmp_path: Path,
+) -> None:
     source = tmp_path / "secret-name-do-not-echo.json"
     secret = "test-only-plaintext-do-not-echo"
     source.write_text(secret)
     source.chmod(0o600)
 
     with pytest.raises(MaterializationError) as captured:
-        read_source_bundle(source_path=source, expected_sha256="0" * 64)
+        _read_source_for_test(source, "0" * 64)
 
     rendered = str(captured.value)
     assert str(source) not in rendered
@@ -901,9 +1628,9 @@ def test_materializer_errors_do_not_echo_source_path_or_plaintext(tmp_path: Path
 
 
 def test_production_materializer_contains_no_test_payload_plaintext() -> None:
-    production = (
-        REPO_ROOT / "src/ai_sdlc/benefit_sealed_materializer.py"
-    ).read_text(encoding="utf-8")
+    production = (REPO_ROOT / "src/ai_sdlc/benefit_sealed_materializer.py").read_text(
+        encoding="utf-8"
+    )
     cli = (REPO_ROOT / "src/ai_sdlc/cli/benefit_evidence_cmd.py").read_text(
         encoding="utf-8"
     )
@@ -949,7 +1676,6 @@ def test_cli_fingerprint_is_read_only_and_materialize_help_is_closed() -> None:
     assert help_result.returncode == 0, help_result.stderr
     combined = help_result.stdout + help_result.stderr
     for option in (
-        "--sealed-source",
         "--sealed-source-fd",
         "--expected-source-sha256",
         "--expected-head",
@@ -957,6 +1683,7 @@ def test_cli_fingerprint_is_read_only_and_materialize_help_is_closed() -> None:
         "--expected-old-root-tree-sha256",
     ):
         assert option in combined
+    assert "--sealed-source " not in combined
     assert "--target" not in combined
 
 
@@ -973,28 +1700,81 @@ def test_cli_redacts_unexpected_materializer_exception(
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(marker)),
     )
 
-    result = CliRunner().invoke(
-        benefit_evidence_cmd.benefit_evidence_app,
-        [
-            "materialize-sealed",
-            "--sealed-source",
-            str(source),
-            "--expected-source-sha256",
-            "0" * 64,
-            "--expected-head",
-            "0" * 40,
-            "--lock-id",
-            FINAL_LOCK_ID,
-            "--expected-old-root-tree-sha256",
-            "0" * 64,
-        ],
-    )
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        result = CliRunner().invoke(
+            benefit_evidence_cmd.benefit_evidence_app,
+            [
+                "materialize-sealed",
+                "--sealed-source-fd",
+                str(descriptor),
+                "--expected-source-sha256",
+                "0" * 64,
+                "--expected-head",
+                "0" * 40,
+                "--lock-id",
+                FINAL_LOCK_ID,
+                "--expected-old-root-tree-sha256",
+                "0" * 64,
+            ],
+        )
+    finally:
+        os.close(descriptor)
 
     assert result.exit_code == 1
     rendered = result.stdout + result.stderr
     assert marker not in rendered
     assert marker not in str(result.exception)
     assert json.loads(rendered) == {"status": "no-go", "code": "internal-error"}
+
+
+def test_fix_round3_cli_success_is_opaque(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    source = tmp_path / "source.json"
+    source.write_bytes(b"{}")
+    source.chmod(0o600)
+    monkeypatch.setattr(
+        benefit_evidence_cmd,
+        "materialize_sealed_bundle",
+        lambda **_kwargs: MaterializationResult(
+            FINAL_LOCK_ID,
+            987654321,
+            {
+                "materialization-receipt.json": "4" * 64,
+                "isolation-attestation.json": "5" * 64,
+            },
+        ),
+    )
+    descriptor = os.open(source, os.O_RDONLY | os.O_NOFOLLOW)
+    try:
+        result = CliRunner().invoke(
+            benefit_evidence_cmd.benefit_evidence_app,
+            [
+                "materialize-sealed",
+                "--sealed-source-fd",
+                str(descriptor),
+                "--expected-source-sha256",
+                "0" * 64,
+                "--expected-head",
+                "0" * 40,
+                "--lock-id",
+                FINAL_LOCK_ID,
+                "--expected-old-root-tree-sha256",
+                "0" * 64,
+            ],
+        )
+    finally:
+        os.close(descriptor)
+
+    assert result.exit_code == 0
+    assert json.loads(result.stdout) == {
+        "status": "materialized",
+        "count": 2,
+        "receipt_sha256": "5" * 64,
+    }
+    assert "987654321" not in result.stdout
+    assert FINAL_LOCK_ID not in result.stdout
 
 
 @pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt/browser")

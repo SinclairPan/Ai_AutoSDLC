@@ -2,8 +2,8 @@
   "schema": "ai-sdlc-v2-benefit-sealed-commitments/v2",
   "lock_id": "v2-benefits-20260819",
   "sealed_manifest_sha256": "4bb7886ba3e5df1b820cc71982eada0a5925a4c17f6b76a7aa22e3f8ebac5e43",
-  "fixture_tree_sha256": "96c67f8be165b52b7471fa9955c36ecc62efe29361d8b4c0d2ba56cfa58d02e1",
-  "fixture_commitment": "96c67f8be165b52b7471fa9955c36ecc62efe29361d8b4c0d2ba56cfa58d02e1",
+  "fixture_tree_sha256": "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a",
+  "fixture_commitment": "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a",
   "evidence_contract_template_sha256": "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c",
   "evidence_contract_commitment": "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c",
   "fixture_payloads": [

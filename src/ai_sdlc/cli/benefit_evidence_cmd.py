@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Annotated
 
 import typer
@@ -31,9 +30,7 @@ def fingerprint_old_root_command() -> None:
         typer.echo(json.dumps({"status": "no-go", "code": error.code}), err=True)
         raise typer.Exit(code=1) from error
     except Exception:
-        typer.echo(
-            json.dumps({"status": "no-go", "code": "internal-error"}), err=True
-        )
+        typer.echo(json.dumps({"status": "no-go", "code": "internal-error"}), err=True)
         raise typer.Exit(code=1) from None
     typer.echo(
         json.dumps(
@@ -46,14 +43,10 @@ def fingerprint_old_root_command() -> None:
 
 @benefit_evidence_app.command("materialize-sealed")
 def materialize_sealed_command(
-    sealed_source: Annotated[
-        Path | None,
-        typer.Option("--sealed-source", help="Protected canonical source bundle path."),
-    ] = None,
     sealed_source_fd: Annotated[
-        int | None,
+        int,
         typer.Option("--sealed-source-fd", help="Already-open protected source FD."),
-    ] = None,
+    ] = -1,
     expected_source_sha256: Annotated[
         str,
         typer.Option("--expected-source-sha256", help="Frozen source bundle SHA256."),
@@ -75,17 +68,14 @@ def materialize_sealed_command(
     ] = "",
 ) -> None:
     """Compile, validate and exclusively publish the final sealed root."""
-    if (sealed_source is None) == (sealed_source_fd is None):
-        typer.echo(
-            json.dumps({"status": "no-go", "code": "source-selector"}), err=True
-        )
+    if sealed_source_fd < 0:
+        typer.echo(json.dumps({"status": "no-go", "code": "source-selector"}), err=True)
         raise typer.Exit(code=1)
     if lock_id != FINAL_LOCK_ID:
         typer.echo(json.dumps({"status": "no-go", "code": "target-lock"}), err=True)
         raise typer.Exit(code=1)
     try:
         result = materialize_sealed_bundle(
-            source_path=sealed_source,
             source_fd=sealed_source_fd,
             expected_source_sha256=expected_source_sha256,
             expected_head=expected_head,
@@ -96,19 +86,14 @@ def materialize_sealed_command(
         typer.echo(json.dumps({"status": "no-go", "code": error.code}), err=True)
         raise typer.Exit(code=1) from error
     except Exception:
-        typer.echo(
-            json.dumps({"status": "no-go", "code": "internal-error"}), err=True
-        )
+        typer.echo(json.dumps({"status": "no-go", "code": "internal-error"}), err=True)
         raise typer.Exit(code=1) from None
     typer.echo(
         json.dumps(
             {
                 "status": "materialized",
-                "lock_id": result.lock_id,
-                "target_inode": result.target_inode,
-                "receipt_sha256": result.file_sha256[
-                    "materialization-receipt.json"
-                ],
+                "count": len(result.file_sha256),
+                "receipt_sha256": result.file_sha256["isolation-attestation.json"],
             },
             sort_keys=True,
             separators=(",", ":"),

@@ -26,21 +26,23 @@ except ImportError:  # pragma: no cover - 正式物化器仅在 macOS 上执行�
 from ai_sdlc.benefit_benchmark_fixtures import (
     FIXTURE_IDS,
     FrozenIntentApprovalService,
+    build_provider_isolation_profile,
     evaluate_fixture,
     load_fixture_manifest,
     prepare_fixture,
+    probe_provider_isolation,
     scan_candidate_for_sealed_leak,
     validate_fixture_manifest,
+    validate_frontend_browser_program,
 )
 
 FINAL_LOCK_ID = "v2-benefits-20260819-r1"
-FINAL_TARGET = Path(
-    "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1"
-)
-LEGACY_ROOT = Path(
-    "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819"
-)
+FINAL_TARGET = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1")
+LEGACY_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819")
 TRUST_ANCHOR = Path("/private/tmp")
+TRUSTED_SOURCE_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-source")
+TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source"
+FINAL_CANARY_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-isolation-canary")
 EXPECTED_LEGACY_INODE = 400173643
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -97,15 +99,6 @@ _FRONTEND_EXPECTED_KEYS = {
     "basic_accessibility",
     "behavior_checks",
 }
-_FRONTEND_SCENARIOS = {
-    "normal",
-    "failure_recovery",
-    "consecutive_failure_recovery",
-    "delayed_race",
-    "rapid_double_click",
-    "malformed_response",
-}
-_FRONTEND_BEHAVIORS = {"field_rendering", "filtering"}
 _OUTPUT_ORDER = (
     "intent-map.json",
     "requirement-contract-ambiguity.sealed.json",
@@ -115,6 +108,7 @@ _OUTPUT_ORDER = (
     "candidate-commitments.json",
     "materialization-receipt.json",
 )
+_ATTESTATION_NAME = "isolation-attestation.json"
 CANDIDATE_COMMITMENT_KEYS = {
     "schema",
     "lock_id",
@@ -128,6 +122,7 @@ CANDIDATE_COMMITMENT_KEYS = {
     "sealed_manifest_sha256",
     "intent_map_sha256",
     "fixture_payloads",
+    "source_root_tree_sha256",
 }
 RECEIPT_KEYS = {
     "schema",
@@ -144,6 +139,8 @@ RECEIPT_KEYS = {
     "intent_map_sha256",
     "fixture_payloads",
     "candidate_commitments_sha256",
+    "isolation_probe_state",
+    "source_root_tree_sha256",
 }
 
 
@@ -169,6 +166,11 @@ class MaterializerPolicy:
     legacy_root: Path
     expected_legacy_inode: int
     forbidden_roots: tuple[Path, ...]
+    source_base: Path
+    source_root: Path
+    canary_run_root: Path
+    raw_results_root: Path
+    other_run_roots: tuple[Path, ...]
 
 
 @dataclass(frozen=True)
@@ -320,35 +322,21 @@ def _descriptor_path(descriptor: int) -> Path:
 
 def _read_source_record(
     *,
-    source_path: Path | None = None,
-    source_fd: int | None = None,
+    source_fd: int,
     expected_sha256: str,
 ) -> SourceRead:
-    if (source_path is None) == (source_fd is None):
-        raise MaterializationError("source-selector")
     if not _valid_digest(expected_sha256):
         raise MaterializationError("source-digest")
-    descriptor: int
-    positional = source_fd is not None
     opened_path: Path | None = None
     try:
-        if source_path is not None:
-            flags = os.O_RDONLY | os.O_CLOEXEC
-            if hasattr(os, "O_NOFOLLOW"):
-                flags |= os.O_NOFOLLOW
-            try:
-                descriptor = os.open(source_path, flags)
-            except OSError as error:
-                raise MaterializationError("source-open") from error
-        else:
-            try:
-                descriptor = os.dup(int(source_fd))
-            except (OSError, TypeError, ValueError) as error:
-                raise MaterializationError("source-open") from error
+        try:
+            descriptor = os.dup(int(source_fd))
+        except (OSError, TypeError, ValueError) as error:
+            raise MaterializationError("source-open") from error
         try:
             opened_path = _descriptor_path(descriptor)
             before = os.fstat(descriptor)
-            data = _read_all(descriptor, positional=positional)
+            data = _read_all(descriptor, positional=True)
             after = os.fstat(descriptor)
         finally:
             os.close(descriptor)
@@ -372,31 +360,48 @@ def _read_source_record(
 
 def read_source_bundle(
     *,
-    source_path: Path | None = None,
-    source_fd: int | None = None,
+    source_fd: int,
     expected_sha256: str,
 ) -> bytes:
     """Read and freeze one canonical source bundle without echoing its identity."""
     return _read_source_record(
-        source_path=source_path,
         source_fd=source_fd,
         expected_sha256=expected_sha256,
     ).canonical_bytes
 
 
 def fingerprint_tree(root: Path) -> TreeFingerprint:
-    """Hash sorted relative path/type/mode/size/content or symlink target records."""
+    """Hash root identity plus sorted child identity and content records."""
     try:
         root_stat = root.lstat()
         if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
             raise MaterializationError("legacy-root")
-        entries: list[dict[str, object]] = []
-        for path in sorted(root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()):
+        entries: list[dict[str, object]] = [
+            {
+                "path": ".",
+                "type": "directory",
+                "device": root_stat.st_dev,
+                "inode": root_stat.st_ino,
+                "uid": root_stat.st_uid,
+                "gid": root_stat.st_gid,
+                "mode": stat.S_IMODE(root_stat.st_mode),
+                "nlink": root_stat.st_nlink,
+                "size": root_stat.st_size,
+            }
+        ]
+        for path in sorted(
+            root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+        ):
             relative = path.relative_to(root).as_posix()
             item_stat = path.lstat()
             record: dict[str, object] = {
                 "path": relative,
+                "device": item_stat.st_dev,
+                "inode": item_stat.st_ino,
+                "uid": item_stat.st_uid,
+                "gid": item_stat.st_gid,
                 "mode": stat.S_IMODE(item_stat.st_mode),
+                "nlink": item_stat.st_nlink,
                 "size": item_stat.st_size,
             }
             if stat.S_ISREG(item_stat.st_mode):
@@ -412,7 +417,9 @@ def fingerprint_tree(root: Path) -> TreeFingerprint:
         raise
     except OSError as error:
         raise MaterializationError("legacy-root") from error
-    return TreeFingerprint(root_stat.st_ino, _digest_bytes(_canonical_json_bytes(entries)))
+    return TreeFingerprint(
+        root_stat.st_ino, _digest_bytes(_canonical_json_bytes(entries))
+    )
 
 
 def default_policy() -> MaterializerPolicy:
@@ -431,6 +438,11 @@ def default_policy() -> MaterializerPolicy:
             benchmark / "raw-results",
             benchmark / ".evaluation-raw-results",
         ),
+        source_base=TRUSTED_SOURCE_BASE,
+        source_root=TRUSTED_SOURCE_ROOT,
+        canary_run_root=FINAL_CANARY_BASE / "run",
+        raw_results_root=FINAL_CANARY_BASE / "raw-results",
+        other_run_roots=(FINAL_CANARY_BASE / "other-run",),
     )
 
 
@@ -470,7 +482,9 @@ def _assert_provider_state_absent(repo_root: Path) -> None:
         raise MaterializationError("provider-state")
 
 
-def _capture_repo_bindings(expected_head: str, policy: MaterializerPolicy) -> RepoBindings:
+def _capture_repo_bindings(
+    expected_head: str, policy: MaterializerPolicy
+) -> RepoBindings:
     repo = policy.repo_root.resolve(strict=True)
     if _git(repo, "rev-parse", "HEAD") != expected_head:
         raise MaterializationError("source-head")
@@ -512,11 +526,32 @@ _CRITERION_KEYS: Mapping[str, set[str]] = MappingProxyType(
         "json_enum": {"id", "weight", "severity", "kind", "path", "allowed"},
         "json_set_contains": {"id", "weight", "severity", "kind", "path", "expected"},
         "json_relation": {"id", "weight", "severity", "kind", "path", "relation"},
-        "json_no_contradiction": {"id", "weight", "severity", "kind", "path", "forbidden"},
-        "verification_command": {"id", "weight", "severity", "kind", "path", "expected"},
+        "json_no_contradiction": {
+            "id",
+            "weight",
+            "severity",
+            "kind",
+            "path",
+            "forbidden",
+        },
+        "verification_command": {
+            "id",
+            "weight",
+            "severity",
+            "kind",
+            "path",
+            "expected",
+        },
         "frontend_browser_suite": {"id", "weight", "severity", "kind", "expected"},
         "security_oracle": {
-            "id", "weight", "severity", "kind", "path", "root_cause", "scenario", "expected"
+            "id",
+            "weight",
+            "severity",
+            "kind",
+            "path",
+            "root_cause",
+            "scenario",
+            "expected",
         },
     }
 )
@@ -537,7 +572,9 @@ def _require_source_schema(condition: bool) -> None:
         raise MaterializationError("source-schema")
 
 
-def _validate_frontend_expected(value: object) -> None:
+def _validate_frontend_expected(
+    value: object, *, scenario_ids: set[str], behavior_ids: set[str]
+) -> None:
     if (
         not isinstance(value, Mapping)
         or not value
@@ -553,8 +590,8 @@ def _validate_frontend_expected(value: object) -> None:
     ):
         raise MaterializationError("source-schema")
     for key, allowed in (
-        ("scenarios", _FRONTEND_SCENARIOS),
-        ("behavior_checks", _FRONTEND_BEHAVIORS),
+        ("scenarios", scenario_ids),
+        ("behavior_checks", behavior_ids),
     ):
         if key not in value:
             continue
@@ -639,7 +676,9 @@ def _validate_security_oracle(criterion: Mapping[str, object]) -> None:
         raise MaterializationError("source-schema")
 
 
-def _validate_criterion_value(criterion: Mapping[str, object]) -> None:
+def _validate_criterion_value(
+    criterion: Mapping[str, object], *, scenario_ids: set[str], behavior_ids: set[str]
+) -> None:
     kind = str(criterion["kind"])
     if kind == "json_enum":
         _validate_scalar_sequence(criterion["allowed"])
@@ -673,12 +712,22 @@ def _validate_criterion_value(criterion: Mapping[str, object]) -> None:
         ):
             raise MaterializationError("source-schema")
     elif kind == "frontend_browser_suite":
-        _validate_frontend_expected(criterion["expected"])
+        _validate_frontend_expected(
+            criterion["expected"],
+            scenario_ids=scenario_ids,
+            behavior_ids=behavior_ids,
+        )
     elif kind == "security_oracle":
         _validate_security_oracle(criterion)
 
 
-def _validate_criteria(fixture_id: str, criteria: object) -> list[Mapping[str, object]]:
+def _validate_criteria(
+    fixture_id: str,
+    criteria: object,
+    *,
+    scenario_ids: set[str] | None = None,
+    behavior_ids: set[str] | None = None,
+) -> list[Mapping[str, object]]:
     if not isinstance(criteria, list) or not criteria:
         raise MaterializationError("source-schema")
     validated: list[Mapping[str, object]] = []
@@ -704,13 +753,15 @@ def _validate_criteria(fixture_id: str, criteria: object) -> list[Mapping[str, o
             raise MaterializationError("source-schema")
         path = criterion.get("path")
         if (
-            kind.startswith("json_") or kind == "verification_command"
-        ) and (
-            not isinstance(path, list)
-            or not all(
-                isinstance(component, str) and component for component in path
+            (kind.startswith("json_") or kind == "verification_command")
+            and (
+                not isinstance(path, list)
+                or not all(
+                    isinstance(component, str) and component for component in path
+                )
             )
-        ) and (path != [] or kind != "json_no_contradiction"):
+            and (path != [] or kind != "json_no_contradiction")
+        ):
             raise MaterializationError("source-schema")
         if kind == "security_oracle" and (
             not isinstance(path, str)
@@ -719,7 +770,11 @@ def _validate_criteria(fixture_id: str, criteria: object) -> list[Mapping[str, o
             or ".." in Path(path).parts
         ):
             raise MaterializationError("source-schema")
-        _validate_criterion_value(criterion)
+        _validate_criterion_value(
+            criterion,
+            scenario_ids=scenario_ids or set(),
+            behavior_ids=behavior_ids or set(),
+        )
         identifiers.add(identifier)
         validated.append(criterion)
     kinds = {str(item["kind"]) for item in validated}
@@ -734,18 +789,71 @@ def _validate_criteria(fixture_id: str, criteria: object) -> list[Mapping[str, o
         raise MaterializationError("source-schema")
     if fixture_id == "frontend-recovery-delivery" and (
         kinds != {"frontend_browser_suite"}
-        or not {
-            "FRD-AC001", "FRD-AC002", "FRD-AC006"
-        }.issubset(identifiers)
+        or not {"FRD-AC001", "FRD-AC002", "FRD-AC006"}.issubset(identifiers)
     ):
         raise MaterializationError("source-schema")
+    if fixture_id == "frontend-recovery-delivery":
+        by_id = {str(item["id"]): item["expected"] for item in validated}
+        required_behavior = {
+            "FRD-AC001": {"behavior_checks": {"field_rendering": True}},
+            "FRD-AC002": {"behavior_checks": {"filtering": True}},
+            "FRD-AC006": {
+                "executed_with_real_browser": True,
+                "console_errors": [],
+                "basic_accessibility": True,
+            },
+        }
+        if any(
+            by_id.get(identifier) != expected
+            for identifier, expected in required_behavior.items()
+        ):
+            raise MaterializationError("source-schema")
     if fixture_id == "multi-tenant-security-review" and kinds != {"security_oracle"}:
         raise MaterializationError("source-schema")
     return validated
 
 
+def _public_intent_taxonomy(
+    policy: MaterializerPolicy,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    fixture_root = policy.repo_root / _BENCHMARK_RELATIVE / "fixtures"
+    try:
+        requirement = json.loads(
+            (
+                fixture_root
+                / "requirement-contract-ambiguity/public/benchmark-task/input-contract.json"
+            ).read_bytes()
+        )
+        questions = requirement["semantics"]["question_taxonomy"]
+        approvals = []
+        for fixture_id in (
+            "requirement-contract-ambiguity",
+            "frontend-recovery-delivery",
+        ):
+            contract = json.loads(
+                (
+                    fixture_root
+                    / fixture_id
+                    / "public/benchmark-task/service-contract.json"
+                ).read_bytes()
+            )
+            approvals.append(contract["approval_type"])
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+        raise MaterializationError("source-schema") from error
+    if (
+        not isinstance(questions, list)
+        or len(questions) != 4
+        or len(set(questions)) != 4
+        or not all(isinstance(item, str) and item for item in questions)
+        or len(set(approvals)) != 2
+        or not all(isinstance(item, str) and item for item in approvals)
+    ):
+        raise MaterializationError("source-schema")
+    return tuple(questions), tuple(approvals)
+
+
 def _validate_source_object_unchecked(
-    source_bytes: bytes, *, expected_lock_id: str
+    source_bytes: bytes, *, policy: MaterializerPolicy
 ) -> Mapping[str, object]:
     try:
         raw = _closed(_strict_json_loads(source_bytes), _SOURCE_KEYS, "source-schema")
@@ -755,7 +863,7 @@ def _validate_source_object_unchecked(
         raise MaterializationError("source-schema") from error
     if (
         raw["schema"] != "ai-sdlc-v2-benefit-sealed-source/v1"
-        or raw["lock_id"] != expected_lock_id
+        or raw["lock_id"] != policy.target.name
     ):
         raise MaterializationError("source-schema")
     intent = _closed(raw["intent_map"], _INTENT_KEYS, "source-schema")
@@ -775,10 +883,12 @@ def _validate_source_object_unchecked(
             or question["delay_ms"] < 0
         ):
             raise MaterializationError("source-schema")
-    if (
-        len(approvals) != len(set(approvals))
-        or not all(isinstance(item, str) and item for item in approvals)
+    if len(approvals) != len(set(approvals)) or not all(
+        isinstance(item, str) and item for item in approvals
     ):
+        raise MaterializationError("source-schema")
+    public_questions, public_approvals = _public_intent_taxonomy(policy)
+    if set(questions) != set(public_questions) or tuple(approvals) != public_approvals:
         raise MaterializationError("source-schema")
     payloads = raw["payloads"]
     if not isinstance(payloads, Mapping) or set(payloads) != set(FIXTURE_IDS):
@@ -787,10 +897,18 @@ def _validate_source_object_unchecked(
         expected_keys = {
             "requirement-contract-ambiguity": {"schema", "fixture_id", "criteria"},
             "frontend-recovery-delivery": {
-                "schema", "fixture_id", "held_out_variant_classes", "criteria"
+                "schema",
+                "fixture_id",
+                "held_out_variant_classes",
+                "browser_program",
+                "criteria",
             },
             "multi-tenant-security-review": {
-                "schema", "fixture_id", "held_out_variant_classes", "root_causes", "criteria"
+                "schema",
+                "fixture_id",
+                "held_out_variant_classes",
+                "root_causes",
+                "criteria",
             },
         }[fixture_id]
         payload = _closed(payloads[fixture_id], expected_keys, "source-schema")
@@ -799,7 +917,27 @@ def _validate_source_object_unchecked(
             or payload["fixture_id"] != fixture_id
         ):
             raise MaterializationError("source-schema")
-        criteria = _validate_criteria(fixture_id, payload["criteria"])
+        scenario_ids: set[str] = set()
+        behavior_ids: set[str] = set()
+        if fixture_id == "frontend-recovery-delivery":
+            try:
+                scenario_ids = set(
+                    validate_frontend_browser_program(payload["browser_program"])
+                )
+                behavior_ids = {
+                    str(assertion["expose_as"])
+                    for scenario in payload["browser_program"]["scenarios"]
+                    for assertion in scenario["assertions"]
+                    if assertion["expose_as"] is not None
+                }
+            except (KeyError, TypeError, ValueError) as error:
+                raise MaterializationError("source-schema") from error
+        criteria = _validate_criteria(
+            fixture_id,
+            payload["criteria"],
+            scenario_ids=scenario_ids,
+            behavior_ids=behavior_ids,
+        )
         if fixture_id != "requirement-contract-ambiguity":
             variants = payload["held_out_variant_classes"]
             if (
@@ -808,6 +946,18 @@ def _validate_source_object_unchecked(
                 or len(set(variants)) != 4
                 or not all(isinstance(item, str) and item for item in variants)
             ):
+                raise MaterializationError("source-schema")
+        if fixture_id == "frontend-recovery-delivery":
+            covered_scenarios = {
+                str(scenario_id)
+                for criterion in criteria
+                for scenario_id in (
+                    criterion["expected"].get("scenarios", {})
+                    if isinstance(criterion["expected"], Mapping)
+                    else {}
+                )
+            }
+            if len(scenario_ids) != 6 or len(covered_scenarios) != 4:
                 raise MaterializationError("source-schema")
         if fixture_id == "multi-tenant-security-review":
             roots = payload["root_causes"]
@@ -825,23 +975,61 @@ def _validate_source_object_unchecked(
 
 
 def _validate_source_object(
-    source_bytes: bytes, *, expected_lock_id: str
+    source_bytes: bytes, *, policy: MaterializerPolicy
 ) -> Mapping[str, object]:
     try:
-        return _validate_source_object_unchecked(
-            source_bytes, expected_lock_id=expected_lock_id
-        )
+        return _validate_source_object_unchecked(source_bytes, policy=policy)
     except MaterializationError:
         raise
-    except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as error:
         raise MaterializationError("source-schema") from error
 
 
-def _assert_source_outside_policy(source: SourceRead, policy: MaterializerPolicy) -> None:
+def _assert_trusted_source(
+    source: SourceRead, policy: MaterializerPolicy
+) -> TreeFingerprint:
     if source.source_path is None:
-        return
-    source_path = source.source_path
-    roots = (policy.repo_root, policy.target, policy.target.parent, *policy.forbidden_roots)
+        raise MaterializationError("source-path")
+    try:
+        base = policy.source_base.resolve(strict=True)
+        root = policy.source_root.resolve(strict=True)
+        source_path = source.source_path.resolve(strict=True)
+        base_stat = policy.source_base.lstat()
+        root_stat = policy.source_root.lstat()
+        leaf_stat = source_path.lstat()
+        if (
+            stat.S_ISLNK(base_stat.st_mode)
+            or stat.S_ISLNK(root_stat.st_mode)
+            or not stat.S_ISDIR(base_stat.st_mode)
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or base_stat.st_uid != os.geteuid()
+            or root_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(base_stat.st_mode) != 0o700
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+            or base_stat.st_dev != root_stat.st_dev
+            or root.parent != base
+            or source_path.parent != root
+            or source.device != root_stat.st_dev
+            or (leaf_stat.st_dev, leaf_stat.st_ino) != (source.device, source.inode)
+            or not stat.S_ISREG(leaf_stat.st_mode)
+        ):
+            raise MaterializationError("source-security")
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("source-security") from error
+    roots = (
+        policy.repo_root,
+        policy.target,
+        policy.target.parent,
+        *policy.forbidden_roots,
+    )
     for root in roots:
         resolved = root.resolve(strict=False)
         try:
@@ -849,6 +1037,20 @@ def _assert_source_outside_policy(source: SourceRead, policy: MaterializerPolicy
             raise MaterializationError("source-overlap")
         except ValueError:
             pass
+    fingerprint = fingerprint_tree(policy.source_root)
+    try:
+        rebound_root = policy.source_root.lstat()
+        rebound_leaf = source_path.lstat()
+    except OSError as error:
+        raise MaterializationError("source-raced") from error
+    if (
+        fingerprint.inode != root_stat.st_ino
+        or (rebound_root.st_dev, rebound_root.st_ino)
+        != (root_stat.st_dev, root_stat.st_ino)
+        or (rebound_leaf.st_dev, rebound_leaf.st_ino) != (source.device, source.inode)
+    ):
+        raise MaterializationError("source-raced")
+    return fingerprint
 
 
 def compile_source_bundle(
@@ -859,10 +1061,14 @@ def compile_source_bundle(
     policy: MaterializerPolicy,
 ) -> CompiledMaterialization:
     """Compile one external canonical source into closed committed output bytes."""
-    if not _valid_digest(expected_source_sha256) or _digest_bytes(source_bytes) != expected_source_sha256:
+    if (
+        not _valid_digest(expected_source_sha256)
+        or _digest_bytes(source_bytes) != expected_source_sha256
+    ):
         raise MaterializationError("source-digest")
-    source = _validate_source_object(source_bytes, expected_lock_id=policy.target.name)
+    source = _validate_source_object(source_bytes, policy=policy)
     bindings = _capture_repo_bindings(expected_head, policy)
+    source_root_tree_sha256 = fingerprint_tree(policy.source_root).sha256
     intent_bytes = _canonical_json_bytes(source["intent_map"])
     payloads = source["payloads"]
     files: dict[str, bytes] = {"intent-map.json": intent_bytes}
@@ -897,12 +1103,14 @@ def compile_source_bundle(
         "sealed_manifest_sha256": _digest_bytes(manifest_bytes),
         "intent_map_sha256": intent_sha,
         "fixture_payloads": payload_commitments,
+        "source_root_tree_sha256": source_root_tree_sha256,
     }
     commitment_bytes = _canonical_json_bytes(commitments)
     files["candidate-commitments.json"] = commitment_bytes
     receipt = {
         "schema": "ai-sdlc-v2-benefit-materialization-receipt/v1",
-        "publication_state": "materialized-validated",
+        "publication_state": "published-pending-isolation",
+        "isolation_probe_state": "pending",
         "target_lock_id": policy.target.name,
         "source_head": bindings.source_head,
         "source_tree_sha": bindings.source_tree_sha,
@@ -915,6 +1123,7 @@ def compile_source_bundle(
         "intent_map_sha256": intent_sha,
         "fixture_payloads": payload_commitments,
         "candidate_commitments_sha256": _digest_bytes(commitment_bytes),
+        "source_root_tree_sha256": source_root_tree_sha256,
     }
     files["materialization-receipt.json"] = _canonical_json_bytes(receipt)
     if tuple(files) != _OUTPUT_ORDER:
@@ -924,11 +1133,12 @@ def compile_source_bundle(
     )
 
 
-def _validate_candidate_commitments(root: Path, compiled: CompiledMaterialization) -> None:
+def _validate_candidate_commitments(
+    root: Path, compiled: CompiledMaterialization
+) -> None:
     try:
         if any(
-            (root / name).read_bytes() != compiled.files[name]
-            for name in _OUTPUT_ORDER
+            (root / name).read_bytes() != compiled.files[name] for name in _OUTPUT_ORDER
         ):
             raise MaterializationError("candidate-commitments")
         raw = _closed(
@@ -960,6 +1170,9 @@ def _validate_candidate_commitments(root: Path, compiled: CompiledMaterializatio
             != _digest_file(root / "candidate-commitments.json")
             or receipt["fixture_payloads"] != expected_payloads
             or receipt["source_bundle_sha256"] != compiled.source_bundle_sha256
+            or receipt["publication_state"] != "published-pending-isolation"
+            or receipt["isolation_probe_state"] != "pending"
+            or receipt["source_root_tree_sha256"] != raw["source_root_tree_sha256"]
         ):
             raise MaterializationError("candidate-commitments")
     except MaterializationError:
@@ -1019,31 +1232,46 @@ def _validate_scratch(
             raise MaterializationError("intent-validation")
         for approval in intent["approvals"]:
             digest = _digest_bytes(approval.encode("utf-8"))
-            service.register_proposal("validation-correct", approval, digest)
-            if service.approval_request("validation-correct", approval, digest).get(
-                "status"
-            ) != "approved":
+            correct_run = f"validation-correct-{approval}"
+            wrong_run = f"validation-wrong-{approval}"
+            zero_run = f"validation-zero-{approval}"
+            expired_run = f"validation-expired-{approval}"
+            service.register_proposal(correct_run, approval, digest)
+            if (
+                service.approval_request(correct_run, approval, digest).get("status")
+                != "approved"
+            ):
                 raise MaterializationError("intent-validation")
-            if service.approval_request(
-                "validation-wrong", approval, "1" * 64
-            ) != {"status": "revise"}:
+            service.register_proposal(wrong_run, approval, digest)
+            if service.approval_request(wrong_run, approval, "1" * 64) != {
+                "status": "revise"
+            }:
                 raise MaterializationError("intent-validation")
-            if service.approval_request(
-                "validation-zero", approval, "0" * 64
-            ) != {"status": "revise"}:
+            service.register_proposal(zero_run, approval, digest)
+            if service.approval_request(zero_run, approval, "0" * 64) != {
+                "status": "revise"
+            }:
                 raise MaterializationError("intent-validation")
-            service.register_proposal("validation-expired", approval, digest)
-            service.expire_run("validation-expired")
-            if service.approval_request(
-                "validation-expired", approval, digest
-            ) != {"status": "revise"}:
+            service.register_proposal(expired_run, approval, digest)
+            service.expire_run(expired_run)
+            if service.approval_request(expired_run, approval, digest) != {
+                "status": "revise"
+            }:
                 raise MaterializationError("intent-validation")
+        if service.approval_request("validation-unknown", "__unknown__", "1" * 64) != {
+            "status": "revise"
+        }:
+            raise MaterializationError("intent-validation")
         for fixture_id in FIXTURE_IDS:
             first = prepare_fixture(
-                fixture_id, runs / f"candidate-a-{fixture_id}", fixture_root=fixture_root
+                fixture_id,
+                runs / f"candidate-a-{fixture_id}",
+                fixture_root=fixture_root,
             )
             second = prepare_fixture(
-                fixture_id, runs / f"candidate-b-{fixture_id}", fixture_root=fixture_root
+                fixture_id,
+                runs / f"candidate-b-{fixture_id}",
+                fixture_root=fixture_root,
             )
             first_result = evaluate_fixture(fixture_id, first.root, sealed)
             second_result = evaluate_fixture(fixture_id, second.root, sealed)
@@ -1096,12 +1324,14 @@ def _open_trusted_parent(policy: MaterializerPolicy) -> tuple[int, os.stat_resul
                 stat.S_ISLNK(item.st_mode)
                 or not stat.S_ISDIR(item.st_mode)
                 or item.st_uid != os.geteuid()
-                or stat.S_IMODE(item.st_mode) & 0o022
+                or stat.S_IMODE(item.st_mode) != 0o700
             ):
                 raise MaterializationError("target-ancestor")
             if item.st_dev != device:
                 raise MaterializationError("target-device")
-        flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        flags = (
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        )
         descriptor = os.open(parent, flags)
         opened = os.fstat(descriptor)
         lexical = parent.lstat()
@@ -1143,7 +1373,7 @@ def _assert_parent_binding(
         or (lexical.st_dev, lexical.st_ino) != identity
         or not stat.S_ISDIR(opened.st_mode)
         or opened.st_uid != os.geteuid()
-        or stat.S_IMODE(opened.st_mode) & 0o022
+        or stat.S_IMODE(opened.st_mode) != 0o700
     ):
         raise MaterializationError("target-raced")
 
@@ -1241,19 +1471,14 @@ def _remove_directory_contents(directory_fd: int) -> None:
             raise MaterializationError("cleanup-failed") from error
 
 
-def _remove_owned_tree_at(
-    parent_fd: int, name: str, identity: tuple[int, int]
-) -> None:
+def _remove_owned_tree_at(parent_fd: int, name: str, identity: tuple[int, int]) -> None:
     try:
         item = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
         if (item.st_dev, item.st_ino) != identity or not stat.S_ISDIR(item.st_mode):
             raise MaterializationError("cleanup-failed")
         descriptor = os.open(
             name,
-            os.O_RDONLY
-            | os.O_DIRECTORY
-            | os.O_CLOEXEC
-            | getattr(os, "O_NOFOLLOW", 0),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
             dir_fd=parent_fd,
         )
         try:
@@ -1361,6 +1586,151 @@ def _verify_published(
     return target_stat.st_ino, MappingProxyType(digests)
 
 
+def _assert_private_directory(path: Path, code: str) -> None:
+    try:
+        item = path.lstat()
+    except OSError as error:
+        raise MaterializationError(code) from error
+    if (
+        stat.S_ISLNK(item.st_mode)
+        or not stat.S_ISDIR(item.st_mode)
+        or item.st_uid != os.geteuid()
+        or stat.S_IMODE(item.st_mode) != 0o700
+    ):
+        raise MaterializationError(code)
+
+
+def _run_final_isolation_canary(
+    policy: MaterializerPolicy, *, pending_receipt_sha256: str
+) -> bytes:
+    for root in (
+        policy.canary_run_root,
+        policy.raw_results_root,
+        *policy.other_run_roots,
+    ):
+        _assert_private_directory(root, "isolation-root")
+    protected_roots = (policy.repo_root / ".git", policy.source_root)
+    profile = build_provider_isolation_profile(
+        run_root=policy.canary_run_root,
+        sealed_root=policy.target,
+        control_root=policy.repo_root,
+        raw_results_root=policy.raw_results_root,
+        protected_roots=protected_roots,
+        other_run_roots=policy.other_run_roots,
+        argv=("/usr/bin/true",),
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    if not profile.executable or profile.issues:
+        raise MaterializationError("isolation-profile")
+    try:
+        probe = probe_provider_isolation(profile)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise MaterializationError("isolation-canary") from error
+    required = (
+        probe.direct,
+        probe.parent,
+        probe.symlink,
+        probe.hardlink,
+        probe.environment,
+        probe.other_run,
+        probe.add_dir,
+        all(value for _label, value in probe.protected_root_results),
+    )
+    if not all(required):
+        raise MaterializationError("isolation-canary")
+    profile_sha256 = _digest_bytes(
+        _canonical_json_bytes(
+            {
+                "sandbox_text": profile.sandbox_text,
+                "argv": list(profile.argv),
+                "protected_root_count": len(profile.protected_roots),
+                "other_run_root_count": len(profile.other_run_roots),
+            }
+        )
+    )
+    return _canonical_json_bytes(
+        {
+            "schema": "ai-sdlc-v2-benefit-isolation-attestation/v1",
+            "state": "validated",
+            "pending_receipt_sha256": pending_receipt_sha256,
+            "profile_sha256": profile_sha256,
+            "checks": {
+                "direct": probe.direct,
+                "parent": probe.parent,
+                "symlink": probe.symlink,
+                "hardlink": probe.hardlink,
+                "environment": probe.environment,
+                "other_run": probe.other_run,
+                "add_dir": probe.add_dir,
+                "protected_roots": len(probe.protected_root_results),
+            },
+        }
+    )
+
+
+def _write_final_attestation(
+    parent_fd: int,
+    target_name: str,
+    expected_identity: tuple[int, int],
+    data: bytes,
+    failure_injector: FailureInjector,
+) -> str:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        target_fd = os.open(target_name, flags, dir_fd=parent_fd)
+        try:
+            item = os.fstat(target_fd)
+            if (item.st_dev, item.st_ino) != expected_identity:
+                raise MaterializationError("postverify")
+            failure_injector.hit("write-attestation")
+            descriptor = os.open(
+                _ATTESTATION_NAME,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=target_fd,
+            )
+            try:
+                _write_all(descriptor, data)
+                written = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(written.st_mode)
+                    or written.st_uid != os.geteuid()
+                    or stat.S_IMODE(written.st_mode) != 0o600
+                    or written.st_nlink != 1
+                ):
+                    raise MaterializationError("postverify")
+                failure_injector.hit("fsync-attestation")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            failure_injector.hit("fsync-final-dir")
+            os.fsync(target_fd)
+            descriptor = os.open(
+                _ATTESTATION_NAME,
+                os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=target_fd,
+            )
+            try:
+                observed = _read_all(descriptor, positional=False)
+                verified = os.fstat(descriptor)
+                if observed != data or verified.st_nlink != 1:
+                    raise MaterializationError("postverify")
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(target_fd)
+        os.fsync(parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("postverify") from error
+    return _digest_bytes(data)
+
+
 def _quarantine_published(
     *,
     parent_fd: int,
@@ -1399,15 +1769,11 @@ def _quarantine_published(
         try:
             if quarantine_fd is not None:
                 if moved:
-                    _remove_owned_tree_at(
-                        quarantine_fd, "published", expected_identity
-                    )
+                    _remove_owned_tree_at(quarantine_fd, "published", expected_identity)
                 os.close(quarantine_fd)
                 quarantine_fd = None
             if quarantine_name is not None and quarantine_identity is not None:
-                _remove_owned_tree_at(
-                    parent_fd, quarantine_name, quarantine_identity
-                )
+                _remove_owned_tree_at(parent_fd, quarantine_name, quarantine_identity)
                 quarantine_name = None
             os.fsync(parent_fd)
         except Exception:
@@ -1475,8 +1841,26 @@ def _publish_compiled(
         target_inode, digests = _verify_published(
             parent_fd, policy.target.name, staging_identity, compiled.files
         )
+        failure_injector.hit("isolation-canary")
+        attestation = _run_final_isolation_canary(
+            policy,
+            pending_receipt_sha256=digests["materialization-receipt.json"],
+        )
+        attestation_sha256 = _write_final_attestation(
+            parent_fd,
+            policy.target.name,
+            staging_identity,
+            attestation,
+            failure_injector,
+        )
+        final_digests = dict(digests)
+        final_digests[_ATTESTATION_NAME] = attestation_sha256
         _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
-        return MaterializationResult(policy.target.name, target_inode, digests)
+        return MaterializationResult(
+            policy.target.name,
+            target_inode,
+            MappingProxyType(final_digests),
+        )
     except Exception as error:
         if published:
             try:
@@ -1502,8 +1886,7 @@ def _publish_compiled(
 
 def materialize_with_policy(
     *,
-    source_path: Path | None = None,
-    source_fd: int | None = None,
+    source_fd: int,
     expected_source_sha256: str,
     expected_head: str,
     expected_old_root_tree_sha256: str,
@@ -1522,11 +1905,10 @@ def materialize_with_policy(
     ):
         raise MaterializationError("legacy-tree")
     source = _read_source_record(
-        source_path=source_path,
         source_fd=source_fd,
         expected_sha256=expected_source_sha256,
     )
-    _assert_source_outside_policy(source, policy)
+    source_root_before = _assert_trusted_source(source, policy)
     parent_fd, parent_stat = _open_trusted_parent(policy)
     try:
         compiled = compile_source_bundle(
@@ -1547,6 +1929,8 @@ def materialize_with_policy(
         _assert_repo_unchanged(compiled.bindings, policy)
         if fingerprint_tree(policy.legacy_root) != legacy_before:
             raise MaterializationError("legacy-changed")
+        if fingerprint_tree(policy.source_root) != source_root_before:
+            raise MaterializationError("source-raced")
         result = _publish_compiled(
             compiled,
             policy=policy,
@@ -1559,6 +1943,8 @@ def materialize_with_policy(
             _assert_repo_unchanged(compiled.bindings, policy)
             if fingerprint_tree(policy.legacy_root) != legacy_before:
                 raise MaterializationError("legacy-changed")
+            if fingerprint_tree(policy.source_root) != source_root_before:
+                raise MaterializationError("source-raced")
         except MaterializationError as error:
             try:
                 _quarantine_published(
@@ -1576,8 +1962,7 @@ def materialize_with_policy(
 
 def materialize_sealed_bundle(
     *,
-    source_path: Path | None = None,
-    source_fd: int | None = None,
+    source_fd: int,
     expected_source_sha256: str,
     expected_head: str,
     lock_id: str,
@@ -1587,7 +1972,6 @@ def materialize_sealed_bundle(
     if lock_id != FINAL_LOCK_ID or FINAL_TARGET.name != FINAL_LOCK_ID:
         raise MaterializationError("target-lock")
     return materialize_with_policy(
-        source_path=source_path,
         source_fd=source_fd,
         expected_source_sha256=expected_source_sha256,
         expected_head=expected_head,

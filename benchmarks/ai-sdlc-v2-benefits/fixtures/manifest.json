@@ -5,7 +5,7 @@
     {
       "fixture_id": "requirement-contract-ambiguity",
       "public_root": "requirement-contract-ambiguity/public",
-      "public_tree_sha256": "18314e6eae34fb8877372036522f93352e859b01bc04643750f7658290a8fe55",
+      "public_tree_sha256": "09d7b4541bb8e8e009eb5590f0bd1c2ec3e480c99ad7b60f771f26247314010d",
       "input_contract_sha256": "9092d760a3c26a2d82f9dfb3e4e85921b14af83cc9c97b14444e8b154e6e65bf",
       "provenance_commit": "7fc2366b8530265d58b1874e781b0b7274615d94",
       "provenance_paths": ["docs/product-site/research/2026-08-17-ai-sdlc-v2-benefit-benchmark-spec.md#4.1"],
@@ -37,6 +37,6 @@
       ]
     }
   ],
-  "canonical_sha256": "96c67f8be165b52b7471fa9955c36ecc62efe29361d8b4c0d2ba56cfa58d02e1",
+  "canonical_sha256": "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a",
   "evidence_contract_template_sha256": "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c"
 }
