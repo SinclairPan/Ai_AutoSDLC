@@ -743,16 +743,21 @@ def _run_visible_commands(
     return tuple(results)
 
 
-def prepare_fixture(fixture_id: str, destination: Path) -> PreparedFixture:
+def prepare_fixture(
+    fixture_id: str,
+    destination: Path,
+    *,
+    fixture_root: Path = _FIXTURE_ROOT,
+) -> PreparedFixture:
     """Copy one public fixture into a clean deterministic single-root Git repository."""
-    manifest = load_fixture_manifest()
-    issues = validate_fixture_manifest(manifest)
+    manifest = load_fixture_manifest(fixture_root / "manifest.json")
+    issues = validate_fixture_manifest(manifest, fixture_root)
     if issues:
         raise ValueError("fixture manifest is invalid")
     entry = _entry_for(fixture_id, manifest)
     if destination.exists() and any(destination.iterdir()):
         raise ValueError("fixture destination must be absent or empty")
-    source = _FIXTURE_ROOT / entry.public_root
+    source = fixture_root / entry.public_root
     shutil.copytree(source, destination, dirs_exist_ok=True)
     public_digest = _tree_digest(destination)
     if public_digest != entry.public_tree_sha256:
@@ -950,6 +955,7 @@ class FrozenIntentApprovalService:
         self._questions = raw["questions"]
         self._approvals = frozenset(raw["approvals"])
         self._expected_proposals: dict[tuple[str, str], str] = {}
+        self._expired_runs: set[str] = set()
         self._event_log = event_log
 
         for question_id, question in self._questions.items():
@@ -1027,12 +1033,26 @@ class FrozenIntentApprovalService:
             raise ValueError("proposal registration is immutable")
         self._expected_proposals[key] = proposal_digest
 
+    def expire_run(self, run_id: str) -> None:
+        """Deterministically invalidate later approval requests for one run."""
+        if not isinstance(run_id, str) or not run_id:
+            raise ValueError("run expiry is invalid")
+        self._expired_runs.add(run_id)
+        self._record(
+            {
+                "type": "approval_expiry_event",
+                "actor": "automated_service",
+                "run_id": run_id,
+            }
+        )
+
     def approval_request(
         self, run_id: str, approval_type: str, proposal_digest: str
     ) -> Mapping[str, object]:
         expected = self._expected_proposals.get((run_id, approval_type))
         valid_digest = (
-            bool(_DIGEST.fullmatch(proposal_digest))
+            run_id not in self._expired_runs
+            and bool(_DIGEST.fullmatch(proposal_digest))
             and proposal_digest != "0" * 64
             and proposal_digest == expected
         )

@@ -108,3 +108,81 @@ build exit=0; Vite 7.3.6; 201 modules transformed
 安全审查拒绝覆盖旧 protected evaluator root，也拒绝在新的 sibling protected root 写入评分 plaintext，错误明确要求不得绕过。故 tracked v2 evaluator/runtime/tests 已完成，但新的 protected materialization 尚未落盘，旧 v1 sealed manifest/payload commitment 不能冒充 Fix Round 1 结果。
 
 解除方式必须是：用户明确授权或受信任 materializer 向一个全新、空、候选不可读的 protected root 写入 `intent-map.json`、三个 v2 payload 与 sealed manifest；随后运行 `validate_sealed_commitments == []`、两次 fresh evaluator 完全一致、opaque leak scan 和 exact system-outside isolation canary。完成前 Task 2 不得宣称 execution-ready，protocol 必须保持 pending。
+
+## Fix Round 2：受信任物化器
+
+### 冻结范围
+
+- Fix 基线：`196025b694ff49dd685c9d0a87ca0ccd834b459f`。
+- Provider、`codex exec`、正式实验调用继续为 `0`；没有启动 Task 3 arms。
+- 最终 r1 evaluator root 尚未物化；旧 root 未修改；tracked protocol 四项仍为 `pending-unbound`，tracked commitments 未替换。
+- tracked 代码只保存 closed schema、编译器、发布器和测试用合成 source；正式 sealed-source、真实答案、held-out plaintext 仍必须从仓外受保护文件或 FD 输入。
+
+### Fresh RED 与关闭结果
+
+Fix Round 2 依次运行了以下真实 RED，而不是仅以代码审阅代替失败证明：
+
+1. 新模块尚不存在时，focused test collection 以 `ModuleNotFoundError` 失败；
+2. 首版编译器运行至 `4 passed, 15 failed`，暴露 canonical key 排序、criterion path 类型和发布链未闭合；
+3. 初次 focused GREEN 前为 `30 passed, 2 failed`，暴露 CLI 窄终端帮助截断和 sealed parent/candidate root 重叠；
+4. 递归 evaluator 字段、repo-before-source、意外异常脱敏新增反例为 `5 failed`，逐项关闭；
+5. pinned-parent staging 与父目录替换竞态新增反例为 `2 failed`，逐项关闭；
+6. FD 指向 tracked repo source 的别名反例为 `1 failed`，通过 descriptor canonical path 识别并关闭；
+7. 六根因 Oracle 的根因错配、拒绝后状态错配和非法时间新增反例为 `3 failed`，通过 root-specific 行为前置条件、状态无副作用和 timezone-aware 时间校验关闭。
+
+最终 focused 结果为 `43 passed, 1 skipped`；唯一 skip 是嵌套 sandbox 不能再次应用 macOS Seatbelt，随后已在 system-outside 验证中实跑通过。
+
+### 受信任输入与 closed compiler
+
+- CLI 只接受互斥的受保护 path/FD、调用时冻结的 source SHA256、exact HEAD、固定 lock id 和旧 root tree SHA256；最终 target 是代码内不可覆写 literal。
+- source leaf 必须 `O_NOFOLLOW` 打开，并在读取前后同时满足 regular、owner=euid、mode `0600`、`nlink=1`、inode/size/mtime 稳定；FD 也必须能解析到 canonical path，不能借 FD 绕过 repo/protected overlap 检查。
+- source 必须是无尾随换行的 canonical JSON；拒绝 NaN/Infinity、未知 top-level、payload、criterion 和递归 scenario/expected 字段。
+- 编译器生成独立 `intent-map.json`、三个 v2 sealed payload、closed manifest、candidate commitments 和 materialization receipt。receipt 绑定 source HEAD/tree、materializer bytes、fixture manifest/tree、evidence contract、source bundle、target lock、manifest、intent 和三个 payload SHA。
+- CLI 对预期与非预期错误都只输出稳定 NO-GO code，不回显 source path、plaintext 或内部异常。
+
+### 起止门禁与原子发布
+
+- 读取 sealed source 前先断言 exact HEAD、完整 tree clean、protocol 四项 pending、Provider ledger/results 不存在；编译后、发布前和发布后重复断言同一绑定。
+- 旧 root 使用本物化器定义的 canonical tree 算法复算：按 relative path 排序，绑定 type/mode/size，以及 regular content SHA 或 symlink target；同时冻结 inode。当前只读 fingerprint 为 inode `400173643`、tree SHA256 `2fb91cccb95b3bee4168041d75bda1ba567eb2f701bff94cf1107fa793283370`。该值不替代调用时 fresh fingerprint。
+- target ancestor 逐级 `lstat`，拒绝 symlink、非 euid owner、group/world writable 和跨 device；parent 以 dirfd 固定并在关键边界重验 lexical inode。
+- staging 和 quarantine 都以 pinned parent dirfd、随机 nonce 和 `mkdirat` 等价安全语义创建为 `0700`；文件以 `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` 创建为 `0600`，short write 循环写完，逐文件与目录 `fsync`。
+- 发布只使用 macOS `renameatx_np(..., RENAME_EXCL)`；API 不可用即 fail closed，不回退到普通 replace。
+- final root 通过 dirfd reopen，逐文件复核 owner/mode/nlink/content digest；失败前只删除本次 nonce staging，失败后仅在 target inode 仍匹配时移入 nonce quarantine 并清理。清理不完整返回 `cleanup-failed`，不得继续。
+
+### 发布前独立验证
+
+- validation scratch 使用独立 `protected/` 与 `runs/` 根，不与 target staging 共用；写入后的七个文件逐字节匹配 compiler output。
+- intent service 实测 known/unknown question，以及 correct/wrong/zero/expired approval；所有事件 actor 都是 automated service。
+- 三个 fixture 各自从两套 fresh copy prepare；public tree、initial commit、visible results 和 sealed evaluation 完全一致；baseline 均保持 non-delivery。
+- 真实 payload-derived opaque inventory 对两套 candidate 分别执行 path/text/binary/link/Git object leakage scan。
+
+### 验证证据
+
+嵌套 sandbox：
+
+```text
+materializer focused: 43 passed, 1 skipped
+related benchmark/fixture/materializer/site: 537 passed, 5 skipped
+Ruff: All checks passed
+git diff --check: clean
+```
+
+system-outside 使用冻结 dependency tree、Playwright module 和真实 Chrome 运行 fixture + materializer 全套：
+
+```text
+75 passed in 42.66s
+```
+
+该批次为 `0 failed / 0 skipped`，覆盖 exact Seatbelt、真实 browser、两次 fresh scratch evaluator 和发布安全反例。它仍只是 evaluator/materializer 健康证据，不是 15-run 效益实验结果。
+
+同一冻结 dependency tree 的 Node 回归再次实跑：
+
+```text
+npm run lint: exit 0
+npm run format:check: exit 0
+npm run build: exit 0; Vite 7.3.6; 201 modules transformed
+```
+
+### 当前门禁
+
+Fix Round 2 的 tracked materializer 已具备复审候选条件，但当前仍不是 execution-ready：必须先完成独立复审并冻结本次 materializer commit。通过后由受信任控制方创建仓外 mode `0600` canonical sealed-source，fresh 读取 old-root fingerprint 与 source SHA，在 clean exact HEAD 上调用 hidden materialize CLI。物化成功后仍需单独验证新 root receipt/commitments；只有之后的父任务才可以决定是否绑定 tracked protocol。
