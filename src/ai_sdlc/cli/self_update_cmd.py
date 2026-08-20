@@ -12,6 +12,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
@@ -144,6 +145,14 @@ def _capture_replay_request() -> ReplayRequest:
         return ReplayRequest(
             executable=executable,
             argv=(*module_prefix, *tuple(sys.argv[1:])),
+        )
+    if (
+        sys.platform == "win32"
+        and PureWindowsPath(sys.argv[0]).name.lower() in _WINDOWS_LAUNCHER_NAMES
+    ):
+        return ReplayRequest(
+            executable=str(_active_windows_process_image()),
+            argv=tuple(sys.argv[1:]),
         )
     executable = str(sys.argv[0]).strip()
     if not executable:
@@ -576,7 +585,7 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
 
 
 def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
-    launcher = Path(os.path.abspath(sys.argv[0]))
+    launcher = _active_windows_process_image()
     if launcher.is_symlink():
         raise SelfUpdateError("the active Windows launcher must not be a link")
     if not launcher.is_file():
@@ -612,6 +621,54 @@ def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
     if _windows_path_key(marked_python) != _windows_path_key(runtime_python):
         raise SelfUpdateError("the Windows runtime marker does not match this runtime")
     return launcher, None
+
+
+def _active_windows_process_image() -> Path:
+    """读取当前 Windows 进程映像，避免依赖启动器改写后的 argv[0]。"""
+
+    import ctypes
+
+    try:
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        get_module_filename = kernel32.GetModuleFileNameW
+        get_module_filename.argtypes = [
+            ctypes.c_void_p,
+            ctypes.c_wchar_p,
+            ctypes.c_uint32,
+        ]
+        get_module_filename.restype = ctypes.c_uint32
+    except (AttributeError, OSError) as exc:
+        raise SelfUpdateError("cannot access the Windows process image API") from exc
+    return _read_windows_process_image(get_module_filename)
+
+
+def _read_windows_process_image(
+    get_module_filename: Callable[..., int],
+) -> Path:
+    """用有界扩容读取 Unicode 进程映像路径。"""
+
+    import ctypes
+
+    capacity = 260
+    while capacity <= 32768:
+        buffer = ctypes.create_unicode_buffer(capacity)
+        try:
+            length = int(get_module_filename(None, buffer, capacity))
+        except (OSError, ValueError) as exc:
+            raise SelfUpdateError(
+                "cannot identify the active Windows process image"
+            ) from exc
+        if length == 0:
+            raise SelfUpdateError("cannot identify the active Windows process image")
+        if length < capacity:
+            image = buffer.value
+            if not image:
+                raise SelfUpdateError(
+                    "cannot identify the active Windows process image"
+                )
+            return Path(os.path.abspath(image))
+        capacity *= 2
+    raise SelfUpdateError("the active Windows process image path is too long")
 
 
 def _windows_path_key(path: Path) -> str:
