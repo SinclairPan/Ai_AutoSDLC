@@ -497,6 +497,222 @@ def test_task2_red_exact_provider_profile_denies_all_canary_shapes(
     assert all(denied for _, denied in result.protected_root_results)
 
 
+def test_fix_round4_probe_uses_regular_gitfile_as_protected_canary(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
+    source = tmp_path / "sealed-source"
+    run = tmp_path / "runs" / "run-1"
+    other = tmp_path / "runs" / "run-2"
+    linked = tmp_path / "linked-worktree"
+    actual_git = tmp_path / "git-worktree-metadata"
+    for path in (control, raw, source, run, other, linked, actual_git):
+        path.mkdir(parents=True)
+    (control / "control.txt").write_text("control", encoding="utf-8")
+    (source / "source.json").write_text("{}", encoding="utf-8")
+    gitfile = linked / ".git"
+    gitfile.write_text(f"gitdir: {actual_git}\n", encoding="utf-8")
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=[gitfile, actual_git, source],
+        other_run_roots=[other],
+        argv=["/usr/bin/true"],
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    denied: list[Path] = []
+
+    def deny(_profile: object, target: Path) -> bool:
+        denied.append(target)
+        return True
+
+    monkeypatch.setattr(fixture_module.sys, "platform", "darwin")
+    monkeypatch.setattr(fixture_module, "_sandbox_denies", deny)
+    monkeypatch.setattr(
+        fixture_module,
+        "run_provider_isolated",
+        lambda _profile, argv, **_kwargs: subprocess.CompletedProcess(
+            list(argv), 126, "", "ISOLATION_REFUSED\n"
+        ),
+    )
+
+    result = probe_provider_isolation(profile)
+
+    assert gitfile.resolve() in denied
+    assert f'(literal "{gitfile.resolve()}")' in profile.sandbox_text
+    assert f'(subpath "{actual_git.resolve()}")' in profile.sandbox_text
+    assert any(path.parent == source.resolve() for path in denied)
+    assert result.direct is True
+    assert result.other_run is True
+    assert not list(raw.glob(".provider-isolation-canary-*"))
+    assert not list(other.glob(".provider-isolation-canary-*"))
+
+
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="macOS Seatbelt profile")
+def test_fix_round4_real_profile_denies_gitfile_and_directory_roots(
+    tmp_path: Path,
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
+    source = tmp_path / "sealed-source"
+    run = tmp_path / "runs" / "run-1"
+    other = tmp_path / "runs" / "run-2"
+    linked = tmp_path / "linked-worktree"
+    actual_git = tmp_path / "git-worktree-metadata"
+    for path in (control, raw, source, run, other, linked, actual_git):
+        path.mkdir(parents=True)
+    (control / "control.txt").write_text("control", encoding="utf-8")
+    (source / "source.json").write_text("{}", encoding="utf-8")
+    gitfile = linked / ".git"
+    gitfile.write_text(f"gitdir: {actual_git}\n", encoding="utf-8")
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=[gitfile, actual_git, source],
+        other_run_roots=[other],
+        argv=["/usr/bin/true"],
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+
+    try:
+        result = probe_provider_isolation(profile)
+    except RuntimeError as error:
+        if "sandbox_apply: Operation not permitted" in str(error):
+            pytest.skip("nested Seatbelt is unavailable inside the test sandbox")
+        raise
+
+    assert f'(literal "{gitfile.resolve()}")' in profile.sandbox_text
+    assert f'(subpath "{actual_git.resolve()}")' in profile.sandbox_text
+    assert all(
+        (
+            result.direct,
+            result.parent,
+            result.symlink,
+            result.hardlink,
+            result.environment,
+            result.other_run,
+            result.add_dir,
+        )
+    )
+    assert all(denied for _, denied in result.protected_root_results)
+
+
+@pytest.mark.parametrize("root_kind", ["symlink", "fifo"])
+def test_fix_round4_protected_root_non_regular_types_fail_closed(
+    tmp_path: Path, root_kind: str
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
+    run = tmp_path / "runs" / "run-1"
+    other = tmp_path / "runs" / "run-2"
+    for path in (control, raw, run, other):
+        path.mkdir(parents=True)
+    target = tmp_path / "root-target"
+    target.mkdir()
+    unusual = tmp_path / "protected-root"
+    if root_kind == "symlink":
+        unusual.symlink_to(target, target_is_directory=True)
+    else:
+        os.mkfifo(unusual)
+
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=[unusual],
+        other_run_roots=[other],
+        argv=["/usr/bin/true"],
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+
+    assert "isolation.protected-root-type" in {issue.code for issue in profile.issues}
+    assert profile.executable is False
+
+
+def test_fix_round4_protected_directory_scan_error_cleans_created_canaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
+    faulty = tmp_path / "faulty-protected"
+    run = tmp_path / "runs" / "run-1"
+    other = tmp_path / "runs" / "run-2"
+    for path in (control, raw, faulty, run, other):
+        path.mkdir(parents=True)
+    (control / "control.txt").write_text("control", encoding="utf-8")
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=[faulty],
+        other_run_roots=[other],
+        argv=["/usr/bin/true"],
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    original_rglob = Path.rglob
+
+    def failing_rglob(path: Path, pattern: str):
+        if path == faulty.resolve():
+            raise PermissionError("test-only protected scan denial")
+        return original_rglob(path, pattern)
+
+    monkeypatch.setattr(fixture_module.sys, "platform", "darwin")
+    monkeypatch.setattr(Path, "rglob", failing_rglob)
+
+    with pytest.raises(RuntimeError, match="protected root canary"):
+        probe_provider_isolation(profile)
+
+    assert not list(raw.glob(".provider-isolation-canary-*"))
+    assert not list(other.glob(".provider-isolation-canary-*"))
+
+
+def test_fix_round4_failed_directory_canary_write_cleans_partial_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
+    run = tmp_path / "runs" / "run-1"
+    other = tmp_path / "runs" / "run-2"
+    for path in (control, raw, run, other):
+        path.mkdir(parents=True)
+    (control / "control.txt").write_text("control", encoding="utf-8")
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        protected_roots=[],
+        other_run_roots=[other],
+        argv=["/usr/bin/true"],
+        environment={"PATH": os.environ.get("PATH", "")},
+    )
+    monkeypatch.setattr(fixture_module.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        fixture_module.os,
+        "fsync",
+        lambda _descriptor: (_ for _ in ()).throw(
+            OSError("test-only canary fsync failure")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="protected root canary"):
+        probe_provider_isolation(profile)
+
+    assert not list(raw.glob(".provider-isolation-canary-*"))
+
+
 def test_task2_red_tracked_public_tree_contains_no_sealed_plaintext() -> None:
     forbidden = (
         "SEALED_RUBRIC_PHRASE",

@@ -254,3 +254,37 @@ npm run build: exit 0; Vite 7.3.6; 201 modules transformed
 ```
 
 以上仍然只是 evaluator/materializer 健康证明，不是 Provider arms 的效益结果。FixR3 commit 通过独立复审、由父任务准备新的仓外正式 source 并实际物化 r1 之前，execution protocol 必须继续保持 pending。
+
+## Fix Round 4：linked worktree gitfile 隔离根
+
+### 失败证据与边界
+
+- Fix 基线：`a6ec5d36d3e67a58379def40b6ae5838b4e3d26d`，起点 clean。
+- 受信任控制方曾按已审合同发起一次正式 materialize；发布后的 isolation canary fail closed，目标 root 已按 inode-bound rollback 清除。未启动 Provider、`codex exec` 或 experiment arm，未再次 materialize，未修改 sealed source、旧 root 或 tracked protocol。
+- 父任务使用同一最终 profile 复现到精确根因：linked worktree 的 `repo/.git` 是 regular gitfile。旧 probe 对它执行目录递归后尝试在 file 下创建 canary，触发 `NotADirectoryError`。
+- fresh FixR4 测试在实现前统一为 `5 failed`：真实覆盖 gitfile canary、regular-file Seatbelt rule、symlink/FIFO fail closed、目录扫描错误与临时 canary 清理。
+- 实现复核又加入 canary 已创建但首次 `fsync` 失败的 cleanup injection，修复前为 `1 failed`；现在用 pinned dirfd 删除半成品并把 cleanup/fsync 失败继续视为 NO-GO。
+
+### 最小修复
+
+- profile 构建时对额外 protected root 使用 `lstat` 分类：regular file 使用 Seatbelt `literal` deny；directory 使用 `subpath` deny；symlink、FIFO、其他类型或读取错误生成 fail-closed issue，profile 不可执行。
+- probe 遇到 regular file 时直接以该文件作为 canary，不再拼接子路径；只有经 `lstat` 与 pinned dirfd/fstat 双重确认的 directory 才允许查找或以 `O_EXCL | O_NOFOLLOW` 创建 mode `0600` 临时 canary。
+- directory 扫描、写入、类型或 identity 异常统一 fail closed；临时 protected canary、run 内 symlink/hardlink 均在统一 finally 清理，清理失败同样返回失败。
+- ordinary `.git` directory、source directory、raw-results/other-run 空目录和 linked-worktree `.git` gitfile 都进入同一 probe 回归。
+
+### FixR4 门禁
+
+```text
+fresh RED: 5 failed
+cleanup injection RED: 1 failed
+FixR4 nested focused: 4 passed, 1 skipped
+fixture + materializer focused: 99 passed, 7 skipped
+related benefit/fixture/materializer/site: 566 passed, 7 skipped
+system-outside gitfile专项: 1 passed
+system-outside Chrome + Seatbelt + final-path统一批次: 106 passed, 0 skipped in 124.53s
+Ruff check: All checks passed
+Ruff format: 2 files already formatted
+git diff --check: clean
+```
+
+最终 r1 继续 absent；旧 root inode `400173643`、identity-tree SHA256 `ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2` 未变；protocol 四项仍为 `pending-unbound`。以上只证明 materializer/isolation 修复，不构成正式效益结果，也不授权自动重试 materialize。

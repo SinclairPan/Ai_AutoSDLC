@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -2140,6 +2141,51 @@ def _contains_path(value: str, roots: Iterable[Path]) -> bool:
     return any(str(root.resolve()) in normalized for root in roots)
 
 
+def _resolve_extra_protected_root(
+    path: Path, *, index: int, issues: list[BenchmarkIssue]
+) -> Path:
+    """Resolve a directory or regular-file protection root without following links."""
+    candidate = Path(path)
+    try:
+        metadata = candidate.lstat()
+    except OSError:
+        issues.append(
+            BenchmarkIssue("isolation.protected-root-scan", f"protected-{index}")
+        )
+        return candidate.absolute()
+    if stat.S_ISLNK(metadata.st_mode) or not (
+        stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+    ):
+        issues.append(
+            BenchmarkIssue("isolation.protected-root-type", f"protected-{index}")
+        )
+        return candidate.absolute()
+    try:
+        return candidate.resolve(strict=True)
+    except OSError:
+        issues.append(
+            BenchmarkIssue("isolation.protected-root-scan", f"protected-{index}")
+        )
+        return candidate.absolute()
+
+
+def _deny_rule_for_protected_root(
+    root: Path, *, index: int, issues: list[BenchmarkIssue]
+) -> str | None:
+    try:
+        metadata = root.lstat()
+    except OSError:
+        issues.append(BenchmarkIssue("isolation.protected-root-scan", f"root-{index}"))
+        return None
+    literal = _seatbelt_literal(root)
+    if stat.S_ISDIR(metadata.st_mode):
+        return f'  (deny file-read* file-write* (subpath "{literal}"))'
+    if stat.S_ISREG(metadata.st_mode):
+        return f'  (deny file-read* file-write* (literal "{literal}"))'
+    issues.append(BenchmarkIssue("isolation.protected-root-type", f"root-{index}"))
+    return None
+
+
 def build_provider_isolation_profile(
     *,
     run_root: Path,
@@ -2156,9 +2202,12 @@ def build_provider_isolation_profile(
     sealed = sealed_root.resolve(strict=True)
     control = control_root.resolve(strict=True)
     raw_results = raw_results_root.resolve(strict=True)
-    extra_protected = tuple(path.resolve(strict=True) for path in protected_roots)
     other = tuple(path.resolve(strict=True) for path in other_run_roots)
     issues = _link_issues(run)
+    extra_protected = tuple(
+        _resolve_extra_protected_root(Path(path), index=index, issues=issues)
+        for index, path in enumerate(protected_roots)
+    )
     protected = tuple(
         dict.fromkeys(
             (
@@ -2188,10 +2237,11 @@ def build_provider_isolation_profile(
     for index, value in enumerate(argv):
         if value == "--add-dir" or value.startswith("--add-dir="):
             issues.append(BenchmarkIssue("isolation.add-dir", f"argument-{index}"))
-    deny_paths = protected
     deny_rules = "\n".join(
-        f'  (deny file-read* file-write* (subpath "{_seatbelt_literal(path)}"))'
-        for path in deny_paths
+        rule
+        for index, path in enumerate(protected)
+        if (rule := _deny_rule_for_protected_root(path, index=index, issues=issues))
+        is not None
     )
     sandbox_text = f"(version 1)\n(allow default)\n{deny_rules}\n"
     executable = sys.platform == "darwin" and not issues
@@ -2253,6 +2303,93 @@ def _sandbox_denies(profile: ProviderIsolationProfile, target: Path) -> bool:
     )
 
 
+def _create_protected_directory_canary(root: Path, index: int) -> Path:
+    """Create one exclusive canary beneath a pinned, verified directory."""
+    directory_fd = -1
+    descriptor = -1
+    created = False
+    complete = False
+    name = f".provider-isolation-canary-{index}"
+    try:
+        directory_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        opened = os.fstat(directory_fd)
+        current = root.lstat()
+        if not stat.S_ISDIR(opened.st_mode) or (
+            opened.st_dev,
+            opened.st_ino,
+        ) != (current.st_dev, current.st_ino):
+            raise RuntimeError("protected root canary directory changed")
+        descriptor = os.open(
+            name,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=directory_fd,
+        )
+        created = True
+        payload = b"protected"
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("short protected root canary write")
+            offset += written
+        os.fsync(descriptor)
+        os.fsync(directory_fd)
+        complete = True
+        return root / name
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        cleanup_error: OSError | None = None
+        if created and not complete and directory_fd >= 0:
+            try:
+                os.unlink(name, dir_fd=directory_fd)
+                os.fsync(directory_fd)
+            except OSError as error:
+                cleanup_error = error
+        if directory_fd >= 0:
+            os.close(directory_fd)
+        if cleanup_error is not None:
+            raise RuntimeError(
+                "protected root canary cleanup failed"
+            ) from cleanup_error
+
+
+def _protected_root_canary(root: Path, index: int, created: list[Path]) -> Path:
+    try:
+        metadata = root.lstat()
+        if stat.S_ISREG(metadata.st_mode):
+            return root
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise RuntimeError("protected root canary type is unsupported")
+        for path in root.rglob("*"):
+            entry = path.lstat()
+            if stat.S_ISREG(entry.st_mode):
+                return path
+            if stat.S_ISLNK(entry.st_mode) or not stat.S_ISDIR(entry.st_mode):
+                raise RuntimeError("protected root canary type is unsupported")
+        canary = _create_protected_directory_canary(root, index)
+        created.append(canary)
+        return canary
+    except (OSError, RuntimeError) as error:
+        if isinstance(error, RuntimeError) and str(error).startswith(
+            "protected root canary"
+        ):
+            raise
+        raise RuntimeError("protected root canary scan failed") from error
+
+
+def _cleanup_isolation_canaries(paths: Iterable[Path]) -> None:
+    cleanup_failed = False
+    for path in reversed(tuple(paths)):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            cleanup_failed = True
+    if cleanup_failed:
+        raise RuntimeError("protected root canary cleanup failed")
+
+
 def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProbeResult:
     """Exercise the exact final profile against direct, parent, link and policy canaries."""
     if sys.platform != "darwin":
@@ -2273,35 +2410,30 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
     )
     created: list[Path] = []
     canaries: list[Path] = []
-    for index, root in enumerate(roots):
-        existing = next((path for path in root.rglob("*") if path.is_file()), None)
-        if existing is None:
-            existing = root / f".provider-isolation-canary-{index}"
-            existing.write_text("protected", encoding="utf-8")
-            created.append(existing)
-        canaries.append(existing)
-    denied_roots = [_sandbox_denies(profile, target) for target in canaries]
-    direct = all(denied_roots)
-    protected_results = tuple(
-        (f"protected-root-{index}", denied) for index, denied in enumerate(denied_roots)
-    )
-    parent = _sandbox_denies(profile, profile.sealed_root.parent)
-    sealed_file = canaries[0]
     symlink_path = profile.run_root / ".isolation-symlink-canary"
     hardlink_path = profile.run_root / ".isolation-hardlink-canary"
     symlink_path.unlink(missing_ok=True)
     hardlink_path.unlink(missing_ok=True)
-    os.symlink(sealed_file, symlink_path)
     hardlink_created = False
     try:
-        os.link(sealed_file, hardlink_path)
-        hardlink_created = True
-    except OSError as error:
-        symlink_path.unlink(missing_ok=True)
-        for path in created:
-            path.unlink(missing_ok=True)
-        raise RuntimeError("hardlink isolation canary is unavailable") from error
-    try:
+        canaries = [
+            _protected_root_canary(root, index, created)
+            for index, root in enumerate(roots)
+        ]
+        denied_roots = [_sandbox_denies(profile, target) for target in canaries]
+        direct = all(denied_roots)
+        protected_results = tuple(
+            (f"protected-root-{index}", denied)
+            for index, denied in enumerate(denied_roots)
+        )
+        parent = _sandbox_denies(profile, profile.sealed_root.parent)
+        sealed_file = canaries[0]
+        os.symlink(sealed_file, symlink_path)
+        try:
+            os.link(sealed_file, hardlink_path)
+            hardlink_created = True
+        except OSError as error:
+            raise RuntimeError("hardlink isolation canary is unavailable") from error
         symlink = _sandbox_denies(profile, symlink_path)
         hardlink_launch = run_provider_isolated(
             profile, ["/bin/cat", str(hardlink_path)]
@@ -2310,47 +2442,47 @@ def probe_provider_isolation(profile: ProviderIsolationProfile) -> IsolationProb
             hardlink_launch.returncode == 126
             and "ISOLATION_REFUSED" in hardlink_launch.stderr
         )
-    finally:
-        symlink_path.unlink(missing_ok=True)
-        if hardlink_created:
-            hardlink_path.unlink(missing_ok=True)
-    other_run = all(
-        _sandbox_denies(profile, target)
-        for root, target in zip(roots, canaries, strict=True)
-        if root in profile.other_run_roots
-    )
-    environment_launch = run_provider_isolated(
-        profile,
-        ["/usr/bin/true"],
-        environment={
-            "PATH": profile.environment.get("PATH", ""),
-            "CANARY": str(sealed_file),
-        },
-    )
-    environment = (
-        environment_launch.returncode == 126
-        and "ISOLATION_REFUSED" in environment_launch.stderr
-    )
-    add_dir_launches = (
-        run_provider_isolated(profile, ["/usr/bin/true", "--add-dir"]),
-        run_provider_isolated(
+        other_run = all(
+            _sandbox_denies(profile, target)
+            for root, target in zip(roots, canaries, strict=True)
+            if root in profile.other_run_roots
+        )
+        environment_launch = run_provider_isolated(
             profile,
-            ["/usr/bin/true", "--add-dir=../protected"],
-        ),
-    )
-    add_dir = all(
-        launch.returncode == 126 and "ISOLATION_REFUSED" in launch.stderr
-        for launch in add_dir_launches
-    )
-    for path in created:
-        path.unlink(missing_ok=True)
-    return IsolationProbeResult(
-        direct=direct,
-        parent=parent,
-        symlink=symlink,
-        hardlink=hardlink,
-        environment=environment,
-        other_run=other_run,
-        add_dir=add_dir,
-        protected_root_results=protected_results,
-    )
+            ["/usr/bin/true"],
+            environment={
+                "PATH": profile.environment.get("PATH", ""),
+                "CANARY": str(sealed_file),
+            },
+        )
+        environment = (
+            environment_launch.returncode == 126
+            and "ISOLATION_REFUSED" in environment_launch.stderr
+        )
+        add_dir_launches = (
+            run_provider_isolated(profile, ["/usr/bin/true", "--add-dir"]),
+            run_provider_isolated(
+                profile,
+                ["/usr/bin/true", "--add-dir=../protected"],
+            ),
+        )
+        add_dir = all(
+            launch.returncode == 126 and "ISOLATION_REFUSED" in launch.stderr
+            for launch in add_dir_launches
+        )
+        return IsolationProbeResult(
+            direct=direct,
+            parent=parent,
+            symlink=symlink,
+            hardlink=hardlink,
+            environment=environment,
+            other_run=other_run,
+            add_dir=add_dir,
+            protected_root_results=protected_results,
+        )
+    finally:
+        cleanup_paths = [symlink_path]
+        if hardlink_created:
+            cleanup_paths.append(hardlink_path)
+        cleanup_paths.extend(created)
+        _cleanup_isolation_canaries(cleanup_paths)
