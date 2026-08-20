@@ -1152,6 +1152,46 @@ def test_task2_red_isolation_rejects_links_env_other_run_and_add_dir(
     assert profile.executable is False
 
 
+def test_one_shot_profile_denies_original_bytes_and_allows_exact_private_copy(
+    tmp_path: Path,
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    run = tmp_path / "runs" / "run-1"
+    control = tmp_path / "control"
+    raw = tmp_path / "raw-results"
+    private = raw / "private"
+    for path in (run, control, raw, private):
+        path.mkdir(parents=True, exist_ok=True)
+    original = tmp_path / "codex-native"
+    original.write_bytes(b"frozen")
+    original.chmod(0o500)
+    one_shot = private / "codex-one-shot"
+    one_shot.write_bytes(original.read_bytes())
+    one_shot.chmod(0o500)
+    profile = build_provider_isolation_profile(
+        run_root=run,
+        sealed_root=sealed,
+        control_root=control,
+        raw_results_root=raw,
+        other_run_roots=[],
+        argv=[str(one_shot), "--version"],
+        environment={"PATH": os.environ.get("PATH", "")},
+        deny_process_exec_paths=[original],
+        deny_read_exec_paths=[original],
+        allow_process_exec_paths=[one_shot],
+    )
+
+    assert not profile.issues
+    assert (
+        f'(deny file-read* file-write* process-exec (literal "{original}"))'
+        in profile.sandbox_text
+    )
+    assert (
+        f'(allow file-read* process-exec (literal "{one_shot}"))'
+        in profile.sandbox_text
+    )
+
+
 @pytest.mark.skipif(os.uname().sysname != "Darwin", reason="macOS Seatbelt profile")
 def test_task2_red_exact_provider_profile_denies_all_canary_shapes(
     tmp_path: Path,

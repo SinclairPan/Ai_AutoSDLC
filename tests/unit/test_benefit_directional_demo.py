@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -391,7 +392,10 @@ def test_cap_gated_launcher_records_complete_lifecycle(
         fixture_id=session.fixture_id,
         provider_cwd=provider_cwd,
         codex=SimpleNamespace(
-            executable="/frozen/codex", resolved_executable="/frozen/native-codex"
+            executable="/frozen/codex",
+            resolved_executable="/frozen/native-codex",
+            entrypoint_sha256="1" * 64,
+            native_binary_sha256="2" * 64,
         ),
     )
     profile = SimpleNamespace(argv=command, run_root=provider_cwd)
@@ -400,12 +404,20 @@ def test_cap_gated_launcher_records_complete_lifecycle(
     monkeypatch.setattr(demo, "verify_prepared_directional_arm", lambda _value: None)
 
     def fake_launch(
-        _profile: object, argv: tuple[str, ...]
-    ) -> subprocess.CompletedProcess[str]:
+        _prepared: object,
+        _profile: object,
+        argv: tuple[str, ...],
+        **_kwargs: object,
+    ) -> demo.OneShotLaunchResult:
         launches.append(tuple(argv))
-        return subprocess.CompletedProcess(list(argv), 0, "ok", "")
+        return demo.OneShotLaunchResult(
+            completed=subprocess.CompletedProcess(list(argv), 0, "ok", ""),
+            original_sha256="2" * 64,
+            one_shot_sha256="2" * 64,
+            residue_free=True,
+        )
 
-    monkeypatch.setattr(demo, "run_provider_isolated", fake_launch)
+    monkeypatch.setattr(demo, "_launch_directional_one_shot", fake_launch)
     result = demo.launch_directional_provider_session(
         ledger, manifest, session.session_id, prepared, profile, command
     )
@@ -418,6 +430,12 @@ def test_cap_gated_launcher_records_complete_lifecycle(
         "launch-completed",
     ]
     assert rows[-2]["provider_launched"] is True
+    assert rows[-2]["original_entrypoint_sha256"] == "1" * 64
+    assert rows[-2]["original_native_sha256"] == "2" * 64
+    assert rows[-2]["one_shot_sha256"] == "2" * 64
+    assert all(
+        "/" not in value for value in rows[-2].values() if isinstance(value, str)
+    )
     assert rows[-1]["provider_launched"] is True
 
 
@@ -452,15 +470,23 @@ def test_cap_gated_launcher_records_failed_terminal_state(
         fixture_id=session.fixture_id,
         provider_cwd=provider_cwd,
         codex=SimpleNamespace(
-            executable="/frozen/codex", resolved_executable="/frozen/native-codex"
+            executable="/frozen/codex",
+            resolved_executable="/frozen/native-codex",
+            entrypoint_sha256="1" * 64,
+            native_binary_sha256="2" * 64,
         ),
     )
     profile = SimpleNamespace(argv=command, run_root=provider_cwd)
     monkeypatch.setattr(demo, "verify_prepared_directional_arm", lambda _value: None)
     monkeypatch.setattr(
         demo,
-        "run_provider_isolated",
-        lambda _profile, argv: subprocess.CompletedProcess(list(argv), 7, "", "bad"),
+        "_launch_directional_one_shot",
+        lambda _prepared, _profile, argv, **_kwargs: demo.OneShotLaunchResult(
+            completed=subprocess.CompletedProcess(list(argv), 7, "", "bad"),
+            original_sha256="2" * 64,
+            one_shot_sha256="2" * 64,
+            residue_free=True,
+        ),
     )
     result = demo.launch_directional_provider_session(
         ledger, manifest, session.session_id, prepared, profile, command
@@ -486,7 +512,10 @@ def test_cap_gated_launcher_rejects_non_provider_command_before_append(
         fixture_id=session.fixture_id,
         provider_cwd=provider_cwd,
         codex=SimpleNamespace(
-            executable="/frozen/codex", resolved_executable="/frozen/native-codex"
+            executable="/frozen/codex",
+            resolved_executable="/frozen/native-codex",
+            entrypoint_sha256="1" * 64,
+            native_binary_sha256="2" * 64,
         ),
     )
     command = ("/usr/bin/true",)
@@ -500,7 +529,7 @@ def test_cap_gated_launcher_rejects_non_provider_command_before_append(
         launched = True
         raise AssertionError("launch must not be reached")
 
-    monkeypatch.setattr(demo, "run_provider_isolated", forbidden)
+    monkeypatch.setattr(demo, "_launch_directional_one_shot", forbidden)
     with pytest.raises(ValueError, match="binding"):
         demo.launch_directional_provider_session(
             ledger, manifest, session.session_id, prepared, profile, command
@@ -524,7 +553,7 @@ def test_cap_gated_launcher_rejects_reservation_only_bypass_and_attempt_20(
         launched = True
         raise AssertionError("launch must not be reached")
 
-    monkeypatch.setattr(demo, "run_provider_isolated", forbidden)
+    monkeypatch.setattr(demo, "_launch_directional_one_shot", forbidden)
     with pytest.raises(ValueError, match="reservation-only"):
         demo.launch_directional_provider_session(
             ledger,
@@ -552,6 +581,133 @@ def test_cap_gated_launcher_rejects_reservation_only_bypass_and_attempt_20(
         )
     assert launched is False
     assert full.read_bytes() == full_before
+
+
+def test_inner_workspace_write_state_is_closed_and_network_restricted(
+    tmp_path: Path,
+) -> None:
+    cwd = tmp_path / "benchmark-task"
+    cwd.mkdir()
+    state = demo.build_codex_inner_sandbox_state(cwd)
+    assert set(state) == {
+        "permissionProfile",
+        "codexLinuxSandboxExe",
+        "sandboxCwd",
+        "useLegacyLandlock",
+    }
+    profile = state["permissionProfile"]
+    assert profile["type"] == "managed"
+    assert profile["network"] == "restricted"
+    assert profile["file_system"]["type"] == "restricted"
+    assert profile["file_system"]["entries"] == [
+        {
+            "path": {"type": "special", "value": {"kind": "root"}},
+            "access": "read",
+        },
+        {
+            "path": {"type": "path", "path": str(cwd.resolve())},
+            "access": "write",
+        },
+    ]
+    assert state["sandboxCwd"] == cwd.resolve().as_uri()
+
+
+def test_one_shot_exec_handshake_is_closed() -> None:
+    assert demo._one_shot_handshake_is_valid(
+        ("/private/codex", "--version"), "codex-cli 0.147.0\n"
+    )
+    assert demo._one_shot_handshake_is_valid(
+        ("/private/codex", "exec", "--json"),
+        '{"type":"thread.started","thread_id":"frozen-thread"}\n',
+    )
+    assert not demo._one_shot_handshake_is_valid(
+        ("/private/codex", "exec", "--json"),
+        '{"type":"item.completed","thread_id":"frozen-thread"}\n',
+    )
+    assert not demo._one_shot_handshake_is_valid(
+        ("/private/codex", "exec", "--json"), "not-json\n"
+    )
+
+
+def test_one_shot_copy_is_exact_private_and_cleanup_bound(tmp_path: Path) -> None:
+    original = tmp_path / "codex-native"
+    original.write_bytes(b"frozen-codex-binary")
+    original.chmod(0o500)
+    output = tmp_path / "output"
+    output.mkdir(mode=0o700)
+    frozen = SimpleNamespace(
+        codex=SimpleNamespace(
+            resolved_executable=str(original),
+            native_binary_sha256=demo.sha256(original.read_bytes()).hexdigest(),
+        )
+    )
+    one_shot = demo._create_directional_one_shot(frozen, output)
+    assert one_shot.executable.read_bytes() == original.read_bytes()
+    assert stat.S_IMODE(one_shot.executable.lstat().st_mode) == 0o500
+    assert stat.S_IMODE(one_shot.private_root.lstat().st_mode) == 0o700
+    assert one_shot.one_shot_sha256 == one_shot.original_sha256
+    demo._cleanup_directional_one_shot(one_shot)
+    assert not one_shot.executable.exists()
+    assert not one_shot.private_root.exists()
+
+
+def test_attempt_20_and_reservation_only_fail_before_one_shot_copy(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    manifest = demo.load_directional_manifest()
+    copied = False
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        nonlocal copied
+        copied = True
+        raise AssertionError("one-shot copy must not be created")
+
+    monkeypatch.setattr(demo, "_create_directional_one_shot", forbidden)
+    ledger = demo.initialize_attempt_ledger(tmp_path / "ledger.jsonl", manifest)
+    demo.reserve_session(ledger, manifest.sessions[0].session_id)
+    with pytest.raises(ValueError, match="reservation-only"):
+        demo.launch_directional_provider_session(
+            ledger,
+            manifest,
+            manifest.sessions[0].session_id,
+            SimpleNamespace(),
+            SimpleNamespace(),
+            ("/frozen/codex", "exec"),
+        )
+    full = demo.initialize_attempt_ledger(tmp_path / "full.jsonl", manifest)
+    for session in manifest.sessions:
+        demo.reserve_session(full, session.session_id)
+    with pytest.raises(ValueError, match="session cap"):
+        demo.launch_directional_provider_session(
+            full,
+            manifest,
+            "session-attempt-20",
+            SimpleNamespace(),
+            SimpleNamespace(),
+            ("/frozen/codex", "exec"),
+        )
+    assert copied is False
+
+
+def test_low_level_one_shot_exec_rejects_missing_capability_before_copy(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    copied = False
+
+    def forbidden(*_args: object, **_kwargs: object) -> None:
+        nonlocal copied
+        copied = True
+        raise AssertionError("copy must not be reached")
+
+    monkeypatch.setattr(demo, "_create_directional_one_shot", forbidden)
+    prepared = SimpleNamespace(codex=SimpleNamespace(executable="/frozen/codex"))
+    with pytest.raises(ValueError, match="cap-gated"):
+        demo._launch_directional_one_shot(
+            prepared,
+            SimpleNamespace(),
+            ("/frozen/codex", "exec", "--json"),
+        )
+    assert copied is False
 
 
 def test_provider_environment_is_clean_and_inventory_bound(tmp_path: Path) -> None:

@@ -11,11 +11,16 @@ import json
 import os
 import pwd
 import re
+import secrets
+import select
 import shutil
+import socket
 import stat
 import subprocess
 import sys
+import time
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -61,6 +66,7 @@ _LABELS = (
     "not production SLA",
     "no generalization",
 )
+_PROVIDER_LAUNCH_CAPABILITY = object()
 _MANIFEST_KEYS = {
     "schema",
     "study_label",
@@ -306,6 +312,10 @@ class DirectionalIsolationCanary:
     output_rename_denied: bool
     method_chmod_denied: bool
     nested_provider_denied: bool
+    nested_provider_copy_denied: bool
+    outer_loopback_allowed: bool
+    inner_network_denied: bool
+    one_shot_cleanup: bool
     residue_free: bool
 
     @property
@@ -324,9 +334,35 @@ class DirectionalIsolationCanary:
                 self.output_rename_denied,
                 self.method_chmod_denied,
                 self.nested_provider_denied,
+                self.nested_provider_copy_denied,
+                self.outer_loopback_allowed,
+                self.inner_network_denied,
+                self.one_shot_cleanup,
                 self.residue_free,
             )
         )
+
+
+@dataclass(frozen=True)
+class DirectionalOneShot:
+    output_root: Path
+    private_name: str
+    private_root: Path
+    executable: Path
+    private_device: int
+    private_inode: int
+    executable_device: int
+    executable_inode: int
+    original_sha256: str
+    one_shot_sha256: str
+
+
+@dataclass(frozen=True)
+class OneShotLaunchResult:
+    completed: subprocess.CompletedProcess[str]
+    original_sha256: str
+    one_shot_sha256: str
+    residue_free: bool
 
 
 def _canonical_bytes(value: object) -> bytes:
@@ -633,6 +669,9 @@ def _ledger_rows_from_descriptor(descriptor: int) -> list[Mapping[str, Any]]:
                     "ordinal",
                     "session_id",
                     "command_sha256",
+                    "original_entrypoint_sha256",
+                    "original_native_sha256",
+                    "one_shot_sha256",
                     "provider_launched",
                 },
                 "ledger launch started",
@@ -645,6 +684,11 @@ def _ledger_rows_from_descriptor(descriptor: int) -> list[Mapping[str, Any]]:
                 or item["ordinal"] != reservations.index(session_id) + 1
                 or not isinstance(item["command_sha256"], str)
                 or not re.fullmatch(r"[a-f0-9]{64}", item["command_sha256"])
+                or not isinstance(item["original_entrypoint_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", item["original_entrypoint_sha256"])
+                or not isinstance(item["original_native_sha256"], str)
+                or not re.fullmatch(r"[a-f0-9]{64}", item["original_native_sha256"])
+                or item["one_shot_sha256"] != item["original_native_sha256"]
                 or item["provider_launched"] is not True
             ):
                 raise ValueError("ledger launch started is corrupt")
@@ -812,6 +856,281 @@ def reserve_session(path: Path, session_id: str, *, retry: bool = False) -> int:
         os.close(descriptor)
 
 
+def build_codex_inner_sandbox_state(cwd: Path) -> Mapping[str, object]:
+    """Build the exact 0.147 managed workspace-write state used by task tools."""
+    absolute = cwd.resolve(strict=True)
+    metadata = absolute.lstat()
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise ValueError("inner sandbox cwd is invalid")
+    return {
+        "permissionProfile": {
+            "type": "managed",
+            "file_system": {
+                "type": "restricted",
+                "entries": [
+                    {
+                        "path": {
+                            "type": "special",
+                            "value": {"kind": "root"},
+                        },
+                        "access": "read",
+                    },
+                    {
+                        "path": {"type": "path", "path": str(absolute)},
+                        "access": "write",
+                    },
+                ],
+            },
+            "network": "restricted",
+        },
+        "codexLinuxSandboxExe": None,
+        "sandboxCwd": absolute.as_uri(),
+        "useLegacyLandlock": False,
+    }
+
+
+def build_codex_inner_sandbox_command(
+    executable: Path, cwd: Path, command: Sequence[str]
+) -> tuple[str, ...]:
+    if not command or any(not isinstance(item, str) or not item for item in command):
+        raise ValueError("inner sandbox command is invalid")
+    state = json.dumps(
+        build_codex_inner_sandbox_state(cwd),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return (
+        str(executable),
+        "sandbox",
+        "--sandbox-state-json",
+        state,
+        "--sandbox-state-disable-network",
+        *command,
+    )
+
+
+def _write_fd_all(descriptor: int, payload: bytes) -> None:
+    offset = 0
+    while offset < len(payload):
+        written = os.write(descriptor, payload[offset:])
+        if written <= 0:
+            raise OSError("one-shot executable short write")
+        offset += written
+
+
+def _create_directional_one_shot(
+    prepared: PreparedArm, output_root: Path
+) -> DirectionalOneShot:
+    """Copy the frozen native Codex into an undiscoverable controller-owned root."""
+    output = Path(os.path.abspath(output_root))
+    output_before = os.lstat(output)
+    if (
+        stat.S_ISLNK(output_before.st_mode)
+        or not stat.S_ISDIR(output_before.st_mode)
+        or output_before.st_uid != os.getuid()
+    ):
+        raise ValueError("one-shot output root is invalid")
+    parent_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    parent_fd = os.open(output, parent_flags)
+    private_name = f".directional-launch-{secrets.token_hex(16)}"
+    private_root = output / private_name
+    executable = private_root / "codex-one-shot"
+    created = False
+    root_fd = -1
+    source_fd = -1
+    target_fd = -1
+    try:
+        parent_open = os.fstat(parent_fd)
+        if (parent_open.st_dev, parent_open.st_ino) != (
+            output_before.st_dev,
+            output_before.st_ino,
+        ):
+            raise ValueError("one-shot output root changed")
+        os.mkdir(private_name, mode=0o700, dir_fd=parent_fd)
+        created = True
+        root_fd = os.open(private_name, parent_flags, dir_fd=parent_fd)
+        os.fchmod(root_fd, 0o700)
+        private_info = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(private_info.st_mode)
+            or stat.S_IMODE(private_info.st_mode) != 0o700
+            or private_info.st_uid != os.getuid()
+        ):
+            raise ValueError("one-shot private root is invalid")
+
+        source = Path(os.path.abspath(prepared.codex.resolved_executable))
+        source_before = os.lstat(source)
+        source_fd = os.open(
+            source,
+            os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0),
+        )
+        source_open = os.fstat(source_fd)
+        source_identity = (
+            source_open.st_dev,
+            source_open.st_ino,
+            source_open.st_uid,
+            source_open.st_gid,
+            source_open.st_mode,
+            source_open.st_nlink,
+            source_open.st_size,
+        )
+        if (
+            stat.S_ISLNK(source_before.st_mode)
+            or not stat.S_ISREG(source_open.st_mode)
+            or source_identity
+            != (
+                source_before.st_dev,
+                source_before.st_ino,
+                source_before.st_uid,
+                source_before.st_gid,
+                source_before.st_mode,
+                source_before.st_nlink,
+                source_before.st_size,
+            )
+            or source_open.st_nlink != 1
+            or source_open.st_uid != os.getuid()
+        ):
+            raise ValueError("frozen Codex executable identity is invalid")
+        target_fd = os.open(
+            "codex-one-shot",
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o500,
+            dir_fd=root_fd,
+        )
+        digest = sha256()
+        while True:
+            chunk = os.read(source_fd, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+            _write_fd_all(target_fd, chunk)
+        os.fchmod(target_fd, 0o500)
+        os.fsync(target_fd)
+        os.fsync(root_fd)
+        target_info = os.fstat(target_fd)
+        source_after = os.fstat(source_fd)
+        actual_sha256 = digest.hexdigest()
+        if (
+            source_identity
+            != (
+                source_after.st_dev,
+                source_after.st_ino,
+                source_after.st_uid,
+                source_after.st_gid,
+                source_after.st_mode,
+                source_after.st_nlink,
+                source_after.st_size,
+            )
+            or actual_sha256 != prepared.codex.native_binary_sha256
+            or not stat.S_ISREG(target_info.st_mode)
+            or stat.S_IMODE(target_info.st_mode) != 0o500
+            or target_info.st_uid != os.getuid()
+            or target_info.st_nlink != 1
+            or target_info.st_size != source_open.st_size
+        ):
+            raise ValueError("one-shot Codex executable copy changed")
+        return DirectionalOneShot(
+            output_root=output,
+            private_name=private_name,
+            private_root=private_root,
+            executable=executable,
+            private_device=private_info.st_dev,
+            private_inode=private_info.st_ino,
+            executable_device=target_info.st_dev,
+            executable_inode=target_info.st_ino,
+            original_sha256=prepared.codex.native_binary_sha256,
+            one_shot_sha256=actual_sha256,
+        )
+    except BaseException:
+        if target_fd >= 0:
+            os.close(target_fd)
+            target_fd = -1
+        if source_fd >= 0:
+            os.close(source_fd)
+            source_fd = -1
+        if root_fd >= 0:
+            with suppress(FileNotFoundError):
+                os.unlink("codex-one-shot", dir_fd=root_fd)
+            os.close(root_fd)
+            root_fd = -1
+        if created:
+            with suppress(OSError):
+                os.rmdir(private_name, dir_fd=parent_fd)
+        raise
+    finally:
+        if target_fd >= 0:
+            os.close(target_fd)
+        if source_fd >= 0:
+            os.close(source_fd)
+        if root_fd >= 0:
+            os.close(root_fd)
+        os.close(parent_fd)
+
+
+def _unlink_directional_one_shot(one_shot: DirectionalOneShot) -> None:
+    if not one_shot.executable.exists():
+        return
+    root_fd = os.open(
+        one_shot.private_root,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        root_info = os.fstat(root_fd)
+        executable_info = os.stat(
+            "codex-one-shot", dir_fd=root_fd, follow_symlinks=False
+        )
+        if (
+            (root_info.st_dev, root_info.st_ino)
+            != (one_shot.private_device, one_shot.private_inode)
+            or (executable_info.st_dev, executable_info.st_ino)
+            != (one_shot.executable_device, one_shot.executable_inode)
+            or not stat.S_ISREG(executable_info.st_mode)
+            or executable_info.st_nlink != 1
+        ):
+            raise ValueError("one-shot cleanup identity changed")
+        os.unlink("codex-one-shot", dir_fd=root_fd)
+        os.fsync(root_fd)
+    finally:
+        os.close(root_fd)
+
+
+def _cleanup_directional_one_shot(one_shot: DirectionalOneShot) -> None:
+    _unlink_directional_one_shot(one_shot)
+    parent_fd = os.open(
+        one_shot.output_root,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        private_info = os.stat(
+            one_shot.private_name, dir_fd=parent_fd, follow_symlinks=False
+        )
+        if (private_info.st_dev, private_info.st_ino) != (
+            one_shot.private_device,
+            one_shot.private_inode,
+        ) or not stat.S_ISDIR(private_info.st_mode):
+            raise ValueError("one-shot private root changed before cleanup")
+        os.rmdir(one_shot.private_name, dir_fd=parent_fd)
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+
 def _provider_command_digest(argv: Sequence[str]) -> str:
     if not argv or any(not isinstance(item, str) or not item for item in argv):
         raise ValueError("Provider command is invalid")
@@ -922,6 +1241,159 @@ def _append_directional_launch_terminal(
         os.close(descriptor)
 
 
+def _rebuild_directional_profile_for_one_shot(
+    profile: ProviderIsolationProfile,
+    one_shot: DirectionalOneShot,
+    argv: Sequence[str],
+) -> ProviderIsolationProfile:
+    rebuilt = build_provider_isolation_profile(
+        run_root=profile.run_root,
+        sealed_root=profile.sealed_root,
+        control_root=profile.control_root,
+        raw_results_root=profile.raw_results_root,
+        protected_roots=profile.protected_roots,
+        write_protected_roots=profile.write_protected_roots,
+        missing_write_protected_paths=profile.missing_write_protected_paths,
+        missing_protected_paths=profile.missing_protected_paths,
+        deny_process_exec_paths=profile.deny_process_exec_paths,
+        deny_read_exec_paths=profile.deny_read_exec_paths,
+        allow_process_exec_paths=(one_shot.executable,),
+        deny_network=profile.deny_network,
+        other_run_roots=profile.other_run_roots,
+        argv=argv,
+        environment=profile.environment,
+        preserve_environment=profile.preserve_environment,
+        launch_guard=profile.launch_guard,
+    )
+    if rebuilt.issues:
+        raise ValueError("one-shot isolation profile is invalid")
+    return rebuilt
+
+
+def _process_executable_path(process_id: int) -> Path | None:
+    if sys.platform != "darwin":
+        return None
+    import ctypes
+
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    buffer = ctypes.create_string_buffer(4096)
+    size = library.proc_pidpath(process_id, buffer, len(buffer))
+    if size <= 0:
+        return None
+    return Path(os.fsdecode(buffer.value))
+
+
+def _one_shot_handshake_is_valid(argv: Sequence[str], line: str) -> bool:
+    if tuple(argv[1:]) == ("--version",):
+        return line.strip() == "codex-cli 0.147.0"
+    if len(argv) > 1 and argv[1] == "exec":
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            return False
+        return (
+            isinstance(event, Mapping)
+            and event.get("type") == "thread.started"
+            and isinstance(event.get("thread_id"), str)
+            and bool(event["thread_id"])
+        )
+    return False
+
+
+def _run_directional_one_shot_process(
+    profile: ProviderIsolationProfile,
+    one_shot: DirectionalOneShot,
+    argv: Sequence[str],
+) -> subprocess.CompletedProcess[str]:
+    rebuilt = _rebuild_directional_profile_for_one_shot(profile, one_shot, argv)
+    if rebuilt.launch_guard is not None:
+        rebuilt.launch_guard()
+    child = subprocess.Popen(
+        ["/usr/bin/sandbox-exec", "-p", rebuilt.sandbox_text, *argv],
+        cwd=rebuilt.run_root,
+        env=dict(rebuilt.environment),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    confirmed_image = False
+    first_stdout = ""
+    deadline = time.monotonic() + 10.0
+    try:
+        while time.monotonic() < deadline and not first_stdout:
+            current = _process_executable_path(child.pid)
+            if current == one_shot.executable:
+                confirmed_image = True
+            if child.stdout is None:
+                raise OSError("one-shot Codex stdout pipe is unavailable")
+            ready, _, _ = select.select(
+                [child.stdout],
+                [],
+                [],
+                max(0.0, min(0.01, deadline - time.monotonic())),
+            )
+            if ready:
+                first_stdout = child.stdout.readline()
+            if child.poll() is not None:
+                break
+        if not first_stdout:
+            child.kill()
+            stdout, stderr = child.communicate()
+            raise subprocess.TimeoutExpired(
+                list(argv), 10, output=stdout, stderr=stderr
+            )
+        handshake_valid = _one_shot_handshake_is_valid(argv, first_stdout)
+        if not handshake_valid or not confirmed_image:
+            child.kill()
+            stdout, stderr = child.communicate()
+            raise OSError("one-shot Codex exec handshake was not observed")
+        _unlink_directional_one_shot(one_shot)
+        stdout, stderr = child.communicate(timeout=10)
+        stdout = first_stdout + stdout
+    except subprocess.TimeoutExpired as error:
+        child.kill()
+        stdout, stderr = child.communicate()
+        raise subprocess.TimeoutExpired(
+            list(argv), 10, output=stdout, stderr=stderr
+        ) from error
+    return subprocess.CompletedProcess(list(argv), child.returncode, stdout, stderr)
+
+
+def _launch_directional_one_shot(
+    prepared: PreparedArm,
+    profile: ProviderIsolationProfile,
+    argv: Sequence[str],
+    *,
+    capability: object | None = None,
+) -> OneShotLaunchResult:
+    if not argv or argv[0] != prepared.codex.executable:
+        raise ValueError("one-shot Provider command is not original-bound")
+    if (
+        len(argv) > 1
+        and argv[1] == "exec"
+        and capability is not _PROVIDER_LAUNCH_CAPABILITY
+    ):
+        raise ValueError("one-shot Provider launch is not cap-gated")
+    one_shot = _create_directional_one_shot(prepared, profile.raw_results_root)
+    launched = (
+        str(one_shot.executable),
+        *tuple(argv[1:]),
+    )
+    try:
+        completed = _run_directional_one_shot_process(profile, one_shot, launched)
+    finally:
+        _cleanup_directional_one_shot(one_shot)
+    residue_free = not one_shot.private_root.exists()
+    if not residue_free:
+        raise OSError("one-shot Codex residue remains")
+    return OneShotLaunchResult(
+        completed=completed,
+        original_sha256=one_shot.original_sha256,
+        one_shot_sha256=one_shot.one_shot_sha256,
+        residue_free=residue_free,
+    )
+
+
 def launch_directional_provider_session(
     path: Path,
     manifest: DirectionalManifest,
@@ -989,6 +1461,9 @@ def launch_directional_provider_session(
             "ordinal": ordinal,
             "session_id": session_id,
             "command_sha256": command_sha256,
+            "original_entrypoint_sha256": prepared.codex.entrypoint_sha256,
+            "original_native_sha256": prepared.codex.native_binary_sha256,
+            "one_shot_sha256": prepared.codex.native_binary_sha256,
             "provider_launched": True,
         }
         _write_all(
@@ -1005,7 +1480,19 @@ def launch_directional_provider_session(
         os.close(descriptor)
 
     try:
-        result = run_provider_isolated(profile, argv)
+        launch = _launch_directional_one_shot(
+            prepared,
+            profile,
+            argv,
+            capability=_PROVIDER_LAUNCH_CAPABILITY,
+        )
+        if (
+            launch.original_sha256 != prepared.codex.native_binary_sha256
+            or launch.one_shot_sha256 != prepared.codex.native_binary_sha256
+            or not launch.residue_free
+        ):
+            raise OSError("one-shot Provider launch binding changed")
+        result = launch.completed
     except subprocess.TimeoutExpired as error:
         stdout = error.stdout if isinstance(error.stdout, str) else ""
         stderr = error.stderr if isinstance(error.stderr, str) else ""
@@ -1747,6 +2234,7 @@ def build_directional_provider_profile(
     # r3 and the formal results path are deliberately absent before execution.
     # Their existing canonical parents are denied so neither can be discovered or
     # created by a Provider.  Exact absent paths are separately write-denied.
+    provider_launch_paths = _directional_provider_launch_paths(prepared)
     existing_protected = (
         roots["sealed-r1"],
         roots["sealed-r3"].parent,
@@ -1805,8 +2293,9 @@ def build_directional_provider_profile(
         write_protected_roots=tuple(dict.fromkeys(write_protected)),
         missing_write_protected_paths=tuple(dict.fromkeys(missing_method_paths)),
         missing_protected_paths=(roots["sealed-r3"], roots["results"]),
-        deny_process_exec_paths=_directional_provider_launch_paths(prepared),
-        deny_network=True,
+        deny_process_exec_paths=provider_launch_paths,
+        deny_read_exec_paths=provider_launch_paths,
+        deny_network=False,
         other_run_roots=other_run_roots,
         argv=argv,
         environment=prepared.environment.environment,
@@ -1870,6 +2359,8 @@ def _add_dir_preflight_rejected(profile: ProviderIsolationProfile) -> bool:
             missing_write_protected_paths=profile.missing_write_protected_paths,
             missing_protected_paths=profile.missing_protected_paths,
             deny_process_exec_paths=profile.deny_process_exec_paths,
+            deny_read_exec_paths=profile.deny_read_exec_paths,
+            allow_process_exec_paths=profile.allow_process_exec_paths,
             deny_network=profile.deny_network,
             other_run_roots=profile.other_run_roots,
             argv=argv,
@@ -1880,6 +2371,162 @@ def _add_dir_preflight_rejected(profile: ProviderIsolationProfile) -> bool:
         if {issue.code for issue in refreshed.issues} != {"isolation.add-dir"}:
             return False
     return True
+
+
+def _run_directional_two_layer_canary(
+    prepared: PreparedArm, profile: ProviderIsolationProfile
+) -> tuple[bool, bool, bool, bool, bool]:
+    original = prepared.codex.executable
+    python = "/usr/bin/python3"
+    cleanup_results: list[bool] = []
+
+    outer_entry = _launch_directional_one_shot(
+        prepared, profile, (original, "--version")
+    )
+    cleanup_results.append(outer_entry.residue_free)
+    outer_entry_allowed = (
+        outer_entry.completed.returncode == 0
+        and outer_entry.completed.stdout.strip() == "codex-cli 0.147.0"
+    )
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    listener.settimeout(2)
+    port = listener.getsockname()[1]
+    token = secrets.token_hex(16)
+    outer_command = (
+        python,
+        "-I",
+        "-c",
+        (
+            "import socket,sys; s=socket.socket(); "
+            "s.connect(('127.0.0.1',int(sys.argv[1]))); "
+            "s.sendall(sys.argv[2].encode()); s.close()"
+        ),
+        str(port),
+        token,
+    )
+    outer_launch = run_provider_isolated(profile, outer_command)
+    received = b""
+    try:
+        connection, _ = listener.accept()
+        with connection:
+            received = connection.recv(128)
+    except TimeoutError:
+        pass
+    finally:
+        listener.close()
+    outer_loopback_allowed = (
+        outer_entry_allowed
+        and outer_launch.returncode == 0
+        and received == token.encode()
+    )
+    if not outer_loopback_allowed:
+        raise RuntimeError("outer-loopback-canary")
+
+    def run_inner(command: Sequence[str]) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            build_codex_inner_sandbox_command(
+                Path(original), prepared.provider_cwd, command
+            ),
+            cwd=prepared.provider_cwd,
+            env=dict(prepared.environment.environment),
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+
+    blocked_listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    blocked_listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    blocked_listener.bind(("127.0.0.1", 0))
+    blocked_listener.listen(1)
+    blocked_listener.settimeout(0.05)
+    blocked_port = blocked_listener.getsockname()[1]
+    network_launch = run_inner(
+        (
+            python,
+            "-I",
+            "-c",
+            (
+                "import socket,sys; s=socket.socket(); s.settimeout(1); "
+                "s.connect(('127.0.0.1',int(sys.argv[1])))"
+            ),
+            str(blocked_port),
+        )
+    )
+    connected = False
+    try:
+        connection, _ = blocked_listener.accept()
+        connected = True
+        connection.close()
+    except TimeoutError:
+        pass
+    finally:
+        blocked_listener.close()
+    inner_network_denied = (
+        network_launch.returncode != 0
+        and "Operation not permitted" in network_launch.stderr
+        and not connected
+    )
+
+    nested_results = []
+    for nested_command in (
+        (original, "--version"),
+        (
+            "/bin/sh",
+            "-c",
+            'exec "$1" --version',
+            "nested-provider",
+            original,
+        ),
+    ):
+        launch = run_inner(
+            (
+                "/usr/bin/sandbox-exec",
+                "-p",
+                profile.sandbox_text,
+                *nested_command,
+            )
+        )
+        nested_results.append(
+            launch.returncode != 0 and "Operation not permitted" in launch.stderr
+        )
+    nested_provider_denied = all(nested_results)
+
+    copied = prepared.provider_cwd / ".nested-codex-copy"
+    copied.unlink(missing_ok=True)
+    copy_launch = run_inner(
+        (
+            "/usr/bin/sandbox-exec",
+            "-p",
+            profile.sandbox_text,
+            "/bin/sh",
+            "-c",
+            'cp "$1" "$2" && "$2" --version',
+            "nested-copy",
+            prepared.codex.resolved_executable,
+            str(copied),
+        )
+    )
+    nested_provider_copy_denied = (
+        copy_launch.returncode != 0
+        and "Operation not permitted" in copy_launch.stderr
+        and not copied.exists()
+    )
+    copied.unlink(missing_ok=True)
+    one_shot_cleanup = all(cleanup_results) and not any(
+        profile.raw_results_root.glob(".directional-launch-*")
+    )
+    return (
+        outer_loopback_allowed,
+        inner_network_denied,
+        nested_provider_denied,
+        nested_provider_copy_denied,
+        one_shot_cleanup,
+    )
 
 
 def run_directional_system_isolation_canary(
@@ -1934,19 +2581,13 @@ def run_directional_system_isolation_canary(
         ],
     )
     add_dir = _add_dir_preflight_rejected(profile)
-    nested_provider_denied = all(
-        _launch_denied(profile, argv)
-        for argv in (
-            [prepared.codex.executable, "--version"],
-            [
-                "/bin/sh",
-                "-c",
-                'exec "$1" --version',
-                "nested-provider",
-                prepared.codex.executable,
-            ],
-        )
-    )
+    (
+        outer_loopback_allowed,
+        inner_network_denied,
+        nested_provider_denied,
+        nested_provider_copy_denied,
+        one_shot_cleanup,
+    ) = _run_directional_two_layer_canary(prepared, profile)
     output_canary = profile.raw_results_root / ".directional-output-canary"
     created = profile.raw_results_root / ".directional-created-canary"
     renamed = profile.raw_results_root / ".directional-renamed-canary"
@@ -2014,6 +2655,10 @@ def run_directional_system_isolation_canary(
         output_rename_denied=rename_denied,
         method_chmod_denied=chmod_denied,
         nested_provider_denied=nested_provider_denied,
+        nested_provider_copy_denied=nested_provider_copy_denied,
+        outer_loopback_allowed=outer_loopback_allowed,
+        inner_network_denied=inner_network_denied,
+        one_shot_cleanup=one_shot_cleanup,
         residue_free=residue_free,
     )
 

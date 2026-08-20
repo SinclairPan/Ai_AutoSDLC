@@ -286,6 +286,8 @@ class ProviderIsolationProfile:
     launch_guard: Callable[[], None] | None = None
     missing_protected_paths: tuple[Path, ...] = ()
     deny_process_exec_paths: tuple[Path, ...] = ()
+    deny_read_exec_paths: tuple[Path, ...] = ()
+    allow_process_exec_paths: tuple[Path, ...] = ()
     deny_network: bool = False
 
 
@@ -3841,6 +3843,8 @@ def build_provider_isolation_profile(
     missing_write_protected_paths: Sequence[Path] = (),
     missing_protected_paths: Sequence[Path] = (),
     deny_process_exec_paths: Sequence[Path] = (),
+    deny_read_exec_paths: Sequence[Path] = (),
+    allow_process_exec_paths: Sequence[Path] = (),
     deny_network: bool = False,
     preserve_environment: bool = False,
     launch_guard: Callable[[], None] | None = None,
@@ -3903,6 +3907,39 @@ def build_provider_isolation_profile(
             continue
         denied_exec_paths.extend((candidate, resolved))
     denied_exec_paths = list(dict.fromkeys(denied_exec_paths))
+    denied_read_exec_paths: list[Path] = []
+    for index, path in enumerate(deny_read_exec_paths):
+        candidate = Path(os.path.abspath(path))
+        try:
+            resolved = candidate.resolve(strict=True)
+            if not stat.S_ISREG(resolved.stat().st_mode):
+                raise OSError("denied readable executable is not a regular file")
+        except OSError:
+            issues.append(
+                BenchmarkIssue("isolation.process-read-exec", f"executable-{index}")
+            )
+            continue
+        denied_read_exec_paths.extend((candidate, resolved))
+    denied_read_exec_paths = list(dict.fromkeys(denied_read_exec_paths))
+    allowed_exec_paths: list[Path] = []
+    for index, path in enumerate(allow_process_exec_paths):
+        candidate = Path(os.path.abspath(path))
+        try:
+            metadata = os.lstat(candidate)
+            resolved = candidate.resolve(strict=True)
+            if (
+                stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISREG(metadata.st_mode)
+                or resolved != candidate
+            ):
+                raise OSError("allowed executable is not a canonical regular file")
+        except OSError:
+            issues.append(
+                BenchmarkIssue("isolation.process-allow", f"executable-{index}")
+            )
+            continue
+        allowed_exec_paths.append(candidate)
+    allowed_exec_paths = list(dict.fromkeys(allowed_exec_paths))
     for index, root in enumerate(write_protected):
         try:
             if not (
@@ -3981,11 +4018,23 @@ def build_provider_isolation_profile(
         f'  (deny process-exec (literal "{_seatbelt_literal(path)}"))'
         for path in denied_exec_paths
     )
+    process_read_exec_deny_rules = "\n".join(
+        (
+            "  (deny file-read* file-write* process-exec "
+            f'(literal "{_seatbelt_literal(path)}"))'
+        )
+        for path in denied_read_exec_paths
+    )
+    process_exec_allow_rules = "\n".join(
+        (f'  (allow file-read* process-exec (literal "{_seatbelt_literal(path)}"))')
+        for path in allowed_exec_paths
+    )
     network_deny_rule = "  (deny network*)" if deny_network else ""
     sandbox_text = (
         f"(version 1)\n(allow default)\n{deny_rules}\n{write_deny_rules}\n"
         f"{missing_write_deny_rules}\n{missing_deny_rules}\n"
-        f"{process_exec_deny_rules}\n{network_deny_rule}\n"
+        f"{process_exec_deny_rules}\n{process_read_exec_deny_rules}\n"
+        f"{process_exec_allow_rules}\n{network_deny_rule}\n"
     )
     executable = sys.platform == "darwin" and not issues
     final_environment = (
@@ -4015,6 +4064,8 @@ def build_provider_isolation_profile(
         launch_guard=launch_guard,
         missing_protected_paths=tuple(missing_protected),
         deny_process_exec_paths=tuple(denied_exec_paths),
+        deny_read_exec_paths=tuple(denied_read_exec_paths),
+        allow_process_exec_paths=tuple(allowed_exec_paths),
         deny_network=deny_network,
     )
 
@@ -4048,6 +4099,8 @@ def run_provider_isolated(
         missing_write_protected_paths=profile.missing_write_protected_paths,
         missing_protected_paths=profile.missing_protected_paths,
         deny_process_exec_paths=profile.deny_process_exec_paths,
+        deny_read_exec_paths=profile.deny_read_exec_paths,
+        allow_process_exec_paths=profile.allow_process_exec_paths,
         deny_network=profile.deny_network,
         other_run_roots=profile.other_run_roots,
         argv=argv,
