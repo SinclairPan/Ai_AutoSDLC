@@ -33,12 +33,7 @@ _LOCAL_PR_CANDIDATE_PATHS = (
     "src/app.py",
     "tests/test_app.py",
 )
-_WINDOWS_FRONTEND_DELIVERY_ROOTS = (
-    "governance/frontend/solution",
-    "governance/frontend/quality-platform",
-    "governance/frontend/provider-runtime-adapter",
-    "managed/frontend",
-)
+_WINDOWS_FRONTEND_DELIVERY_ROOTS = ("managed/frontend",)
 
 
 @dataclass

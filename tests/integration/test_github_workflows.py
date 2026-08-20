@@ -199,7 +199,7 @@ def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
         "tests/test_app.py",
     )
     delivery_roots = tuple(script["_WINDOWS_FRONTEND_DELIVERY_ROOTS"])
-    assert delivery_roots[-1] == "managed/frontend"
+    assert delivery_roots == ("managed/frontend",)
     governance_paths = tuple(
         path
         for root in delivery_roots[:-1]
