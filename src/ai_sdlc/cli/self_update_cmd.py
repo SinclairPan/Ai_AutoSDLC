@@ -12,6 +12,7 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
@@ -49,7 +50,8 @@ _REPLAY_HANDOFF_SCHEMA_VERSION = 1
 _MAX_REPLAY_HANDOFF_BYTES = 24 * 1024
 _WINDOWS_LAUNCHER_NAMES = {"ai-sdlc.exe", "ai_sdlc.exe"}
 _PROCESS_ENTRY_ARGV0 = str(sys.argv[0])
-_WINDOWS_LAUNCHER_CLEANUP_ATTEMPTS = 200
+_WINDOWS_ENTRY_DIRECT = "direct-runtime"
+_WINDOWS_ENTRY_STABLE = "stable"
 _AUTO_REFRESH_FAILURES = {
     REFRESH_BACKOFF,
     REFRESH_NETWORK_ERROR,
@@ -77,6 +79,14 @@ class ReplayRequest:
     argv: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class WindowsLauncherEntry:
+    """Validated Windows launcher identity and its update capability."""
+
+    path: Path
+    kind: str
+
+
 def _print_json(payload: dict[str, object]) -> None:
     typer.echo(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
 
@@ -100,6 +110,15 @@ def maybe_render_update_notice(*, machine_output: bool) -> None:
     if not latest_version:
         return
 
+    windows_entry = _automatic_windows_launcher_entry()
+    if windows_entry is not None and windows_entry.kind == _WINDOWS_ENTRY_DIRECT:
+        _render_windows_direct_migration_notice(
+            current_version=current_version,
+            latest_version=latest_version,
+            machine_output=machine_output,
+        )
+        return
+
     prompt = _update_confirmation_prompt(current_version, latest_version)
     if not machine_output and _can_prompt_for_update_confirmation():
         if not typer.confirm(prompt, default=False, err=True):
@@ -118,6 +137,73 @@ def maybe_render_update_notice(*, machine_output: bool) -> None:
         "latest_version": latest_version,
         "action": "ask_then_self_update_and_retry",
         "upgrade_command": "ai-sdlc self-update check",
+    }
+    typer.echo(
+        "AI_SDLC_UPDATE_NOTICE "
+        + json.dumps(
+            payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ),
+        err=True,
+    )
+
+
+def _automatic_windows_launcher_entry() -> WindowsLauncherEntry | None:
+    """Classify a Windows console entry before offering an in-process upgrade."""
+
+    if not _should_reexec_windows_launcher():
+        return None
+    try:
+        return _classify_windows_launcher()
+    except SelfUpdateError:
+        return WindowsLauncherEntry(
+            path=Path(_PROCESS_ENTRY_ARGV0),
+            kind=_WINDOWS_ENTRY_DIRECT,
+        )
+
+
+def _windows_module_upgrade_argv(version: str) -> tuple[str, ...]:
+    executable = os.path.abspath(sys.executable)
+    return (
+        executable,
+        "-m",
+        "ai_sdlc",
+        "self-update",
+        "install",
+        "--version",
+        version,
+    )
+
+
+def _powershell_command(argv: tuple[str, ...]) -> str:
+    quoted = ["'" + item.replace("'", "''") + "'" for item in argv]
+    return "& " + " ".join(quoted)
+
+
+def _render_windows_direct_migration_notice(
+    *,
+    current_version: str,
+    latest_version: str,
+    machine_output: bool,
+) -> None:
+    """Keep the current command running when its runtime launcher is locked."""
+
+    upgrade_argv = _windows_module_upgrade_argv(latest_version)
+    if not machine_output and _can_prompt_for_update_confirmation():
+        notice_console.print(
+            "当前 Windows 命令入口正在使用，无法安全原地替换；"
+            "本次命令将继续执行。完成后运行：" + _powershell_command(upgrade_argv),
+            markup=False,
+        )
+        return
+
+    payload = {
+        "schema_version": 1,
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "action": "continue_current_then_run_upgrade_command",
+        "reason": "windows_direct_launcher_locked",
+        "upgrade_argv": list(upgrade_argv),
+        "current_command_continued": True,
     }
     typer.echo(
         "AI_SDLC_UPDATE_NOTICE "
@@ -418,6 +504,7 @@ def self_update_install(
     replay_request: ReplayRequest | None = None
     try:
         replay_request = _consume_replay_handoff()
+        stable_dir = _prepare_windows_stable_shim()
         release_version, _release_url, asset_url, hint = _release_asset_context(version)
         with tempfile.TemporaryDirectory(prefix="ai-sdlc-self-update-") as temp_root:
             temp_path = Path(temp_root)
@@ -428,7 +515,16 @@ def self_update_install(
             )
             _install_bundle_into_current_runtime(bundle_dir, release_version)
             installed_version = _read_installed_version()
-            _repair_current_user_path_if_possible()
+            if installed_version != release_version:
+                raise SelfUpdateError(
+                    f"installed version is {installed_version}, expected {release_version}"
+                )
+            if stable_dir is not None:
+                _verify_windows_stable_shim(stable_dir)
+                _prefer_cli_dir_in_process_path(stable_dir)
+                _repair_user_path_if_possible(stable_dir)
+            else:
+                _repair_current_user_path_if_possible()
             bare_version: str | None
             try:
                 bare_version = _verify_bare_cli_version(release_version)
@@ -436,10 +532,6 @@ def self_update_install(
                 if shutil.which("ai-sdlc"):
                     raise
                 bare_version = None
-        if installed_version != release_version:
-            raise SelfUpdateError(
-                f"installed version is {installed_version}, expected {release_version}"
-            )
     except SelfUpdateError as exc:
         console.print(
             Panel(
@@ -528,23 +620,25 @@ def _release_asset_context(
 def _reexec_windows_launcher_if_needed(version: str) -> None:
     if not _should_reexec_windows_launcher():
         return
-    replay_request = _consume_replay_handoff()
     try:
-        launcher, backup = _prepare_windows_launcher_update()
+        entry = _classify_windows_launcher()
     except SelfUpdateError as exc:
         notice_console.print(f"无法准备 Windows 更新：{exc}", markup=False)
         raise typer.Exit(1) from exc
+    if entry.kind == _WINDOWS_ENTRY_DIRECT:
+        os.environ.pop(_REPLAY_HANDOFF_ENV, None)
+        notice_console.print(
+            "当前 Windows direct runtime 命令正在使用，不能安全原地升级。"
+            "请退出本命令后运行："
+            + _powershell_command(_windows_module_upgrade_argv(version)),
+            markup=False,
+        )
+        raise typer.Exit(1)
+
+    replay_request = _consume_replay_handoff()
     env = os.environ.copy()
     env[_SELF_UPDATE_REEXEC_ENV] = "1"
-    command = [
-        sys.executable,
-        "-m",
-        "ai_sdlc",
-        "self-update",
-        "install",
-        "--version",
-        version,
-    ]
+    command = list(_windows_module_upgrade_argv(version))
     try:
         completed = subprocess.run(
             command,
@@ -553,39 +647,19 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
             check=False,
         )
     except OSError as exc:
-        if backup is not None:
-            _restore_windows_launcher_path(launcher, backup)
         notice_console.print(f"无法启动 Windows 更新进程：{exc}", markup=False)
         raise typer.Exit(1) from exc
 
     if completed.returncode != 0:
-        if backup is not None:
-            restored = _restore_windows_launcher_path(launcher, backup)
-            notice_console.print(
-                (
-                    "Windows 更新失败，已恢复原命令入口。"
-                    if restored
-                    else "Windows 更新失败，且无法恢复原命令入口。"
-                ),
-                markup=False,
-            )
         raise typer.Exit(completed.returncode)
 
     business_exit = (
         _run_updated_command(replay_request) if replay_request is not None else 0
     )
-    if backup is not None:
-        try:
-            _start_windows_launcher_cleanup(backup)
-        except OSError as exc:
-            notice_console.print(
-                f"更新已完成，但旧 Windows 命令入口将在下次启动时清理：{exc}",
-                markup=False,
-            )
     raise typer.Exit(business_exit)
 
 
-def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
+def _classify_windows_launcher() -> WindowsLauncherEntry:
     launcher = _locate_windows_launcher()
     if launcher.is_symlink():
         raise SelfUpdateError("the active Windows launcher must not be a link")
@@ -605,7 +679,22 @@ def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
     if launcher_name not in _WINDOWS_LAUNCHER_NAMES:
         raise SelfUpdateError("the active Windows command is not ai-sdlc.exe")
     if _windows_path_key(launcher.parent) in allowed_dirs:
-        return launcher, _release_windows_runtime_launcher(launcher)
+        return WindowsLauncherEntry(path=launcher, kind=_WINDOWS_ENTRY_DIRECT)
+
+    return _classify_external_windows_launcher(launcher, runtime_python)
+
+
+def _classify_external_windows_launcher(
+    launcher: Path, runtime_python: Path
+) -> WindowsLauncherEntry:
+    """Validate the installer-owned stable shim against its runtime marker."""
+
+    if (
+        launcher.name.lower() not in _WINDOWS_LAUNCHER_NAMES
+        or launcher.is_symlink()
+        or not launcher.is_file()
+    ):
+        raise SelfUpdateError("the external Windows launcher is not a trusted file")
 
     marker = launcher.with_name("ai-sdlc-runtime.txt")
     if marker.is_symlink() or not marker.is_file():
@@ -621,7 +710,7 @@ def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
         raise SelfUpdateError("the Windows runtime marker target is not a file")
     if _windows_path_key(marked_python) != _windows_path_key(runtime_python):
         raise SelfUpdateError("the Windows runtime marker does not match this runtime")
-    return launcher, None
+    return WindowsLauncherEntry(path=launcher, kind=_WINDOWS_ENTRY_STABLE)
 
 
 def _locate_windows_launcher(argv0: str | None = None) -> Path:
@@ -679,76 +768,6 @@ def _windows_path_key(path: Path) -> str:
     except OSError as exc:
         raise SelfUpdateError("cannot normalize the Windows runtime path") from exc
     return os.path.normcase(canonical)
-
-
-def _release_windows_runtime_launcher(launcher: Path) -> Path:
-    """Move the active runtime launcher so pip can write the canonical path."""
-
-    prefix = f".{launcher.stem}-old-"
-    _remove_stale_windows_launchers(launcher.parent, prefix)
-    backup = launcher.with_name(f"{prefix}{os.getpid()}{launcher.suffix}")
-    ordinal = 0
-    while backup.exists():
-        ordinal += 1
-        backup = launcher.with_name(f"{prefix}{os.getpid()}-{ordinal}{launcher.suffix}")
-    try:
-        os.replace(launcher, backup)
-    except OSError as exc:
-        raise SelfUpdateError(
-            "cannot release the active Windows launcher for replacement"
-        ) from exc
-    return backup
-
-
-def _remove_stale_windows_launchers(directory: Path, prefix: str) -> None:
-    for candidate in directory.glob(f"{prefix}*.exe"):
-        try:
-            if candidate.is_symlink() or not candidate.is_file():
-                continue
-            candidate.unlink()
-        except OSError:
-            continue
-
-
-def _restore_windows_launcher_path(launcher: Path, backup: Path) -> bool:
-    if not backup.exists():
-        return False
-    try:
-        os.replace(backup, launcher)
-    except OSError as exc:
-        notice_console.print(
-            f"Windows 更新失败，且无法恢复原命令入口：{exc}", markup=False
-        )
-        return False
-    return True
-
-
-def _start_windows_launcher_cleanup(backup: Path) -> None:
-    cleanup_code = (
-        "import pathlib,sys,time\n"
-        "path=pathlib.Path(sys.argv[1])\n"
-        f"for _ in range({_WINDOWS_LAUNCHER_CLEANUP_ATTEMPTS}):\n"
-        " try:\n"
-        "  path.unlink(missing_ok=True)\n"
-        "  raise SystemExit(0)\n"
-        " except PermissionError:\n"
-        "  time.sleep(0.05)\n"
-        "raise SystemExit(1)\n"
-    )
-    env = os.environ.copy()
-    env.pop(_REPLAY_HANDOFF_ENV, None)
-    env.pop(_REPLAY_BYPASS_ENV, None)
-    env.pop(_SELF_UPDATE_REEXEC_ENV, None)
-    subprocess.Popen(
-        [sys.executable, "-c", cleanup_code, str(backup)],
-        shell=False,
-        env=env,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-    )
 
 
 def _should_reexec_windows_launcher(
@@ -1003,6 +1022,90 @@ def _current_cli_directory() -> Path | None:
     if argv0.name.lower() in _candidate_names():
         return argv0.parent
     return None
+
+
+def _windows_stable_shim_directory() -> Path | None:
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        return Path(local_app_data) / "AI-SDLC" / "bin"
+    user_profile = os.environ.get("USERPROFILE", "").strip()
+    if user_profile:
+        return Path(user_profile) / ".ai-sdlc" / "bin"
+    return None
+
+
+def _prepare_windows_stable_shim() -> Path | None:
+    """Create or validate the runtime-external entry before mutating Windows."""
+
+    if sys.platform != "win32":
+        return None
+    runtime_python = Path(os.path.abspath(sys.executable))
+    if runtime_python.is_symlink() or not runtime_python.is_file():
+        raise SelfUpdateError("the active Windows Python runtime is not a trusted file")
+    launcher_candidates = {
+        _windows_path_key(candidate): candidate
+        for candidate in (
+            runtime_python.with_name("ai-sdlc.exe"),
+            runtime_python.parent / "Scripts" / "ai-sdlc.exe",
+        )
+        if not candidate.is_symlink() and candidate.is_file()
+    }
+    if len(launcher_candidates) != 1:
+        raise SelfUpdateError(
+            "the Windows runtime must expose exactly one ai-sdlc launcher"
+        )
+    launcher = next(iter(launcher_candidates.values()))
+    stable_dir = _windows_stable_shim_directory()
+    if stable_dir is None:
+        raise SelfUpdateError("cannot determine the Windows stable command directory")
+    if _windows_path_key(stable_dir) == _windows_path_key(launcher.parent):
+        raise SelfUpdateError("the Windows stable command must be outside the runtime")
+
+    stable_launcher = stable_dir / "ai-sdlc.exe"
+    marker = stable_dir / "ai-sdlc-runtime.txt"
+    launcher_existed = stable_launcher.exists()
+    marker_existed = marker.exists()
+    try:
+        stable_dir.mkdir(parents=True, exist_ok=True)
+        if launcher_existed or marker_existed:
+            if not launcher_existed or not marker_existed:
+                raise SelfUpdateError("the Windows stable command is incomplete")
+            _classify_external_windows_launcher(stable_launcher, runtime_python)
+            return stable_dir
+
+        launcher_temp = stable_dir / f".ai-sdlc-{os.getpid()}.exe.tmp"
+        marker_temp = stable_dir / f".ai-sdlc-runtime-{os.getpid()}.txt.tmp"
+        shutil.copy2(launcher, launcher_temp)
+        marker_temp.write_text(f"{runtime_python}\n", encoding="utf-8")
+        os.replace(marker_temp, marker)
+        os.replace(launcher_temp, stable_launcher)
+        _classify_external_windows_launcher(stable_launcher, runtime_python)
+    except (OSError, SelfUpdateError) as exc:
+        for candidate in (
+            stable_dir / f".ai-sdlc-{os.getpid()}.exe.tmp",
+            stable_dir / f".ai-sdlc-runtime-{os.getpid()}.txt.tmp",
+        ):
+            with suppress(OSError):
+                candidate.unlink(missing_ok=True)
+        if not launcher_existed:
+            with suppress(OSError):
+                stable_launcher.unlink(missing_ok=True)
+        if not marker_existed:
+            with suppress(OSError):
+                marker.unlink(missing_ok=True)
+        if isinstance(exc, SelfUpdateError):
+            raise
+        raise SelfUpdateError("cannot create the Windows stable command") from exc
+    return stable_dir
+
+
+def _verify_windows_stable_shim(stable_dir: Path) -> None:
+    runtime_python = Path(os.path.abspath(sys.executable))
+    entry = _classify_external_windows_launcher(
+        stable_dir / "ai-sdlc.exe", runtime_python
+    )
+    if entry.kind != _WINDOWS_ENTRY_STABLE:
+        raise SelfUpdateError("the Windows stable command verification failed")
 
 
 def _repair_current_user_path_if_possible() -> None:

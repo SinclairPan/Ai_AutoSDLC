@@ -24,6 +24,9 @@ Files:
 
 - Modify `tests/integration/test_cli_self_update.py`
 - Create `tests/integration/test_cli_update_notice_process.py`
+- Modify `packaging/install_online.ps1`
+- Modify `packaging/offline/install_offline.ps1`
+- Modify `tests/integration/test_offline_bundle_scripts.py`
 - Modify `tests/integration/test_cli_run.py`
 - Modify `tests/unit/test_rules_loader.py`
 - Modify `tests/integration/test_cli_status.py`
@@ -58,10 +61,13 @@ Implementation:
 - render a deterministic `AI_SDLC_UPDATE_NOTICE {compact-json}` line to stderr for non-TTY/JSON;
 - keep TTY confirmation on stderr; decline and discovery failure continue the original command;
 - freeze the original executable and argv before installation; on POSIX, replay them after the install
-  returns; on Windows, extend `_reexec_windows_launcher_if_needed` to distinguish a runtime-owned launcher
-  from a trusted stable shim whose sibling runtime marker matches `sys.executable`; atomically move aside
-  only the runtime-owned launcher, synchronously run a handoff-free module updater, and treat only exit 0
-  as an installed and verified update instead of relying on in-process `exec` replacement;
+  returns; on Windows, distinguish a runtime-owned direct launcher from a trusted stable shim whose sibling
+  runtime marker matches `sys.executable`;
+- keep the stable shim and `python -m ai_sdlc` as supported immediate-update entries: synchronously run a
+  handoff-free module updater, treat only exit 0 as installed/verified, then exact-replay the business argv;
+- when the active entry is the locked runtime-owned direct exe, do not prompt, rename or install: emit an
+  exact module upgrade argv on stderr, continue the original business handler once, and preserve its exit;
+  explicit direct `self-update install` is nonzero and performs no mutation;
 - make the Windows parent strictly parse and remove the one-shot handoff before installation, then run the
   updated original executable with exact argv and `shell=False`; the replay child receives a one-shot
   bypass marker that the root callback removes before invoking the business handler;
@@ -70,19 +76,19 @@ Implementation:
   claiming the business command completed;
 - explicit `self-update` does not create a replay handoff, and no handoff/argv may reach a file, cache,
   log, notice, persistent environment or the final business-handler environment;
-- restore the old Windows launcher when no committed replacement exists; after success, use only a
-  bounded one-shot cleanup child without business argv to delete the old image after its parent exits;
+- after a successful module update, create or validate the runtime-external stable shim and marker and
+  prefer its directory for future bare commands; installers with `-AddToPath` must recommend stable
+  `ai-sdlc`, while no-PATH guidance keeps the module form and runtime direct is compatibility-only;
 - never serialize argv into notice/cache and never replay source/editable/`uv run` runtimes;
 - retain existing cache freshness, automatic timeout, failure backoff, explicit-check timeout and
   Release redirect validation.
 
 Process-level tests must use separated stdout/stderr and a disposable installed-runtime fixture. A
-CliRunner-only assertion is insufficient for JSON cleanliness or replay behavior. Add a real Windows
-installed-launcher regression that traverses `.exe`→module-updater child delegation: updater once,
-business handler once and only after install, exact argv, no recursion, exact child exit propagation,
-no business execution on install failure, and consumed handoff/bypass values. It must perform a real
-local-wheel upgrade while the original launcher is still alive so file-lock behavior is evidence-based.
-A POSIX spawn or platform mock cannot replace it.
+CliRunner-only assertion is insufficient for JSON cleanliness or replay behavior. Real Windows 3.11–3.14
+tests must cover: stable `.exe` and module 1.0→2.0 real-wheel update with exact replay/exit; direct runtime
+exe with zero installer calls, zero mutation, one old-version business execution and exact exit; explicit
+direct install rejection; and execution of the emitted module argv followed by a working stable shim.
+No core case may be replaced by skip, xfail, a POSIX spawn or a platform mock.
 
 Verify:
 
@@ -207,8 +213,9 @@ git diff --check
 ```
 
 Build wheel and sdist, run a fresh installed CLI subprocess, and exercise macOS/Linux/Windows smoke
-contracts including separated stdout/stderr. The Windows smoke must use the generated console `.exe`
-and prove the real launcher→module updater→updated launcher replay branch, not a mocked platform check.
+contracts including separated stdout/stderr. The Windows smoke must prove the supported stable
+launcher→module updater→updated stable replay branch, the module branch, and the direct-runtime
+defer→module migration branch with real wheels, not platform mocks.
 Re-run the Node/Java/Python fixtures from the built distribution, not only the source checkout.
 
 Freeze HEAD/tree/base/path set/dirty state. Start exactly two independent local reviewers on the same

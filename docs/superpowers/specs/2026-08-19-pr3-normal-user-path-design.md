@@ -75,25 +75,30 @@ Program、Telemetry 和治理表。顶层帮助同时展示二十余个历史/�
 
 - 拒绝：记录本次选择并继续执行原命令。
 - 离线、超时、解析失败或缓存不可写：继续执行原命令。
-- 确认：调用现有安全安装流程；安装成功后用 `shell=False` 启动更新后的同一 CLI
+- stable shim 或 `python -m ai_sdlc` 确认：调用现有安全安装流程；安装成功后用 `shell=False` 启动更新后的同一 CLI
   可执行文件，并传入原始参数；父进程传播重跑命令的退出码。
+- Windows runtime 内的 direct `Scripts\ai-sdlc.exe` 正在执行时不可被 pip 安全替换。该入口
+  不询问、不安装，只在 stderr 给出精确的 `python -m ai_sdlc self-update install` 命令，随后
+  继续当前业务命令并保持其退出码。显式从 direct exe 执行 `self-update install` 必须零修改、
+  非零退出并给出同一迁移命令。
 - 重跑通过一次性进程环境标记跳过第二次提示，禁止递归；标记不写入项目或长期配置。
 - 安装成功但无法重跑时明确返回失败，不能谎报业务命令已完成。
 
 不得把原始 argv 写入缓存、日志或升级提示，避免泄漏业务参数与凭证。
 
-Windows console launcher 是同一 update→replay 状态机的一部分。`ai-sdlc.exe` 必须在安装前
-区分 runtime-owned launcher 与安装器生成的 stable shim：前者原子改名以释放 canonical 路径；
-后者只有在本身为普通文件、相邻 `ai-sdlc-runtime.txt` 精确指向当前 `sys.executable` 时才可信，
-且不得改名。随后同步启动无 handoff 的 `python -m ai_sdlc self-update install` 子进程并等待
-完成；禁止依赖 Windows 不可靠的进程内 `exec` 替换。初始进程必须先冻结原 executable 与 argv，
-严格解析一次性环境 handoff 后只在内存中保留；不得写临时文件。module updater 只执行安装和
-验证，退出 0 才算安装成功；初始进程随后调用更新后的原 executable 与 exact argv，单独传播
-业务退出码，不能用 metadata 或 launcher 是否存在猜测子进程失败阶段。业务子进程只接收一次性
-bypass 标记，根回调必须在调用业务 handler 前消费并删除该标记，因此 handoff/bypass 都不会
-出现在实际业务命令环境中。安装未形成新 launcher 时必须恢复旧 launcher；成功后只允许一个
-不携带业务 argv 的有界清理子进程在父进程退出后删除旧映像，下一次升级只可清理同目录受控命名
-的残留，不能扫描或治理其他安装路径。
+Windows console launcher 必须先区分 runtime-owned direct launcher 与安装器生成的 stable shim。
+stable shim 只有在本身为普通文件、相邻 `ai-sdlc-runtime.txt` 精确指向当前 `sys.executable` 时
+才可信；它位于 runtime 之外，不属于 pip 本次替换对象，因此可以同步启动无 handoff 的
+`python -m ai_sdlc self-update install` 子进程，安装成功后再用 stable executable 与 exact argv
+重放业务命令。runtime-owned direct launcher 在进程存活时被 Windows 锁定，不能 rename、replace
+或由 pip 原地收口；本合同明确不再承诺该入口的即时安装。module updater 成功后应创建或验证
+runtime 外的 stable shim 与 marker，并将其目录作为后续裸命令的优先入口。禁止引入版本目录、
+current pointer、后台更新器或自定义 wheel/RECORD 处理。
+
+stable/module 自动升级仍必须冻结原 executable 与 argv，一次性 handoff 只在进程链内传递并在
+安装前消费；业务子进程只接收一次性 bypass，根回调在业务 handler 前消费。安装与业务 replay
+是两个独立阶段，只有安装退出 0 才能 replay，最终传播业务退出码，不得把“升级完成”表述成
+“业务命令完成”。
 
 显式 `self-update` 命令不创建 replay handoff。自动升级 handoff 缺失/损坏、安装失败或重跑
 启动失败都必须非零退出；安装失败时不得执行原业务命令，任何路径都不得把“升级完成”当作
@@ -110,6 +115,8 @@ AI_SDLC_UPDATE_NOTICE {"action":"ask_then_self_update_and_retry","current_versio
 JSON 使用紧凑、稳定键名和固定前缀；不包含原始 argv。stdout 完全属于原业务命令，必须保持
 可解析。Agent adapter 明确要求：向用户确认；确认后执行 `ai-sdlc self-update check`；成功后
 重新执行自己刚才的原命令。用户拒绝或暂不确认时继续处理原命令结果。
+Windows direct launcher 使用同一前缀，`reason=windows_direct_launcher_locked`，并提供结构化
+`upgrade_argv` 与 `current_command_continued=true`；stdout 仍完全属于原业务命令。
 
 ### 缓存与网络
 
@@ -189,8 +196,12 @@ AI-SDLC 自研发布和历史 WorkItem 内容从通用模板移除。
 
 - 模拟 installed `1.0.0` 与 latest `2.0.0`：普通命令和 `loop` 均提示。
 - TTY 拒绝、离线、刷新失败时原命令继续；确认后安装并精确重跑原命令一次。
-- Windows 安装入口必须真实覆盖 `.exe`→module updater→更新后 `.exe` 的进程链；安装和业务
-  handler 各执行一次，argv 与业务退出码保持不变，handoff/bypass 被消费且不落盘。
+- Windows stable shim 必须真实覆盖 `.exe`→module updater→更新后 stable `.exe` 的进程链；
+  `python -m ai_sdlc` 覆盖同等即时升级语义。安装和业务 handler 各执行一次，argv 与退出码
+  保持不变，handoff/bypass 被消费且不落盘。
+- Windows direct runtime exe 的真实 wheel 测试必须证明零安装/零改名、旧业务恰好执行一次、
+  退出码原样传播、JSON stdout 可解析；提示给出的 module argv 必须真实完成 1.0→2.0 升级并
+  创建/验证 stable shim。显式 direct self-update 必须非零且不修改安装。
 - 非 TTY 与 JSON 只产生一行 stderr；JSON stdout 始终可解析。
 - 同一成功缓存周期只联网一次；源码/editable/`uv run` 不安装、不重跑。
 - 安装或重跑失败不产生假成功。
