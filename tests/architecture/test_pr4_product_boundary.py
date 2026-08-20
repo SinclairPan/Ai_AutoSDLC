@@ -49,6 +49,17 @@ def test_frontend_delivery_service_is_a_narrow_retained_module() -> None:
         assert retired not in text
 
 
+def test_distributed_sources_do_not_recommend_retired_program_commands() -> None:
+    for suffix in ("*.py", "*.md"):
+        for path in sorted((ROOT / "src" / "ai_sdlc").rglob(suffix)):
+            assert "ai-sdlc program" not in path.read_text(encoding="utf-8"), path
+
+    browser_runtime = (
+        ROOT / "src" / "ai_sdlc" / "core" / "frontend_browser_gate_runtime.py"
+    ).read_text(encoding="utf-8")
+    assert "uv run ai-sdlc loop frontend-evidence" not in browser_runtime
+
+
 def test_scanner_models_parent_package_initialization(tmp_path: Path) -> None:
     entry = tmp_path / "entry.py"
     parent = tmp_path / "models_init.py"

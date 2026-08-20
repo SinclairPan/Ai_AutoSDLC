@@ -967,7 +967,7 @@ def _copy_release_contract_surfaces(root: Path) -> None:
         "packaging/offline/README.md",
         "packaging/install_online.ps1",
         "packaging/install_online.sh",
-        "docs/v2-migration.zh-CN.md",
+        "docs/v3-migration.zh-CN.md",
         "docs/框架自迭代开发与发布约定.md",
         "docs/pull-request-checklist.zh.md",
         ".github/workflows/release-build.yml",
@@ -993,7 +993,7 @@ def test_release_docs_consistency_blocks_when_current_identity_is_missing(
     blockers = collect_constraint_blockers(tmp_path)
 
     assert any("release docs consistency drift" in item for item in blockers)
-    assert any("README.md" in item and "2.0.0" in item for item in blockers)
+    assert any("README.md" in item and "3.0.0" in item for item in blockers)
 
 
 def test_release_docs_consistency_passes_when_current_surfaces_align(

@@ -1169,6 +1169,11 @@ def test_run_default_browser_gate_probe_kills_process_tree_on_timeout(
 
     assert result.runtime_status == "failed_transient"
     assert result.diagnostic_codes == ["browser_probe_timeout"]
+    assert result.warnings == [
+        "Browser gate probe timed out before completion. Confirm the frontend host "
+        "is ready, then re-run `ai-sdlc loop frontend-evidence capture "
+        "--execute`."
+    ]
     assert killed_pids == [4321]
 
 

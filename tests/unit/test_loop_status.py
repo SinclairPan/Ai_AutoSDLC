@@ -1166,6 +1166,23 @@ def test_frontend_evidence_status_after_close_points_to_local_pr_review(
     assert result.current_loop.frontend_evidence.closed is True
 
 
+def test_frontend_evidence_needs_fix_points_to_retained_capture_command(
+    tmp_path: Path,
+) -> None:
+    _write_frontend_evidence_status_loop(
+        tmp_path,
+        loop_id="fe-needs-fix",
+        status=LoopStatus.NEEDS_FIX,
+    )
+
+    result = get_loop_status(tmp_path, loop_type="frontend-evidence")
+
+    assert result.next_guidance.command == (
+        "ai-sdlc loop frontend-evidence capture --execute"
+    )
+    assert "ai-sdlc program" not in result.next_guidance.model_dump_json()
+
+
 def test_list_loops_reports_malformed_current_frontend_evidence_run(
     tmp_path: Path,
 ) -> None:

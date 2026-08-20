@@ -1,17 +1,17 @@
-# AI-SDLC 2.0.0
+# AI-SDLC 3.0.0
 
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 当前公开稳定版本为 `v2.0.0`。普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装；从 `v1.0.2` 升级前请先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
+> 当前公开稳定版本为 `v3.0.0`。普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装；从 `v2.0.0` 升级前请阅读 [v3 迁移说明](docs/v3-migration.zh-CN.md)，从 `v1.0.2` 跨大版本升级还应先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
 
 ## 核心特性
 
 | 能力 | 说明 |
 | --- | --- |
 | 项目初始化与接入 | `init` 为新项目建立规则、状态与代理入口；`adopt` 在不修改业务文件的前提下识别已有项目事实。 |
-| 命令前升级提示 | 安装版在业务命令执行前检查缓存；TTY 可确认升级，Agent/非 TTY 通过 stderr 获得稳定单行提示，JSON stdout 不受污染。 |
+| 命令前升级提示 | 安装版在业务命令执行前检查缓存；stable shim / `python -m ai_sdlc` 支持 TTY 确认后升级重放，Agent/非 TTY 通过 stderr 获得稳定单行提示，JSON stdout 不受污染。 |
 | Codex 项目适配 | 以 `AGENTS.md` 作为项目级指令入口，可持久化 Codex 与 PowerShell、Bash、Zsh 或 Cmd 偏好。 |
 | 可恢复流水线 | checkpoint 记录执行阶段、开放门禁和下一步动作；`status` 默认只显示 Result、Next、Blockers，详细诊断进入 `--details`。 |
 | Loop Engineering | 内置 requirement、design-contract、implementation、frontend-evidence、local-pr-review 五类闭环。 |
@@ -30,18 +30,18 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 ### 从 Git 安装
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0"
 ai-sdlc --version
 ```
 
-版本输出应为 `2.0.0`。
+版本输出应为 `3.0.0`。
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
 ### 从源码运行
 
 ```powershell
-git clone --branch v2.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v3.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -143,7 +143,7 @@ ai-sdlc run
 
 ### 命令前升级提示
 
-安装版 CLI 在业务命令执行前使用本地缓存判断是否有新版本。TTY 用户可确认先升级再精确重放原命令；非 TTY、Codex、Cursor 和 Claude Code 获得 stderr 中的一行 `AI_SDLC_UPDATE_NOTICE` 结构化提示，原命令继续执行。`--json` 的 stdout 始终保持可解析。拒绝升级、离线、超时或检查失败不会阻断原命令；`self-update`、帮助、补全以及源码/`uv run` 开发环境不会触发自动覆盖安装。
+安装版 CLI 在业务命令执行前使用本地缓存判断是否有新版本。经验证的外部 stable shim 与 `python -m ai_sdlc` 入口支持 TTY 用户确认后先升级，再精确重放原命令。Windows 运行时目录内的 direct `Scripts\ai-sdlc.exe` 在活动期间无法安全替换：自动检查只输出可执行迁移提示、零安装并让当前业务命令继续一次，显式 direct self-update 则不修改安装且非零退出。非 TTY、Codex、Cursor 和 Claude Code 获得 stderr 中的一行 `AI_SDLC_UPDATE_NOTICE` 结构化提示，原命令继续执行。`--json` 的 stdout 始终保持可解析。拒绝升级、离线、超时或检查失败不会阻断原命令；`self-update`、帮助、补全以及源码/`uv run` 开发环境不会触发自动覆盖安装。
 
 ### 4. 恢复工作
 
@@ -217,11 +217,11 @@ AI-SDLC 将前端质量作为可验证交付的一部分：
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。`v2.0.0` 的正式产物名称为：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。`v3.0.0` 的正式产物名称为：
 
-- `ai-sdlc-offline-2.0.0-windows-amd64.zip`
-- `ai-sdlc-offline-2.0.0-macos-arm64.tar.gz`
-- `ai-sdlc-offline-2.0.0-linux-amd64.tar.gz`
+- `ai-sdlc-offline-3.0.0-windows-amd64.zip`
+- `ai-sdlc-offline-3.0.0-macos-arm64.tar.gz`
+- `ai-sdlc-offline-3.0.0-linux-amd64.tar.gz`
 
 具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
 
@@ -253,6 +253,7 @@ uv run python scripts/validate_public_release_identity.py .
 ## 文档
 
 - [中文用户指南](USER_GUIDE.zh-CN.md)
+- [v3 迁移说明](docs/v3-migration.zh-CN.md)
 - [v2 迁移说明](docs/v2-migration.zh-CN.md)
 - [产品能力契约](docs/product-contract.md)
 - [Pull Request 检查清单](docs/pull-request-checklist.zh.md)

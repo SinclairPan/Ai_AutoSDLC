@@ -1,4 +1,4 @@
-# AI-SDLC 2.0.0 产品能力契约
+# AI-SDLC 3.0.0 产品能力契约
 
 ## 产品定位
 
@@ -24,7 +24,7 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 - 扫描语言、依赖、测试、入口和风险；
 - 为 Codex 生成 `AGENTS.md` 项目入口；
 - 持久化 PowerShell、Bash、Zsh、Cmd 或自动选择；
-- 安装版 CLI 在业务命令前读取更新缓存：TTY 仅在用户明确确认后升级并重放原命令；Agent、非 TTY 和 JSON 路径只在 stderr 输出稳定单行提示，不污染业务 stdout。
+- 安装版 CLI 在业务命令前读取更新缓存：外部 stable shim 与 `python -m ai_sdlc` 仅在 TTY 用户明确确认后升级并重放原命令；Windows runtime-local direct `Scripts\ai-sdlc.exe` 只给出迁移提示、零安装并继续当前业务，显式 direct self-update 非零退出；Agent、非 TTY 和 JSON 路径只在 stderr 输出稳定单行提示，不污染业务 stdout。
 
 ### 流水线与恢复
 
@@ -62,7 +62,7 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 ### 运行集成
 
 - 本地 Continuity handoff 与五 Loop 状态恢复；
-- 安装版命令前升级提示、离线升级与失败恢复；
+- 受支持安装入口的命令前升级提示、离线升级与失败恢复；
 - Windows、macOS、Linux 离线交付。
 
 ## 非目标
@@ -76,11 +76,12 @@ AI-SDLC 是面向 AI 代理与工程团队的本地研发治理框架。它负�
 
 ## 当前源码与公开版本
 
-- Python 源码版本：`2.0.0`；
+- Python 源码版本：`3.0.0`；
 - Git 仓库：`https://github.com/SinclairPan/Ai_AutoSDLC`；
-- 当前公开稳定版本：`v2.0.0`，其安装与校验入口见 `USER_GUIDE.zh-CN.md`；
-- `ai-sdlc-offline-2.0.0-windows-amd64.zip`、`ai-sdlc-offline-2.0.0-macos-arm64.tar.gz`、`ai-sdlc-offline-2.0.0-linux-amd64.tar.gz` 是正式离线产物名；
-- `v2.0.0` 删除了 `v1.0.2` 中已公开但已退出产品边界的命令；升级说明见 `docs/v2-migration.zh-CN.md`；
+- 当前公开稳定版本：`v3.0.0`，其安装与校验入口见 `USER_GUIDE.zh-CN.md`；
+- `ai-sdlc-offline-3.0.0-windows-amd64.zip`、`ai-sdlc-offline-3.0.0-macos-arm64.tar.gz`、`ai-sdlc-offline-3.0.0-linux-amd64.tar.gz` 是正式离线产物名；
+- `v2.0.0` 相对 `v1.0.2` 删除了旧审查治理入口，历史升级说明见 `docs/v2-migration.zh-CN.md`；
+- `v3.0.0` 删除了 `v2.0.0` 中公开但已退出产品边界的旧顶层命令；升级说明见 `docs/v3-migration.zh-CN.md`；
 - 新版本只通过普通 GitHub Release、tag、跨平台 smoke 和分支保护发布，不建立 Release Proof、Certificate、attestation、generation burn 或额外 authority/store。
 
 ## 验收接口

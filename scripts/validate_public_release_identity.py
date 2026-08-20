@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the public AI-SDLC 2.0.0 release identity."""
+"""Validate the public AI-SDLC 3.0.0 release identity."""
 
 from __future__ import annotations
 
@@ -11,10 +11,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 CURRENT_REPOSITORY_URL = "https://github.com/SinclairPan/Ai_AutoSDLC"
-CURRENT_VERSION = "2.0.0"
+CURRENT_VERSION = "3.0.0"
 STABLE_SOURCE_CLONE = (
-    "git clone --branch v2.0.0 --depth 1 "
-    "https://github.com/SinclairPan/Ai_AutoSDLC.git"
+    "git clone --branch v3.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git"
 )
 
 REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
@@ -24,9 +23,9 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         CURRENT_VERSION,
         "## 第一章：全新用户 + 全新空项目",
         "## 第二章：全新用户 + 已有项目",
-        "releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip",
-        "releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
-        "releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
+        "releases/download/v3.0.0/ai-sdlc-offline-3.0.0-windows-amd64.zip",
+        "releases/download/v3.0.0/ai-sdlc-offline-3.0.0-macos-arm64.tar.gz",
+        "releases/download/v3.0.0/ai-sdlc-offline-3.0.0-linux-amd64.tar.gz",
         "Get-FileHash -Algorithm SHA256",
         "shasum -a 256 -c",
         "sha256sum -c",
@@ -39,6 +38,9 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "ai-sdlc adopt .",
         "当前结果 / Result",
         "下一步 / Next",
+        "外部 stable shim 与 `python -m ai_sdlc`",
+        "Windows 运行时目录内的 direct `Scripts\\ai-sdlc.exe`",
+        "$ModulePython -m ai_sdlc",
     ),
     "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
     "packaging/offline/README.md": (
@@ -52,17 +54,20 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
     ),
     "packaging/install_online.ps1": (
         CURRENT_REPOSITORY_URL,
-        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0",
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0",
     ),
     "packaging/install_online.sh": (
         CURRENT_REPOSITORY_URL,
-        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v2.0.0",
+        "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0",
     ),
-    "docs/v2-migration.zh-CN.md": (
+    "docs/v3-migration.zh-CN.md": (
         CURRENT_VERSION,
+        "v2.0.0",
         "Local PR Review",
         "代码精简分析只给出建议",
         "最多两名只读专家",
+        "`program`",
+        "没有兼容别名",
     ),
 }
 

@@ -50,7 +50,7 @@ def test_scan_rejects_repository_mismatch_and_local_path_disclosure(
 def test_required_surfaces_enforce_current_release_identity() -> None:
     files = {
         "README.md": (
-            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 2.0.0\n{STABLE_SOURCE_CLONE}"
+            f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 3.0.0\n{STABLE_SOURCE_CLONE}"
         ),
     }
 
@@ -64,7 +64,7 @@ def test_required_surfaces_enforce_current_release_identity() -> None:
 
 def test_scan_allows_current_release_and_dependency_versions(tmp_path: Path) -> None:
     files = {
-        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 2.0.0",
+        "README.md": f"{CURRENT_REPOSITORY_URL}\nAI-SDLC 3.0.0",
         "uv.lock": 'name = "example"\nversion = "3.4.2"',
         "managed/frontend/package-lock.json": '{"version":"3.3.0"}',
         "src/provider.py": 'release_ref = "refs/tags/rust-v0.138.0"',
@@ -81,6 +81,8 @@ def test_public_identity_does_not_require_release_history_documents() -> None:
 
     assert not any(path.startswith("docs/releases/") for path in public_paths)
     assert not any("prd" in path.casefold() for path in public_paths)
+    assert "docs/v3-migration.zh-CN.md" in public_paths
+    assert "docs/v2-migration.zh-CN.md" not in public_paths
 
 
 def test_user_guide_identity_requires_new_user_release_paths() -> None:
