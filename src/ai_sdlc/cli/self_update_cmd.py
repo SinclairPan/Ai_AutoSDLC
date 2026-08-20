@@ -12,7 +12,6 @@ import tempfile
 import urllib.error
 import urllib.request
 import zipfile
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path, PureWindowsPath
 
@@ -151,7 +150,7 @@ def _capture_replay_request() -> ReplayRequest:
         and PureWindowsPath(sys.argv[0]).name.lower() in _WINDOWS_LAUNCHER_NAMES
     ):
         return ReplayRequest(
-            executable=str(_active_windows_process_image()),
+            executable=str(_locate_windows_launcher()),
             argv=tuple(sys.argv[1:]),
         )
     executable = str(sys.argv[0]).strip()
@@ -585,7 +584,7 @@ def _reexec_windows_launcher_if_needed(version: str) -> None:
 
 
 def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
-    launcher = _active_windows_process_image()
+    launcher = _locate_windows_launcher()
     if launcher.is_symlink():
         raise SelfUpdateError("the active Windows launcher must not be a link")
     if not launcher.is_file():
@@ -623,52 +622,50 @@ def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
     return launcher, None
 
 
-def _active_windows_process_image() -> Path:
-    """读取当前 Windows 进程映像，避免依赖启动器改写后的 argv[0]。"""
+def _locate_windows_launcher() -> Path:
+    """定位 distlib 父启动器；其 Python 子进程只保留启动器名称。"""
 
-    import ctypes
+    raw = str(sys.argv[0]).strip()
+    if not raw:
+        raise SelfUpdateError("cannot identify the active Windows launcher")
+    launcher_name = PureWindowsPath(raw).name
+    if launcher_name.lower() not in _WINDOWS_LAUNCHER_NAMES:
+        raise SelfUpdateError("the active Windows command is not ai-sdlc.exe")
 
-    try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        get_module_filename = kernel32.GetModuleFileNameW
-        get_module_filename.argtypes = [
-            ctypes.c_void_p,
-            ctypes.c_wchar_p,
-            ctypes.c_uint32,
-        ]
-        get_module_filename.restype = ctypes.c_uint32
-    except (AttributeError, OSError) as exc:
-        raise SelfUpdateError("cannot access the Windows process image API") from exc
-    return _read_windows_process_image(get_module_filename)
+    if os.path.isabs(raw):
+        direct = _windows_launcher_candidate(Path(raw), launcher_name)
+        if direct is not None:
+            return direct
+
+    located = shutil.which(launcher_name)
+    if located:
+        path_candidate = _windows_launcher_candidate(Path(located), launcher_name)
+        if path_candidate is not None:
+            return path_candidate
+
+    runtime_python = Path(os.path.abspath(sys.executable))
+    runtime_dirs = (runtime_python.parent, runtime_python.parent / "Scripts")
+    runtime_candidates: dict[str, Path] = {}
+    for directory in runtime_dirs:
+        candidate = _windows_launcher_candidate(
+            directory / launcher_name, launcher_name
+        )
+        if candidate is not None:
+            runtime_candidates[_windows_path_key(candidate)] = candidate
+    if len(runtime_candidates) == 1:
+        return next(iter(runtime_candidates.values()))
+    if len(runtime_candidates) > 1:
+        raise SelfUpdateError("the active Windows runtime launcher is ambiguous")
+    raise SelfUpdateError("cannot locate the active Windows launcher")
 
 
-def _read_windows_process_image(
-    get_module_filename: Callable[..., int],
-) -> Path:
-    """用有界扩容读取 Unicode 进程映像路径。"""
-
-    import ctypes
-
-    capacity = 260
-    while capacity <= 32768:
-        buffer = ctypes.create_unicode_buffer(capacity)
-        try:
-            length = int(get_module_filename(None, buffer, capacity))
-        except (OSError, ValueError) as exc:
-            raise SelfUpdateError(
-                "cannot identify the active Windows process image"
-            ) from exc
-        if length == 0:
-            raise SelfUpdateError("cannot identify the active Windows process image")
-        if length < capacity:
-            image = buffer.value
-            if not image:
-                raise SelfUpdateError(
-                    "cannot identify the active Windows process image"
-                )
-            return Path(os.path.abspath(image))
-        capacity *= 2
-    raise SelfUpdateError("the active Windows process image path is too long")
+def _windows_launcher_candidate(path: Path, launcher_name: str) -> Path | None:
+    candidate = Path(os.path.abspath(path))
+    if candidate.name.lower() != launcher_name.lower():
+        return None
+    if candidate.is_symlink() or not candidate.is_file():
+        return None
+    return candidate
 
 
 def _windows_path_key(path: Path) -> str:

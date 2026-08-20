@@ -481,9 +481,16 @@ target._verify_bare_cli_version = lambda version: version
     env["AI_SDLC_REPLAY_TEST_LOG"] = str(process_log)
     env["AI_SDLC_REPLAY_TEST_WHEEL"] = str(new_wheel)
     env["PYTHONPATH"] = str(hooks)
-    env["PATH"] = os.pathsep.join(
-        part for part in (str(command_launcher.parent), env.get("PATH", "")) if part
-    )
+    if use_stable_shim:
+        env["PATH"] = os.pathsep.join(
+            part for part in (str(command_launcher.parent), env.get("PATH", "")) if part
+        )
+    else:
+        env["PATH"] = os.pathsep.join(
+            part
+            for part in env.get("PATH", "").split(os.pathsep)
+            if part and not (Path(part) / "ai-sdlc.exe").is_file()
+        )
 
     result = subprocess.run(
         [str(command_launcher), "status"],
@@ -622,7 +629,7 @@ def test_capture_windows_launcher_uses_current_process_image(
     monkeypatch.setattr(self_update_cmd, "_module_replay_prefix", lambda: None)
     monkeypatch.setattr(
         self_update_cmd,
-        "_active_windows_process_image",
+        "_locate_windows_launcher",
         lambda: process_image,
     )
 
@@ -632,42 +639,100 @@ def test_capture_windows_launcher_uses_current_process_image(
     )
 
 
-def test_windows_process_image_reader_expands_for_unicode_path(
+def test_windows_launcher_locator_uses_path_for_distlib_basename(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ai_sdlc.cli import self_update_cmd
 
-    image = str(tmp_path / ("长路径" * 100) / "ai-sdlc.exe")
-    capacities: list[int] = []
+    launcher = tmp_path / "安装 目录" / "ai-sdlc.exe"
+    launcher.parent.mkdir()
+    launcher.write_bytes(b"launcher")
+    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(
+        self_update_cmd.shutil,
+        "which",
+        lambda command: str(launcher) if command == "ai-sdlc.exe" else None,
+    )
 
-    def fake_get_module_filename(_module, buffer, capacity):
-        capacities.append(capacity)
-        if capacity <= len(image):
-            return capacity
-        buffer.value = image
-        return len(image)
-
-    assert self_update_cmd._read_windows_process_image(
-        fake_get_module_filename
-    ) == Path(os.path.abspath(image))
-    assert capacities[0] == 260
-    assert len(capacities) > 1
+    assert self_update_cmd._locate_windows_launcher() == launcher
 
 
-@pytest.mark.parametrize(
-    "fake_get_module_filename",
-    [
-        lambda _module, _buffer, _capacity: 0,
-        lambda _module, _buffer, capacity: capacity,
-    ],
-)
-def test_windows_process_image_reader_fails_closed(
-    fake_get_module_filename,
+def test_windows_launcher_locator_prefers_existing_absolute_invocation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from ai_sdlc.cli import self_update_cmd
+
+    launcher = tmp_path / "outside-path" / "ai-sdlc.exe"
+    launcher.parent.mkdir()
+    launcher.write_bytes(b"launcher")
+    monkeypatch.setattr(self_update_cmd.sys, "argv", [str(launcher), "status"])
+    monkeypatch.setattr(
+        self_update_cmd.shutil,
+        "which",
+        lambda _command: pytest.fail("PATH lookup must not replace an absolute entry"),
+    )
+
+    assert self_update_cmd._locate_windows_launcher() == launcher
+
+
+def test_windows_launcher_locator_fails_when_path_has_no_launcher(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    runtime = tmp_path / "runtime" / "python.exe"
+    runtime.parent.mkdir()
+    runtime.write_bytes(b"python")
+    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
+    monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _command: None)
 
     with pytest.raises(self_update_cmd.SelfUpdateError):
-        self_update_cmd._read_windows_process_image(fake_get_module_filename)
+        self_update_cmd._locate_windows_launcher()
+
+
+def test_windows_launcher_locator_falls_back_to_runtime_without_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    scripts = tmp_path / "runtime" / "Scripts"
+    scripts.mkdir(parents=True)
+    runtime = scripts / "python.exe"
+    runtime.write_bytes(b"python")
+    launcher = scripts / "ai-sdlc.exe"
+    launcher.write_bytes(b"launcher")
+    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
+    monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _command: None)
+
+    assert self_update_cmd._locate_windows_launcher() == launcher
+
+
+def test_windows_launcher_locator_rejects_ambiguous_runtime_candidates(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    runtime_dir = tmp_path / "runtime"
+    runtime_dir.mkdir()
+    runtime = runtime_dir / "python.exe"
+    runtime.write_bytes(b"python")
+    (runtime_dir / "ai-sdlc.exe").write_bytes(b"launcher")
+    nested_scripts = runtime_dir / "Scripts"
+    nested_scripts.mkdir()
+    (nested_scripts / "ai-sdlc.exe").write_bytes(b"launcher")
+    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
+    monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _command: None)
+
+    with pytest.raises(self_update_cmd.SelfUpdateError, match="ambiguous"):
+        self_update_cmd._locate_windows_launcher()
 
 
 def test_windows_launcher_reexec_carries_the_process_only_handoff(
@@ -863,7 +928,7 @@ def test_external_windows_launcher_requires_matching_runtime_marker(
     monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
     monkeypatch.setattr(
         self_update_cmd,
-        "_active_windows_process_image",
+        "_locate_windows_launcher",
         lambda: stable,
     )
 
@@ -901,7 +966,7 @@ def test_runtime_owned_windows_launcher_does_not_require_strict_resolve(
     monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
     monkeypatch.setattr(
         self_update_cmd,
-        "_active_windows_process_image",
+        "_locate_windows_launcher",
         lambda: launcher,
     )
     monkeypatch.setattr(
@@ -941,7 +1006,7 @@ def test_windows_launcher_file_validation_fails_closed(
     monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
     monkeypatch.setattr(
         self_update_cmd,
-        "_active_windows_process_image",
+        "_locate_windows_launcher",
         lambda: launcher,
     )
 
