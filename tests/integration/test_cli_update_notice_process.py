@@ -17,10 +17,9 @@ import pytest
 from ai_sdlc.routers.bootstrap import init_project
 
 
-def _dependency_overlay_site_packages(tmp_path: Path) -> Path:
+def _copy_dependency_site_packages(destination: Path) -> Path:
     source = Path(click.__file__).resolve().parents[1]
-    overlay = tmp_path / "dependency-overlay"
-    overlay.mkdir()
+    destination.mkdir(parents=True, exist_ok=True)
 
     for item in source.iterdir():
         if item.name == "ai_sdlc":
@@ -30,7 +29,9 @@ def _dependency_overlay_site_packages(tmp_path: Path) -> Path:
         if item.name.startswith("ai_sdlc") and item.suffix == ".pth":
             continue
 
-        target = overlay / item.name
+        target = destination / item.name
+        if target.exists():
+            continue
         try:
             target.symlink_to(item, target_is_directory=item.is_dir())
         except OSError:
@@ -39,13 +40,13 @@ def _dependency_overlay_site_packages(tmp_path: Path) -> Path:
             else:
                 shutil.copy2(item, target)
 
-    return overlay
+    return destination
 
 
 def test_dependency_overlay_exposes_runtime_deps_without_candidate(
     tmp_path: Path,
 ) -> None:
-    overlay = _dependency_overlay_site_packages(tmp_path)
+    overlay = _copy_dependency_site_packages(tmp_path / "dependency-overlay")
     env = os.environ.copy()
     env["PYTHONPATH"] = str(overlay)
     probe = subprocess.run(
@@ -398,6 +399,18 @@ def test_windows_launcher_can_upgrade_its_live_installed_wheel(
     assert create_venv.returncode == 0, create_venv.stderr
     venv_python = venv_dir / "Scripts" / "python.exe"
     launcher = venv_dir / "Scripts" / "ai-sdlc.exe"
+    _copy_dependency_site_packages(venv_dir / "Lib" / "site-packages")
+    dependency_probe = subprocess.run(
+        [
+            str(venv_python),
+            "-c",
+            "import jinja2, pydantic, rich, typer, yaml",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert dependency_probe.returncode == 0, dependency_probe.stderr
     install_old = subprocess.run(
         [str(venv_python), "-m", "pip", "install", "--no-deps", str(old_wheel)],
         capture_output=True,
@@ -455,8 +468,7 @@ target._verify_bare_cli_version = lambda version: version
     env["AI_SDLC_UPDATE_ADVISOR_FORCE_TTY"] = "1"
     env["AI_SDLC_REPLAY_TEST_LOG"] = str(process_log)
     env["AI_SDLC_REPLAY_TEST_WHEEL"] = str(new_wheel)
-    dependency_overlay = _dependency_overlay_site_packages(tmp_path)
-    env["PYTHONPATH"] = os.pathsep.join((str(hooks), str(dependency_overlay)))
+    env["PYTHONPATH"] = str(hooks)
     env["PATH"] = os.pathsep.join(
         part for part in (str(launcher.parent), env.get("PATH", "")) if part
     )
