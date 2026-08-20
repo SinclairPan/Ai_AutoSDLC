@@ -82,6 +82,15 @@ def _route_sections(text: str) -> tuple[list[str], dict[str, str]]:
     return [match.group(1) for match in matches], sections
 
 
+def _step_sections(text: str) -> tuple[list[str], dict[str, str]]:
+    matches = list(_STEP_PATTERN.finditer(text))
+    sections: dict[str, str] = {}
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        sections.setdefault(match.group(1), text[match.end() : end])
+    return [match.group(1) for match in matches], sections
+
+
 def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Finding]:
     """合同生效后校验 12 条可独立执行的路线。"""
 
@@ -108,7 +117,8 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
         section = sections.get(route_id)
         if section is None:
             continue
-        steps = tuple(_STEP_PATTERN.findall(section))
+        step_ids, step_sections = _step_sections(section)
+        steps = tuple(step_ids)
         if steps != REQUIRED_STEPS:
             findings.append(
                 Finding(
@@ -123,9 +133,21 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
             "-m ai_sdlc",
             "当前结果 / Result",
             "下一步 / Next",
-            "init ." if state == "new" else "adopt .",
-            "install_online" if channel == "online" else "install_offline",
         ]
+        if state == "new":
+            required_text.append("init .")
+        else:
+            required_text.extend(("init .", "adopt ."))
+        if channel == "online":
+            required_text.extend(
+                {
+                    "windows-amd64": ("install_online.ps1", "-AddToPath"),
+                    "macos-arm64": ("install_online.sh", "--add-to-path"),
+                    "linux-amd64": ("install_online.sh", "--add-to-path"),
+                }[platform]
+            )
+        else:
+            required_text.append("install_offline")
         if channel == "offline":
             required_text.append(".sha256")
             required_text.append(
@@ -140,7 +162,8 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                 findings.append(
                     Finding("guide-route-content-missing", f"{route_id}: {marker}")
                 )
-        if not re.search(r"失败|错误|不可用|停止", section):
+        recovery_text = step_sections.get("recover", "")
+        if not re.search(r"失败|错误|不可用|停止", recovery_text):
             findings.append(Finding("guide-route-recovery-empty", route_id))
 
     return findings
