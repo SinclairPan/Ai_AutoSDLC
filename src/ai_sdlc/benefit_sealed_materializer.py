@@ -38,6 +38,7 @@ from ai_sdlc.benefit_benchmark_fixtures import (
     load_fixture_manifest,
     prepare_fixture,
     probe_provider_isolation,
+    run_provider_isolated,
     scan_candidate_for_sealed_leak,
     validate_fixture_manifest,
     validate_frontend_browser_program,
@@ -75,6 +76,21 @@ EXPECTED_R2_DISPOSITION_TREE_SHA256 = (
 DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit-r3")
 FINAL_CANARY_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-isolation-canary")
 EXPECTED_LEGACY_INODE = 400173643
+EXPECTED_LEGACY_TREE_SHA256 = (
+    "ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2"
+)
+EXPECTED_R2_PROTOCOL_SHA256 = (
+    "4f402736450a893b339b3f99faa3c71c1b8d3f5517d0bebb6bdaf03042179572"
+)
+EXPECTED_R2_SEALED_COMMITMENTS_SHA256 = (
+    "e364aa7a2a72f198ad7e0e590a8575b8e8b37b3854d59ed74f58bc78519f4ec9"
+)
+EXPECTED_R2_FIXTURE_TREE_SHA256 = (
+    "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a"
+)
+EXPECTED_R2_EVIDENCE_CONTRACT_SHA256 = (
+    "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c"
+)
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _BENCHMARK_RELATIVE = Path("benchmarks/ai-sdlc-v2-benefits")
@@ -210,6 +226,7 @@ class MaterializerPolicy:
     trust_anchor: Path
     legacy_root: Path
     expected_legacy_inode: int
+    expected_legacy_tree_sha256: str
     forbidden_roots: tuple[Path, ...]
     source_base: Path
     source_root: Path
@@ -251,6 +268,25 @@ class MaterializationResult:
     lock_id: str
     target_inode: int
     file_sha256: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class _RuntimeWriteCanary:
+    root: Path
+    root_identity: tuple[int, int, int, int]
+    files: Mapping[str, tuple[int, int, bytes, int]]
+
+
+@dataclass(frozen=True)
+class _RuntimeCapsuleProbe:
+    runtime_read: bool
+    runtime_exec: bool
+    runtime_append_denied: bool
+    runtime_create_denied: bool
+    runtime_chmod_denied: bool
+    runtime_rename_denied: bool
+    transcript: tuple[tuple[str, int, str, str], ...]
+    transcript_sha256: str
 
 
 @dataclass(frozen=True)
@@ -544,6 +580,7 @@ def default_policy() -> MaterializerPolicy:
         trust_anchor=TRUST_ANCHOR,
         legacy_root=LEGACY_ROOT,
         expected_legacy_inode=EXPECTED_LEGACY_INODE,
+        expected_legacy_tree_sha256=EXPECTED_LEGACY_TREE_SHA256,
         forbidden_roots=(
             _REPO_ROOT,
             _REPO_ROOT / ".git",
@@ -611,17 +648,45 @@ def _git(repo_root: Path, *arguments: str) -> str:
     return completed.stdout.strip()
 
 
-def _assert_protocol_pending(repo_root: Path) -> None:
-    path = repo_root / _BENCHMARK_RELATIVE / "protocol.json"
+def _assert_exact_r2_predecessor(repo_root: Path) -> None:
+    benchmark = repo_root / _BENCHMARK_RELATIVE
+    protocol_path = benchmark / "protocol.json"
+    authority_path = benchmark / "fixtures" / "sealed-commitments.json"
     try:
-        protocol = json.loads(path.read_text(encoding="utf-8"))
+        protocol_bytes = protocol_path.read_bytes()
+        authority_bytes = authority_path.read_bytes()
+        if (
+            _digest_bytes(protocol_bytes) != EXPECTED_R2_PROTOCOL_SHA256
+            or _digest_bytes(authority_bytes) != EXPECTED_R2_SEALED_COMMITMENTS_SHA256
+        ):
+            raise MaterializationError("protocol-predecessor")
+        protocol = json.loads(protocol_bytes)
+        authority = json.loads(authority_bytes)
         lock = protocol["execution_lock"]
-        if any(lock[field] != "pending-unbound" for field in _PENDING_FIELDS):
-            raise MaterializationError("protocol-state")
+        expected_lock = {
+            "fixture_tree_sha256": EXPECTED_R2_FIXTURE_TREE_SHA256,
+            "fixture_commitment": EXPECTED_R2_FIXTURE_TREE_SHA256,
+            "evidence_contract_sha256": EXPECTED_R2_EVIDENCE_CONTRACT_SHA256,
+            "evidence_contract_commitment": EXPECTED_R2_EVIDENCE_CONTRACT_SHA256,
+        }
+        if any(lock[field] != expected for field, expected in expected_lock.items()):
+            raise MaterializationError("protocol-predecessor")
+        if (
+            authority["schema"] != "ai-sdlc-v2-benefit-sealed-commitments/v3"
+            or authority["lock_id"] != "v2-benefits-20260819-r2"
+            or authority["publication_state"] != "materialized-validated"
+            or authority["fixture_tree_sha256"] != EXPECTED_R2_FIXTURE_TREE_SHA256
+            or authority["fixture_commitment"] != EXPECTED_R2_FIXTURE_TREE_SHA256
+            or authority["evidence_contract_template_sha256"]
+            != EXPECTED_R2_EVIDENCE_CONTRACT_SHA256
+            or authority["evidence_contract_commitment"]
+            != EXPECTED_R2_EVIDENCE_CONTRACT_SHA256
+        ):
+            raise MaterializationError("protocol-predecessor")
     except MaterializationError:
         raise
     except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
-        raise MaterializationError("protocol-state") from error
+        raise MaterializationError("protocol-predecessor") from error
 
 
 def _assert_provider_state_absent(repo_root: Path) -> None:
@@ -638,7 +703,7 @@ def _capture_repo_bindings(
         raise MaterializationError("source-head")
     if _git(repo, "status", "--porcelain", "--untracked-files=all"):
         raise MaterializationError("source-tree")
-    _assert_protocol_pending(repo)
+    _assert_exact_r2_predecessor(repo)
     _assert_provider_state_absent(repo)
     fixture_root = repo / _BENCHMARK_RELATIVE / "fixtures"
     manifest_path = fixture_root / "manifest.json"
@@ -647,6 +712,11 @@ def _capture_repo_bindings(
         manifest = load_fixture_manifest(manifest_path)
         if validate_fixture_manifest(manifest, fixture_root):
             raise MaterializationError("fixture-manifest")
+        if (
+            manifest.canonical_sha256 != EXPECTED_R2_FIXTURE_TREE_SHA256
+            or _digest_file(evidence_path) != EXPECTED_R2_EVIDENCE_CONTRACT_SHA256
+        ):
+            raise MaterializationError("protocol-predecessor")
         source_tree_sha = _git(repo, "rev-parse", "HEAD^{tree}")
         return RepoBindings(
             source_head=expected_head,
@@ -1790,8 +1860,402 @@ def _assert_private_directory(path: Path, code: str) -> None:
         raise MaterializationError(code)
 
 
+def _cleanup_incomplete_runtime_canary(
+    root: Path, root_identity: tuple[int, int, int, int]
+) -> None:
+    descriptor = -1
+    try:
+        item = root.lstat()
+        if (
+            not stat.S_ISDIR(item.st_mode)
+            or (
+                item.st_dev,
+                item.st_ino,
+                item.st_uid,
+                stat.S_IMODE(item.st_mode),
+            )
+            != root_identity
+        ):
+            raise OSError("runtime canary root changed during creation")
+        descriptor = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        allowed = {"append", "chmod", "rename"}
+        observed = set(os.listdir(descriptor))
+        if not observed <= allowed:
+            raise OSError("runtime canary creation left an unexpected entry")
+        for name in observed:
+            child = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(child.st_mode)
+                or child.st_uid != os.geteuid()
+                or child.st_nlink != 1
+            ):
+                raise OSError("runtime canary creation entry is unsafe")
+            os.unlink(name, dir_fd=descriptor)
+        os.fsync(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    root.rmdir()
+
+
+def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCanary:
+    parent = policy.canary_run_root.parent
+    _assert_private_directory(parent, "runtime-canary-root")
+    root: Path | None = None
+    root_identity: tuple[int, int, int, int] | None = None
+    try:
+        root = Path(tempfile.mkdtemp(prefix=".runtime-write-", dir=parent))
+        root.chmod(0o700)
+        root_stat = root.lstat()
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or root_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        root_identity = (
+            root_stat.st_dev,
+            root_stat.st_ino,
+            root_stat.st_uid,
+            stat.S_IMODE(root_stat.st_mode),
+        )
+        files: dict[str, tuple[int, int, bytes, int]] = {}
+        directory_fd = os.open(
+            root,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            for name in ("append", "chmod", "rename"):
+                payload = f"runtime-{name}-canary\n".encode()
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=directory_fd,
+                )
+                try:
+                    _write_all(descriptor, payload)
+                    os.fsync(descriptor)
+                    item = os.fstat(descriptor)
+                    files[name] = (
+                        item.st_dev,
+                        item.st_ino,
+                        payload,
+                        stat.S_IMODE(item.st_mode),
+                    )
+                finally:
+                    os.close(descriptor)
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+        return _RuntimeWriteCanary(
+            root=root,
+            root_identity=root_identity,
+            files=MappingProxyType(files),
+        )
+    except (MaterializationError, OSError) as error:
+        if root is not None and root_identity is not None:
+            try:
+                _cleanup_incomplete_runtime_canary(root, root_identity)
+            except OSError as cleanup_error:
+                raise MaterializationError("runtime-canary-cleanup") from cleanup_error
+        if isinstance(error, MaterializationError):
+            raise
+        raise MaterializationError("runtime-canary-root") from error
+
+
+def _assert_runtime_canary_root(canary: _RuntimeWriteCanary) -> None:
+    try:
+        item = canary.root.lstat()
+    except OSError as error:
+        raise MaterializationError("runtime-canary-raced") from error
+    observed = (
+        item.st_dev,
+        item.st_ino,
+        item.st_uid,
+        stat.S_IMODE(item.st_mode),
+    )
+    if not stat.S_ISDIR(item.st_mode) or observed != canary.root_identity:
+        raise MaterializationError("runtime-canary-raced")
+
+
+def _assert_runtime_profile_binding(
+    runtime_identity: Mapping[str, object],
+    runtime_capsule: Mapping[str, object],
+    runtime_write_canary: _RuntimeWriteCanary | None,
+) -> None:
+    try:
+        launcher = Path(str(runtime_identity["path"]))
+        launcher_stat = launcher.lstat()
+        root = Path(str(runtime_capsule["root"]))
+        root_stat = root.lstat()
+        root_identity = runtime_capsule["root_identity"]
+        if not isinstance(root_identity, dict):
+            raise KeyError("root_identity")
+        launcher_expected = (
+            int(runtime_identity["device"]),
+            int(runtime_identity["inode"]),
+            int(runtime_identity["uid"]),
+            int(runtime_identity["gid"]),
+            int(runtime_identity["mode"]),
+            int(runtime_identity["nlink"]),
+            int(runtime_identity["size"]),
+        )
+        launcher_observed = (
+            launcher_stat.st_dev,
+            launcher_stat.st_ino,
+            launcher_stat.st_uid,
+            launcher_stat.st_gid,
+            stat.S_IMODE(launcher_stat.st_mode),
+            launcher_stat.st_nlink,
+            launcher_stat.st_size,
+        )
+        root_expected = tuple(
+            int(root_identity[key])
+            for key in ("device", "inode", "uid", "gid", "mode", "nlink", "size")
+        )
+        root_observed = (
+            root_stat.st_dev,
+            root_stat.st_ino,
+            root_stat.st_uid,
+            root_stat.st_gid,
+            stat.S_IMODE(root_stat.st_mode),
+            root_stat.st_nlink,
+            root_stat.st_size,
+        )
+        if (
+            not stat.S_ISREG(launcher_stat.st_mode)
+            or stat.S_ISLNK(launcher_stat.st_mode)
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_ISLNK(root_stat.st_mode)
+            or launcher_observed != launcher_expected
+            or root_observed != root_expected
+        ):
+            raise MaterializationError("runtime-capsule-raced")
+        if runtime_write_canary is not None:
+            _assert_runtime_canary_root(runtime_write_canary)
+    except MaterializationError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise MaterializationError("runtime-capsule-raced") from error
+
+
+def _runtime_canary_file_unchanged(canary: _RuntimeWriteCanary, name: str) -> bool:
+    expected_device, expected_inode, expected_bytes, expected_mode = canary.files[name]
+    try:
+        item = (canary.root / name).lstat()
+        return (
+            stat.S_ISREG(item.st_mode)
+            and item.st_uid == os.geteuid()
+            and item.st_nlink == 1
+            and (item.st_dev, item.st_ino) == (expected_device, expected_inode)
+            and stat.S_IMODE(item.st_mode) == expected_mode
+            and (canary.root / name).read_bytes() == expected_bytes
+        )
+    except OSError:
+        return False
+
+
+def _run_final_profile_launch_guard(
+    runtime_identity: Mapping[str, object],
+    runtime_capsule: Mapping[str, object],
+    runtime_write_canary: _RuntimeWriteCanary | None,
+) -> None:
+    try:
+        _assert_runtime_profile_binding(
+            runtime_identity, runtime_capsule, runtime_write_canary
+        )
+    except MaterializationError as error:
+        raise ValueError("runtime profile identity changed") from error
+
+
+def _cleanup_runtime_write_canary(canary: _RuntimeWriteCanary) -> None:
+    _assert_runtime_canary_root(canary)
+    directory_fd = -1
+    try:
+        directory_fd = os.open(
+            canary.root,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(directory_fd)
+        if (opened.st_dev, opened.st_ino) != canary.root_identity[:2]:
+            raise OSError("runtime canary root changed")
+        allowed = {*canary.files, "created", "renamed"}
+        observed = set(os.listdir(directory_fd))
+        if not observed <= allowed:
+            raise OSError("runtime canary contains an unexpected entry")
+        for name in observed:
+            item = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(item.st_mode)
+                or item.st_uid != os.geteuid()
+                or item.st_nlink != 1
+            ):
+                raise OSError("runtime canary entry is unsafe")
+            os.unlink(name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except (MaterializationError, OSError) as error:
+        raise MaterializationError("runtime-canary-cleanup") from error
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+    try:
+        canary.root.rmdir()
+    except OSError as error:
+        raise MaterializationError("runtime-canary-cleanup") from error
+
+
+def _probe_runtime_capsule_access(
+    profile: ProviderIsolationProfile,
+    runtime_identity: Mapping[str, object],
+    runtime_capsule: Mapping[str, object],
+    canary: _RuntimeWriteCanary,
+) -> _RuntimeCapsuleProbe:
+    _assert_runtime_canary_root(canary)
+    launcher = Path(str(runtime_identity["path"]))
+    capsule_root = Path(str(runtime_capsule["root"]))
+    entries = runtime_capsule["entries"]
+    if not isinstance(entries, list):
+        raise MaterializationError("runtime-capsule-probe")
+    readable_entry = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("type") == "file"
+            and str(entry.get("path", "")).endswith(".py")
+        ),
+        None,
+    )
+    if readable_entry is None:
+        raise MaterializationError("runtime-capsule-probe")
+    readable = capsule_root / str(readable_entry["path"])
+
+    def readable_is_bound() -> bool:
+        try:
+            item = readable.lstat()
+            return (
+                stat.S_ISREG(item.st_mode)
+                and not stat.S_ISLNK(item.st_mode)
+                and item.st_dev == int(readable_entry["device"])
+                and item.st_ino == int(readable_entry["inode"])
+                and item.st_uid == int(readable_entry["uid"])
+                and item.st_gid == int(readable_entry["gid"])
+                and stat.S_IMODE(item.st_mode) == int(readable_entry["mode"])
+                and item.st_nlink == int(readable_entry["nlink"])
+                and item.st_size == int(readable_entry["size"])
+                and _digest_file(readable) == str(readable_entry["sha256"])
+            )
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+
+    if not readable_is_bound():
+        raise MaterializationError("runtime-capsule-raced")
+    operations = (
+        (
+            "runtime_read",
+            (
+                str(launcher),
+                "-I",
+                "-B",
+                "-c",
+                "from pathlib import Path; import sys; print(len(Path(sys.argv[1]).read_bytes()))",
+                str(readable),
+            ),
+        ),
+        (
+            "runtime_exec",
+            (str(launcher), "-I", "-B", "-c", "print('runtime-exec-ok')"),
+        ),
+        (
+            "runtime_append_denied",
+            (
+                "/bin/sh",
+                "-c",
+                'printf x >> "$1"',
+                "runtime-append",
+                str(canary.root / "append"),
+            ),
+        ),
+        (
+            "runtime_create_denied",
+            ("/usr/bin/touch", str(canary.root / "created")),
+        ),
+        (
+            "runtime_chmod_denied",
+            ("/bin/chmod", "700", str(canary.root / "chmod")),
+        ),
+        (
+            "runtime_rename_denied",
+            (
+                "/bin/mv",
+                str(canary.root / "rename"),
+                str(canary.root / "renamed"),
+            ),
+        ),
+    )
+    transcript: list[tuple[str, int, str, str]] = []
+    outcomes: dict[str, bool] = {}
+    for name, argv in operations:
+        _assert_runtime_canary_root(canary)
+        try:
+            completed = run_provider_isolated(profile, argv)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            raise MaterializationError("runtime-capsule-probe") from error
+        transcript.append(
+            (
+                name,
+                completed.returncode,
+                _digest_bytes(completed.stdout.encode()),
+                _digest_bytes(completed.stderr.encode()),
+            )
+        )
+        if name == "runtime_read":
+            outcomes[name] = (
+                completed.returncode == 0
+                and completed.stdout.strip().isdigit()
+                and readable_is_bound()
+            )
+        elif name == "runtime_exec":
+            outcomes[name] = (
+                completed.returncode == 0
+                and completed.stdout.strip() == "runtime-exec-ok"
+            )
+        else:
+            denied = (
+                completed.returncode != 0
+                and "Operation not permitted" in completed.stderr
+                and "sandbox_apply:" not in completed.stderr
+            )
+            if name == "runtime_append_denied":
+                unchanged = _runtime_canary_file_unchanged(canary, "append")
+            elif name == "runtime_create_denied":
+                unchanged = not (canary.root / "created").exists()
+            elif name == "runtime_chmod_denied":
+                unchanged = _runtime_canary_file_unchanged(canary, "chmod")
+            else:
+                unchanged = (
+                    _runtime_canary_file_unchanged(canary, "rename")
+                    and not (canary.root / "renamed").exists()
+                )
+            outcomes[name] = denied and unchanged
+    transcript_value = tuple(transcript)
+    transcript_sha256 = _digest_bytes(
+        _canonical_json_bytes([list(item) for item in transcript_value])
+    )
+    return _RuntimeCapsuleProbe(
+        **outcomes,
+        transcript=transcript_value,
+        transcript_sha256=transcript_sha256,
+    )
+
+
 def _build_final_isolation_profile(
     policy: MaterializerPolicy,
+    runtime_write_canary: _RuntimeWriteCanary | None = None,
 ) -> ProviderIsolationProfile:
     git_surfaces = derive_repo_git_surfaces(policy.repo_root)
     runtime_identity = evaluator_python_runtime_identity(
@@ -1813,15 +2277,22 @@ def _build_final_isolation_profile(
         control_root=policy.repo_root,
         raw_results_root=policy.raw_results_root,
         protected_roots=protected_roots,
-        write_protected_roots=(Path(str(runtime_capsule["root"])),),
+        write_protected_roots=(
+            Path(str(runtime_capsule["root"])),
+            *((runtime_write_canary.root,) if runtime_write_canary else ()),
+        ),
         other_run_roots=policy.other_run_roots,
         argv=("/usr/bin/true",),
         environment={"PATH": os.environ.get("PATH", "")},
+        launch_guard=lambda: _run_final_profile_launch_guard(
+            runtime_identity, runtime_capsule, runtime_write_canary
+        ),
     )
 
 
-def _run_final_isolation_canary(
+def _run_final_isolation_canary_with_runtime_write_canary(
     policy: MaterializerPolicy,
+    runtime_write_canary: _RuntimeWriteCanary,
     *,
     pending_receipt_sha256: str,
     evaluator_python_runtime_sha256: str | None = None,
@@ -1834,7 +2305,7 @@ def _run_final_isolation_canary(
     ):
         _assert_private_directory(root, "isolation-root")
     try:
-        profile = _build_final_isolation_profile(policy)
+        profile = _build_final_isolation_profile(policy, runtime_write_canary)
     except (OSError, ValueError, EvaluatorNoGoError) as error:
         raise MaterializationError("isolation-profile") from error
     if not profile.executable or profile.issues:
@@ -1880,6 +2351,30 @@ def _run_final_isolation_canary(
     )
     if not all(required):
         raise MaterializationError("isolation-canary")
+    runtime_probe = _probe_runtime_capsule_access(
+        profile,
+        current_runtime,
+        current_capsule,
+        runtime_write_canary,
+    )
+    runtime_checks = {
+        "runtime_read": runtime_probe.runtime_read,
+        "runtime_exec": runtime_probe.runtime_exec,
+        "runtime_append_denied": runtime_probe.runtime_append_denied,
+        "runtime_create_denied": runtime_probe.runtime_create_denied,
+        "runtime_chmod_denied": runtime_probe.runtime_chmod_denied,
+        "runtime_rename_denied": runtime_probe.runtime_rename_denied,
+    }
+    expected_transcript_names = tuple(runtime_checks)
+    if (
+        tuple(item[0] for item in runtime_probe.transcript) != expected_transcript_names
+        or runtime_probe.transcript_sha256
+        != _digest_bytes(
+            _canonical_json_bytes([list(item) for item in runtime_probe.transcript])
+        )
+        or not all(value is True for value in runtime_checks.values())
+    ):
+        raise MaterializationError("runtime-capsule-probe")
     profile_sha256 = _digest_bytes(
         _canonical_json_bytes(
             {
@@ -1888,6 +2383,7 @@ def _run_final_isolation_canary(
                 "protected_root_count": len(profile.protected_roots),
                 "write_protected_root_count": len(profile.write_protected_roots),
                 "other_run_root_count": len(profile.other_run_roots),
+                "runtime_probe_transcript_sha256": runtime_probe.transcript_sha256,
             }
         )
     )
@@ -1909,9 +2405,31 @@ def _run_final_isolation_canary(
                 "add_dir": probe.add_dir,
                 "protected_roots": len(probe.protected_root_results),
                 "write_protected_roots": len(profile.write_protected_roots),
+                **runtime_checks,
+                "runtime_probe_transcript_sha256": runtime_probe.transcript_sha256,
             },
         }
     )
+
+
+def _run_final_isolation_canary(
+    policy: MaterializerPolicy,
+    *,
+    pending_receipt_sha256: str,
+    evaluator_python_runtime_sha256: str | None = None,
+    expected_runtime_capsule_sha256: str | None = None,
+) -> bytes:
+    runtime_write_canary = _create_runtime_write_canary(policy)
+    try:
+        return _run_final_isolation_canary_with_runtime_write_canary(
+            policy,
+            runtime_write_canary,
+            pending_receipt_sha256=pending_receipt_sha256,
+            evaluator_python_runtime_sha256=evaluator_python_runtime_sha256,
+            expected_runtime_capsule_sha256=expected_runtime_capsule_sha256,
+        )
+    finally:
+        _cleanup_runtime_write_canary(runtime_write_canary)
 
 
 def _write_final_attestation(
@@ -2141,7 +2659,7 @@ def materialize_with_policy(
     source_fd: int,
     expected_source_sha256: str,
     expected_head: str,
-    expected_old_root_tree_sha256: str,
+    expected_predecessor_r2_tree_sha256: str,
     policy: MaterializerPolicy,
     failure_injector: FailureInjector | None = None,
 ) -> MaterializationResult:
@@ -2153,10 +2671,20 @@ def materialize_with_policy(
     if legacy_before.inode != policy.expected_legacy_inode:
         raise MaterializationError("legacy-inode")
     if (
-        not _valid_digest(expected_old_root_tree_sha256)
-        or legacy_before.sha256 != expected_old_root_tree_sha256
+        not _valid_digest(policy.expected_legacy_tree_sha256)
+        or legacy_before.sha256 != policy.expected_legacy_tree_sha256
     ):
         raise MaterializationError("legacy-tree")
+    predecessor = next(
+        (item for item in policy.immutable_roots if item.label == "validated-r2"),
+        None,
+    )
+    if (
+        predecessor is None
+        or not _valid_digest(expected_predecessor_r2_tree_sha256)
+        or predecessor.tree_sha256 != expected_predecessor_r2_tree_sha256
+    ):
+        raise MaterializationError("predecessor-r2-tree")
     source = _read_source_record(
         source_fd=source_fd,
         expected_sha256=expected_source_sha256,
@@ -2221,7 +2749,7 @@ def materialize_sealed_bundle(
     expected_source_sha256: str,
     expected_head: str,
     lock_id: str,
-    expected_old_root_tree_sha256: str,
+    expected_predecessor_r2_tree_sha256: str,
 ) -> MaterializationResult:
     """Production entry point with a literal, non-overridable final target."""
     if lock_id != FINAL_LOCK_ID or FINAL_TARGET.name != FINAL_LOCK_ID:
@@ -2230,6 +2758,6 @@ def materialize_sealed_bundle(
         source_fd=source_fd,
         expected_source_sha256=expected_source_sha256,
         expected_head=expected_head,
-        expected_old_root_tree_sha256=expected_old_root_tree_sha256,
+        expected_predecessor_r2_tree_sha256=expected_predecessor_r2_tree_sha256,
         policy=default_policy(),
     )

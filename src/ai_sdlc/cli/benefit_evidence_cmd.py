@@ -88,6 +88,26 @@ def fingerprint_old_root_command() -> None:
     )
 
 
+@benefit_evidence_app.command("fingerprint-predecessor-r2")
+def fingerprint_predecessor_r2_command() -> None:
+    """Print only the exact r2 predecessor inode and canonical tree digest."""
+    try:
+        fingerprint = fingerprint_tree(R2_ROOT)
+    except MaterializationError as error:
+        typer.echo(json.dumps({"status": "no-go", "code": error.code}), err=True)
+        raise typer.Exit(code=1) from error
+    except Exception:
+        typer.echo(json.dumps({"status": "no-go", "code": "internal-error"}), err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        json.dumps(
+            {"inode": fingerprint.inode, "tree_sha256": fingerprint.sha256},
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+
+
 @benefit_evidence_app.command("materialize-sealed")
 def materialize_sealed_command(
     sealed_source_fd: Annotated[
@@ -106,11 +126,11 @@ def materialize_sealed_command(
         str,
         typer.Option("--lock-id", help="Fixed target lock identifier."),
     ] = "",
-    expected_old_root_tree_sha256: Annotated[
+    expected_predecessor_r2_tree_sha256: Annotated[
         str,
         typer.Option(
-            "--expected-old-root-tree-sha256",
-            help="Canonical legacy-root tree SHA256 from fingerprint-old-root.",
+            "--expected-predecessor-r2-tree-sha256",
+            help="Canonical r2 tree SHA256 from fingerprint-predecessor-r2.",
         ),
     ] = "",
 ) -> None:
@@ -127,7 +147,7 @@ def materialize_sealed_command(
             expected_source_sha256=expected_source_sha256,
             expected_head=expected_head,
             lock_id=lock_id,
-            expected_old_root_tree_sha256=expected_old_root_tree_sha256,
+            expected_predecessor_r2_tree_sha256=expected_predecessor_r2_tree_sha256,
         )
     except MaterializationError as error:
         typer.echo(json.dumps({"status": "no-go", "code": error.code}), err=True)

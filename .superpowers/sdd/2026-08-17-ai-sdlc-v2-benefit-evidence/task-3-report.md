@@ -151,3 +151,12 @@ Provider / codex exec / formal auth / ledger / results / experiment: 0
 ```
 
 12 个全量 skip 均是既有需要 macOS system-outside 或专用外部 runtime/browser 的门禁；Task 3 新增的唯一 system-outside 项已单独实跑，无 skip。本报告不把 preparation、fake callback 或 evaluator 健康证明表述为正式效益数据。
+
+## Capsule-v2 FixR1：exact r2 predecessor 与动态 runtime 权限证明
+
+- production capture 不再接受 pending protocol；只接受 tracked protocol SHA256 `4f402736…9572`、sealed authority SHA256 `e364aa7a…4ec9`、fixture pair `3a5a2a09…ff8a`、evidence pair `7b32d614…060c` 的 exact bound r2 predecessor。pending、partial、四字段任一错误、pair mismatch、protocol/authority 漂移及 already-r3 均在 source read/target write 前拒绝。
+- 正式参数升级为 `expected_predecessor_r2_tree_sha256`，CLI 只暴露 `--expected-predecessor-r2-tree-sha256`；旧参数不兼容。r2 predecessor 对应 exact `R2_ROOT` identity/tree；legacy inode/tree 继续由 production policy 独立 hard-bound。
+- final isolation attestation 在相同 exact Seatbelt profile 下动态证明 runtime capsule read 与 launcher exec 允许，append/create/chmod/rename 拒绝。六项结果、完整操作 transcript digest 与 profile digest 均写入 closed checks；规则未执行、伪 transcript、false result、permissive profile 和 cleanup failure 全部 NO-GO。
+- write canary 位于 private sibling root，root/原文件均绑定 device/inode/owner/mode/content；创建中失败和最终成功/失败均执行安全清理，cleanup failure 独立 fail-closed。每次 launch 复验 runtime root、launcher、read target 与 canary identity。
+- system-outside actual final profile与temporary publication：`2 passed / 0 skipped`；完整 benefit suite：`655 passed / 2 skipped / 0 failed`；完整项目：`4339 passed / 5 skipped / 0 failed`；changed-files Ruff、format check、`git diff --check` 全绿。
+- 本轮仍未创建/物化 r3 source、disposition 或 target；Provider、`codex exec`、formal authorization、ledger、results、experiment 均为 `0`。Task 3 candidate/authority 与 Task 4 继续 NO-GO，等待独立 review 和后续 r3 materialization/binding。

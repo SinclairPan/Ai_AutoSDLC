@@ -41,6 +41,31 @@ def _canonical(value: object) -> bytes:
     ).encode()
 
 
+def _successful_runtime_probe() -> materializer._RuntimeCapsuleProbe:
+    names = (
+        "runtime_read",
+        "runtime_exec",
+        "runtime_append_denied",
+        "runtime_create_denied",
+        "runtime_chmod_denied",
+        "runtime_rename_denied",
+    )
+    transcript = tuple(
+        (name, 0 if index < 2 else 1, "1" * 64, "2" * 64)
+        for index, name in enumerate(names)
+    )
+    return materializer._RuntimeCapsuleProbe(
+        True,
+        True,
+        True,
+        True,
+        True,
+        True,
+        transcript,
+        sha256(_canonical([list(item) for item in transcript])).hexdigest(),
+    )
+
+
 def _security_scenario(**overrides: object) -> dict[str, object]:
     scenario: dict[str, object] = {
         "actor_id": "reviewer-a",
@@ -462,16 +487,6 @@ def _copy_repo_contract(root: Path) -> str:
         REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json",
         fixture_target.parent / "protocol.json",
     )
-    protocol_path = fixture_target.parent / "protocol.json"
-    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
-    for field in (
-        "fixture_tree_sha256",
-        "fixture_commitment",
-        "evidence_contract_sha256",
-        "evidence_contract_commitment",
-    ):
-        protocol["execution_lock"][field] = "pending-unbound"
-    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
     subprocess.run(["git", "init", "-q"], cwd=root, check=True)
     subprocess.run(["git", "add", "--all"], cwd=root, check=True)
     subprocess.run(
@@ -506,6 +521,10 @@ def _policy(tmp_path: Path) -> tuple[MaterializerPolicy, str, Path]:
     old = protected / "old-lock"
     old.mkdir(mode=0o700)
     (old / "legacy.json").write_bytes(b'{"legacy":true}')
+    predecessor = tmp_path / "predecessor-r2"
+    predecessor.mkdir(mode=0o700)
+    (predecessor / "receipt.json").write_bytes(b'{"r2":true}')
+    predecessor_fingerprint = fingerprint_tree(predecessor)
     source_base = tmp_path / "trusted-source-base"
     source_base.mkdir(mode=0o700)
     source_root = source_base / "sealed-source"
@@ -525,14 +544,247 @@ def _policy(tmp_path: Path) -> tuple[MaterializerPolicy, str, Path]:
         trust_anchor=tmp_path,
         legacy_root=old,
         expected_legacy_inode=old.stat().st_ino,
+        expected_legacy_tree_sha256=fingerprint_tree(old).sha256,
         forbidden_roots=(repo, repo / ".git", repo / "benchmarks"),
         source_base=source_base,
         source_root=source_root,
         canary_run_root=canary_run,
         raw_results_root=raw_results,
         other_run_roots=(other_run,),
+        immutable_roots=(
+            materializer.ImmutableRoot(
+                predecessor,
+                predecessor_fingerprint.inode,
+                predecessor_fingerprint.sha256,
+                "validated-r2",
+            ),
+        ),
     )
     return policy, head, source
+
+
+def _predecessor_tree_sha256(policy: MaterializerPolicy) -> str:
+    return next(
+        item.tree_sha256
+        for item in policy.immutable_roots
+        if item.label == "validated-r2"
+    )
+
+
+def _bind_synthetic_repo_to_actual_r2(
+    policy: MaterializerPolicy,
+) -> str:
+    protocol = REPO_ROOT / "benchmarks/ai-sdlc-v2-benefits/protocol.json"
+    target = policy.repo_root / "benchmarks/ai-sdlc-v2-benefits/protocol.json"
+    shutil.copy2(protocol, target)
+    if subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=policy.repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout:
+        subprocess.run(["git", "add", "--all"], cwd=policy.repo_root, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=materializer-test",
+                "-c",
+                "user.email=test@invalid",
+                "commit",
+                "-qm",
+                "bind exact r2 predecessor",
+            ],
+            cwd=policy.repo_root,
+            check=True,
+        )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=policy.repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def _commit_synthetic_repo(policy: MaterializerPolicy, message: str) -> str:
+    subprocess.run(["git", "add", "--all"], cwd=policy.repo_root, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=materializer-test",
+            "-c",
+            "user.email=test@invalid",
+            "commit",
+            "-qm",
+            message,
+        ],
+        cwd=policy.repo_root,
+        check=True,
+    )
+    return subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=policy.repo_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+
+def test_capture_repo_bindings_accepts_only_exact_bound_r2_predecessor(
+    tmp_path: Path,
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    head = _bind_synthetic_repo_to_actual_r2(policy)
+
+    bindings = materializer._capture_repo_bindings(head, policy)
+
+    assert bindings.source_head == head
+    assert (
+        bindings.source_tree_sha
+        == subprocess.run(
+            ["git", "rev-parse", "HEAD^{tree}"],
+            cwd=policy.repo_root,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+    )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "pending",
+        "partial-bound",
+        "fixture-tree-wrong",
+        "fixture-commitment-wrong",
+        "evidence-sha-wrong",
+        "evidence-commitment-wrong",
+        "fixture-pair-mismatch",
+        "evidence-pair-mismatch",
+        "protocol-digest",
+        "sealed-authority",
+        "already-r3",
+    ),
+)
+def test_capture_repo_bindings_rejects_nonexact_r2_predecessor(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    _bind_synthetic_repo_to_actual_r2(policy)
+    protocol_path = policy.repo_root / "benchmarks/ai-sdlc-v2-benefits/protocol.json"
+    authority_path = (
+        policy.repo_root
+        / "benchmarks/ai-sdlc-v2-benefits/fixtures/sealed-commitments.json"
+    )
+    if mutation in {
+        "pending",
+        "partial-bound",
+        "fixture-tree-wrong",
+        "fixture-commitment-wrong",
+        "evidence-sha-wrong",
+        "evidence-commitment-wrong",
+        "fixture-pair-mismatch",
+        "evidence-pair-mismatch",
+        "protocol-digest",
+    }:
+        protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+        lock = protocol["execution_lock"]
+        if mutation == "pending":
+            for field in (
+                "fixture_tree_sha256",
+                "fixture_commitment",
+                "evidence_contract_sha256",
+                "evidence_contract_commitment",
+            ):
+                lock[field] = "pending-unbound"
+        elif mutation == "partial-bound":
+            lock["fixture_tree_sha256"] = "pending-unbound"
+        elif mutation == "protocol-digest":
+            lock["writer_timeout_seconds"] += 1
+        else:
+            field = {
+                "fixture-tree-wrong": "fixture_tree_sha256",
+                "fixture-commitment-wrong": "fixture_commitment",
+                "evidence-sha-wrong": "evidence_contract_sha256",
+                "evidence-commitment-wrong": "evidence_contract_commitment",
+                "fixture-pair-mismatch": "fixture_commitment",
+                "evidence-pair-mismatch": "evidence_contract_commitment",
+            }[mutation]
+            lock[field] = "0" * 64
+        protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    else:
+        authority = json.loads(authority_path.read_text(encoding="utf-8"))
+        if mutation == "already-r3":
+            authority["lock_id"] = "v2-benefits-20260819-r3"
+        else:
+            authority["source_bundle_sha256"] = "0" * 64
+        authority_path.write_text(json.dumps(authority), encoding="utf-8")
+    head = _commit_synthetic_repo(policy, f"invalid predecessor {mutation}")
+    touched: list[str] = []
+    monkeypatch.setattr(
+        materializer,
+        "_read_source_record",
+        lambda **_kwargs: touched.append("source-read"),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "_open_trusted_parent",
+        lambda _policy: touched.append("target-write"),
+    )
+
+    with pytest.raises(MaterializationError, match="protocol-predecessor"):
+        materializer.materialize_with_policy(
+            source_fd=-1,
+            expected_source_sha256="0" * 64,
+            expected_head=head,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
+            policy=policy,
+        )
+
+    assert touched == []
+
+
+def test_pending_predecessor_fails_before_source_read_or_write(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    protocol_path = policy.repo_root / "benchmarks/ai-sdlc-v2-benefits/protocol.json"
+    protocol = json.loads(protocol_path.read_text(encoding="utf-8"))
+    for field in (
+        "fixture_tree_sha256",
+        "fixture_commitment",
+        "evidence_contract_sha256",
+        "evidence_contract_commitment",
+    ):
+        protocol["execution_lock"][field] = "pending-unbound"
+    protocol_path.write_text(json.dumps(protocol), encoding="utf-8")
+    head = _commit_synthetic_repo(policy, "pending predecessor")
+    touched: list[str] = []
+    monkeypatch.setattr(
+        materializer,
+        "_read_source_record",
+        lambda **_kwargs: touched.append("source-read"),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "_open_trusted_parent",
+        lambda _policy: touched.append("target-write"),
+    )
+
+    with pytest.raises(MaterializationError, match="protocol-predecessor"):
+        materializer.materialize_with_policy(
+            source_fd=-1,
+            expected_source_sha256="0" * 64,
+            expected_head=head,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
+            policy=policy,
+        )
+
+    assert touched == []
 
 
 def _compile_for_test(
@@ -600,7 +852,14 @@ def _stable_unit_isolation_attestation(
                     "other_run": True,
                     "add_dir": True,
                     "protected_roots": 2,
-                    "write_protected_roots": 1,
+                    "write_protected_roots": 2,
+                    "runtime_read": True,
+                    "runtime_exec": True,
+                    "runtime_append_denied": True,
+                    "runtime_create_denied": True,
+                    "runtime_chmod_denied": True,
+                    "runtime_rename_denied": True,
+                    "runtime_probe_transcript_sha256": "3" * 64,
                 },
             }
         ),
@@ -687,9 +946,7 @@ def test_source_fd_alias_inside_repository_is_rejected(
                 source_fd=descriptor,
                 expected_source_sha256=digest,
                 expected_head=head,
-                expected_old_root_tree_sha256=fingerprint_tree(
-                    policy.legacy_root
-                ).sha256,
+                expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
                 policy=policy,
             )
     finally:
@@ -923,9 +1180,7 @@ def test_fix_round3_source_must_be_direct_child_of_strict_trusted_root(
                 source_fd=descriptor,
                 expected_source_sha256=digest,
                 expected_head=head,
-                expected_old_root_tree_sha256=fingerprint_tree(
-                    policy.legacy_root
-                ).sha256,
+                expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
                 policy=policy,
             )
     finally:
@@ -936,7 +1191,7 @@ def test_fix_round3_source_must_be_direct_child_of_strict_trusted_root(
             _source,
             expected_source_sha256=sha256(_source.read_bytes()).hexdigest(),
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -949,7 +1204,7 @@ def test_fix_round3_target_parent_requires_exact_private_mode(tmp_path: Path) ->
             source,
             expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -975,6 +1230,11 @@ def test_fix_round3_final_canary_uses_exact_published_and_protected_roots(
         )
 
     monkeypatch.setattr(materializer, "probe_provider_isolation", successful_probe)
+    monkeypatch.setattr(
+        materializer,
+        "_probe_runtime_capsule_access",
+        lambda *_args, **_kwargs: _successful_runtime_probe(),
+    )
     data = REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="3" * 64)
     attestation = json.loads(data)
     profile = captured[0]
@@ -997,6 +1257,140 @@ def test_fix_round3_final_canary_uses_exact_published_and_protected_roots(
     )
     assert attestation["state"] == "validated"
     assert attestation["pending_receipt_sha256"] == "3" * 64
+    assert {
+        key: attestation["checks"][key]
+        for key in (
+            "runtime_read",
+            "runtime_exec",
+            "runtime_append_denied",
+            "runtime_create_denied",
+            "runtime_chmod_denied",
+            "runtime_rename_denied",
+        )
+    } == {
+        "runtime_read": True,
+        "runtime_exec": True,
+        "runtime_append_denied": True,
+        "runtime_create_denied": True,
+        "runtime_chmod_denied": True,
+        "runtime_rename_denied": True,
+    }
+
+
+@pytest.mark.parametrize("mutation", ("unexecuted", "fake-digest", "false-check"))
+def test_runtime_probe_attestation_is_closed_and_cannot_be_faked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, mutation: str
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    policy.target.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        materializer,
+        "probe_provider_isolation",
+        lambda _profile: IsolationProbeResult(
+            True, True, True, True, True, True, True, ()
+        ),
+    )
+    proof = _successful_runtime_probe()
+    if mutation == "unexecuted":
+        proof = replace(
+            proof,
+            transcript=(),
+            transcript_sha256=sha256(_canonical([])).hexdigest(),
+        )
+    elif mutation == "fake-digest":
+        proof = replace(proof, transcript_sha256="0" * 64)
+    else:
+        proof = replace(proof, runtime_rename_denied=False)
+    monkeypatch.setattr(
+        materializer,
+        "_probe_runtime_capsule_access",
+        lambda *_args, **_kwargs: proof,
+    )
+
+    with pytest.raises(MaterializationError, match="runtime-capsule-probe"):
+        REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="6" * 64)
+
+    assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
+
+
+def test_runtime_probe_executes_all_six_checks_and_rejects_permissive_profile(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    policy.target.mkdir(mode=0o700)
+    launches: list[tuple[str, ...]] = []
+    monkeypatch.setattr(
+        materializer,
+        "probe_provider_isolation",
+        lambda _profile: IsolationProbeResult(
+            True, True, True, True, True, True, True, ()
+        ),
+    )
+
+    def permissive_launch(
+        _profile: object, argv: tuple[str, ...]
+    ) -> subprocess.CompletedProcess[str]:
+        launches.append(tuple(argv))
+        if "read_bytes" in " ".join(argv):
+            stdout = "1\n"
+        elif "runtime-exec-ok" in " ".join(argv):
+            stdout = "runtime-exec-ok\n"
+        else:
+            stdout = ""
+        return subprocess.CompletedProcess(list(argv), 0, stdout, "")
+
+    monkeypatch.setattr(materializer, "run_provider_isolated", permissive_launch)
+
+    with pytest.raises(MaterializationError, match="runtime-capsule-probe"):
+        REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="7" * 64)
+
+    assert len(launches) == 6
+    assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
+
+
+def test_runtime_canary_cleanup_failure_is_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    policy.target.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        materializer,
+        "probe_provider_isolation",
+        lambda _profile: IsolationProbeResult(
+            True, True, True, True, True, True, True, ()
+        ),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "_probe_runtime_capsule_access",
+        lambda *_args, **_kwargs: _successful_runtime_probe(),
+    )
+    monkeypatch.setattr(
+        materializer,
+        "_cleanup_runtime_write_canary",
+        lambda _canary: (_ for _ in ()).throw(
+            MaterializationError("runtime-canary-cleanup")
+        ),
+    )
+
+    with pytest.raises(MaterializationError, match="runtime-canary-cleanup"):
+        REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="8" * 64)
+
+
+def test_runtime_canary_creation_failure_cleans_inode_bound_partial_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy, _head, _source = _policy(tmp_path)
+    monkeypatch.setattr(
+        materializer,
+        "_write_all",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("short create")),
+    )
+
+    with pytest.raises(MaterializationError, match="runtime-canary-root"):
+        materializer._create_runtime_write_canary(policy)
+
+    assert not list(policy.canary_run_root.parent.glob(".runtime-write-*"))
 
 
 def _default_policy_with_test_canary_roots(
@@ -1061,6 +1455,11 @@ def test_fix_round5_default_policy_final_profile_derives_all_git_surfaces(
         )
 
     monkeypatch.setattr(materializer, "probe_provider_isolation", successful_probe)
+    monkeypatch.setattr(
+        materializer,
+        "_probe_runtime_capsule_access",
+        lambda *_args, **_kwargs: _successful_runtime_probe(),
+    )
     data = REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="4" * 64)
     attestation = json.loads(data)
     profile = captured[0]
@@ -1117,7 +1516,7 @@ def test_fix_round3_canary_failure_quarantines_published_target(
             source,
             expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -1139,7 +1538,7 @@ def test_fix_round3_system_publication_requires_real_final_path_canary(
             source,
             expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
     except MaterializationError as error:
@@ -1175,8 +1574,18 @@ def test_fix_round3_system_publication_requires_real_final_path_canary(
         "other_run": True,
         "add_dir": True,
         "protected_roots": expected_protected_roots,
-        "write_protected_roots": 1,
+        "write_protected_roots": 2,
+        "runtime_read": True,
+        "runtime_exec": True,
+        "runtime_append_denied": True,
+        "runtime_create_denied": True,
+        "runtime_chmod_denied": True,
+        "runtime_rename_denied": True,
+        "runtime_probe_transcript_sha256": attestation["checks"][
+            "runtime_probe_transcript_sha256"
+        ],
     }
+    assert len(attestation["checks"]["runtime_probe_transcript_sha256"]) == 64
     assert (
         result.file_sha256["isolation-attestation.json"]
         == sha256(
@@ -1201,7 +1610,7 @@ def test_fix_round3_source_root_drift_aborts_before_publication(
             source,
             expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -1388,6 +1797,9 @@ def test_r3_production_target_is_monotonic_and_refuses_predecessors() -> None:
         == materializer.INVALID_R1_ROOT
     )
     assert policy.target != materializer.INVALID_R1_ROOT
+    assert (
+        policy.expected_legacy_tree_sha256 == materializer.EXPECTED_LEGACY_TREE_SHA256
+    )
     assert policy.source_root.name == "sealed-source-r3"
     assert policy.prior_source_roots == (
         materializer.PRIOR_TRUSTED_SOURCE_ROOT,
@@ -1432,7 +1844,7 @@ def test_r3_production_target_is_monotonic_and_refuses_predecessors() -> None:
             expected_source_sha256="0" * 64,
             expected_head="0" * 40,
             lock_id="v2-benefits-20260819-r1",
-            expected_old_root_tree_sha256="0" * 64,
+            expected_predecessor_r2_tree_sha256="0" * 64,
         )
     with pytest.raises(MaterializationError, match="target-lock"):
         materializer.materialize_sealed_bundle(
@@ -1440,7 +1852,7 @@ def test_r3_production_target_is_monotonic_and_refuses_predecessors() -> None:
             expected_source_sha256="0" * 64,
             expected_head="0" * 40,
             lock_id="v2-benefits-20260819-r2",
-            expected_old_root_tree_sha256="0" * 64,
+            expected_predecessor_r2_tree_sha256="0" * 64,
         )
 
 
@@ -1528,6 +1940,7 @@ def test_fix_round6_immutable_r1_drift_stops_before_r2_publication(
     policy = replace(
         policy,
         immutable_roots=(
+            *policy.immutable_roots,
             materializer.ImmutableRoot(
                 invalid, before.inode, before.sha256, "invalid-r1"
             ),
@@ -1543,9 +1956,7 @@ def test_fix_round6_immutable_r1_drift_stops_before_r2_publication(
             source,
             expected_source_sha256=sha256(source.read_bytes()).hexdigest(),
             expected_head=head,
-            expected_old_root_tree_sha256=materializer.fingerprint_tree(
-                policy.legacy_root
-            ).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -1566,7 +1977,7 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
             source,
             expected_source_sha256=digest,
             expected_head="0" * 40,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
     dirty = policy.repo_root / "dirty.txt"
@@ -1576,7 +1987,7 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
     dirty.unlink()
@@ -1606,16 +2017,17 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
         capture_output=True,
         text=True,
     ).stdout.strip()
-    with pytest.raises(MaterializationError, match="protocol-state"):
+    with pytest.raises(MaterializationError, match="protocol-predecessor"):
         _materialize_for_test(
             source,
             expected_source_sha256=digest,
             expected_head=invalid_head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
-    protocol["execution_lock"]["fixture_commitment"] = "pending-unbound"
-    protocol_path.write_text(json.dumps(protocol))
+    shutil.copy2(
+        REPO_ROOT / "benchmarks/ai-sdlc-v2-benefits/protocol.json", protocol_path
+    )
     subprocess.run(["git", "add", "--all"], cwd=policy.repo_root, check=True)
     subprocess.run(
         [
@@ -1645,7 +2057,7 @@ def test_materializer_rejects_head_dirty_protocol_and_provider_outputs(
             source,
             expected_source_sha256=digest,
             expected_head=valid_head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -1655,7 +2067,7 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
-    old_digest = fingerprint_tree(policy.legacy_root).sha256
+    predecessor_digest = _predecessor_tree_sha256(policy)
     monkeypatch.setattr(
         materializer, "_validate_scratch", lambda *_args, **_kwargs: None
     )
@@ -1665,7 +2077,7 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=old_digest,
+            expected_predecessor_r2_tree_sha256=predecessor_digest,
             policy=policy,
         )
     policy.target.rmdir()
@@ -1675,7 +2087,7 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=old_digest,
+            expected_predecessor_r2_tree_sha256=predecessor_digest,
             policy=policy,
         )
     policy.target.parent.chmod(0o700)
@@ -1685,19 +2097,21 @@ def test_target_policy_rejects_existing_leaf_untrusted_parent_and_overlap(
         trust_anchor=policy.trust_anchor,
         legacy_root=policy.legacy_root,
         expected_legacy_inode=policy.expected_legacy_inode,
+        expected_legacy_tree_sha256=policy.expected_legacy_tree_sha256,
         forbidden_roots=(*policy.forbidden_roots, policy.target.parent),
         source_base=policy.source_base,
         source_root=policy.source_root,
         canary_run_root=policy.canary_run_root,
         raw_results_root=policy.raw_results_root,
         other_run_roots=policy.other_run_roots,
+        immutable_roots=policy.immutable_roots,
     )
     with pytest.raises(MaterializationError, match="target-overlap"):
         _materialize_for_test(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=old_digest,
+            expected_predecessor_r2_tree_sha256=predecessor_digest,
             policy=overlap,
         )
 
@@ -1716,7 +2130,7 @@ def test_successful_publication_is_exclusive_closed_and_mode_locked(
         source,
         expected_source_sha256=digest,
         expected_head=head,
-        expected_old_root_tree_sha256=old_before.sha256,
+        expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
         policy=policy,
     )
 
@@ -1747,7 +2161,6 @@ def test_publication_retries_short_writes_until_every_byte_is_durable(
 ) -> None:
     policy, head, source = _policy(tmp_path)
     digest = sha256(source.read_bytes()).hexdigest()
-    old_before = fingerprint_tree(policy.legacy_root)
     monkeypatch.setattr(
         materializer, "_validate_scratch", lambda *_args, **_kwargs: None
     )
@@ -1766,7 +2179,7 @@ def test_publication_retries_short_writes_until_every_byte_is_durable(
         source,
         expected_source_sha256=digest,
         expected_head=head,
-        expected_old_root_tree_sha256=old_before.sha256,
+        expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
         policy=policy,
     )
 
@@ -1797,7 +2210,7 @@ def test_staging_creation_is_relative_to_the_pinned_parent_descriptor(
         source,
         expected_source_sha256=digest,
         expected_head=head,
-        expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+        expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
         policy=policy,
     )
 
@@ -1822,7 +2235,7 @@ def test_parent_path_replacement_after_pin_fails_before_publication(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -1838,7 +2251,7 @@ def test_repository_preflight_precedes_protected_source_read(tmp_path: Path) -> 
             source_fd=-1,
             expected_source_sha256="0" * 64,
             expected_head="0" * 40,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
 
@@ -1893,7 +2306,7 @@ def test_prepublish_failure_removes_only_owned_staging(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=old_before.sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
             failure_injector=FailureInjector(failure_point),
         )
@@ -1932,7 +2345,7 @@ def test_postpublish_failure_quarantines_only_matching_target(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=old_before.sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
             failure_injector=FailureInjector(failure_point),
         )
@@ -1961,7 +2374,7 @@ def test_cleanup_failure_is_explicit_no_go(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
             failure_injector=FailureInjector("postverify"),
         )
@@ -1982,7 +2395,7 @@ def test_renameatx_unavailable_is_fail_closed_before_publish(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=policy,
         )
     assert not policy.target.exists()
@@ -1996,13 +2409,14 @@ def test_old_root_inode_and_tree_are_required_and_unchanged(
     monkeypatch.setattr(
         materializer, "_validate_scratch", lambda *_args, **_kwargs: None
     )
+    wrong_tree = replace(policy, expected_legacy_tree_sha256="0" * 64)
     with pytest.raises(MaterializationError, match="legacy-tree"):
         _materialize_for_test(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256="0" * 64,
-            policy=policy,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
+            policy=wrong_tree,
         )
     wrong_inode = MaterializerPolicy(
         repo_root=policy.repo_root,
@@ -2010,19 +2424,21 @@ def test_old_root_inode_and_tree_are_required_and_unchanged(
         trust_anchor=policy.trust_anchor,
         legacy_root=policy.legacy_root,
         expected_legacy_inode=policy.expected_legacy_inode + 1,
+        expected_legacy_tree_sha256=policy.expected_legacy_tree_sha256,
         forbidden_roots=policy.forbidden_roots,
         source_base=policy.source_base,
         source_root=policy.source_root,
         canary_run_root=policy.canary_run_root,
         raw_results_root=policy.raw_results_root,
         other_run_roots=policy.other_run_roots,
+        immutable_roots=policy.immutable_roots,
     )
     with pytest.raises(MaterializationError, match="legacy-inode"):
         _materialize_for_test(
             source,
             expected_source_sha256=digest,
             expected_head=head,
-            expected_old_root_tree_sha256=fingerprint_tree(policy.legacy_root).sha256,
+            expected_predecessor_r2_tree_sha256=_predecessor_tree_sha256(policy),
             policy=wrong_inode,
         )
 
@@ -2074,6 +2490,25 @@ def test_cli_fingerprint_is_read_only_and_materialize_help_is_closed() -> None:
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert set(payload) == {"inode", "tree_sha256"}
+    predecessor_result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "ai_sdlc",
+            "benefit-evidence",
+            "fingerprint-predecessor-r2",
+        ],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert predecessor_result.returncode == 0, predecessor_result.stderr
+    predecessor = json.loads(predecessor_result.stdout)
+    assert predecessor == {
+        "inode": materializer.EXPECTED_R2_INODE,
+        "tree_sha256": materializer.EXPECTED_R2_TREE_SHA256,
+    }
     help_result = subprocess.run(
         [
             sys.executable,
@@ -2096,11 +2531,23 @@ def test_cli_fingerprint_is_read_only_and_materialize_help_is_closed() -> None:
         "--expected-source-sha256",
         "--expected-head",
         "--lock-id",
-        "--expected-old-root-tree-sha256",
+        "--expected-predecessor-r2-tree-sha256",
     ):
         assert option in combined
+    assert "--expected-old-root-tree-sha256" not in combined
     assert "--sealed-source " not in combined
     assert "--target" not in combined
+
+    legacy_option = CliRunner().invoke(
+        benefit_evidence_cmd.benefit_evidence_app,
+        [
+            "materialize-sealed",
+            "--expected-old-root-tree-sha256",
+            "0" * 64,
+        ],
+    )
+    assert legacy_option.exit_code != 0
+    assert "No such option" in legacy_option.output
 
 
 def test_task2_binding_cli_reports_narrow_authority_without_provider_permission(
@@ -2181,7 +2628,7 @@ def test_cli_redacts_unexpected_materializer_exception(
                 "0" * 40,
                 "--lock-id",
                 FINAL_LOCK_ID,
-                "--expected-old-root-tree-sha256",
+                "--expected-predecessor-r2-tree-sha256",
                 "0" * 64,
             ],
         )
@@ -2227,7 +2674,7 @@ def test_fix_round3_cli_success_is_opaque(
                 "0" * 40,
                 "--lock-id",
                 FINAL_LOCK_ID,
-                "--expected-old-root-tree-sha256",
+                "--expected-predecessor-r2-tree-sha256",
                 "0" * 64,
             ],
         )
