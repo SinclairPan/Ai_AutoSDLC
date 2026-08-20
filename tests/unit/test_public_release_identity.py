@@ -83,6 +83,7 @@ def test_public_identity_does_not_require_release_history_documents() -> None:
     assert not any("prd" in path.casefold() for path in public_paths)
     assert "docs/v3-migration.zh-CN.md" in public_paths
     assert "docs/v2-migration.zh-CN.md" not in public_paths
+    assert "docs/user-guide-release-standard.zh-CN.md" in public_paths
 
 
 def test_user_guide_identity_requires_new_user_release_paths() -> None:

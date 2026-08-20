@@ -69,6 +69,16 @@ Keep the handoff concise enough for a fresh thread to read quickly.
 This section is for development of this AI-SDLC repository itself. Do not copy
 it into external user guidance or framework runtime rules.
 
+### New-user guide release contract
+
+The first release after `v3.0.0` and every later release must follow
+`docs/user-guide-release-standard.zh-CN.md`. The published Chinese guide must
+contain the complete 2 project states x 2 install channels x 3 operating
+systems matrix. All 12 routes must be independently executable and validated;
+online routes, offline routes, initialization/adoption, success evidence, and
+inline recovery steps may not be collapsed into an offline-only or shared-text
+substitute. Treat a missing route or an unverified route as a release blocker.
+
 For this repository's self-development workflow, treat the checked-out source as
 the active framework implementation. Use `uv run ai-sdlc ...` for Loop, Local PR
 Review, handoff, work item, verify, and run commands. A globally

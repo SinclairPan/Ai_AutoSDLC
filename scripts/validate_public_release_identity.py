@@ -43,6 +43,13 @@ REQUIRED_SURFACES: dict[str, tuple[str, ...]] = {
         "$ModulePython -m ai_sdlc",
     ),
     "docs/product-contract.md": (CURRENT_REPOSITORY_URL, CURRENT_VERSION),
+    "docs/user-guide-release-standard.zh-CN.md": (
+        "2 × 2 × 3 = 12",
+        "3.0.0` 之后的首个版本",
+        "AI-SDLC-USER-GUIDE-MATRIX: 2x2x3=12",
+        "AI-SDLC-USER-GUIDE-ROUTE: new|online|windows-amd64",
+        "AI-SDLC-USER-GUIDE-STEP: recover",
+    ),
     "packaging/offline/README.md": (
         CURRENT_REPOSITORY_URL,
         CURRENT_VERSION,
