@@ -302,6 +302,7 @@ def test_windows_direct_launcher_defers_update_and_runs_business_once(
     sitecustomize = hooks / "sitecustomize.py"
     sitecustomize.write_text(
         """
+import functools
 import json
 import os
 import sys
@@ -322,6 +323,7 @@ import ai_sdlc.cli.self_update_cmd as target
 
 original_doctor = doctor_module.doctor_command
 
+@functools.wraps(original_doctor)
 def wrapped_doctor(*args, **kwargs):
     original_doctor(*args, **kwargs)
     raise typer.Exit(17)
