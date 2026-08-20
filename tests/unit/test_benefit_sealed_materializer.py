@@ -6,12 +6,14 @@ import shutil
 import stat
 import subprocess
 import sys
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
+import ai_sdlc.benefit_benchmark_fixtures as fixture_module
 import ai_sdlc.benefit_sealed_materializer as materializer
 import ai_sdlc.cli.benefit_evidence_cmd as benefit_evidence_cmd
 from ai_sdlc.benefit_benchmark_fixtures import IsolationProbeResult
@@ -948,6 +950,90 @@ def test_fix_round3_final_canary_uses_exact_published_and_protected_roots(
     )
     assert attestation["state"] == "validated"
     assert attestation["pending_receipt_sha256"] == "3" * 64
+
+
+def _default_policy_with_test_canary_roots(
+    tmp_path: Path,
+) -> MaterializerPolicy:
+    base = materializer.default_policy()
+    protected = tmp_path / "protected"
+    target = protected / "target"
+    canary = tmp_path / "canary"
+    run = canary / "run"
+    raw = canary / "raw-results"
+    other = canary / "other-run"
+    protected.mkdir(mode=0o700)
+    target.mkdir(mode=0o700)
+    for path in (canary, run, raw, other):
+        path.mkdir(mode=0o700)
+    return replace(
+        base,
+        target=target,
+        canary_run_root=run,
+        raw_results_root=raw,
+        other_run_roots=(other,),
+    )
+
+
+def test_fix_round5_default_policy_final_profile_derives_all_git_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    policy = _default_policy_with_test_canary_roots(tmp_path)
+    captured: list[object] = []
+
+    def successful_probe(profile: object) -> IsolationProbeResult:
+        captured.append(profile)
+        return IsolationProbeResult(
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            True,
+            tuple(
+                (f"protected-root-{index}", True)
+                for index in range(
+                    5 + len(profile.protected_roots) + len(profile.other_run_roots)
+                )
+            ),
+        )
+
+    monkeypatch.setattr(materializer, "probe_provider_isolation", successful_probe)
+    data = REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="4" * 64)
+    attestation = json.loads(data)
+    profile = captured[0]
+    expected = set(fixture_module.derive_repo_git_surfaces(policy.repo_root))
+
+    assert expected <= set(profile.protected_roots)
+    assert policy.source_root.resolve() in profile.protected_roots
+    assert attestation["state"] == "validated"
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS Seatbelt")
+def test_fix_round5_system_default_policy_denies_each_exact_git_surface(
+    tmp_path: Path,
+) -> None:
+    policy = _default_policy_with_test_canary_roots(tmp_path)
+    profile = materializer._build_final_isolation_profile(policy)
+    surfaces = fixture_module.derive_repo_git_surfaces(policy.repo_root)
+
+    try:
+        attestation = json.loads(
+            REAL_FINAL_ISOLATION_CANARY(policy, pending_receipt_sha256="5" * 64)
+        )
+        denied = {
+            surface: fixture_module._sandbox_denies(profile, surface)
+            for surface in surfaces
+        }
+    except (MaterializationError, RuntimeError) as error:
+        if "sandbox_apply: Operation not permitted" in str(error.__cause__):
+            pytest.skip("nested Seatbelt is unavailable inside the test sandbox")
+        raise
+
+    assert set(surfaces) <= set(profile.protected_roots)
+    assert all(denied.values())
+    assert attestation["state"] == "validated"
 
 
 def test_fix_round3_canary_failure_quarantines_published_target(

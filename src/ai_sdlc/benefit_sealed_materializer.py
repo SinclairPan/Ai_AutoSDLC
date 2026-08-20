@@ -26,7 +26,9 @@ except ImportError:  # pragma: no cover - 正式物化器仅在 macOS 上执行�
 from ai_sdlc.benefit_benchmark_fixtures import (
     FIXTURE_IDS,
     FrozenIntentApprovalService,
+    ProviderIsolationProfile,
     build_provider_isolation_profile,
+    derive_repo_git_surfaces,
     evaluate_fixture,
     load_fixture_manifest,
     prepare_fixture,
@@ -1600,17 +1602,12 @@ def _assert_private_directory(path: Path, code: str) -> None:
         raise MaterializationError(code)
 
 
-def _run_final_isolation_canary(
-    policy: MaterializerPolicy, *, pending_receipt_sha256: str
-) -> bytes:
-    for root in (
-        policy.canary_run_root,
-        policy.raw_results_root,
-        *policy.other_run_roots,
-    ):
-        _assert_private_directory(root, "isolation-root")
-    protected_roots = (policy.repo_root / ".git", policy.source_root)
-    profile = build_provider_isolation_profile(
+def _build_final_isolation_profile(
+    policy: MaterializerPolicy,
+) -> ProviderIsolationProfile:
+    git_surfaces = derive_repo_git_surfaces(policy.repo_root)
+    protected_roots = (*git_surfaces, policy.source_root)
+    return build_provider_isolation_profile(
         run_root=policy.canary_run_root,
         sealed_root=policy.target,
         control_root=policy.repo_root,
@@ -1620,6 +1617,21 @@ def _run_final_isolation_canary(
         argv=("/usr/bin/true",),
         environment={"PATH": os.environ.get("PATH", "")},
     )
+
+
+def _run_final_isolation_canary(
+    policy: MaterializerPolicy, *, pending_receipt_sha256: str
+) -> bytes:
+    for root in (
+        policy.canary_run_root,
+        policy.raw_results_root,
+        *policy.other_run_roots,
+    ):
+        _assert_private_directory(root, "isolation-root")
+    try:
+        profile = _build_final_isolation_profile(policy)
+    except (OSError, ValueError) as error:
+        raise MaterializationError("isolation-profile") from error
     if not profile.executable or profile.issues:
         raise MaterializationError("isolation-profile")
     try:

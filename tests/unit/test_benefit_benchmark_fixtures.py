@@ -713,6 +713,219 @@ def test_fix_round4_failed_directory_canary_write_cleans_partial_file(
     assert not list(raw.glob(".provider-isolation-canary-*"))
 
 
+def test_fix_round5_derives_real_linked_worktree_git_surfaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    gitfile = REPO_ROOT / ".git"
+    assert gitfile.is_file()
+    monkeypatch.setenv("GIT_DIR", "/test-only/untrusted-git-dir")
+    monkeypatch.setenv("GIT_COMMON_DIR", "/test-only/untrusted-common-dir")
+
+    surfaces = fixture_module.derive_repo_git_surfaces(REPO_ROOT)
+    trusted_env = {
+        "PATH": "/usr/bin:/bin",
+        "LC_ALL": "C",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_TERMINAL_PROMPT": "0",
+    }
+
+    assert surfaces[0] == gitfile
+    assert surfaces[1] == Path(
+        subprocess.run(
+            [
+                "/usr/bin/git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--absolute-git-dir",
+            ],
+            cwd=REPO_ROOT,
+            env=trusted_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    )
+    assert surfaces[2] == Path(
+        subprocess.run(
+            [
+                "/usr/bin/git",
+                "rev-parse",
+                "--path-format=absolute",
+                "--git-common-dir",
+            ],
+            cwd=REPO_ROOT,
+            env=trusted_env,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout.strip()
+    )
+    assert len(set(surfaces)) == 3
+
+
+@pytest.mark.parametrize("git_entry_kind", ["symlink", "fifo"])
+def test_fix_round5_git_surface_untrusted_entry_types_fail_closed(
+    tmp_path: Path, git_entry_kind: str
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    git_entry = repo / ".git"
+    target = tmp_path / "git-target"
+    target.mkdir()
+    if git_entry_kind == "symlink":
+        git_entry.symlink_to(target, target_is_directory=True)
+    else:
+        os.mkfifo(git_entry)
+
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(repo)
+
+
+def test_fix_round5_git_surface_malformed_pointer_and_command_error_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").write_text("not-a-gitdir\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(repo)
+
+    monkeypatch.setattr(
+        fixture_module.subprocess,
+        "run",
+        lambda *_args, **_kwargs: subprocess.CompletedProcess(
+            ["git", "rev-parse"], 1, "", "test-only git error"
+        ),
+    )
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(REPO_ROOT)
+
+
+def test_fix_round5_git_surface_pointer_boundary_and_owner_fail_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    inside = repo / "metadata" / "worktrees" / "unit"
+    inside.mkdir(parents=True)
+    common = repo / "metadata"
+    (repo / ".git").write_text(f"gitdir: {inside}\n", encoding="utf-8")
+
+    def fake_git(arguments: list[str], **_kwargs: object):
+        output = common if arguments[-1] == "--git-common-dir" else inside
+        return subprocess.CompletedProcess(arguments, 0, f"{output}\n", "")
+
+    monkeypatch.setattr(fixture_module.subprocess, "run", fake_git)
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(repo)
+
+    monkeypatch.setattr(fixture_module.os, "geteuid", lambda: os.getuid() + 1)
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(REPO_ROOT)
+
+
+def test_fix_round5_git_surface_scan_error_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_lstat = Path.lstat
+
+    def failing_lstat(path: Path):
+        if path == REPO_ROOT / ".git":
+            raise PermissionError("test-only git surface scan failure")
+        return original_lstat(path)
+
+    monkeypatch.setattr(Path, "lstat", failing_lstat)
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(REPO_ROOT)
+
+
+def test_fix_round5_git_surface_symlinked_gitdir_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    common = tmp_path / "common"
+    actual = common / "worktrees" / "unit"
+    actual.mkdir(parents=True)
+    linked = tmp_path / "linked-gitdir"
+    linked.symlink_to(actual, target_is_directory=True)
+    (repo / ".git").write_text(f"gitdir: {linked}\n", encoding="utf-8")
+
+    def fake_git(arguments: list[str], **_kwargs: object):
+        output = common if arguments[-1] == "--git-common-dir" else linked
+        return subprocess.CompletedProcess(arguments, 0, f"{output}\n", "")
+
+    monkeypatch.setattr(fixture_module.subprocess, "run", fake_git)
+    with pytest.raises(ValueError, match="git-surface"):
+        fixture_module.derive_repo_git_surfaces(repo)
+
+
+def test_fix_round5_candidate_evaluator_automatically_protects_git_surfaces(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    source = candidate / "candidate.py"
+    source.write_text("pass\n", encoding="utf-8")
+    captured: list[object] = []
+
+    def isolated_launch(
+        profile: object,
+        argv: tuple[str, ...] | list[str],
+        **_kwargs: object,
+    ) -> subprocess.CompletedProcess[str]:
+        captured.append(profile)
+        return subprocess.CompletedProcess(
+            list(argv), 0, '{"allowed":false,"status":"pending"}\n', ""
+        )
+
+    monkeypatch.setattr(fixture_module, "run_provider_isolated", isolated_launch)
+    result = fixture_module._run_candidate_adapter(
+        candidate,
+        sealed,
+        source=source,
+        scenario={},
+    )
+
+    assert result == {"allowed": False, "status": "pending"}
+    profile = captured[0]
+    assert set(fixture_module.derive_repo_git_surfaces(REPO_ROOT)) <= set(
+        profile.protected_roots
+    )
+
+
+@pytest.mark.skipif(os.uname().sysname != "Darwin", reason="macOS Seatbelt profile")
+def test_fix_round5_system_candidate_profile_denies_every_production_git_surface(
+    tmp_path: Path,
+) -> None:
+    sealed = _write_sealed_test_root(tmp_path / "protected" / "sealed")
+    candidate = tmp_path / "candidate"
+    candidate.mkdir()
+    raw = tmp_path / "raw-results"
+    raw.mkdir()
+    profile = fixture_module._build_candidate_isolation_profile(
+        candidate=candidate,
+        sealed_root=sealed,
+        raw_results=raw,
+        argv=["/usr/bin/true"],
+    )
+
+    try:
+        denied = {
+            surface: fixture_module._sandbox_denies(profile, surface)
+            for surface in fixture_module.derive_repo_git_surfaces(REPO_ROOT)
+        }
+    except RuntimeError as error:
+        if "sandbox_apply: Operation not permitted" in str(error):
+            pytest.skip("nested Seatbelt is unavailable inside the test sandbox")
+        raise
+
+    assert denied
+    assert all(denied.values())
+
+
 def test_task2_red_tracked_public_tree_contains_no_sealed_plaintext() -> None:
     forbidden = (
         "SEALED_RUBRIC_PHRASE",

@@ -288,3 +288,35 @@ git diff --check: clean
 ```
 
 最终 r1 继续 absent；旧 root inode `400173643`、identity-tree SHA256 `ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2` 未变；protocol 四项仍为 `pending-unbound`。以上只证明 materializer/isolation 修复，不构成正式效益结果，也不授权自动重试 materialize。
+
+## Fix Round 5：生产 Git 元数据完整隔离面
+
+### Critical 与 RED
+
+- Fix 基线：`bfeab5cd1681465b785846b15fb1c03703e208cb`，起点 clean。
+- 独立复审确认 FixR4 只保护 linked worktree 内的 `.git` gitfile；生产 materializer/evaluator 未自动保护 gitfile 指向的 per-worktree gitdir 与 common Git directory。FixR4 测试中的 `actual_git` 是手工合成参数，不能证明生产调用安全，结论为 FAIL/NO-GO。
+- fresh production-integration 批次为 `9 failed`：真实 linked worktree 三类 surface 派生、symlink/FIFO/malformed/command error/owner/overlap 边界、evaluator 自动接线、default-policy materializer 自动接线及两条 system-outside exact-read 证明均先失败。
+
+### Trusted derive 与生产接线
+
+- 新的 trusted derive 固定使用 `/usr/bin/git rev-parse --path-format=absolute` 获取 `--absolute-git-dir` 与 `--git-common-dir`，并使用最小环境清除外部 `GIT_DIR` / `GIT_COMMON_DIR` 等进程环境影响。
+- repo root、`.git` entry、gitdir 和 common dir 均执行 canonical、euid owner、`lstat` type、无 symlink component 与读取前后 identity 校验。gitfile 使用 `O_NOFOLLOW`、`nlink=1`、size bound 和前后全文一致校验；malformed、多行、NUL、FIFO、symlink、读取/命令错误全部 fail closed。
+- directory `.git` 必须与 absolute gitdir/common dir 同一；linked-worktree gitfile 必须精确指向 absolute gitdir，gitdir 必须位于 common dir 的 `worktrees/<id>/...` 边界内，且 gitdir/common 不得与 worktree 内容树重叠。
+- 生产 evaluator 的 candidate isolation profile 现在自动加入 gitfile、per-worktree gitdir、common Git dir；materializer final profile 使用同一 derive，再加入 trusted source root。测试不再手工注入 `actual_git` 伪装生产覆盖。
+- `run_provider_isolated` 的每次刷新继续复核 protected root canonical/type/owner；regular gitfile 使用 `literal` deny，两个 Git directory 使用 `subpath` deny。最终 canary 与 system-outside 测试对三个 known exact surface 分别执行真实读取并全部被 Seatbelt 拒绝。
+
+### FixR5 门禁
+
+```text
+fresh production-integration RED: 9 failed
+FixR5 nested focused: 9 passed, 2 skipped
+fixture + materializer focused: 108 passed, 9 skipped
+related benefit/fixture/materializer/site: 575 passed, 9 skipped
+system-outside production exact Git surfaces: 2 passed
+system-outside Chrome + Seatbelt + final-path统一批次: 117 passed, 0 skipped in 126.67s
+Ruff check: All checks passed
+Ruff format: 4 files already formatted
+git diff --check: clean
+```
+
+本轮没有重试正式 materialize，没有修改 external source、old root、tracked protocol 或交易/发布合同，也没有启动 Provider、`codex exec` 或 experiment arm。上一轮失败留下的 raw-results stale canary 保持原样，留待父任务在任何正式重试决策前按已确认的精确路径处理。

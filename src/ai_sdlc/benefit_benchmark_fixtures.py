@@ -1423,6 +1423,27 @@ print(json.dumps({"allowed":getattr(result,"allowed",None),"reason":getattr(resu
 """
 
 
+def _build_candidate_isolation_profile(
+    *,
+    candidate: Path,
+    sealed_root: Path,
+    raw_results: Path,
+    argv: Sequence[str],
+) -> ProviderIsolationProfile:
+    control_root = _BENCHMARK_ROOT.parent.parent
+    git_surfaces = derive_repo_git_surfaces(control_root)
+    return build_provider_isolation_profile(
+        run_root=candidate,
+        sealed_root=sealed_root,
+        control_root=control_root,
+        other_run_roots=[],
+        argv=argv,
+        environment={"PATH": os.environ.get("PATH", "")},
+        raw_results_root=raw_results,
+        protected_roots=git_surfaces,
+    )
+
+
 def _run_candidate_adapter(
     candidate: Path,
     sealed_root: Path,
@@ -1444,16 +1465,11 @@ def _run_candidate_adapter(
     ]
     raw_results = candidate.parent / ".evaluation-raw-results"
     raw_results.mkdir(exist_ok=True)
-    source_git = _BENCHMARK_ROOT.parent.parent / ".git"
-    profile = build_provider_isolation_profile(
-        run_root=candidate,
+    profile = _build_candidate_isolation_profile(
+        candidate=candidate,
         sealed_root=sealed_root,
-        control_root=_BENCHMARK_ROOT.parent.parent,
-        other_run_roots=[],
+        raw_results=raw_results,
         argv=argv,
-        environment={"PATH": os.environ.get("PATH", "")},
-        raw_results_root=raw_results,
-        protected_roots=[source_git],
     )
     if not profile.executable:
         raise ValueError("sealed candidate isolation preflight failed")
@@ -2141,6 +2157,205 @@ def _contains_path(value: str, roots: Iterable[Path]) -> bool:
     return any(str(root.resolve()) in normalized for root in roots)
 
 
+def _git_surface_failure() -> ValueError:
+    return ValueError("git-surface-validation")
+
+
+def _git_surface_identity(metadata: os.stat_result) -> tuple[int, ...]:
+    return (
+        metadata.st_dev,
+        metadata.st_ino,
+        metadata.st_mode,
+        metadata.st_uid,
+        metadata.st_gid,
+        metadata.st_nlink,
+        metadata.st_size,
+        metadata.st_mtime_ns,
+    )
+
+
+def _canonical_owned_path(
+    path: Path, *, allow_file: bool
+) -> tuple[Path, os.stat_result]:
+    candidate = Path(os.path.abspath(path))
+    try:
+        metadata = candidate.lstat()
+        resolved = candidate.resolve(strict=True)
+    except OSError as error:
+        raise _git_surface_failure() from error
+    allowed = stat.S_ISDIR(metadata.st_mode) or (
+        allow_file and stat.S_ISREG(metadata.st_mode)
+    )
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not allowed
+        or metadata.st_uid != os.geteuid()
+        or resolved != candidate
+    ):
+        raise _git_surface_failure()
+    return resolved, metadata
+
+
+def _read_gitfile(path: Path, expected: os.stat_result) -> str:
+    descriptor = -1
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        opened = os.fstat(descriptor)
+        identity = (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_mode,
+            opened.st_uid,
+            opened.st_nlink,
+            opened.st_size,
+            opened.st_mtime_ns,
+        )
+        expected_identity = (
+            expected.st_dev,
+            expected.st_ino,
+            expected.st_mode,
+            expected.st_uid,
+            expected.st_nlink,
+            expected.st_size,
+            expected.st_mtime_ns,
+        )
+        if (
+            identity != expected_identity
+            or not stat.S_ISREG(opened.st_mode)
+            or opened.st_nlink != 1
+            or opened.st_size > 4096
+        ):
+            raise _git_surface_failure()
+        data = os.read(descriptor, 4097)
+        if len(data) != opened.st_size or os.read(descriptor, 1):
+            raise _git_surface_failure()
+        return data.decode("utf-8", errors="strict")
+    except (OSError, UnicodeError) as error:
+        raise _git_surface_failure() from error
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _git_rev_parse_path(repo_root: Path, argument: str) -> tuple[Path, os.stat_result]:
+    try:
+        completed = subprocess.run(
+            ["/usr/bin/git", "rev-parse", "--path-format=absolute", argument],
+            cwd=repo_root,
+            env={
+                "PATH": "/usr/bin:/bin",
+                "LC_ALL": "C",
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_TERMINAL_PROMPT": "0",
+            },
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise _git_surface_failure() from error
+    lines = completed.stdout.splitlines()
+    if (
+        completed.returncode != 0
+        or len(lines) != 1
+        or not lines[0]
+        or lines[0] != lines[0].strip()
+    ):
+        raise _git_surface_failure()
+    path = Path(lines[0])
+    if not path.is_absolute():
+        raise _git_surface_failure()
+    return _canonical_owned_path(path, allow_file=False)
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    try:
+        left.relative_to(right)
+        return True
+    except ValueError:
+        pass
+    try:
+        right.relative_to(left)
+        return True
+    except ValueError:
+        return False
+
+
+def derive_repo_git_surfaces(repo_root: Path) -> tuple[Path, Path, Path]:
+    """Derive and validate the worktree gitfile, gitdir and common Git directory."""
+    repo, repo_metadata = _canonical_owned_path(repo_root, allow_file=False)
+    git_entry = repo / ".git"
+    entry, entry_metadata = _canonical_owned_path(git_entry, allow_file=True)
+    pointer_value: str | None = None
+    gitfile_raw: str | None = None
+    if stat.S_ISREG(entry_metadata.st_mode):
+        gitfile_raw = _read_gitfile(entry, entry_metadata)
+        lines = gitfile_raw.splitlines()
+        if len(lines) != 1 or not lines[0].startswith("gitdir: "):
+            raise _git_surface_failure()
+        pointer_value = lines[0][len("gitdir: ") :]
+        if (
+            not pointer_value
+            or pointer_value != pointer_value.strip()
+            or "\x00" in pointer_value
+        ):
+            raise _git_surface_failure()
+    absolute_git_dir, gitdir_metadata = _git_rev_parse_path(repo, "--absolute-git-dir")
+    common_git_dir, common_metadata = _git_rev_parse_path(repo, "--git-common-dir")
+    try:
+        entry_after = git_entry.lstat()
+    except OSError as error:
+        raise _git_surface_failure() from error
+    if _git_surface_identity(entry_after) != _git_surface_identity(entry_metadata):
+        raise _git_surface_failure()
+    if gitfile_raw is not None and _read_gitfile(entry, entry_after) != gitfile_raw:
+        raise _git_surface_failure()
+    if pointer_value is None:
+        if entry != absolute_git_dir or common_git_dir != absolute_git_dir:
+            raise _git_surface_failure()
+    else:
+        pointer = Path(pointer_value)
+        if not pointer.is_absolute():
+            pointer = entry.parent / pointer
+        try:
+            pointer = pointer.resolve(strict=True)
+        except OSError as error:
+            raise _git_surface_failure() from error
+        if pointer != absolute_git_dir:
+            raise _git_surface_failure()
+        if _paths_overlap(repo, absolute_git_dir) or _paths_overlap(
+            repo, common_git_dir
+        ):
+            raise _git_surface_failure()
+        try:
+            gitdir_relative = absolute_git_dir.relative_to(common_git_dir)
+        except ValueError as error:
+            raise _git_surface_failure() from error
+        if len(gitdir_relative.parts) < 2 or gitdir_relative.parts[0] != "worktrees":
+            raise _git_surface_failure()
+    repo_after, repo_after_metadata = _canonical_owned_path(repo, allow_file=False)
+    gitdir_after, gitdir_after_metadata = _canonical_owned_path(
+        absolute_git_dir, allow_file=False
+    )
+    common_after, common_after_metadata = _canonical_owned_path(
+        common_git_dir, allow_file=False
+    )
+    if (
+        repo_after != repo
+        or gitdir_after != absolute_git_dir
+        or common_after != common_git_dir
+        or _git_surface_identity(repo_after_metadata)
+        != _git_surface_identity(repo_metadata)
+        or _git_surface_identity(gitdir_after_metadata)
+        != _git_surface_identity(gitdir_metadata)
+        or _git_surface_identity(common_after_metadata)
+        != _git_surface_identity(common_metadata)
+    ):
+        raise _git_surface_failure()
+    return entry, absolute_git_dir, common_git_dir
+
+
 def _resolve_extra_protected_root(
     path: Path, *, index: int, issues: list[BenchmarkIssue]
 ) -> Path:
@@ -2153,15 +2368,20 @@ def _resolve_extra_protected_root(
             BenchmarkIssue("isolation.protected-root-scan", f"protected-{index}")
         )
         return candidate.absolute()
-    if stat.S_ISLNK(metadata.st_mode) or not (
-        stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not (stat.S_ISDIR(metadata.st_mode) or stat.S_ISREG(metadata.st_mode))
+        or metadata.st_uid != os.geteuid()
     ):
         issues.append(
             BenchmarkIssue("isolation.protected-root-type", f"protected-{index}")
         )
         return candidate.absolute()
     try:
-        return candidate.resolve(strict=True)
+        resolved = candidate.resolve(strict=True)
+        if resolved != Path(os.path.abspath(candidate)):
+            raise OSError("protected root is not canonical")
+        return resolved
     except OSError:
         issues.append(
             BenchmarkIssue("isolation.protected-root-scan", f"protected-{index}")
