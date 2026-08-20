@@ -1,0 +1,1 @@
+{"schema":"ai-sdlc-v2-benefit-arm/v1","arm_id":"A10","label":"AI-SDLC 2.0.0 with one Loop and no experts","methodology":"ai-sdlc-v2.0.0","multi_agent":false,"ai_sdlc":true,"loop":"one-canonical-stage-loop","dynamic_experts":"harness-enforced-ablation-disabled","harness_instrumentation":["digest-bound-intent-approval-client","allowlisted-nested-ablation-overlay"]}

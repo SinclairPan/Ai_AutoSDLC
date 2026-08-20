@@ -3379,12 +3379,13 @@ def _deny_write_rule_for_root(
             BenchmarkIssue("isolation.write-root-scan", f"write-root-{index}")
         )
         return None
-    if not stat.S_ISDIR(metadata.st_mode):
-        issues.append(
-            BenchmarkIssue("isolation.write-root-type", f"write-root-{index}")
-        )
-        return None
-    return f'  (deny file-write* (subpath "{_seatbelt_literal(root)}"))'
+    literal = _seatbelt_literal(root)
+    if stat.S_ISDIR(metadata.st_mode):
+        return f'  (deny file-write* (subpath "{literal}"))'
+    if stat.S_ISREG(metadata.st_mode):
+        return f'  (deny file-write* (literal "{literal}"))'
+    issues.append(BenchmarkIssue("isolation.write-root-type", f"write-root-{index}"))
+    return None
 
 
 def build_provider_isolation_profile(
@@ -3416,7 +3417,10 @@ def build_provider_isolation_profile(
     )
     for index, root in enumerate(write_protected):
         try:
-            if not stat.S_ISDIR(root.lstat().st_mode):
+            if not (
+                stat.S_ISDIR(root.lstat().st_mode)
+                or stat.S_ISREG(root.lstat().st_mode)
+            ):
                 raise OSError("write protection root is not a directory")
         except OSError:
             issues.append(
@@ -3451,11 +3455,9 @@ def build_provider_isolation_profile(
             issues.append(BenchmarkIssue("isolation.root-overlap", "run-in-write-root"))
         except ValueError:
             pass
-        try:
-            root.relative_to(run)
-            issues.append(BenchmarkIssue("isolation.root-overlap", "write-root-in-run"))
-        except ValueError:
-            pass
+        # Readable method instructions intentionally live inside the run and are
+        # made write-only protected.  A write-protected descendant is therefore
+        # safe; only placing the writable run beneath a protected root is invalid.
     for key, value in environment.items():
         if key != "PATH" and _contains_path(value, protected):
             issues.append(BenchmarkIssue("isolation.environment", key))

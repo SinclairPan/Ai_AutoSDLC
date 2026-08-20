@@ -74,7 +74,7 @@ def _write_execution_authorization(
             "+00:00", "Z"
         ),
         "scope": {
-            "mode": "single-frozen-matrix",
+            "mode": "synthetic-unit-mutation",
             "run_ids": [run.run_id for run in protocol.run_matrix],
             "operations": [
                 "start_run",
@@ -4562,7 +4562,7 @@ def test_execution_authorization_is_closed_and_metadata_protected(
     assert not ledger.exists()
 
 
-def test_validate_requires_explicit_independent_authorization_for_execution_ready(
+def test_v1_synthetic_authorization_never_makes_formal_matrix_execution_ready(
     tmp_path: Path,
 ) -> None:
     protocol_path = _bound_protocol_path(tmp_path)
@@ -4584,13 +4584,41 @@ def test_validate_requires_explicit_independent_authorization_for_execution_read
         "task2_commitment_bound": True,
     }
     assert json.loads(authorized.stdout) == {
-        "execution_ready": True,
-        "experiment_authorized": True,
+        "execution_ready": False,
+        "experiment_authorized": False,
         "issues": [],
-        "provider_authorized": True,
+        "provider_authorized": False,
         "structurally_valid": True,
         "task2_commitment_bound": True,
     }
+
+
+def test_task3_rejects_legacy_v1_formal_mode_and_has_no_formal_v2_lock(
+    tmp_path: Path,
+) -> None:
+    protocol = load_protocol(PROTOCOL_PATH)
+    authorization = _write_execution_authorization(
+        tmp_path / "legacy-v1-authorization.json", protocol
+    )
+    raw = json.loads(authorization.read_text())
+    raw["scope"]["mode"] = "single-frozen-matrix"
+    authorization.write_bytes(
+        json.dumps(raw, sort_keys=True, separators=(",", ":")).encode()
+    )
+
+    assert benchmark_core.validate_execution_authorization(protocol, authorization)
+    assert not (
+        REPO_ROOT
+        / "benchmarks"
+        / "ai-sdlc-v2-benefits"
+        / "evidence"
+        / "preflight-receipt.json"
+    ).exists()
+    assert not list(
+        (REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits").glob(
+            "execution-authorization-*.json"
+        )
+    )
 
 
 @pytest.mark.parametrize(

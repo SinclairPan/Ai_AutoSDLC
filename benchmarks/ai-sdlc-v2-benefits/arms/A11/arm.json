@@ -1,0 +1,1 @@
+{"schema":"ai-sdlc-v2-benefit-arm/v1","arm_id":"A11","label":"AI-SDLC 2.0.0 Loop plus Bounded Dynamic Expert Review Graph","methodology":"ai-sdlc-v2.0.0","multi_agent":false,"ai_sdlc":true,"loop":"one-canonical-stage-loop","dynamic_experts":"bounded-runner-callback","harness_instrumentation":["digest-bound-intent-approval-client","hash-bound-same-writer-callback-bridge"]}

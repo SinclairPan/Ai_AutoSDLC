@@ -7,6 +7,7 @@ import math
 import os
 import re
 import stat
+import subprocess
 import tempfile
 from collections.abc import Mapping
 from contextlib import contextmanager, suppress
@@ -356,6 +357,36 @@ def validate_execution_authorization(
         if authorization_path is None:
             raise ValueError("execution authorization is missing")
         raw = _load_execution_authorization(authorization_path)
+        schema = raw.get("schema")
+        if schema == "ai-sdlc-v2-benefit-execution-authorization/v2":
+            from ai_sdlc.benefit_benchmark_arms import (
+                validate_execution_authorization_v2,
+            )
+
+            preflight = _BENCHMARK_ROOT / "evidence" / "preflight-receipt.json"
+            execution_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=_BENCHMARK_ROOT.parents[1],
+                env={
+                    "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                    "LC_ALL": "C",
+                    "GIT_CONFIG_NOSYSTEM": "1",
+                    "GIT_TERMINAL_PROMPT": "0",
+                },
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            ).stdout.strip()
+            issues = validate_execution_authorization_v2(
+                protocol,
+                authorization_path,
+                execution_commit=execution_commit,
+                preflight_receipt=preflight,
+            )
+            if issues:
+                raise ValueError("execution authorization v2 is invalid")
+            return []
         _reject_unknown(raw, _EXECUTION_AUTHORIZATION_KEYS, "execution authorization")
         _require_keys(raw, _EXECUTION_AUTHORIZATION_KEYS, "execution authorization")
         if raw["schema"] != "ai-sdlc-v2-benefit-execution-authorization/v1":
@@ -390,7 +421,9 @@ def validate_execution_authorization(
             scope, _EXECUTION_AUTHORIZATION_SCOPE_KEYS, "authorization scope"
         )
         if (
-            scope["mode"] != "single-frozen-matrix"
+            # v1 remains available only to deterministic unit tests of the mutation
+            # state machine.  The old formal matrix mode is permanently rejected.
+            scope["mode"] != "synthetic-unit-mutation"
             or scope["run_ids"] != [run.run_id for run in protocol.run_matrix]
             or scope["operations"] != list(_EXECUTION_AUTHORIZATION_OPERATIONS)
         ):
@@ -413,6 +446,19 @@ def validate_execution_authorization(
             )
         ]
     return []
+
+
+def execution_authorization_is_formal(path: Path | None) -> bool:
+    """Return true only for the v2 matrix authorization after metadata-safe read."""
+    if path is None:
+        return False
+    try:
+        return (
+            _load_execution_authorization(path).get("schema")
+            == "ai-sdlc-v2-benefit-execution-authorization/v2"
+        )
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def _load_execution_authorization(path: Path) -> dict[str, object]:

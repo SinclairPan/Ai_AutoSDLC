@@ -11,6 +11,7 @@ from ai_sdlc.benefit_benchmark import (
     AttemptCompletion,
     AttemptRequest,
     BenchmarkIssue,
+    execution_authorization_is_formal,
     load_protocol,
     record_provider_completion,
     record_service_transaction,
@@ -194,15 +195,18 @@ def main() -> int:
                 and not issues
                 and not authorization_issues
             )
+            formally_authorized = explicitly_authorized and execution_authorization_is_formal(
+                arguments.authorization
+            )
             _emit(
                 {
-                    "execution_ready": explicitly_authorized,
-                    "experiment_authorized": explicitly_authorized,
+                    "execution_ready": formally_authorized,
+                    "experiment_authorized": formally_authorized,
                     "issues": [
                         _issue_payload(issue)
                         for issue in (*issues, *authorization_issues)
                     ],
-                    "provider_authorized": explicitly_authorized,
+                    "provider_authorized": formally_authorized,
                     "structurally_valid": not structural_issues,
                     "task2_commitment_bound": not any(
                         issue.code
