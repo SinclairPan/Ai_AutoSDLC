@@ -48,6 +48,7 @@ _SELF_UPDATE_REEXEC_ENV = "AI_SDLC_SELF_UPDATE_REEXEC"
 _REPLAY_HANDOFF_SCHEMA_VERSION = 1
 _MAX_REPLAY_HANDOFF_BYTES = 24 * 1024
 _WINDOWS_LAUNCHER_NAMES = {"ai-sdlc.exe", "ai_sdlc.exe"}
+_PROCESS_ENTRY_ARGV0 = str(sys.argv[0])
 _WINDOWS_LAUNCHER_CLEANUP_ATTEMPTS = 200
 _AUTO_REFRESH_FAILURES = {
     REFRESH_BACKOFF,
@@ -147,7 +148,8 @@ def _capture_replay_request() -> ReplayRequest:
         )
     if (
         sys.platform == "win32"
-        and PureWindowsPath(sys.argv[0]).name.lower() in _WINDOWS_LAUNCHER_NAMES
+        and PureWindowsPath(_PROCESS_ENTRY_ARGV0).name.lower()
+        in _WINDOWS_LAUNCHER_NAMES
     ):
         return ReplayRequest(
             executable=str(_locate_windows_launcher()),
@@ -622,10 +624,10 @@ def _prepare_windows_launcher_update() -> tuple[Path, Path | None]:
     return launcher, None
 
 
-def _locate_windows_launcher() -> Path:
+def _locate_windows_launcher(argv0: str | None = None) -> Path:
     """定位 distlib 父启动器；其 Python 子进程只保留启动器名称。"""
 
-    raw = str(sys.argv[0]).strip()
+    raw = str(_PROCESS_ENTRY_ARGV0 if argv0 is None else argv0).strip()
     if not raw:
         raise SelfUpdateError("cannot identify the active Windows launcher")
     launcher_name = PureWindowsPath(raw).name
@@ -752,7 +754,7 @@ def _start_windows_launcher_cleanup(backup: Path) -> None:
 def _should_reexec_windows_launcher(
     *,
     platform_name: str = sys.platform,
-    argv0: str = sys.argv[0],
+    argv0: str | None = None,
     env: dict[str, str] | None = None,
 ) -> bool:
     if platform_name != "win32":
@@ -760,7 +762,9 @@ def _should_reexec_windows_launcher(
     env_map = env or os.environ
     if env_map.get(_SELF_UPDATE_REEXEC_ENV) == "1":
         return False
-    launcher = PureWindowsPath(argv0).name.lower()
+    launcher = PureWindowsPath(
+        _PROCESS_ENTRY_ARGV0 if argv0 is None else argv0
+    ).name.lower()
     return launcher in _WINDOWS_LAUNCHER_NAMES
 
 

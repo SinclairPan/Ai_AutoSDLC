@@ -626,6 +626,7 @@ def test_capture_windows_launcher_uses_current_process_image(
         "argv",
         ["ai-sdlc.exe", "status", "--details"],
     )
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", "ai-sdlc.exe")
     monkeypatch.setattr(self_update_cmd, "_module_replay_prefix", lambda: None)
     monkeypatch.setattr(
         self_update_cmd,
@@ -648,7 +649,7 @@ def test_windows_launcher_locator_uses_path_for_distlib_basename(
     launcher = tmp_path / "安装 目录" / "ai-sdlc.exe"
     launcher.parent.mkdir()
     launcher.write_bytes(b"launcher")
-    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", "ai-sdlc.exe")
     monkeypatch.setattr(
         self_update_cmd.shutil,
         "which",
@@ -667,7 +668,7 @@ def test_windows_launcher_locator_prefers_existing_absolute_invocation(
     launcher = tmp_path / "outside-path" / "ai-sdlc.exe"
     launcher.parent.mkdir()
     launcher.write_bytes(b"launcher")
-    monkeypatch.setattr(self_update_cmd.sys, "argv", [str(launcher), "status"])
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", str(launcher))
     monkeypatch.setattr(
         self_update_cmd.shutil,
         "which",
@@ -686,7 +687,7 @@ def test_windows_launcher_locator_fails_when_path_has_no_launcher(
     runtime = tmp_path / "runtime" / "python.exe"
     runtime.parent.mkdir()
     runtime.write_bytes(b"python")
-    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", "ai-sdlc.exe")
     monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
     monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _command: None)
 
@@ -706,7 +707,7 @@ def test_windows_launcher_locator_falls_back_to_runtime_without_path(
     runtime.write_bytes(b"python")
     launcher = scripts / "ai-sdlc.exe"
     launcher.write_bytes(b"launcher")
-    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", "ai-sdlc.exe")
     monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
     monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _command: None)
 
@@ -727,7 +728,7 @@ def test_windows_launcher_locator_rejects_ambiguous_runtime_candidates(
     nested_scripts = runtime_dir / "Scripts"
     nested_scripts.mkdir()
     (nested_scripts / "ai-sdlc.exe").write_bytes(b"launcher")
-    monkeypatch.setattr(self_update_cmd.sys, "argv", ["ai-sdlc.exe", "status"])
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", "ai-sdlc.exe")
     monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
     monkeypatch.setattr(self_update_cmd.shutil, "which", lambda _command: None)
 
@@ -797,6 +798,52 @@ def test_windows_launcher_reexec_carries_the_process_only_handoff(
     assert calls[1][0] == [request.executable, *request.argv]
     assert seen["cleanup"] == backup
     assert events == ["install", "replay", "cleanup"]
+
+
+def test_explicit_windows_launcher_update_without_handoff_still_cleans_up(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    monkeypatch.delenv("AI_SDLC_UPDATE_REPLAY_HANDOFF", raising=False)
+    monkeypatch.setattr(
+        self_update_cmd, "_should_reexec_windows_launcher", lambda: True
+    )
+    monkeypatch.setattr(self_update_cmd.sys, "executable", r"C:\Python\python.exe")
+    launcher = Path(r"C:\Python\Scripts\ai-sdlc.exe")
+    backup = Path(r"C:\Python\Scripts\.ai-sdlc-old-1.exe")
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_prepare_windows_launcher_update",
+        lambda: (launcher, backup),
+    )
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        self_update_cmd.subprocess,
+        "run",
+        lambda command, **_kwargs: (
+            commands.append(command) or subprocess.CompletedProcess(command, 0)
+        ),
+    )
+    cleaned: list[Path] = []
+    monkeypatch.setattr(
+        self_update_cmd,
+        "_start_windows_launcher_cleanup",
+        cleaned.append,
+    )
+
+    with pytest.raises(click.exceptions.Exit) as exc_info:
+        self_update_cmd._reexec_windows_launcher_if_needed("2.0.0")
+
+    assert exc_info.value.exit_code == 0
+    assert len(commands) == 1
+    assert commands[0][-4:] == [
+        "self-update",
+        "install",
+        "--version",
+        "2.0.0",
+    ]
+    assert cleaned == [backup]
 
 
 def test_windows_launcher_delegate_failure_is_nonzero(
@@ -976,6 +1023,34 @@ def test_runtime_owned_windows_launcher_does_not_require_strict_resolve(
             OSError("strict resolve is unavailable for the live launcher")
         ),
     )
+
+    prepared, backup = self_update_cmd._prepare_windows_launcher_update()
+
+    assert prepared == launcher
+    assert backup is not None
+    assert backup.is_file()
+    assert not launcher.exists()
+
+
+def test_prepare_windows_launcher_uses_frozen_entry_after_live_argv_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from ai_sdlc.cli import self_update_cmd
+
+    scripts = tmp_path / "runtime" / "Scripts"
+    scripts.mkdir(parents=True)
+    runtime = scripts / "python.exe"
+    runtime.write_bytes(b"python")
+    launcher = scripts / "ai-sdlc.exe"
+    launcher.write_bytes(b"launcher")
+    monkeypatch.setattr(self_update_cmd, "_PROCESS_ENTRY_ARGV0", str(launcher))
+    monkeypatch.setattr(
+        self_update_cmd.sys,
+        "argv",
+        ["self-update", "install", "--version", "2.0.0"],
+    )
+    monkeypatch.setattr(self_update_cmd.sys, "executable", str(runtime))
 
     prepared, backup = self_update_cmd._prepare_windows_launcher_update()
 
