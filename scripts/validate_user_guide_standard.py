@@ -30,6 +30,44 @@ EXPECTED_ROUTE_IDS = tuple(
     for channel in INSTALL_CHANNELS
     for platform in PLATFORMS
 )
+LINUX_PYTHON_BOOTSTRAP_BOUNDARY_MARKERS = (
+    "Debian GNU/Linux 12 (bookworm)",
+    "amd64/x86_64",
+    "glibc",
+    "Python 3.11+",
+    "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+    "路线 6/12",
+    "非 AMD64 或非 glibc",
+    "v3.0.1 没有兼容的 Linux 发行资产",
+    "不得使用路线 6/12 的 AMD64 离线包",
+)
+LINUX_OFFLINE_COMPATIBILITY_GATE_MARKERS = (
+    "detect_linux_libc()",
+    "command -v getconf",
+    "LC_ALL=C getconf GNU_LIBC_VERSION",
+    "getconf_glibc_re='^glibc [0-9]+\\.[0-9]+$'",
+    "/lib64/ld-linux-x86-64.so.2",
+    "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+    'LC_ALL=C "$loader" --version',
+    "loader_glibc_re='^ld\\.so",
+    "(GNU libc|[^)]+ GLIBC [0-9][^)]*)",
+    "[0-9]+\\.[0-9]+\\.?$'",
+    "command -v ldd",
+    "LC_ALL=C ldd --version",
+    "ldd_musl_re='^musl libc",
+    'if [ "$musl_seen" -eq 1 ]',
+    'if [ "$glibc_seen" -eq 1 ]',
+    'ARCH="$(uname -m)"',
+    'LIBC="$(detect_linux_libc)"',
+    'if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } ||',
+    '[ "$LIBC" = "musl" ]; then',
+    'echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；'
+    '不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2',
+    '[ "$LIBC" != "glibc" ]; then',
+    "无法确定此主机使用的 libc",
+    "为避免误装，未下载、解压或安装",
+    "  exit 1\nfi",
+)
 
 _VERSION_PATTERN = re.compile(
     r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)(?:[^\"]*)"\s*$', re.MULTILINE
@@ -168,6 +206,21 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                         )
                     )
 
+        if channel == "offline":
+            acquire_text = step_sections.get("acquire", "")
+            download_root_markers = (
+                ("$DownloadRoot =", "New-Item", "$DownloadRoot")
+                if platform == "windows-amd64"
+                else ("DOWNLOAD_ROOT=", 'mkdir -p "$DOWNLOAD_ROOT"')
+            )
+            if any(marker not in acquire_text for marker in download_root_markers):
+                findings.append(
+                    Finding(
+                        "guide-route-offline-acquire-download-root-missing",
+                        route_id,
+                    )
+                )
+
         if state == "existing":
             initialize_text = step_sections.get("initialize", "")
             if initialize_text.rfind("init .") > initialize_text.find("adopt ."):
@@ -175,6 +228,101 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
         recovery_text = step_sections.get("recover", "")
         if not re.search(r"失败|错误|不可用|停止", recovery_text):
             findings.append(Finding("guide-route-recovery-empty", route_id))
+        if platform == "windows-amd64":
+            direct_recovery_markers = (
+                "Scripts\\ai-sdlc.exe",
+                "不能安全原地替换",
+                "显式 direct self-update",
+                "返回非零",
+                "python -m ai_sdlc",
+            )
+            if any(marker not in recovery_text for marker in direct_recovery_markers):
+                findings.append(
+                    Finding("guide-route-windows-direct-recovery-missing", route_id)
+                )
+        if channel == "online" and platform == "linux-amd64":
+            for step_name in ("prerequisites", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text
+                    for marker in LINUX_PYTHON_BOOTSTRAP_BOUNDARY_MARKERS
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-python-bootstrap-boundary-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
+            prerequisite_bootstrap_markers = (
+                "command -v apt-get",
+                "apt-get install -y ca-certificates curl git",
+                "command -v dnf",
+                "dnf install -y ca-certificates curl git",
+                "command -v yum",
+                "yum install -y ca-certificates curl git",
+                "command -v curl",
+                "ca_bundle_available",
+                "/etc/ssl/ca-bundle.pem",
+            )
+            for step_name in ("prerequisites", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text for marker in prerequisite_bootstrap_markers
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-download-bootstrap-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
+        if channel == "offline" and platform == "linux-amd64":
+            for step_name in ("prerequisites", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text
+                    for marker in LINUX_OFFLINE_COMPATIBILITY_GATE_MARKERS
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-offline-compatibility-gate-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
+            acquisition_bootstrap_markers = (
+                "command -v apt-get",
+                "apt-get install -y ca-certificates curl",
+                "command -v dnf",
+                "dnf install -y ca-certificates curl",
+                "command -v yum",
+                "yum install -y ca-certificates curl",
+                "command -v curl",
+                "ca_bundle_available",
+                "/etc/ssl/ca-bundle.pem",
+            )
+            for step_name in ("acquire", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text for marker in acquisition_bootstrap_markers
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-download-bootstrap-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
+        if state == "existing" and platform == "windows-amd64":
+            for step in ("prerequisites", "success"):
+                step_text = step_sections.get(step, "")
+                if (
+                    "git rev-parse --is-inside-work-tree" not in step_text
+                    or "git status --short --untracked-files=all" not in step_text
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-windows-git-worktree-guard-missing",
+                            f"{route_id}:{step}",
+                        )
+                    )
 
     return findings
 

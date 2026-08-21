@@ -6,7 +6,7 @@ on:
       tag:
         description: Published release tag to verify against the user guide.
         required: true
-        default: v3.0.0
+        default: v3.0.1
   pull_request:
     paths:
       - ".github/workflows/windows-user-guide-e2e.yml"
@@ -21,6 +21,7 @@ on:
       - "packaging/offline/**"
       - "scripts/windows_clean_user_e2e.py"
       - "scripts/windows_clean_user_e2e_support.py"
+      - "scripts/windows_python_bootstrap_e2e.ps1"
       - "tests/integration/test_github_workflows.py"
 
 permissions:
@@ -35,7 +36,7 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 30
     env:
-      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.0' || inputs.tag }}
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.1' || inputs.tag }}
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
 
@@ -44,7 +45,6 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up package build Python
-        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -72,6 +72,14 @@ jobs:
             AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64" \
             AI_SDLC_OFFLINE_TARGET_PLATFORM="win_amd64" \
             bash packaging/offline/build_offline_bundle.sh
+
+      - name: Install ConPTY interaction driver dependency
+        shell: pwsh
+        run: |
+          py -3.11 -m pip install --disable-pip-version-check "pywinpty==3.0.5"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to install the ConPTY-only offline E2E dependency."
+          }
 
       - name: Replay Windows existing-project guide path
         shell: pwsh
@@ -130,7 +138,7 @@ jobs:
           $ChecksumName = "$PackageName.sha256"
           $PackageDir = (Get-Location).Path
           $ExtractRoot = Join-Path $PackageDir ".ai-sdlc-install"
-          $expectedTag = if ($env:GITHUB_EVENT_NAME -eq "pull_request") { "v3.0.0" } else { "v3.0.0" }
+          $expectedTag = if ($env:GITHUB_EVENT_NAME -eq "pull_request") { "v3.0.1" } else { "v3.0.1" }
           if ($env:RELEASE_TAG -ne $expectedTag) {
             throw "Guide replay tag $env:RELEASE_TAG differs from the expected candidate/published split $expectedTag."
           }
@@ -237,14 +245,19 @@ jobs:
           }
 
           # USER_GUIDE.zh-CN.md Chapter 2: return to the existing project root,
-          # then use the Direct shim with a non-Codex adapter target.
+          # then exercise the documented argument-free interactive init.
           Set-Location $projectRoot
-          & $directShim init . --agent-target vscode --shell powershell *>&1 |
-            Tee-Object -FilePath (Join-Path $evidenceRoot "init-existing-project.txt")
+          $existingInteractiveEvidence = Join-Path $evidenceRoot "existing-interactive"
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_clean_user_e2e.py" `
+            --cli $directShim `
+            --project-root $projectRoot `
+            --evidence-root $existingInteractiveEvidence `
+            --init-only `
+            --allow-existing-project
           if ($LASTEXITCODE -ne 0) {
-            throw "Direct shim VS Code + PowerShell init failed with exit code $LASTEXITCODE"
+            throw "Offline existing-project ConPTY init failed with exit code $LASTEXITCODE"
           }
-          $initOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "init-existing-project.txt") -Raw
+          $initOutput = Get-Content -LiteralPath (Join-Path $existingInteractiveEvidence "interactive-init.txt") -Raw
           if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
             throw "init output did not include the guide's bilingual Result/Next surface"
           }
@@ -254,8 +267,8 @@ jobs:
           if (-not (Test-Path (Join-Path $projectRoot ".ai-sdlc"))) {
             throw "init did not create .ai-sdlc in the existing project"
           }
-          if (-not (Test-Path (Join-Path $projectRoot ".github\copilot-instructions.md"))) {
-            throw "init did not create the VS Code adapter guidance file"
+          if (-not (Test-Path (Join-Path $projectRoot "AGENTS.md"))) {
+            throw "init did not create the selected Codex adapter guidance file"
           }
 
           & $directShim adopt . *>&1 |
@@ -291,16 +304,20 @@ jobs:
             Out-File -FilePath (Join-Path $evidenceRoot "existing-project-after.txt") -Encoding utf8
 
           # USER_GUIDE.zh-CN.md Chapter 1: an empty Windows project uses the
-          # same installed Direct shim and can select another supported adapter.
+          # same installed Direct shim through the documented interactive prompts.
           $emptyProjectRoot = Join-Path $workRoot "my-new-project"
           New-Item -ItemType Directory -Force -Path $emptyProjectRoot | Out-Null
           Set-Location $emptyProjectRoot
-          & $directShim init . --agent-target cursor --shell powershell *>&1 |
-            Tee-Object -FilePath (Join-Path $evidenceRoot "windows-empty-project-init.txt")
+          $emptyInteractiveEvidence = Join-Path $evidenceRoot "empty-interactive"
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_clean_user_e2e.py" `
+            --cli $directShim `
+            --project-root $emptyProjectRoot `
+            --evidence-root $emptyInteractiveEvidence `
+            --init-only
           if ($LASTEXITCODE -ne 0) {
-            throw "Direct shim Cursor + PowerShell empty-project init failed with exit code $LASTEXITCODE"
+            throw "Offline empty-project ConPTY init failed with exit code $LASTEXITCODE"
           }
-          $emptyInitOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "windows-empty-project-init.txt") -Raw
+          $emptyInitOutput = Get-Content -LiteralPath (Join-Path $emptyInteractiveEvidence "interactive-init.txt") -Raw
           if (
             ($emptyInitOutput -notmatch "Initialized AI-SDLC project") -or
             ($emptyInitOutput -notmatch "当前结果 / Result") -or
@@ -308,8 +325,8 @@ jobs:
           ) {
             throw "empty-project init output did not match the user-guide Result/Next contract"
           }
-          if (-not (Test-Path (Join-Path $emptyProjectRoot ".cursor\rules\ai-sdlc.mdc"))) {
-            throw "empty-project init did not create the Cursor adapter guidance file"
+          if (-not (Test-Path (Join-Path $emptyProjectRoot "AGENTS.md"))) {
+            throw "empty-project init did not create the selected Codex adapter guidance file"
           }
 
       - name: Upload guide replay evidence
@@ -326,7 +343,7 @@ jobs:
     env:
       PYTHONUTF8: "1"
       PYTHONIOENCODING: utf-8
-      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.0' || inputs.tag }}
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.1' || inputs.tag }}
       PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
 
@@ -335,6 +352,82 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Replay installer without a preinstalled Python
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 -PackageManager winget
+
+      - name: Replay installer after a Chocolatey Python install
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 -PackageManager choco
+
+      - name: Replay expected Windows Python bootstrap failure
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 -PackageManager winget -ExpectInstallFailure
+
+      - name: Verify isolated Python bootstrap receipts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          foreach ($name in @(
+            "python-bootstrap-winget-success.json",
+            "python-bootstrap-winget-success-output.txt",
+            "python-bootstrap-winget-success-events.txt",
+            "python-bootstrap-choco-success.json",
+            "python-bootstrap-choco-success-output.txt",
+            "python-bootstrap-choco-success-events.txt",
+            "python-bootstrap-winget-expected-failure.json",
+            "python-bootstrap-winget-expected-failure-output.txt",
+            "python-bootstrap-winget-expected-failure-events.txt"
+          )) {
+            $path = Join-Path $evidenceRoot $name
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing isolated bootstrap evidence: $path"
+            }
+          }
+          foreach ($scenario in @("winget-success", "choco-success", "winget-expected-failure")) {
+            $receiptPath = Join-Path $evidenceRoot "python-bootstrap-$scenario.json"
+            $outputPath = Join-Path $evidenceRoot "python-bootstrap-$scenario-output.txt"
+            $eventsPath = Join-Path $evidenceRoot "python-bootstrap-$scenario-events.txt"
+            foreach ($path in @($receiptPath, $outputPath, $eventsPath)) {
+              if (-not (Test-Path -LiteralPath $path)) {
+                throw "Missing isolated bootstrap evidence: $path"
+              }
+            }
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+            if ($receipt.scenario -ne $scenario -or $receipt.manager_transition_count -ne 1) {
+              throw "Invalid scenario identity or manager transition count in $receiptPath"
+            }
+            foreach ($field in @(
+              "machine_path_restored",
+              "user_path_restored",
+              "process_path_restored",
+              "local_app_data_restored",
+              "program_files_restored"
+            )) {
+              if ($receipt.$field -ne $true) {
+                throw "Restoration marker $field was not true in $receiptPath"
+              }
+            }
+            if ($scenario -eq "winget-expected-failure") {
+              if (
+                $receipt.installer_exit -eq 0 -or
+                $receipt.runtime_absent -ne $true -or
+                $receipt.venv_absent -ne $true
+              ) {
+                throw "Expected-failure receipt did not prove failure before runtime creation."
+              }
+            } elseif (
+              $receipt.installer_exit -ne 0 -or
+              $receipt.distribution_version -ne "3.0.1" -or
+              $receipt.distribution_version_exit -ne 0 -or
+              $receipt.cli_version -ne "3.0.1" -or
+              $receipt.cli_version_exit -ne 0
+            ) {
+              throw "Successful bootstrap receipt did not prove exact distribution and CLI 3.0.1."
+            }
+          }
 
       - name: Set up Node.js for the real Codex CLI
         uses: actions/setup-node@v6
@@ -514,6 +607,42 @@ jobs:
             --evidence-root $evidenceRoot
           if ($LASTEXITCODE -ne 0) {
             throw "The ConPTY ordinary-user journey failed with exit code $LASTEXITCODE."
+          }
+          "online_installer=true; project_state=existing" |
+            Out-File -FilePath (Join-Path $evidenceRoot "windows-online-existing-project.txt") -Encoding utf8
+
+      - name: Replay the empty-project online route
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $projectRoot = Join-Path $env:RUNNER_TEMP "windows-online-empty-project"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          $emptyEvidenceRoot = Join-Path $evidenceRoot "empty-project"
+          Remove-Item -Recurse -Force $projectRoot -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $projectRoot | Out-Null
+          if ((Get-ChildItem -LiteralPath $projectRoot -Force).Count -ne 0) {
+            throw "The online empty-project route did not start from an empty directory."
+          }
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_clean_user_e2e.py" `
+            --cli $env:AI_SDLC_E2E_CLI `
+            --project-root $projectRoot `
+            --evidence-root $emptyEvidenceRoot `
+            --init-only
+          if ($LASTEXITCODE -ne 0) {
+            throw "The ConPTY online empty-project init failed with exit code $LASTEXITCODE."
+          }
+          $initOutput = Get-Content -LiteralPath (Join-Path $emptyEvidenceRoot "interactive-init.txt") -Raw
+          if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
+            throw "The online empty-project init did not expose the guide Result/Next contract."
+          }
+          if (-not (Test-Path (Join-Path $projectRoot ".ai-sdlc"))) {
+            throw "The online empty-project route did not create .ai-sdlc."
+          }
+          if (-not (Test-Path (Join-Path $projectRoot "AGENTS.md"))) {
+            throw "The online empty-project route did not create Codex AGENTS.md."
+          }
+          if ((Test-Path (Join-Path $projectRoot "src")) -or (Test-Path (Join-Path $projectRoot "package.json"))) {
+            throw "The online empty-project route created unexpected example business files."
           }
 
       - name: Upload clean online ordinary-user evidence

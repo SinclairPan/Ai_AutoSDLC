@@ -21,25 +21,49 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OFFLINE_DIR = _REPO_ROOT / "packaging" / "offline"
 _PACKAGING_DIR = _REPO_ROOT / "packaging"
+_DEBIAN12_OS_RELEASE = """PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+"""
+_UBUNTU2204_OS_RELEASE = """PRETTY_NAME="Ubuntu 22.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="22.04"
+VERSION="22.04.5 LTS (Jammy Jellyfish)"
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=jammy
+LOGO=ubuntu-logo
+"""
 
 
 def test_release_checklist_matches_the_standard_release_workflow() -> None:
     checklist = (_OFFLINE_DIR / "RELEASE_CHECKLIST.md").read_text(encoding="utf-8")
 
-    assert "`v3.0.0`" in checklist
+    assert "`v3.0.1`" in checklist
     assert "`upload_to_release`" in checklist
     assert "PR1 的三个发布开关" not in checklist
     assert "v1.0.4 上传与发布动作保持禁止" not in checklist
 
 
 def test_online_installers_default_to_the_exact_public_git_tag(tmp_path: Path) -> None:
-    expected = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0"
+    expected = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.1"
     powershell = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
     script_path = tmp_path / "install_online.sh"
     shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
     script_path.chmod(0o755)
     wrapper_dir = tmp_path / "wrappers"
     wrapper_dir.mkdir()
+    _make_fake_git(wrapper_dir)
     fake_python = _make_fake_python(wrapper_dir)
     _make_path_alias(fake_python, wrapper_dir / "python3.11")
     install_log = tmp_path / "pip-install.log"
@@ -82,10 +106,26 @@ def _write_executable(path: Path, content: str) -> Path:
     return path
 
 
+def _find_cygpath_command() -> str | None:
+    cygpath = shutil.which("cygpath")
+    if cygpath:
+        return cygpath
+    bash = shutil.which("bash")
+    if not bash:
+        return None
+    git_bin = Path(bash).resolve().parent
+    for candidate_dir in (git_bin, git_bin.parent / "usr" / "bin"):
+        for name in ("cygpath.exe", "cygpath"):
+            candidate = candidate_dir / name
+            if candidate.is_file():
+                return str(candidate)
+    return None
+
+
 def _bash_shebang_python() -> str:
     if os.name != "nt":
         return sys.executable
-    cygpath = shutil.which("cygpath")
+    cygpath = _find_cygpath_command()
     if not cygpath:
         return sys.executable
     result = subprocess.run(
@@ -100,7 +140,7 @@ def _bash_shebang_python() -> str:
 def _bash_path(path: Path) -> str:
     if os.name != "nt":
         return str(path)
-    cygpath = shutil.which("cygpath")
+    cygpath = _find_cygpath_command()
     if not cygpath:
         return str(path)
     result = subprocess.run(
@@ -121,6 +161,47 @@ def _bash_wrapper_path(wrapper_dir: Path) -> str:
         git_bin = Path(bash).resolve().parent
         git_paths = [str(git_bin.parent / "usr" / "bin"), str(git_bin)]
     return os.pathsep.join([str(wrapper_dir), *git_paths])
+
+
+def test_cygpath_discovery_falls_back_to_the_git_bash_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_root = tmp_path / "Git"
+    bash = git_root / "bin" / "bash.exe"
+    cygpath = git_root / "usr" / "bin" / "cygpath.exe"
+    bash.parent.mkdir(parents=True)
+    cygpath.parent.mkdir(parents=True)
+    bash.touch()
+    cygpath.touch()
+
+    def fake_which(command: str) -> str | None:
+        if command == "bash":
+            return str(bash)
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    assert _find_cygpath_command() == str(cygpath)
+
+
+def test_cygpath_discovery_uses_the_git_bash_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_usr_bin = tmp_path / "Git" / "usr" / "bin"
+    bash = git_usr_bin / "bash.exe"
+    cygpath = git_usr_bin / "cygpath.exe"
+    git_usr_bin.mkdir(parents=True)
+    bash.touch()
+    cygpath.touch()
+
+    def fake_which(command: str) -> str | None:
+        if command == "bash":
+            return str(bash)
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    assert _find_cygpath_command() == str(cygpath)
 
 
 def _bash_command() -> str:
@@ -225,6 +306,15 @@ completed = subprocess.run([REAL_PYTHON, *sys.argv[1:]], check=False)
 raise SystemExit(completed.returncode)
 """
     return _write_executable(wrapper_path, wrapper)
+
+
+def _make_fake_git(wrapper_dir: Path) -> Path:
+    return _write_executable(
+        wrapper_dir / "git",
+        f"""#!{_bash_shebang_python()}
+print("git version 2.49.0")
+""",
+    )
 
 
 def _make_fake_portable_python(runtime_dir: Path) -> Path:
@@ -504,7 +594,9 @@ raise SystemExit(0)
     return _write_executable(wrapper_path, wrapper)
 
 
-def test_build_offline_bundle_emits_platform_manifest_and_archives(tmp_path: Path) -> None:
+def test_build_offline_bundle_emits_platform_manifest_and_archives(
+    tmp_path: Path,
+) -> None:
     repo = _prepare_fake_bundle_repo(tmp_path)
     wrapper_dir = tmp_path / "wrappers"
     wrapper_dir.mkdir()
@@ -512,7 +604,10 @@ def test_build_offline_bundle_emits_platform_manifest_and_archives(tmp_path: Pat
     _make_fake_uv(wrapper_dir)
 
     result = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -566,7 +661,10 @@ def test_build_offline_bundle_rejects_release_tag_version_mismatch(
     env["RELEASE_TAG"] = "v1.2.1"
 
     result = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -589,7 +687,10 @@ def test_verify_offline_bundle_rejects_tampered_checksum_payload(
     _make_fake_uv(wrapper_dir)
 
     build = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -628,7 +729,10 @@ def test_verify_offline_bundle_rejects_expected_package_version_mismatch(
     _make_fake_uv(wrapper_dir)
 
     build = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -671,7 +775,10 @@ def test_build_offline_bundle_embeds_portable_python_runtime_when_configured(
     env["AI_SDLC_OFFLINE_PYTHON_RUNTIME"] = str(portable_runtime)
 
     result = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -681,8 +788,12 @@ def test_build_offline_bundle_embeds_portable_python_runtime_when_configured(
 
     assert result.returncode == 0, result.stderr
     bundle_root = repo / "dist-offline" / "ai-sdlc-offline-1.2.0"
-    assert (bundle_root / "python-runtime" / portable_python.relative_to(portable_runtime)).is_file()
-    manifest = json.loads((bundle_root / "bundle-manifest.json").read_text(encoding="utf-8"))
+    assert (
+        bundle_root / "python-runtime" / portable_python.relative_to(portable_runtime)
+    ).is_file()
+    manifest = json.loads(
+        (bundle_root / "bundle-manifest.json").read_text(encoding="utf-8")
+    )
     assert manifest["python_runtime_bundled"] is True
     assert "Bundled Python runtime: included" in result.stdout
     assert "Offline bundle runtime verification passed." in result.stdout
@@ -812,7 +923,9 @@ def test_runtime_probe_disables_bytecode_writes(
     runtime_python.write_text("", encoding="utf-8")
     captured: dict[str, object] = {}
 
-    def fake_run(command: list[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+    def fake_run(
+        command: list[str], **kwargs: object
+    ) -> subprocess.CompletedProcess[str]:
         captured.update(kwargs)
         return subprocess.CompletedProcess(command, 0, "3.11\n", "")
 
@@ -903,14 +1016,18 @@ def test_verify_offline_bundle_accepts_linux_ldd_dependency_inside_bundle(
     )
 
 
-def test_build_offline_bundle_uses_relative_zip_paths_for_cross_platform_python() -> None:
+def test_build_offline_bundle_uses_relative_zip_paths_for_cross_platform_python() -> (
+    None
+):
     script = (_OFFLINE_DIR / "build_offline_bundle.sh").read_text(encoding="utf-8")
 
     assert 'root = Path("dist-offline")' in script
     assert 'dst = root / f"{out_basename}.zip"' in script
 
 
-def test_build_offline_bundle_can_suffix_platform_release_assets(tmp_path: Path) -> None:
+def test_build_offline_bundle_can_suffix_platform_release_assets(
+    tmp_path: Path,
+) -> None:
     repo = _prepare_fake_bundle_repo(tmp_path)
     wrapper_dir = tmp_path / "wrappers"
     wrapper_dir.mkdir()
@@ -923,7 +1040,10 @@ def test_build_offline_bundle_can_suffix_platform_release_assets(tmp_path: Path)
     env["AI_SDLC_OFFLINE_ASSET_SUFFIX"] = "-windows-amd64"
 
     result = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -961,7 +1081,10 @@ def test_build_offline_bundle_can_include_multiple_python_abis(tmp_path: Path) -
         _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
 
     result = subprocess.run(
-        [_bash_command(), str(repo / "packaging" / "offline" / "build_offline_bundle.sh")],
+        [
+            _bash_command(),
+            str(repo / "packaging" / "offline" / "build_offline_bundle.sh"),
+        ],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -1263,7 +1386,9 @@ def test_install_offline_uses_bundled_python_runtime_when_system_python_missing(
     assert (bundle_dir / ".venv" / "bin" / "ai-sdlc").is_file()
 
 
-def test_install_offline_upgrade_existing_uses_current_cli_runtime(tmp_path: Path) -> None:
+def test_install_offline_upgrade_existing_uses_current_cli_runtime(
+    tmp_path: Path,
+) -> None:
     if os.name == "nt":
         pytest.skip("POSIX upgrade-existing installer path is covered on POSIX runners")
     bundle_dir = tmp_path / "bundle"
@@ -1288,7 +1413,9 @@ def test_install_offline_upgrade_existing_uses_current_cli_runtime(tmp_path: Pat
     assert result.returncode == 0, result.stderr
     assert "Using existing AI-SDLC runtime" in result.stdout
     assert "Upgrade completed" in result.stdout
-    assert (existing_bin / "installed-version.txt").read_text(encoding="utf-8") == "1.2.0"
+    assert (existing_bin / "installed-version.txt").read_text(
+        encoding="utf-8"
+    ) == "1.2.0"
     assert not (bundle_dir / ".venv").exists()
 
 
@@ -1331,9 +1458,7 @@ def test_install_offline_upgrade_existing_reads_distlib_shell_wrapper(
     fake_python = _make_upgrade_existing_python(existing_bin)
     _write_executable(
         existing_bin / "ai-sdlc",
-        "#!/bin/sh\n"
-        f"'''exec' \"{fake_python}\" \"$0\" \"$@\"\n"
-        "' '''\n",
+        f"#!/bin/sh\n'''exec' \"{fake_python}\" \"$0\" \"$@\"\n' '''\n",
     )
 
     env = dict(os.environ)
@@ -1351,7 +1476,9 @@ def test_install_offline_upgrade_existing_reads_distlib_shell_wrapper(
 
     assert result.returncode == 0, result.stderr
     assert "Using existing AI-SDLC runtime" in result.stdout
-    assert (existing_bin / "installed-version.txt").read_text(encoding="utf-8") == "1.2.0"
+    assert (existing_bin / "installed-version.txt").read_text(
+        encoding="utf-8"
+    ) == "1.2.0"
     assert not (bundle_dir / ".venv").exists()
 
 
@@ -1475,7 +1602,7 @@ def test_install_online_add_to_path_enables_bare_cli_guidance(tmp_path: Path) ->
     ).read_text(encoding="utf-8")
 
 
-def test_install_online_auto_installs_python_when_linux_package_manager_is_available(
+def test_install_online_fails_before_creating_venv_when_git_package_lacks_git(
     tmp_path: Path,
 ) -> None:
     script_path = tmp_path / "install_online.sh"
@@ -1485,12 +1612,94 @@ def test_install_online_auto_installs_python_when_linux_package_manager_is_avail
     wrapper_dir = tmp_path / "wrappers"
     wrapper_dir.mkdir()
     fake_python = _make_fake_python(wrapper_dir)
-    apt_log = tmp_path / "apt.log"
+    _make_path_alias(fake_python, wrapper_dir / "python3.11")
 
+    env = dict(os.environ)
+    _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
+    env.pop("AI_SDLC_PACKAGE_SPEC", None)
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path)],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "Git is required for the configured git+ package source" in result.stdout
+    assert "Install Git, then rerun this installer" in result.stdout
+    assert not (tmp_path / ".venv").exists()
+
+
+def _copy_online_installer_with_os_release_fixture(
+    tmp_path: Path, os_release: str | None
+) -> Path:
+    script_path = tmp_path / "install_online.sh"
+    script = (_PACKAGING_DIR / "install_online.sh").read_text(encoding="utf-8")
+    fixture_path = tmp_path / "os-release"
+    if os_release is not None:
+        fixture_path.write_bytes(os_release.encode("utf-8"))
+    os_release_reads = script.count("/etc/os-release")
+    assert os_release_reads == 1
+    script_path.write_text(
+        script.replace("/etc/os-release", _bash_path(fixture_path)), encoding="utf-8"
+    )
+    script_path.chmod(0o755)
+    return script_path
+
+
+def test_os_release_fixture_preserves_linux_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_write_text = Path.write_text
+
+    def reject_text_mode_os_release_write(
+        path: Path, data: str, *args: object, **kwargs: object
+    ) -> int:
+        if path.name == "os-release":
+            raise AssertionError("Linux os-release fixtures must be written as bytes")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", reject_text_mode_os_release_write)
+
+    _copy_online_installer_with_os_release_fixture(
+        tmp_path, "ID=debian\nVERSION_ID=12\n"
+    )
+
+    assert (tmp_path / "os-release").read_bytes() == b"ID=debian\nVERSION_ID=12\n"
+
+
+def _make_linux_identity_wrappers(
+    wrapper_dir: Path, *, arch: str, libc: str, identity_log: Path
+) -> None:
     _write_executable(
         wrapper_dir / "uname",
         f"""#!{_bash_shebang_python()}
-print("Linux")
+import sys
+from pathlib import Path
+
+Path({str(identity_log)!r}).open("a", encoding="utf-8").write("uname " + " ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1:] == ["-s"]:
+    print("Linux")
+elif sys.argv[1:] == ["-m"]:
+    print({arch!r})
+else:
+    raise SystemExit(1)
+""",
+    )
+    _write_executable(
+        wrapper_dir / "getconf",
+        f"""#!{_bash_shebang_python()}
+import sys
+from pathlib import Path
+
+Path({str(identity_log)!r}).open("a", encoding="utf-8").write("getconf " + " ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1:] == ["GNU_LIBC_VERSION"]:
+    print({libc!r})
+else:
+    raise SystemExit(1)
 """,
     )
     _write_executable(
@@ -1498,49 +1707,261 @@ print("Linux")
         f"""#!{_bash_shebang_python()}
 import sys
 if sys.argv[1:] == ["-u"]:
-    print("501")
+    print("0")
     raise SystemExit(0)
 raise SystemExit(1)
 """,
     )
-    _write_executable(
-        wrapper_dir / "sudo",
-        f"""#!{_bash_shebang_python()}
-import subprocess
-import sys
-from pathlib import Path
 
-command = Path(__file__).resolve().parent / sys.argv[1]
-completed = subprocess.run([sys.executable, str(command), *sys.argv[2:]], check=False)
-raise SystemExit(completed.returncode)
-""",
-    )
-    _write_executable(
-        wrapper_dir / "apt-get",
-        f"""#!{_bash_shebang_python()}
-import os
-import shutil
-import sys
-from pathlib import Path
 
-log_path = Path({str(apt_log)!r})
-with log_path.open("a", encoding="utf-8") as handle:
-    handle.write(" ".join(sys.argv[1:]) + "\\n")
-
+def _make_fake_apt_bootstrap(
+    wrapper_dir: Path, apt_log: Path, fake_python: Path | None
+) -> None:
+    install_body = ""
+    if fake_python is not None:
+        install_body = f"""
 if sys.argv[1:2] == ["install"]:
     source = Path({str(fake_python)!r})
     target = Path({str(wrapper_dir / "python3.11")!r})
     shutil.copy2(source, target)
     target.chmod(0o755)
+"""
+    _write_executable(
+        wrapper_dir / "apt-get",
+        f"""#!{_bash_shebang_python()}
+import shutil
+import sys
+from pathlib import Path
 
+with Path({str(apt_log)!r}).open("a", encoding="utf-8") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+{install_body}
 raise SystemExit(0)
 """,
     )
 
+
+def _prepare_missing_python_linux_install(
+    tmp_path: Path,
+    *,
+    os_release: str | None,
+    arch: str,
+    libc: str,
+    install_python_after_apt: bool = False,
+) -> tuple[Path, Path, Path, dict[str, str], Path, Path]:
+    script_path = _copy_online_installer_with_os_release_fixture(tmp_path, os_release)
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    identity_log = tmp_path / "identity.log"
+    apt_log = tmp_path / "apt.log"
+    _make_linux_identity_wrappers(
+        wrapper_dir, arch=arch, libc=libc, identity_log=identity_log
+    )
+    fake_python = _make_fake_python(wrapper_dir) if install_python_after_apt else None
+    _make_fake_apt_bootstrap(wrapper_dir, apt_log, fake_python)
+    _make_fake_git(wrapper_dir)
     env = dict(os.environ)
     _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
     env["AI_SDLC_PACKAGE_SPEC"] = "ai-sdlc==1.0.1"
     env.pop("PYTHON", None)
+    return script_path, wrapper_dir, apt_log, env, identity_log, tmp_path / "project"
+
+
+def _prepare_unsupported_install_home(
+    home_dir: Path,
+) -> tuple[bytes, bytes, str, str]:
+    home_dir.mkdir()
+    bashrc = home_dir / ".bashrc"
+    profile = home_dir / ".profile"
+    bashrc.write_bytes(b"# unchanged bashrc\\n")
+    profile.write_bytes(b"# unchanged profile\\n")
+    bashrc_before = bashrc.read_bytes()
+    profile_before = profile.read_bytes()
+    return (
+        bashrc_before,
+        profile_before,
+        hashlib.sha256(bashrc_before).hexdigest(),
+        hashlib.sha256(profile_before).hexdigest(),
+    )
+
+
+def _snapshot_project_tree(project_dir: Path) -> list[tuple[str, str, str]]:
+    snapshot: list[tuple[str, str, str]] = []
+    for path in sorted(
+        project_dir.rglob("*"),
+        key=lambda item: item.relative_to(project_dir).as_posix(),
+    ):
+        relative_path = path.relative_to(project_dir).as_posix()
+        if path.is_symlink():
+            snapshot.append((relative_path, "symlink", os.readlink(path)))
+        elif path.is_dir():
+            snapshot.append((relative_path, "directory", ""))
+        elif path.is_file():
+            snapshot.append(
+                (relative_path, "file", hashlib.sha256(path.read_bytes()).hexdigest())
+            )
+        else:
+            snapshot.append((relative_path, "other", ""))
+    return snapshot
+
+
+def _assert_unsupported_install_did_not_mutate(
+    *,
+    venv_target: Path,
+    home_dir: Path,
+    bashrc_before: bytes,
+    profile_before: bytes,
+    bashrc_hash_before: str,
+    profile_hash_before: str,
+    project_dir: Path,
+    project_before: list[tuple[str, str, str]],
+    apt_log: Path,
+) -> None:
+    assert not venv_target.exists()
+    assert not (home_dir / ".local" / "bin" / "ai-sdlc").exists()
+    assert (home_dir / ".bashrc").read_bytes() == bashrc_before
+    assert (home_dir / ".profile").read_bytes() == profile_before
+    assert (
+        hashlib.sha256((home_dir / ".bashrc").read_bytes()).hexdigest()
+        == bashrc_hash_before
+    )
+    assert (
+        hashlib.sha256((home_dir / ".profile").read_bytes()).hexdigest()
+        == profile_hash_before
+    )
+    assert _snapshot_project_tree(project_dir) == project_before
+    assert not apt_log.exists()
+
+
+def test_online_unsupported_install_snapshot_detects_any_project_tree_change(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "keep.txt").write_text("business data\n", encoding="utf-8")
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir()
+    (nested_dir / "config.txt").write_text("preserve\n", encoding="utf-8")
+    (project_dir / "keep-link").symlink_to("keep.txt")
+    project_before = _snapshot_project_tree(project_dir)
+    (project_dir / "unexpected.txt").write_text("mutation\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        _assert_unsupported_install_did_not_mutate(
+            venv_target=tmp_path / "custom-venv",
+            home_dir=home_dir,
+            bashrc_before=bashrc_before,
+            profile_before=profile_before,
+            bashrc_hash_before=bashrc_hash_before,
+            profile_hash_before=profile_hash_before,
+            project_dir=project_dir,
+            project_before=project_before,
+            apt_log=tmp_path / "apt.log",
+        )
+
+
+def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
+    tmp_path: Path,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release="# accepted comment\n\n" + _DEBIAN12_OS_RELEASE,
+            arch="x86_64",
+            libc="glibc 2.36",
+            install_python_after_apt=True,
+        )
+    )
+    project_dir.mkdir()
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path)],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (project_dir / ".venv" / "bin" / "ai-sdlc").is_file()
+    assert apt_log.read_text(encoding="utf-8").splitlines() == [
+        "update",
+        "install -y python3.11 python3.11-venv python3-pip",
+    ]
+
+
+def test_install_online_rejects_ubuntu_glibc_without_python_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release=_UBUNTU2204_OS_RELEASE,
+            arch="x86_64",
+            libc="glibc 2.35",
+        )
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=ubuntu version=22.04 arch=x86_64 libc=glibc" in result.stdout
+    assert "Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc" in result.stdout
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in result.stdout
+    assert "route 6/12" in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_uses_existing_python_on_ubuntu_without_consulting_linux_guard(
+    tmp_path: Path,
+) -> None:
+    script_path = _copy_online_installer_with_os_release_fixture(
+        tmp_path, "ID=ubuntu\nVERSION_ID=22.04\n"
+    )
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    identity_log = tmp_path / "identity.log"
+    _make_linux_identity_wrappers(
+        wrapper_dir, arch="x86_64", libc="glibc 2.35", identity_log=identity_log
+    )
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_path_alias(fake_python, wrapper_dir / "python3.11")
+    _make_fake_git(wrapper_dir)
+    env = dict(os.environ)
+    _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
+    env["AI_SDLC_PACKAGE_SPEC"] = "ai-sdlc==1.0.1"
 
     result = subprocess.run(
         [_bash_command(), str(script_path)],
@@ -1553,71 +1974,223 @@ raise SystemExit(0)
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / ".venv" / "bin" / "ai-sdlc").is_file()
-    assert "No Python 3.11+ detected. Attempting online installation" in result.stdout
-    assert "Using Python runtime: python3.11" in result.stdout
-    assert "当前结果 / Result" in result.stdout
-    assert apt_log.read_text(encoding="utf-8").splitlines() == [
-        "update",
-        "install -y python3.11 python3.11-venv python3-pip",
-    ]
+    assert not identity_log.exists()
 
 
-def test_install_online_reports_bilingual_failure_when_python_is_still_missing_after_auto_install(
+@pytest.mark.parametrize(
+    ("os_release", "arch", "libc", "expected_identity", "expects_amd64_fallback"),
+    [
+        (None, "x86_64", "glibc 2.35", "arch=x86_64 libc=glibc", True),
+        (
+            "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            "ID=debian\nVERSION_ID=12\nBROKEN_LINE\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            "ID=debian\nVERSION_ID=12\nINVALID KEY=value\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            'ID=debian\nVERSION_ID=12\nPRETTY_NAME="unterminated\n',
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            "ID=debian\nVERSION_ID=12\nHOME_URL=$(touch unsafe)\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (None, "", "glibc 2.35", "arch=unknown libc=glibc", False),
+        (None, "x86_64", "", "arch=x86_64 libc=unknown", False),
+    ],
+)
+def test_install_online_preserves_independent_linux_host_facts_when_os_release_is_unknown(
+    tmp_path: Path,
+    os_release: str | None,
+    arch: str,
+    libc: str,
+    expected_identity: str,
+    expects_amd64_fallback: bool,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release=os_release,
+            arch=arch,
+            libc=libc,
+        )
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert f"distro=unknown version=unknown {expected_identity}" in result.stdout
+    if expects_amd64_fallback:
+        assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in result.stdout
+        assert "route 6/12" in result.stdout
+    else:
+        assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" not in result.stdout
+        assert "route 6/12" not in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_rejects_linux_aarch64_glibc_without_python_fallback(
     tmp_path: Path,
 ) -> None:
-    script_path = tmp_path / "install_online.sh"
-    shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
-    script_path.chmod(0o755)
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release="ID=debian\nVERSION_ID=12\n",
+            arch="aarch64",
+            libc="glibc 2.36",
+        )
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
 
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=debian version=12 arch=aarch64 libc=glibc" in result.stdout
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" not in result.stdout
+    assert "route 6/12" not in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_rejects_linux_x86_64_musl_without_python_fallback(
+    tmp_path: Path,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release="ID=debian\nVERSION_ID=12\n",
+            arch="x86_64",
+            libc="musl 1.2.4",
+        )
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=debian version=12 arch=x86_64 libc=musl" in result.stdout
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" not in result.stdout
+    assert "route 6/12" not in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_uses_existing_python_on_musl_without_consulting_linux_guard(
+    tmp_path: Path,
+) -> None:
+    script_path = _copy_online_installer_with_os_release_fixture(
+        tmp_path, "ID=debian\nVERSION_ID=12\n"
+    )
     wrapper_dir = tmp_path / "wrappers"
     wrapper_dir.mkdir()
-    apt_log = tmp_path / "apt.log"
-
-    _write_executable(
-        wrapper_dir / "uname",
-        f"""#!{_bash_shebang_python()}
-print("Linux")
-""",
+    identity_log = tmp_path / "identity.log"
+    _make_linux_identity_wrappers(
+        wrapper_dir, arch="x86_64", libc="musl 1.2.4", identity_log=identity_log
     )
-    _write_executable(
-        wrapper_dir / "id",
-        f"""#!{_bash_shebang_python()}
-import sys
-if sys.argv[1:] == ["-u"]:
-    print("501")
-    raise SystemExit(0)
-raise SystemExit(1)
-""",
-    )
-    _write_executable(
-        wrapper_dir / "sudo",
-        f"""#!{_bash_shebang_python()}
-import subprocess
-import sys
-from pathlib import Path
-
-command = Path(__file__).resolve().parent / sys.argv[1]
-completed = subprocess.run([sys.executable, str(command), *sys.argv[2:]], check=False)
-raise SystemExit(completed.returncode)
-""",
-    )
-    _write_executable(
-        wrapper_dir / "apt-get",
-        f"""#!{_bash_shebang_python()}
-import sys
-from pathlib import Path
-
-log_path = Path({str(apt_log)!r})
-with log_path.open("a", encoding="utf-8") as handle:
-    handle.write(" ".join(sys.argv[1:]) + "\\n")
-
-raise SystemExit(0)
-""",
-    )
-
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_path_alias(fake_python, wrapper_dir / "python3.11")
+    _make_fake_git(wrapper_dir)
     env = dict(os.environ)
     _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
-    env.pop("PYTHON", None)
+    env["AI_SDLC_PACKAGE_SPEC"] = "ai-sdlc==1.0.1"
 
     result = subprocess.run(
         [_bash_command(), str(script_path)],
@@ -1628,52 +2201,14 @@ raise SystemExit(0)
         check=False,
     )
 
-    assert result.returncode != 0
-    assert "当前结果 / Result" in result.stdout
-    assert "无法自动完成在线安装" in result.stdout
-    assert "Python 3.11+ was not detected" in result.stdout
-    assert "./packaging/install_online.sh" in result.stdout
-    assert apt_log.read_text(encoding="utf-8").splitlines() == [
-        "update",
-        "install -y python3.11 python3.11-venv python3-pip",
-    ]
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".venv" / "bin" / "ai-sdlc").is_file()
+    assert not identity_log.exists()
 
 
-def test_install_online_reports_bilingual_failure_when_python_cannot_be_installed(
-    tmp_path: Path,
-) -> None:
-    script_path = tmp_path / "install_online.sh"
-    shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
-    script_path.chmod(0o755)
-
-    wrapper_dir = tmp_path / "wrappers"
-    wrapper_dir.mkdir()
-    _write_executable(
-        wrapper_dir / "uname",
-        "#!/usr/bin/env bash\nprintf 'UnknownOS\\n'\n",
-    )
-
-    env = dict(os.environ)
-    _set_env_path(env, _bash_wrapper_path(wrapper_dir))
-    env.pop("PYTHON", None)
-
-    result = subprocess.run(
-        [_bash_command(), str(script_path)],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "当前结果 / Result" in result.stdout
-    assert "无法自动完成在线安装" in result.stdout
-    assert "Python 3.11+ was not detected" in result.stdout
-    assert "./packaging/install_online.sh" in result.stdout
-
-
-def test_windows_online_installer_catches_auto_install_failure_before_bilingual_guidance() -> None:
+def test_windows_online_installer_catches_auto_install_failure_before_bilingual_guidance() -> (
+    None
+):
     online_ps1 = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
 
     assert "try {" in online_ps1
@@ -1689,17 +2224,35 @@ def test_windows_online_installer_accepts_any_py_launcher_python_gte_311() -> No
     assert '@{ Command = "py"; Args = @("-3.11") }' not in online_ps1
 
 
-def test_windows_online_installer_checks_native_exit_codes_before_success_guidance() -> None:
+def test_windows_online_installer_checks_native_exit_codes_before_success_guidance() -> (
+    None
+):
     online_ps1 = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
 
     assert "function Assert-LastExitCode" in online_ps1
-    assert '& $python.Command @($python.Args + @("-m", "venv", $VenvPath))' in online_ps1
+    assert (
+        '& $python.Command @($python.Args + @("-m", "venv", $VenvPath))' in online_ps1
+    )
     assert 'Assert-LastExitCode "python -m venv"' in online_ps1
     assert 'Assert-LastExitCode "pip install --upgrade pip"' in online_ps1
     assert 'Assert-LastExitCode "pip install $PackageSpec"' in online_ps1
 
 
-def test_windows_install_scripts_include_auto_python_detection_and_bilingual_guidance() -> None:
+def test_windows_online_installer_checks_git_source_before_python_or_venv() -> None:
+    online_ps1 = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
+
+    assert "function Assert-GitSourcePrerequisite" in online_ps1
+    assert 'if ($PackageSpec -notmatch "^git\\+")' in online_ps1
+    assert "Git is required for the configured git+ package source" in online_ps1
+    assert "winget install --id Git.Git -e" in online_ps1
+    assert online_ps1.index("Assert-GitSourcePrerequisite") < online_ps1.index(
+        "$python = Get-PythonCommand"
+    )
+
+
+def test_windows_install_scripts_include_auto_python_detection_and_bilingual_guidance() -> (
+    None
+):
     offline_bat = (_OFFLINE_DIR / "install_offline.bat").read_text(encoding="utf-8")
     offline_ps1 = (_OFFLINE_DIR / "install_offline.ps1").read_text(encoding="utf-8")
     online_ps1 = (_PACKAGING_DIR / "install_online.ps1").read_text(encoding="utf-8")
@@ -1712,7 +2265,10 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "UpgradeExisting" in offline_ps1
     assert "Using existing AI-SDLC runtime" in offline_ps1
     assert 'Join-Path $baseDir "python.exe"' in offline_ps1
-    assert "$existingCommandSource = (Resolve-Path -LiteralPath $aiSdlcCommand.Source).Path" in offline_ps1
+    assert (
+        "$existingCommandSource = (Resolve-Path -LiteralPath $aiSdlcCommand.Source).Path"
+        in offline_ps1
+    )
     assert "$existingCliCandidates += $existingCommandSource" in offline_ps1
     assert "supported_python_versions" in offline_ps1
     assert "Get-ManifestPythonVersions" in offline_ps1
@@ -1722,8 +2278,8 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "$LASTEXITCODE -ne 0" in offline_ps1
     assert "Result" in offline_ps1
     assert "Next" in offline_ps1
-    assert 'if ($StatusEn -and ($StatusEn -ne $Status))' in offline_ps1
-    assert 'if ($PurposeEn -and ($PurposeEn -ne $Purpose))' in offline_ps1
+    assert "if ($StatusEn -and ($StatusEn -ne $Status))" in offline_ps1
+    assert "if ($PurposeEn -and ($PurposeEn -ne $Purpose))" in offline_ps1
     assert not any(ord(char) > 127 for char in offline_ps1)
     assert "amd64" in offline_ps1
     assert "x64" in offline_ps1
@@ -1732,23 +2288,34 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "UTF8Encoding" in offline_ps1
     assert "`run --dry-run`" not in offline_ps1
     assert "New terminals can run ai-sdlc directly." in offline_ps1
-    assert "-AddToPath was provided, so the installer updated User PATH" not in offline_ps1
+    assert (
+        "-AddToPath was provided, so the installer updated User PATH" not in offline_ps1
+    )
     assert "The latest AI-SDLC command entry is now preferred" not in offline_ps1
-    assert "current parent terminal may still resolve an older ai-sdlc command" not in offline_ps1
+    assert (
+        "current parent terminal may still resolve an older ai-sdlc command"
+        not in offline_ps1
+    )
     assert "Get-Command ai-sdlc | Select-Object Source" not in offline_ps1
     assert "Set-PreferredAiSdlcPath" in offline_ps1
     assert "Repair-AiSdlcCommandPath" in offline_ps1
     assert "Add-DirectoryToUserPath" not in offline_ps1
     assert "Sync-AiSdlcLaunchersOnPath" in offline_ps1
     assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' not in offline_ps1
-    assert '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")' not in offline_ps1
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
+        not in offline_ps1
+    )
     assert "Install-AiSdlcCommandShim" in offline_ps1
     assert 'Join-Path $env:LOCALAPPDATA "AI-SDLC\\bin"' in offline_ps1
     assert 'Join-Path $shimDir "ai-sdlc.exe"' in offline_ps1
     assert 'Join-Path $shimDir "ai-sdlc.cmd"' in offline_ps1
     assert 'Join-Path $shimDir "ai-sdlc.ps1"' in offline_ps1
-    assert 'Write-TextUtf8NoBom -Path (Join-Path $shimDir "ai-sdlc.ps1")' not in offline_ps1
-    assert 'Remove-Item -LiteralPath $existingPsShim -Force' in offline_ps1
+    assert (
+        'Write-TextUtf8NoBom -Path (Join-Path $shimDir "ai-sdlc.ps1")'
+        not in offline_ps1
+    )
+    assert "Remove-Item -LiteralPath $existingPsShim -Force" in offline_ps1
     assert 'Join-Path $shimDir "ai-sdlc-runtime.txt"' in offline_ps1
     assert "Write-TextUtf8NoBom" in offline_ps1
     assert "ConvertFrom-GitBashPath" in offline_ps1
@@ -1757,8 +2324,11 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert '$profileNames = @(".bashrc")' in offline_ps1
     assert '@(".bash_profile", ".bash_login", ".profile")' in offline_ps1
     assert "candidateProfileName" in offline_ps1
-    assert 'Join-Path $gitBashHome $profileName' in offline_ps1
-    assert 'foreach ($profileName in ($profileNames | Select-Object -Unique))' in offline_ps1
+    assert "Join-Path $gitBashHome $profileName" in offline_ps1
+    assert (
+        "foreach ($profileName in ($profileNames | Select-Object -Unique))"
+        in offline_ps1
+    )
     assert "hash -r 2>/dev/null || true" in offline_ps1
     assert "stableShimRuntimePath" in offline_ps1
     assert "Test-DirectoryHasAiSdlc" not in offline_ps1
@@ -1773,8 +2343,8 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "choco install python311 -y" in online_ps1
     assert "Result" in online_ps1
     assert "Next" in online_ps1
-    assert 'if ($StatusEn -and ($StatusEn -ne $Status))' in online_ps1
-    assert 'if ($PurposeEn -and ($PurposeEn -ne $Purpose))' in online_ps1
+    assert "if ($StatusEn -and ($StatusEn -ne $Status))" in online_ps1
+    assert "if ($PurposeEn -and ($PurposeEn -ne $Purpose))" in online_ps1
     assert not any(ord(char) > 127 for char in online_ps1)
     assert "''-m'', ''ai_sdlc'', ''init'', ''.''" in online_ps1
     assert "ai-sdlc adapter status" not in online_ps1
@@ -1782,24 +2352,38 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "PYTHONIOENCODING" in online_ps1
     assert "UTF8Encoding" in online_ps1
     assert "New terminals can run ai-sdlc directly." in online_ps1
-    assert "-AddToPath was provided, so the installer updated User PATH" not in online_ps1
+    assert (
+        "-AddToPath was provided, so the installer updated User PATH" not in online_ps1
+    )
     assert "The latest AI-SDLC command entry is now preferred" not in online_ps1
-    assert "current parent terminal may still resolve an older ai-sdlc command" not in online_ps1
+    assert (
+        "current parent terminal may still resolve an older ai-sdlc command"
+        not in online_ps1
+    )
     assert "Get-Command ai-sdlc | Select-Object Source" not in online_ps1
     assert "Bare ai-sdlc may still resolve an older install" not in online_ps1
     assert "Set-PreferredAiSdlcPath" in online_ps1
     assert "Repair-AiSdlcCommandPath" in online_ps1
     assert "Add-DirectoryToUserPath" not in online_ps1
     assert "Sync-AiSdlcLaunchersOnPath" in online_ps1
-    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' not in online_ps1
-    assert '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")' not in online_ps1
+    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' in online_ps1
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
+        not in online_ps1
+    )
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
+        not in online_ps1
+    )
     assert "Install-AiSdlcCommandShim" in online_ps1
     assert 'Join-Path $env:LOCALAPPDATA "AI-SDLC\\bin"' in online_ps1
     assert 'Join-Path $shimDir "ai-sdlc.exe"' in online_ps1
     assert 'Join-Path $shimDir "ai-sdlc.cmd"' in online_ps1
     assert 'Join-Path $shimDir "ai-sdlc.ps1"' in online_ps1
-    assert 'Write-TextUtf8NoBom -Path (Join-Path $shimDir "ai-sdlc.ps1")' not in online_ps1
-    assert 'Remove-Item -LiteralPath $existingPsShim -Force' in online_ps1
+    assert (
+        'Write-TextUtf8NoBom -Path (Join-Path $shimDir "ai-sdlc.ps1")' not in online_ps1
+    )
+    assert "Remove-Item -LiteralPath $existingPsShim -Force" in online_ps1
     assert 'Join-Path $shimDir "ai-sdlc-runtime.txt"' in online_ps1
     assert "Write-TextUtf8NoBom" in online_ps1
     assert "ConvertFrom-GitBashPath" in online_ps1
@@ -1808,8 +2392,11 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert '$profileNames = @(".bashrc")' in online_ps1
     assert '@(".bash_profile", ".bash_login", ".profile")' in online_ps1
     assert "candidateProfileName" in online_ps1
-    assert 'Join-Path $gitBashHome $profileName' in online_ps1
-    assert 'foreach ($profileName in ($profileNames | Select-Object -Unique))' in online_ps1
+    assert "Join-Path $gitBashHome $profileName" in online_ps1
+    assert (
+        "foreach ($profileName in ($profileNames | Select-Object -Unique))"
+        in online_ps1
+    )
     assert "hash -r 2>/dev/null || true" in online_ps1
     assert "Test-DirectoryHasAiSdlc" not in online_ps1
     assert "Direct shim compatibility" in online_ps1
@@ -1830,7 +2417,7 @@ def test_windows_install_guidance_is_safe_for_windows_powershell_parser(
         assert "Start-Process -Wait -NoNewWindow" in script
         assert "Resolve-Path -LiteralPath $venvPython" in script
         assert "YOUR_PROJECT_PATH" in script
-        assert '[char]34' in script
+        assert "[char]34" in script
         assert '`"$resolvedVenvPython`"' not in script
         assert "cd <your-project>" not in script
         assert '-Command "&' not in script
@@ -1838,7 +2425,10 @@ def test_windows_install_guidance_is_safe_for_windows_powershell_parser(
 
     assert "$doubleQuote = [char]34" in offline_ps1
     assert "Write-Host \"  $callOperator '$resolvedCliExe' --help\"" not in offline_ps1
-    assert "Write-Host \"  $callOperator '$resolvedVenvPython' -m ai_sdlc --help\"" not in offline_ps1
+    assert (
+        "Write-Host \"  $callOperator '$resolvedVenvPython' -m ai_sdlc --help\""
+        not in offline_ps1
+    )
     expected_help_guidance = (
         "Write-Host ('  & {0}{1}{0} -m ai_sdlc --help' "
         "-f $doubleQuote, $resolvedVenvPython)"
@@ -1889,9 +2479,9 @@ def test_user_guide_documents_published_assets_and_two_new_user_paths() -> None:
     assert "## 第一章：全新用户 + 全新空项目" in guide
     assert "## 第二章：全新用户 + 已有项目" in guide
     assert "https://github.com/SinclairPan/Ai_AutoSDLC" in guide
-    assert "ai-sdlc-offline-3.0.0-windows-amd64.zip" in guide
-    assert "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz" in guide
-    assert "ai-sdlc-offline-3.0.0-linux-amd64.tar.gz" in guide
+    assert "ai-sdlc-offline-3.0.1-windows-amd64.zip" in guide
+    assert "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz" in guide
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in guide
     assert "releases/download/v1.0.4/" not in guide
     assert "Get-FileHash -Algorithm SHA256" in guide
     assert "shasum -a 256 -c" in guide
@@ -1914,17 +2504,28 @@ def test_windows_release_guidance_uses_repeat_safe_extract_cache() -> None:
     assert '$InstallRoot = Join-Path $HOME "AI-SDLC"' in guide
     assert "-DestinationPath $InstallRoot -Force" in guide
     assert guide.count("Push-Location $BundleRoot") >= 2
-    assert guide.count('powershell -NoProfile -ExecutionPolicy Bypass -File ".\\install_offline.ps1" -AddToPath') >= 2
+    assert (
+        guide.count(
+            'powershell -NoProfile -ExecutionPolicy Bypass -File ".\\install_offline.ps1" -AddToPath'
+        )
+        >= 2
+    )
     assert guide.count("Pop-Location") >= 2
     assert "$GitCommand = Get-Command git -ErrorAction SilentlyContinue" in guide
     assert "if ($GitCommand)" in guide
 
     for path in guidance_paths:
         text = path.read_text(encoding="utf-8")
-        assert not re.search(r"Expand-Archive[^\n]*-DestinationPath\s+\.(?:\s|$)", text), path
-        assert not re.search(r"(?m)^(?:cd|Set-Location)\s+\.\\ai-sdlc-offline", text), path
+        assert not re.search(
+            r"Expand-Archive[^\n]*-DestinationPath\s+\.(?:\s|$)", text
+        ), path
+        assert not re.search(r"(?m)^(?:cd|Set-Location)\s+\.\\ai-sdlc-offline", text), (
+            path
+        )
 
-    build_script = (_OFFLINE_DIR / "build_offline_bundle.sh").read_text(encoding="utf-8")
+    build_script = (_OFFLINE_DIR / "build_offline_bundle.sh").read_text(
+        encoding="utf-8"
+    )
     assert ".ai-sdlc-install" in build_script
     assert "DestinationPath \\$ExtractRoot -Force" in build_script
     assert "unzip ${OUT_BASENAME}.zip" not in build_script

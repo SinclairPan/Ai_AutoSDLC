@@ -38,7 +38,7 @@
 - [ ] 12 条路线的在线/离线安装、全新/已有项目和三平台命令均有真实环境证据；
 - [ ] `uv run python scripts/validate_user_guide_standard.py .` 通过；
 - [ ] `README.md`、`USER_GUIDE.zh-CN.md` 与 `packaging/offline/README.md` 描述一致；
-- [ ] 源码版本、公开稳定版本、workflow 默认 tag 与制品名称均为 `3.0.0` / `v3.0.0`；
+- [ ] 源码版本、公开稳定版本、workflow 默认 tag 与制品名称均为 `3.0.1` / `v3.0.1`；
 - [ ] 发布变更只使用普通 GitHub Release、tag、跨平台 smoke 和分支保护；
 - [ ] 包版本、源码版本、锁文件和工作流一致；
 - [ ] README、用户指南和打包说明一致；

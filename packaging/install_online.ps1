@@ -1,6 +1,6 @@
 param(
   [string]$VenvPath = ".venv",
-  [string]$PackageSpec = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0",
+  [string]$PackageSpec = "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.1",
   [switch]$AddToPath
 )
 
@@ -307,11 +307,48 @@ function Update-GitBashProfilePath {
   }
 }
 
+function Update-ProcessPathFromPersistentEnvironment {
+  $entries = @(
+    [Environment]::GetEnvironmentVariable("Path", "Machine"),
+    [Environment]::GetEnvironmentVariable("Path", "User"),
+    $env:Path
+  ) | Where-Object { $_ }
+  $env:Path = ($entries -join [IO.Path]::PathSeparator)
+}
+
 function Get-PythonCommand {
   $candidates = @(
     @{ Command = "py"; Args = @("-3") },
     @{ Command = "python"; Args = @() }
   )
+
+  $pythonRoots = @()
+  if ($env:LOCALAPPDATA) {
+    $pythonRoots += (Join-Path $env:LOCALAPPDATA "Programs\Python")
+  }
+  if ($env:ProgramFiles) {
+    $pythonRoots += $env:ProgramFiles
+  }
+  foreach ($root in $pythonRoots) {
+    if (-not (Test-Path -LiteralPath $root)) {
+      continue
+    }
+    $pythonHomes = @()
+    foreach ($minorVersion in @(14, 13, 12, 11)) {
+      $pythonHomes += (Join-Path $root "Python3$minorVersion")
+    }
+    $pythonHomes += @(
+      Get-ChildItem -LiteralPath $root -Directory -Filter "Python3*" -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        Select-Object -ExpandProperty FullName
+    )
+    foreach ($pythonHome in @($pythonHomes | Select-Object -Unique)) {
+      $pythonExe = Join-Path $pythonHome "python.exe"
+      if (Test-Path -LiteralPath $pythonExe) {
+        $candidates += @{ Command = $pythonExe; Args = @() }
+      }
+    }
+  }
 
   foreach ($candidate in $candidates) {
     if (Get-Command $candidate.Command -ErrorAction SilentlyContinue) {
@@ -327,14 +364,36 @@ function Get-PythonCommand {
 function Install-PythonOnline {
   if (Get-Command winget -ErrorAction SilentlyContinue) {
     winget install --id Python.Python.3.11 -e --accept-package-agreements --accept-source-agreements
+    Assert-LastExitCode "winget install Python.Python.3.11"
     return $true
   }
   if (Get-Command choco -ErrorAction SilentlyContinue) {
     choco install python311 -y
+    Assert-LastExitCode "choco install python311"
     return $true
   }
   return $false
 }
+
+function Assert-GitSourcePrerequisite {
+  if ($PackageSpec -notmatch "^git\+") {
+    return
+  }
+  if (Get-Command git -ErrorAction SilentlyContinue) {
+    git --version
+    Assert-LastExitCode "git --version"
+    return
+  }
+  Write-BilingualStatus `
+    -Status "Git is required for the configured git+ package source, but it was not detected." `
+    -StatusEn "Git is required for the configured git+ package source, but it was not detected." `
+    -Command "winget install --id Git.Git -e" `
+    -Purpose "Install Git, then rerun this installer. If winget is unavailable, install Git for Windows from https://git-scm.com/download/win." `
+    -PurposeEn "Install Git, then rerun this installer. If winget is unavailable, install Git for Windows from https://git-scm.com/download/win."
+  exit 1
+}
+
+Assert-GitSourcePrerequisite
 
 $python = Get-PythonCommand
 if (-not $python) {
@@ -348,6 +407,7 @@ if (-not $python) {
   if (-not $installAttempted) {
     Write-Host "Automatic Python installation could not be completed on this host."
   }
+  Update-ProcessPathFromPersistentEnvironment
   $python = Get-PythonCommand
 }
 

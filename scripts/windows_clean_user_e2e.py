@@ -553,8 +553,15 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     hashes_before = _business_hashes(project_root, business_files)
     _write_hashes(evidence_root / "business-hashes-before.json", hashes_before)
     _verify_interactive_init(cli_path, project_root, evidence_root)
+    adopt_output = _run_cli(
+        cli_path,
+        ["adopt", "."],
+        cwd=project_root,
+        evidence_path=evidence_root / "adopt-existing-project.txt",
+    )
+    _assert_contains(adopt_output, "接入已有项目：已生成桥接结果")
     if _business_hashes(project_root, business_files) != hashes_before:
-        raise AssertionError("交互式 init 修改了已有业务文件")
+        raise AssertionError("交互式 init/adopt 修改了已有业务文件")
     _commit_current_state(project_root, "initialize AI-SDLC")
     _run_requirement_and_workitem_flow(cli_path, project_root, evidence_root)
     _run_default_solution(cli_path, project_root, evidence_root)
@@ -567,14 +574,43 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     _write_summary(evidence_root)
 
 
+def run_interactive_init_only(
+    cli_path: str,
+    project_root: Path,
+    evidence_root: Path,
+    *,
+    allow_existing_project: bool = False,
+) -> None:
+    project_root.mkdir(parents=True, exist_ok=True)
+    evidence_root.mkdir(parents=True, exist_ok=True)
+    if not allow_existing_project and any(project_root.iterdir()):
+        raise AssertionError("交互式空项目 E2E 必须从空目录开始")
+    _verify_interactive_init(cli_path, project_root, evidence_root)
+    if not allow_existing_project and (
+        (project_root / "src").exists() or (project_root / "package.json").exists()
+    ):
+        raise AssertionError("交互式空项目 init 生成了意外的业务示例文件")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cli", required=True)
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
+    parser.add_argument("--init-only", action="store_true")
+    parser.add_argument("--allow-existing-project", action="store_true")
     args = parser.parse_args()
-    run_journey(args.cli, args.project_root.resolve(), args.evidence_root.resolve())
-    print("WINDOWS_CLEAN_USER_E2E_PASSED")
+    if args.init_only:
+        run_interactive_init_only(
+            args.cli,
+            args.project_root.resolve(),
+            args.evidence_root.resolve(),
+            allow_existing_project=args.allow_existing_project,
+        )
+        print("WINDOWS_INTERACTIVE_INIT_E2E_PASSED")
+    else:
+        run_journey(args.cli, args.project_root.resolve(), args.evidence_root.resolve())
+        print("WINDOWS_CLEAN_USER_E2E_PASSED")
     return 0
 
 

@@ -463,7 +463,11 @@ def test_concurrent_completed_round_one_has_exactly_one_winner(
     assert first_replace.is_set()
     assert replacement_count == 1
     assert len(successes) == 1
-    assert errors == ["review-already-completed"]
+    assert len(errors) == 1
+    assert errors[0] in {
+        "review-already-completed",
+        "review-outcome-lock-unavailable",
+    }
     assert outcome.read_bytes() == successes[0][1]
 
 

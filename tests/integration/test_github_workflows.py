@@ -216,8 +216,12 @@ def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
         path.write_text(f"fixture: {relative_path}\n", encoding="utf-8")
     managed_root = project_root / "managed" / "frontend"
     (managed_root / "index.html").parent.mkdir(parents=True, exist_ok=True)
-    (managed_root / "index.html").write_text("<main>review me</main>\n", encoding="utf-8")
-    (managed_root / "package.json").write_text('{"dependencies":{"temp":"1"}}\n', encoding="utf-8")
+    (managed_root / "index.html").write_text(
+        "<main>review me</main>\n", encoding="utf-8"
+    )
+    (managed_root / "package.json").write_text(
+        '{"dependencies":{"temp":"1"}}\n', encoding="utf-8"
+    )
     ignored_noise = managed_root / "node_modules" / "noise"
     ignored_noise.parent.mkdir(parents=True, exist_ok=True)
     ignored_noise.write_text("ignored\n", encoding="utf-8")
@@ -363,7 +367,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v3.0.0" in workflow
+    assert "default: v3.0.1" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -426,7 +430,7 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v3.0.0" in workflow
+    assert "default: v3.0.1" in workflow
     assert "ref: ${{ inputs.tag }}" in workflow
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert all(
@@ -466,7 +470,9 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     ]
     assert upload_job["permissions"] == {"contents": "write"}
     assert upload_job["needs"] == "build-smoke"
-    assert not any("actions/checkout" in step.get("uses", "") for step in upload_job["steps"])
+    assert not any(
+        "actions/checkout" in step.get("uses", "") for step in upload_job["steps"]
+    )
 
 
 def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> None:
@@ -485,7 +491,7 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / "pyproject.toml").write_text(
-        '[project]\nname = "ai-sdlc"\nversion = "3.0.0"\n',
+        '[project]\nname = "ai-sdlc"\nversion = "3.0.1"\n',
         encoding="utf-8",
     )
     for command in (
@@ -494,7 +500,7 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
         [git, "config", "user.email", "release@example.invalid"],
         [git, "add", "pyproject.toml"],
         [git, "commit", "-m", "release source"],
-        [git, "tag", "-a", "v3.0.0", "-m", "v3.0.0"],
+        [git, "tag", "-a", "v3.0.1", "-m", "v3.0.1"],
     ):
         subprocess.run(command, cwd=repository, check=True, capture_output=True)
     head = subprocess.run(
@@ -506,8 +512,8 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
     ).stdout.strip()
     base_env = {
         **os.environ,
-        "RELEASE_TAG": "v3.0.0",
-        "ALLOWED_RELEASE_TAG": "v3.0.0",
+        "RELEASE_TAG": "v3.0.1",
+        "ALLOWED_RELEASE_TAG": "v3.0.1",
         "DISPATCH_REF": "refs/heads/main",
         "DISPATCH_SHA": head,
     }
@@ -547,7 +553,7 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
 
     assert accepted.returncode == 0, accepted.stderr
     assert frozen_tag.returncode != 0
-    assert "Only v3.0.0" in frozen_tag.stderr
+    assert "Only v3.0.1" in frozen_tag.stderr
     assert non_main.returncode != 0
     assert wrong_commit.returncode != 0
 
@@ -628,17 +634,17 @@ fi
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-3.0.0-linux-amd64.tar.gz"
+    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
     asset.parent.mkdir()
     asset.write_bytes(b"archive")
     sidecar = Path(f"{asset}.sha256")
     sidecar.write_text("digest  archive\n", encoding="utf-8")
     other_assets = []
     for name in (
-        "ai-sdlc-offline-3.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-3.0.0-windows-amd64.zip.sha256",
-        "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz.sha256",
+        "ai-sdlc-offline-3.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-3.0.1-windows-amd64.zip.sha256",
+        "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz.sha256",
     ):
         path = asset.parent / name
         path.write_bytes(name.encode("utf-8"))
@@ -650,8 +656,8 @@ fi
     base_env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "RELEASE_TAG": "v3.0.0",
-        "ALLOWED_RELEASE_TAG": "v3.0.0",
+        "RELEASE_TAG": "v3.0.1",
+        "ALLOWED_RELEASE_TAG": "v3.0.1",
         "DISPATCH_REF": "refs/heads/main",
         "DISPATCH_SHA": "a" * 40,
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
@@ -742,9 +748,7 @@ fi
     complete_asset_names = "\n".join(
         [asset.name, sidecar.name, *(item.name for item in other_assets)]
     )
-    asset_state.write_text(
-        f"{complete_asset_names}\n", encoding="utf-8", newline="\n"
-    )
+    asset_state.write_text(f"{complete_asset_names}\n", encoding="utf-8", newline="\n")
     complete = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -813,14 +817,14 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v3.0.0" in workflow
+    assert "default: v3.0.1" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "v3.0.0" in workflow
+    assert "v3.0.1" in workflow
     assert "ai-sdlc-offline-$releaseVersion-windows-amd64" in workflow
     assert "releases/download/$env:RELEASE_TAG" in workflow
     assert "Invoke-WebRequest" in workflow
@@ -832,7 +836,11 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "Direct shim" in workflow
     assert "Codex \\+ PowerShell project init" in workflow
     assert "released-package-guide-gap.txt" in workflow
-    assert "& $directShim init . --agent-target vscode --shell powershell" in workflow
+    assert workflow.count("--init-only") >= 2
+    assert "--allow-existing-project" in workflow
+    assert (
+        "& $directShim init . --agent-target vscode --shell powershell" not in workflow
+    )
     assert "当前结果 / Result" in workflow
     assert "下一步 / Next" in workflow
     assert "adapter ingress|materialized|unverified|host ingress" in workflow
@@ -843,9 +851,11 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "Compare-Object" in workflow
     assert "init/adopt modified existing business files" in workflow
     assert "my-new-project" in workflow
-    assert "& $directShim init . --agent-target cursor --shell powershell" in workflow
-    assert "windows-empty-project-init.txt" in workflow
-    assert ".cursor\\rules\\ai-sdlc.mdc" in workflow
+    assert (
+        "& $directShim init . --agent-target cursor --shell powershell" not in workflow
+    )
+    assert "interactive-init.txt" in workflow
+    assert "AGENTS.md" in workflow
     assert "windows-user-guide-existing-project-evidence" in workflow
     assert "actions/upload-artifact@v7" in workflow
 
@@ -861,8 +871,8 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v3.0.0"' in workflow
-    assert "v3.0.0" in workflow
+    assert 'default: "v3.0.1"' in workflow
+    assert "v3.0.1" in workflow
     for path_filter in (
         '      - "src/**"',
         '      - "pyproject.toml"',
@@ -888,9 +898,9 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "sha256sum -c" in workflow
     assert "./install_offline.sh --add-to-path" in workflow
     assert '"$DIRECT_CLI" --version' in workflow
-    assert '"$DIRECT_CLI" init .' in workflow
     assert '"$DIRECT_CLI" adopt .' in workflow
-    assert "python3 scripts/posix_clean_user_e2e.py" in workflow
+    assert workflow.count("python3 scripts/posix_clean_user_e2e.py") >= 2
+    assert '"$DIRECT_CLI" init . --agent-target vscode' not in workflow
     assert "POSIX_INTERACTIVE_SELECTION_COMPLETED" in workflow
     assert "pty.fork()" in driver
     assert 'os.execv(str(cli_path), [str(cli_path), "init", "."])' in driver
@@ -906,6 +916,625 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "diff -u" in workflow
     assert "posix-user-guide-e2e-evidence" in workflow
     assert "actions/upload-artifact@v7" in workflow
+
+
+def test_user_guide_e2e_covers_both_project_states_through_online_installers() -> None:
+    windows = (_WORKFLOWS_DIR / "windows-user-guide-e2e.yml").read_text(
+        encoding="utf-8"
+    )
+    posix = (_WORKFLOWS_DIR / "posix-user-guide-e2e.yml").read_text(encoding="utf-8")
+    windows_driver = (_REPO_ROOT / "scripts" / "windows_clean_user_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    windows_online = windows.split("clean-online-interactive-user-journey:", 1)[1]
+    assert "install_online.ps1" in windows_online
+    assert "windows-online-empty-project" in windows_online
+    assert "windows-online-existing-project" in windows_online
+    assert "--init-only" in windows_online
+    assert "init . --agent-target codex --shell powershell" not in windows_online
+    assert '["adopt", "."]' in windows_driver
+
+    assert "online-install:" in posix
+    posix_online = posix.split("online-install:", 1)[1]
+    assert "macos-latest" in posix_online
+    assert "ubuntu-latest" in posix_online
+    assert "install_online.sh" in posix_online
+    assert "remote-pull-request-head" in posix_online
+    assert "remote-release-tag" in posix_online
+    assert "posix-online-empty-project" in posix_online
+    assert "posix-online-existing-project" in posix_online
+    assert posix_online.count("python3 scripts/posix_clean_user_e2e.py") >= 2
+    assert '"${online_cli}" init . --agent-target codex' not in posix_online
+    assert '"${online_cli}" adopt .' in posix_online
+
+
+def test_windows_online_guide_replays_missing_python_bootstrap_before_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_python_bootstrap_e2e.ps1"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    assert driver_path.is_file()
+    steps = workflow["jobs"]["clean-online-interactive-user-journey"]["steps"]
+    replay = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay installer without a preinstalled Python"
+    )
+    assert replay["shell"] == "pwsh"
+    assert replay["run"] == (
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
+        "-PackageManager winget"
+    )
+    choco_replay = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay installer after a Chocolatey Python install"
+    )
+    assert choco_replay["shell"] == "pwsh"
+    assert choco_replay["run"] == (
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
+        "-PackageManager choco"
+    )
+    failure_replay = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay expected Windows Python bootstrap failure"
+    )
+    assert failure_replay["shell"] == "pwsh"
+    assert failure_replay["run"] == (
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
+        "-PackageManager winget -ExpectInstallFailure"
+    )
+    receipt_check = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify isolated Python bootstrap receipts"
+    )
+    for scenario in (
+        "winget-success",
+        "choco-success",
+        "winget-expected-failure",
+    ):
+        assert f"python-bootstrap-{scenario}.json" in receipt_check["run"]
+        assert f"python-bootstrap-{scenario}-output.txt" in receipt_check["run"]
+        assert f"python-bootstrap-{scenario}-events.txt" in receipt_check["run"]
+    prerequisite_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Assert fresh runner prerequisites"
+    )
+    assert steps.index(replay) < prerequisite_index
+
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert '- "scripts/windows_python_bootstrap_e2e.ps1"' in workflow_text
+    driver = driver_path.read_text(encoding="utf-8")
+    assert 'Join-Path $shimRoot "py.cmd"' in driver
+    assert 'Join-Path $shimRoot "python.cmd"' not in driver
+    assert "FAKE_INSTALLED_PYTHON_ROOT" in driver
+    assert "Programs\\Python\\Python311" in driver
+    assert "xcopy" in driver
+    assert "mklink /J" not in driver
+    assert '[ValidateSet("winget", "choco")]' in driver
+    assert "[switch]$ExpectInstallFailure" in driver
+    assert (
+        '$scenario = if ($ExpectInstallFailure) { "winget-expected-failure" } '
+        'else { "$PackageManager-success" }'
+    ) in driver
+    assert 'Join-Path $shimRoot "choco.cmd"' in driver
+    isolated_path = '$isolatedPath = "$shimRoot;$env:SystemRoot\\System32"'
+    assert isolated_path in driver
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $isolatedPath, "Machine")'
+        in driver
+    )
+    assert "$env:Path = $isolatedPath" in driver
+    assert (
+        '$isolatedPath = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"'
+        not in driver
+    )
+    assert (
+        '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"'
+        not in driver
+    )
+    assert '$fakeLocalAppData = Join-Path $root "local-app-data"' in driver
+    assert '$fakeProgramFiles = Join-Path $root "program-files"' in driver
+    assert "$env:LOCALAPPDATA = $fakeLocalAppData" in driver
+    assert "$env:ProgramFiles = $fakeProgramFiles" in driver
+    preflight_markers = (
+        "Get-Command py -All",
+        "Get-Command python -All",
+        '$whereExe = Join-Path $env:SystemRoot "System32\\where.exe"',
+        "& $whereExe py",
+        "$standardPythonRootsAbsent",
+    )
+    installer_call = driver.index(
+        '(Join-Path $PSScriptRoot "..\\packaging\\install_online.ps1")'
+    )
+    for marker in preflight_markers:
+        assert marker in driver
+        assert driver.index(marker) < installer_call
+    assert "python-bootstrap-$scenario-output.txt" in driver
+    assert "python-bootstrap-$scenario-events.txt" in driver
+    assert "python-bootstrap-$scenario.json" in driver
+    assert "importlib.metadata.version('dummy-ai-sdlc')" in driver
+    assert 'Join-Path $installRoot "Scripts\\ai-sdlc.exe"' in driver
+    assert "distribution_version" in driver
+    assert "cli_version" in driver
+    assert '"3.0.1"' in driver
+    for restoration_marker in (
+        "machine_path_restored",
+        "user_path_restored",
+        "process_path_restored",
+        "local_app_data_restored",
+        "program_files_restored",
+    ):
+        assert restoration_marker in driver
+    assert driver.count("restorationErrors.Add") >= 5
+    assert "runtime_absent" in driver
+    assert "venv_absent" in driver
+    assert "$windowsPowerShell = (Get-Command powershell" in driver
+    assert "& $windowsPowerShell -NoProfile" in driver
+
+    installer = (_REPO_ROOT / "packaging" / "install_online.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "Update-ProcessPathFromPersistentEnvironment" in installer
+    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' in installer
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
+        not in installer
+    )
+    assert 'Join-Path $env:LOCALAPPDATA "Programs\\Python"' in installer
+    assert "foreach ($minorVersion in @(14, 13, 12, 11))" in installer
+    assert 'Join-Path $root "Python3$minorVersion"' in installer
+    assert 'Join-Path $pythonHome "python.exe"' in installer
+
+
+def test_windows_python_bootstrap_preserves_execution_and_restoration_failures() -> (
+    None
+):
+    driver = (_REPO_ROOT / "scripts" / "windows_python_bootstrap_e2e.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert "$executionFailure = if ($capturedFailure)" in driver
+    assert "$restorationFailures = @($restorationErrors)" in driver
+    assert "execution_failure = $executionFailure" in driver
+    assert "restoration_failures = $restorationFailures" in driver
+    assert '$finalFailureParts += "Execution failure: $executionFailure"' in driver
+    assert (
+        '$finalFailureParts += "Environment restoration failures: '
+        "$($restorationFailures -join '; ')\""
+    ) in driver
+    receipt_write = driver.index("Write-Utf8NoBom -Path $evidencePath")
+    final_failure_construction = driver.index("$finalFailureParts = @()")
+    final_throw = driver.index("throw $finalFailure")
+    assert receipt_write < final_failure_construction < final_throw
+    assert '$capturedFailure = "Environment restoration failed:' not in driver
+
+
+def test_linux_offline_acquisition_bootstrap_runs_on_fresh_connected_hosts() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-offline-acquisition-bootstrap"]
+    assert job["container"]["image"] == "debian:12-slim"
+    assert job["strategy"]["matrix"]["project_state"] == ["new", "existing"]
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Replay exact offline acquisition bootstrap"
+    )["run"]
+    assert "|offline|linux-amd64" in replay
+    assert 'test -z "$(command -v curl || true)"' in replay
+    assert "AI-SDLC-USER-GUIDE-STEP: acquire" in replay
+    assert "sed '/^PACKAGE_NAME=/,$d'" in replay
+    assert 'bash "${bootstrap_script}"' in replay
+    assert "curl --fail --location" in replay
+    assert "actions/upload-artifact@v7" in str(job["steps"])
+
+
+def test_linux_offline_compatibility_gates_execute_on_glibc_and_musl_hosts() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-offline-compatibility-gates"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["strategy"]["matrix"]["include"] == [
+        {
+            "host_kind": "supported-glibc",
+            "container_image": "debian:12-slim",
+            "expected_outcome": "pass",
+        },
+        {
+            "host_kind": "rejected-musl",
+            "container_image": "alpine:3.21",
+            "expected_outcome": "fail",
+        },
+        {
+            "host_kind": "unknown-libc",
+            "container_image": "alpine:3.21",
+            "expected_outcome": "unknown",
+        },
+    ]
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Execute exact offline compatibility gates"
+    )["run"]
+    for project_state in ("new", "existing"):
+        assert f'"{project_state}"' in replay
+    for step_name in ("prerequisites", "recover"):
+        assert f'"{step_name}"' in replay
+    assert '"AI-SDLC-USER-GUIDE-STEP: " step_name' in replay
+    assert 'route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE:' in replay
+    assert 'bash "${guard_script}"' in replay
+    assert "docker run --rm" in replay
+    assert '"${CONTAINER_IMAGE}"' in replay
+    assert 'test "${guard_exit}" -eq 0' in replay
+    assert 'test "${guard_exit}" -ne 0' in replay
+    assert 'test -z "$(command -v getconf || true)"' in replay
+    assert "rm -f /usr/bin/getconf" in replay
+    assert 'LC_ALL=C "${loader}" --version > /evidence/loader.txt' in replay
+    assert "grep -Eq '^ld\\.so" in replay
+    assert "grep -Eq '^musl libc" in replay
+    assert "test ! -s /evidence/loader.txt" in replay
+    assert "diagnostic: glibc compatibility could not be determined" in replay
+    assert "cat > \"${guard_root}/ldd\" <<'UNKNOWN_LDD'" in replay
+    assert 'test "$(command -v ldd)" = "/guards/ldd"' in replay
+    assert "无法确定此主机使用的 libc" in replay
+    assert "grep -Ei 'glibc|GNU C Library|GNU libc' /evidence/host.txt" not in replay
+    assert "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in replay
+    assert "actions/upload-artifact@v7" in str(job["steps"])
+
+
+def test_linux_online_existing_python_path_replays_on_opensuse() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-online-opensuse-existing-python"]
+    assert job["runs-on"] == "ubuntu-latest"
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Replay exact openSUSE online prerequisites"
+    )["run"]
+    assert "opensuse/leap:15.6" in replay
+    assert "/etc/ssl/ca-bundle.pem" in replay
+    assert "python3.11" in replay
+    assert '"new" "existing"' in replay
+    assert '"prerequisites" "acquire" "verify" "recover"' in replay
+    assert 'source "/replay/${project_state}-prerequisites.sh"' in replay
+    assert 'source "/replay/${project_state}-acquire.sh"' in replay
+    assert 'source "/replay/${project_state}-verify.sh"' in replay
+    assert (
+        "https://raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/v3.0.1/packaging/install_online.sh"
+        in replay
+    )
+    assert 'test -s "${INSTALLER_PATH}"' in replay
+    assert (
+        'cp "${INSTALLER_PATH}" "/evidence/${project_state}-install_online.sh"'
+        in replay
+    )
+    assert "AI_SDLC_PACKAGE_SPEC=/workspace" in replay
+    assert "bash /evidence/new-install_online.sh /tmp/ai-sdlc-venv" in replay
+    assert "/tmp/ai-sdlc-venv/bin/python -m ai_sdlc --version" in replay
+    assert "grep -F '3.0.1' /evidence/version.txt" in replay
+    assert '--volume "${GITHUB_WORKSPACE}:/workspace:ro"' in replay
+    assert "actions/upload-artifact@v7" in str(job["steps"])
+
+
+def test_macos_online_guide_replays_stock_host_prerequisites_before_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "macos_stock_host_prerequisite_e2e.py"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    assert driver_path.is_file()
+    online_steps = workflow["jobs"]["online-install"]["steps"]
+    replay = next(
+        step
+        for step in online_steps
+        if step.get("name") == "Replay stock macOS route prerequisites"
+    )
+    assert replay["if"] == "matrix.asset_os == 'macos'"
+    assert replay["run"] == "python3 scripts/macos_stock_host_prerequisite_e2e.py"
+    install_index = next(
+        index
+        for index, step in enumerate(online_steps)
+        if step.get("name")
+        == "Install from the pinned online source and replay both project states"
+    )
+    assert online_steps.index(replay) < install_index
+
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert '- "scripts/macos_stock_host_prerequisite_e2e.py"' in workflow_text
+
+
+def test_macos_stock_host_prerequisite_driver_runs_from_checkout(
+    tmp_path: Path,
+) -> None:
+    driver_path = _REPO_ROOT / "scripts" / "macos_stock_host_prerequisite_e2e.py"
+    if os.name == "nt":
+        assert driver_path.is_file()
+        return
+
+    env = os.environ.copy()
+    env["RUNNER_TEMP"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, str(driver_path)],
+        cwd=_REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "MACOS_STOCK_HOST_PREREQUISITES_OK" in completed.stdout
+    evidence = json.loads(
+        (
+            tmp_path
+            / "posix-online-user-guide-e2e-evidence"
+            / "macos-stock-host-prerequisites.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert evidence == {
+        "routes": [
+            {
+                "route_id": "new|online|macos-arm64",
+                "official_installer_invocations": 1,
+                "homebrew_activated": True,
+            },
+            {
+                "route_id": "existing|online|macos-arm64",
+                "official_installer_invocations": 1,
+                "homebrew_activated": True,
+            },
+        ]
+    }
+
+
+def test_posix_online_guide_replays_missing_python_bootstrap_before_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    assert driver_path.is_file()
+    online_steps = workflow["jobs"]["online-install"]["steps"]
+    replay = next(
+        step
+        for step in online_steps
+        if step.get("name") == "Replay installer without a preinstalled Python"
+    )
+    assert replay["if"] == "matrix.asset_os == 'macos'"
+    assert replay["run"] == "python3 scripts/posix_python_bootstrap_e2e.py"
+    install_index = next(
+        index
+        for index, step in enumerate(online_steps)
+        if step.get("name")
+        == "Install from the pinned online source and replay both project states"
+    )
+    assert online_steps.index(replay) < install_index
+
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert '- "scripts/posix_python_bootstrap_e2e.py"' in workflow_text
+
+
+def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-python-bootstrap"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["container"]["image"] == "debian:12-slim"
+    assert job["strategy"]["matrix"]["project_state"] == ["new", "existing"]
+    steps = job["steps"]
+    checkout = next(
+        step for step in steps if step.get("name") == "Check out exact guide inputs"
+    )
+    prepare = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay exact Linux route prerequisites"
+    )
+    bootstrap = next(
+        step
+        for step in steps
+        if step.get("name") == "Install Python through the exact online installer"
+    )
+    complete = next(
+        step
+        for step in steps
+        if step.get("name") == "Complete the exact Linux route after bootstrap"
+    )
+    assert steps.index(checkout) < steps.index(prepare)
+    assert "AI-SDLC-USER-GUIDE-ROUTE" in prepare["run"]
+    assert "USER_GUIDE.zh-CN.md" in prepare["run"]
+    assert 'bash "${prerequisite_script}"' in prepare["run"]
+    assert 'test -z "$(command -v python3.11 || true)"' in prepare["run"]
+    assert 'test -z "$(command -v python3 || true)"' in prepare["run"]
+    assert 'test -z "$(command -v python || true)"' in prepare["run"]
+    assert "command -v curl" in prepare["run"]
+    assert "ca-certificates.crt" in prepare["run"]
+    assert 'bash "${installer_path}" "${install_root}"' in bootstrap["run"]
+    assert "dpkg-query -W" in bootstrap["run"]
+    assert "python3.11 python3.11-venv python3-pip" in bootstrap["run"]
+    assert "fake" not in bootstrap["run"].lower()
+    installer_command = 'bash "${installer_path}" "${install_root}" --add-to-path'
+    assert installer_command in bootstrap["run"]
+    for identity_check in (
+        ". /etc/os-release",
+        'test "${ID}" = "debian"',
+        'test "${VERSION_ID}" = "12"',
+        "uname -m",
+        "getconf GNU_LIBC_VERSION",
+    ):
+        assert identity_check in bootstrap["run"]
+        assert bootstrap["run"].index(identity_check) < bootstrap["run"].index(
+            installer_command
+        )
+    assert 'stable_cli="${HOME}/.local/bin/ai-sdlc"' in bootstrap["run"]
+    assert 'test -L "${stable_cli}"' in bootstrap["run"]
+    assert "profile-export-count.txt" in bootstrap["run"]
+    assert 'test "${profile_export_count}" -eq 1' in bootstrap["run"]
+    assert 'bash --noprofile --rcfile "${HOME}/.bashrc" -ic' in bootstrap["run"]
+    assert "ai-sdlc --version" in bootstrap["run"]
+    assert 'test "${fresh_shell_version}" = "${RELEASE_TAG#v}"' in bootstrap["run"]
+    assert steps.index(bootstrap) < steps.index(complete)
+    assert 'if [[ "${PROJECT_STATE}" == "existing" ]]' in complete["run"]
+    assert "python3 scripts/posix_clean_user_e2e.py" in complete["run"]
+    assert '--cli "${install_root}/bin/ai-sdlc"' in complete["run"]
+    assert '--project "${project_root}"' in complete["run"]
+    assert "POSIX_INTERACTIVE_SELECTION_COMPLETED" in complete["run"]
+    assert 'test -f "${project_root}/.cursor/rules/ai-sdlc.mdc"' in complete["run"]
+    assert 'grep -F "AI 代理入口: Cursor"' in complete["run"]
+    assert 'grep -F "Project shell: bash"' in complete["run"]
+    assert 'test -f "${project_root}/AGENTS.md"' not in complete["run"]
+    assert "--agent-target" not in complete["run"]
+    assert "--shell bash" not in complete["run"]
+    assert '"${module_python}" -m ai_sdlc adopt .' in complete["run"]
+    assert "AI-SDLC-USER-GUIDE-STEP: success" in complete["run"]
+    assert "AI-SDLC-USER-GUIDE-STEP: recover" in complete["run"]
+    assert 'bash "${success_script}"' in complete["run"]
+    assert 'bash "${recover_script}"' in complete["run"]
+    assert "git status --short --untracked-files=all" in complete["run"]
+    assert "business-before.sha256" in complete["run"]
+    assert "business-after.sha256" in complete["run"]
+    assert "route-completion.json" in complete["run"]
+
+    driver = (_REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'shim_bin / "apt-get"' not in driver
+
+
+def test_linux_unsupported_python_bootstrap_fails_closed_without_mutation() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-unsupported-python-bootstrap"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["container"]["image"] == "ubuntu:22.04"
+    assert job["strategy"]["matrix"]["project_state"] == ["new", "existing"]
+    steps = job["steps"]
+    checkout = next(
+        step
+        for step in steps
+        if step.get("name") == "Check out the exact unsupported-host installer"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert (
+        "github.event.pull_request.head.repo.full_name"
+        in checkout["with"]["repository"]
+    )
+    assert "github.event.pull_request.head.sha" in checkout["with"]["ref"]
+
+    verify = next(
+        step
+        for step in steps
+        if step.get("name") == "Require unsupported Ubuntu to fail closed"
+    )
+    run = verify["run"]
+    assert (
+        'export HOME="${RUNNER_TEMP}/ubuntu-unsupported-home-${PROJECT_STATE}"' in run
+    )
+    assert 'export SHELL="/bin/bash"' in run
+    assert (
+        'project_root="${RUNNER_TEMP}/ubuntu-unsupported-${PROJECT_STATE}-project"'
+        in run
+    )
+    assert "project-before.sha256" in run
+    assert "project-after.sha256" in run
+    for command in ("python3.11", "python3", "python"):
+        assert f'"${{shadow_bin}}/{command}"' in run
+    assert 'apt_sentinel_log="${evidence_root}/apt-get-calls.log"' in run
+    assert '"${shadow_bin}/apt-get"' in run
+    assert 'AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}"' in run
+    installer_command = 'bash "${installer_path}" "${install_root}" --add-to-path'
+    assert installer_command in run
+    installer_from_hashed_project = (
+        "(\n"
+        '  cd "${project_root}"\n'
+        '  AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}" \\\n'
+        '    bash "${installer_path}" "${install_root}" --add-to-path\n'
+        ') > "${evidence_root}/install-online.txt" 2>&1'
+    )
+    assert installer_from_hashed_project in run
+    assert "installer_exit=$?" in run
+    assert 'test "${installer_exit}" -ne 0' in run
+    assert "distro=ubuntu version=22\\.04" in run
+    assert "Debian GNU/Linux 12 (bookworm)" in run
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in run
+    assert "route 6/12" in run
+    assert 'test "${python_package_install_calls}" -eq 0' in run
+    assert 'test ! -e "${install_root}"' in run
+    assert 'test ! -L "${stable_cli}"' in run
+    assert "profile-before.sha256" in run
+    assert "profile-after.sha256" in run
+    assert "diff -u" in run
+    assert 'installer_failed_closed="true"' in run
+    assert 'venv_created="false"' in run
+    assert 'project_mutated="false"' in run
+    receipt_write = run.index('> "${evidence_root}/fail-closed.json"')
+    for assertion in (
+        'test "${installer_exit}" -ne 0',
+        'test "${python_package_install_calls}" -eq 0',
+        'test ! -e "${install_root}"',
+        'test ! -L "${stable_cli}"',
+        "profile-after.sha256",
+        "project-after.sha256",
+    ):
+        assert run.index(assertion) < receipt_write
+    for evidence_field in (
+        '"platform":"ubuntu-22.04"',
+        '"project_state":"%s"',
+        '"installer_failed_closed":%s',
+        '"python_package_install_calls":%s',
+        '"venv_created":%s',
+        '"project_mutated":%s',
+        '"offline_recovery_asset":"ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"',
+    ):
+        assert evidence_field in run
+
+    upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload unsupported Linux bootstrap evidence"
+    )
+    assert upload["if"] == "always()"
+    assert "ubuntu-unsupported-python-bootstrap-evidence" in upload["with"]["name"]
+    assert "ubuntu-unsupported-python-bootstrap-evidence" in upload["with"]["path"]
+
+
+def test_posix_python_bootstrap_driver_runs_from_checkout(tmp_path: Path) -> None:
+    driver_path = _REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py"
+    if sys.platform != "darwin":
+        assert driver_path.is_file()
+        return
+
+    env = os.environ.copy()
+    env["RUNNER_TEMP"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, str(driver_path)],
+        cwd=_REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "POSIX_PYTHON_BOOTSTRAP_OK" in completed.stdout
+    evidence = json.loads(
+        (
+            tmp_path / "posix-online-user-guide-e2e-evidence" / "python-bootstrap.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert evidence["python_missing_before_install"] is True
+    assert evidence["python_available_after_install"] is True
+    assert evidence["package_manager_install_calls"] == 1
+    assert evidence["installer_completed"] is True
 
 
 def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() -> None:
