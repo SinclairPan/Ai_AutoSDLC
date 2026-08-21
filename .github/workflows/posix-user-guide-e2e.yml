@@ -169,39 +169,61 @@ jobs:
           include-hidden-files: true
 
   linux-python-bootstrap:
-    name: linux real Python bootstrap
+    name: ${{ matrix.project_state }} linux real prerequisites and Python bootstrap
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        project_state: [new, existing]
     container:
       image: debian:12-slim
     env:
       RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.1' || inputs.tag }}
       PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+      PROJECT_STATE: ${{ matrix.project_state }}
 
     steps:
-      - name: Prepare a stock Linux host
-        shell: bash
-        run: |
-          set -euo pipefail
-          apt-get update
-          apt-get install -y ca-certificates curl git
-          test -z "$(command -v python3.11 || true)"
-          test -z "$(command -v python3 || true)"
-          test -z "$(command -v python || true)"
-
-      - name: Check out exact installer inputs
+      - name: Check out exact guide inputs
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Replay exact Linux route prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v git || true)"
+          test -z "$(command -v curl || true)"
+          test ! -s /etc/ssl/certs/ca-certificates.crt
+          test ! -s /etc/pki/tls/certs/ca-bundle.crt
+          test -z "$(command -v python3.11 || true)"
+          test -z "$(command -v python3 || true)"
+          test -z "$(command -v python || true)"
+          route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE: ${PROJECT_STATE}|online|linux-amd64 -->"
+          prerequisite_script="${RUNNER_TEMP}/linux-${PROJECT_STATE}-prerequisites.sh"
+          awk -v marker="${route_marker}" '
+            $0 == marker { in_route = 1; next }
+            in_route && /AI-SDLC-USER-GUIDE-STEP: prerequisites/ { in_step = 1; next }
+            in_step && /^```bash$/ { in_code = 1; next }
+            in_code && /^```$/ { exit }
+            in_code { print }
+          ' USER_GUIDE.zh-CN.md > "${prerequisite_script}"
+          test -s "${prerequisite_script}"
+          bash "${prerequisite_script}"
+          command -v git
+          command -v curl
+          test -s /etc/ssl/certs/ca-certificates.crt || \
+            test -s /etc/pki/tls/certs/ca-bundle.crt
 
       - name: Install Python through the exact online installer
         shell: bash
         run: |
           set -euo pipefail
 
-          evidence_root="${RUNNER_TEMP}/linux-real-python-bootstrap-evidence"
-          install_root="${RUNNER_TEMP}/ai-sdlc-linux-bootstrap"
+          evidence_root="${RUNNER_TEMP}/linux-real-python-bootstrap-evidence-${PROJECT_STATE}"
+          install_root="${RUNNER_TEMP}/ai-sdlc-linux-bootstrap-${PROJECT_STATE}"
           mkdir -p "${evidence_root}"
           source_repository="SinclairPan/Ai_AutoSDLC"
           if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
@@ -240,15 +262,15 @@ jobs:
             "${evidence_root}/install-online.txt"
           grep -F "Online installation completed" \
             "${evidence_root}/install-online.txt"
-          printf '{"platform":"debian-12","real_apt":true,"source_revision":"%s","installed_cli_version":"%s"}\n' \
-            "${remote_sha}" "${RELEASE_TAG#v}" > "${evidence_root}/python-bootstrap.json"
+          printf '{"platform":"debian-12","project_state":"%s","real_prerequisite_apt":true,"real_python_apt":true,"source_revision":"%s","installed_cli_version":"%s"}\n' \
+            "${PROJECT_STATE}" "${remote_sha}" "${RELEASE_TAG#v}" > "${evidence_root}/python-bootstrap.json"
 
       - name: Upload real Linux bootstrap evidence
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: linux-real-python-bootstrap-evidence
-          path: ${{ runner.temp }}/linux-real-python-bootstrap-evidence
+          name: linux-real-python-bootstrap-evidence-${{ matrix.project_state }}
+          path: ${{ runner.temp }}/linux-real-python-bootstrap-evidence-${{ matrix.project_state }}
           if-no-files-found: error
 
   replay-published-guide:

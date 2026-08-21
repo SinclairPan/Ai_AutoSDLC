@@ -129,15 +129,19 @@ def test_macos_online_routes_bootstrap_homebrew_before_python_install() -> None:
         assert shellenv in steps["recover"], route_id
 
 
-def test_linux_online_routes_provide_executable_git_bootstrap_and_recovery() -> None:
+def test_linux_online_routes_provide_executable_download_bootstrap_and_recovery() -> (
+    None
+):
     _, routes = _route_sections(guide_text())
     required = (
         "command -v apt-get",
-        "apt-get install -y git",
+        "apt-get install -y ca-certificates curl git",
         "command -v dnf",
-        "dnf install -y git",
+        "dnf install -y ca-certificates curl git",
         "command -v yum",
-        "yum install -y git",
+        "yum install -y ca-certificates curl git",
+        "command -v curl",
+        "ca_bundle_available",
     )
 
     for state in ("new", "existing"):

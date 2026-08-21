@@ -1077,19 +1077,30 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
     job = workflow["jobs"]["linux-python-bootstrap"]
     assert job["runs-on"] == "ubuntu-latest"
     assert job["container"]["image"] == "debian:12-slim"
+    assert job["strategy"]["matrix"]["project_state"] == ["new", "existing"]
     steps = job["steps"]
+    checkout = next(
+        step for step in steps if step.get("name") == "Check out exact guide inputs"
+    )
     prepare = next(
-        step for step in steps if step.get("name") == "Prepare a stock Linux host"
+        step
+        for step in steps
+        if step.get("name") == "Replay exact Linux route prerequisites"
     )
     bootstrap = next(
         step
         for step in steps
         if step.get("name") == "Install Python through the exact online installer"
     )
-    assert "apt-get install -y ca-certificates curl git" in prepare["run"]
+    assert steps.index(checkout) < steps.index(prepare)
+    assert "AI-SDLC-USER-GUIDE-ROUTE" in prepare["run"]
+    assert "USER_GUIDE.zh-CN.md" in prepare["run"]
+    assert 'bash "${prerequisite_script}"' in prepare["run"]
     assert 'test -z "$(command -v python3.11 || true)"' in prepare["run"]
     assert 'test -z "$(command -v python3 || true)"' in prepare["run"]
     assert 'test -z "$(command -v python || true)"' in prepare["run"]
+    assert "command -v curl" in prepare["run"]
+    assert "ca-certificates.crt" in prepare["run"]
     assert 'bash "${installer_path}" "${install_root}"' in bootstrap["run"]
     assert "dpkg-query -W" in bootstrap["run"]
     assert "python3.11 python3.11-venv python3-pip" in bootstrap["run"]

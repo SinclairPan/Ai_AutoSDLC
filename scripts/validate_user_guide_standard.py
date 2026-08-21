@@ -188,20 +188,24 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                     Finding("guide-route-windows-direct-recovery-missing", route_id)
                 )
         if channel == "online" and platform == "linux-amd64":
-            git_bootstrap_markers = (
+            prerequisite_bootstrap_markers = (
                 "command -v apt-get",
-                "apt-get install -y git",
+                "apt-get install -y ca-certificates curl git",
                 "command -v dnf",
-                "dnf install -y git",
+                "dnf install -y ca-certificates curl git",
                 "command -v yum",
-                "yum install -y git",
+                "yum install -y ca-certificates curl git",
+                "command -v curl",
+                "ca_bundle_available",
             )
             for step_name in ("prerequisites", "recover"):
                 step_text = step_sections.get(step_name, "")
-                if any(marker not in step_text for marker in git_bootstrap_markers):
+                if any(
+                    marker not in step_text for marker in prerequisite_bootstrap_markers
+                ):
                     findings.append(
                         Finding(
-                            "guide-route-linux-git-bootstrap-missing",
+                            "guide-route-linux-download-bootstrap-missing",
                             f"{route_id}:{step_name}",
                         )
                     )
