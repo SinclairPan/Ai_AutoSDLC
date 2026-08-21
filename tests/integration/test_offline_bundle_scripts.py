@@ -114,10 +114,11 @@ def _find_cygpath_command() -> str | None:
     if not bash:
         return None
     git_bin = Path(bash).resolve().parent
-    for name in ("cygpath.exe", "cygpath"):
-        candidate = git_bin.parent / "usr" / "bin" / name
-        if candidate.is_file():
-            return str(candidate)
+    for candidate_dir in (git_bin, git_bin.parent / "usr" / "bin"):
+        for name in ("cygpath.exe", "cygpath"):
+            candidate = candidate_dir / name
+            if candidate.is_file():
+                return str(candidate)
     return None
 
 
@@ -170,6 +171,26 @@ def test_cygpath_discovery_falls_back_to_the_git_bash_sibling(
     cygpath = git_root / "usr" / "bin" / "cygpath.exe"
     bash.parent.mkdir(parents=True)
     cygpath.parent.mkdir(parents=True)
+    bash.touch()
+    cygpath.touch()
+
+    def fake_which(command: str) -> str | None:
+        if command == "bash":
+            return str(bash)
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    assert _find_cygpath_command() == str(cygpath)
+
+
+def test_cygpath_discovery_uses_the_git_bash_directory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_usr_bin = tmp_path / "Git" / "usr" / "bin"
+    bash = git_usr_bin / "bash.exe"
+    cygpath = git_usr_bin / "cygpath.exe"
+    git_usr_bin.mkdir(parents=True)
     bash.touch()
     cygpath.touch()
 
