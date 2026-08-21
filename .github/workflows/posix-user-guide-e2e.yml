@@ -516,9 +516,11 @@ jobs:
 
           test -f "${installer_path}"
           set +e
-          AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}" \
-            bash "${installer_path}" "${install_root}" --add-to-path > \
-            "${evidence_root}/install-online.txt" 2>&1
+          (
+            cd "${project_root}"
+            AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}" \
+              bash "${installer_path}" "${install_root}" --add-to-path
+          ) > "${evidence_root}/install-online.txt" 2>&1
           installer_exit=$?
           set -e
           cat "${evidence_root}/install-online.txt"

@@ -1261,6 +1261,14 @@ def test_linux_unsupported_python_bootstrap_fails_closed_without_mutation() -> N
         'bash "${installer_path}" "${install_root}" --add-to-path'
     )
     assert installer_command in run
+    installer_from_hashed_project = (
+        '(\n'
+        '  cd "${project_root}"\n'
+        '  AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}" \\\n'
+        '    bash "${installer_path}" "${install_root}" --add-to-path\n'
+        ') > "${evidence_root}/install-online.txt" 2>&1'
+    )
+    assert installer_from_hashed_project in run
     assert "installer_exit=$?" in run
     assert 'test "${installer_exit}" -ne 0' in run
     assert "distro=ubuntu version=22\\.04" in run
