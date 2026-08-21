@@ -963,7 +963,18 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     )
     assert replay["shell"] == "pwsh"
     assert replay["run"] == (
-        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1"
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
+        "-PackageManager winget"
+    )
+    choco_replay = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay installer after a Chocolatey Python install"
+    )
+    assert choco_replay["shell"] == "pwsh"
+    assert choco_replay["run"] == (
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
+        "-PackageManager choco"
     )
     prerequisite_index = next(
         index
@@ -981,7 +992,10 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert "Programs\\Python\\Python311" in driver
     assert "xcopy" in driver
     assert "mklink /J" not in driver
-    assert "python-bootstrap-output.txt" in driver
+    assert '[ValidateSet("winget", "choco")]' in driver
+    assert 'Join-Path $shimRoot "choco.cmd"' in driver
+    assert 'SetEnvironmentVariable("Path", $saved.MachinePath, "Machine")' in driver
+    assert "python-bootstrap-$PackageManager-output.txt" in driver
     assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
     assert "$windowsPowerShell = (Get-Command powershell" in driver
     assert "& $windowsPowerShell -NoProfile" in driver
@@ -990,6 +1004,11 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
         encoding="utf-8"
     )
     assert "Update-ProcessPathFromPersistentEnvironment" in installer
+    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' in installer
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
+        not in installer
+    )
     assert 'Join-Path $env:LOCALAPPDATA "Programs\\Python"' in installer
     assert "foreach ($minorVersion in @(14, 13, 12, 11))" in installer
     assert 'Join-Path $root "Python3$minorVersion"' in installer

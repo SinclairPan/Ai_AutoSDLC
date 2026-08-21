@@ -309,6 +309,7 @@ function Update-GitBashProfilePath {
 
 function Update-ProcessPathFromPersistentEnvironment {
   $entries = @(
+    [Environment]::GetEnvironmentVariable("Path", "Machine"),
     [Environment]::GetEnvironmentVariable("Path", "User"),
     $env:Path
   ) | Where-Object { $_ }

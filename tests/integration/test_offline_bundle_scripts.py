@@ -1913,7 +1913,11 @@ def test_windows_install_scripts_include_auto_python_detection_and_bilingual_gui
     assert "Repair-AiSdlcCommandPath" in online_ps1
     assert "Add-DirectoryToUserPath" not in online_ps1
     assert "Sync-AiSdlcLaunchersOnPath" in online_ps1
-    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' not in online_ps1
+    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' in online_ps1
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
+        not in online_ps1
+    )
     assert (
         '[Environment]::SetEnvironmentVariable("Path", $updatedMachinePath, "Machine")'
         not in online_ps1

@@ -1,3 +1,8 @@
+param(
+  [ValidateSet("winget", "choco")]
+  [string]$PackageManager = "winget"
+)
+
 $ErrorActionPreference = "Stop"
 
 function Write-Utf8NoBom {
@@ -55,7 +60,7 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $realPython)) {
 $windowsPowerShell = (Get-Command powershell -ErrorAction Stop).Source
 
 $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
-$root = Join-Path $env:RUNNER_TEMP "windows-python-bootstrap-replay"
+$root = Join-Path $env:RUNNER_TEMP "windows-python-bootstrap-replay-$PackageManager"
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $evidenceRoot, $root | Out-Null
 $shimRoot = Join-Path $root "shims"
@@ -69,7 +74,8 @@ Write-Utf8NoBom -Path (Join-Path $shimRoot "py.cmd") -Value @'
 echo py %*>>"%FAKE_BOOTSTRAP_LOG%"
 exit /b 1
 '@
-Write-Utf8NoBom -Path (Join-Path $shimRoot "winget.cmd") -Value @'
+if ($PackageManager -eq "winget") {
+  Write-Utf8NoBom -Path (Join-Path $shimRoot "winget.cmd") -Value @'
 @echo off
 echo package-manager-install winget Python.Python.3.11>>"%FAKE_BOOTSTRAP_LOG%"
 set "PYTHON_PARENT=%LOCALAPPDATA%\Programs\Python"
@@ -80,10 +86,25 @@ if errorlevel 1 exit /b %ERRORLEVEL%
 if not exist "%PYTHON_TARGET%\python.exe" exit /b 1
 exit /b 0
 '@
+} else {
+  Write-Utf8NoBom -Path (Join-Path $shimRoot "choco.cmd") -Value @'
+@echo off
+echo package-manager-install choco python311>>"%FAKE_BOOTSTRAP_LOG%"
+if not exist "%FAKE_MACHINE_PYTHON_ROOT%" mkdir "%FAKE_MACHINE_PYTHON_ROOT%"
+xcopy "%FAKE_INSTALLED_PYTHON_ROOT%\*" "%FAKE_MACHINE_PYTHON_ROOT%\" /E /I /Q /Y >nul
+if errorlevel 1 exit /b %ERRORLEVEL%
+if not exist "%FAKE_MACHINE_PYTHON_ROOT%\python.exe" exit /b 1
+"%FAKE_WINDOWS_POWERSHELL%" -NoProfile -Command "[Environment]::SetEnvironmentVariable('Path', $env:FAKE_MACHINE_PYTHON_ROOT + ';' + $env:FAKE_ISOLATED_MACHINE_PATH, 'Machine')"
+if errorlevel 1 exit /b %ERRORLEVEL%
+exit /b 0
+'@
+}
 
 $wheelPath = New-MinimalWheel -Root $root
+$fakeMachinePythonRoot = Join-Path $root "machine-python\Python311"
 $saved = @{
   Path = $env:Path
+  MachinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
   Python = $env:PYTHON
   NoIndex = $env:PIP_NO_INDEX
   DisableCheck = $env:PIP_DISABLE_PIP_VERSION_CHECK
@@ -91,8 +112,13 @@ $saved = @{
 }
 try {
   Remove-Item Env:PYTHON -ErrorAction SilentlyContinue
+  $isolatedMachinePath = "$env:SystemRoot\System32;$env:SystemRoot"
+  [Environment]::SetEnvironmentVariable("Path", $isolatedMachinePath, "Machine")
   $env:FAKE_BOOTSTRAP_LOG = $eventLog
   $env:FAKE_INSTALLED_PYTHON_ROOT = Split-Path -Parent $realPython
+  $env:FAKE_MACHINE_PYTHON_ROOT = $fakeMachinePythonRoot
+  $env:FAKE_ISOLATED_MACHINE_PATH = $isolatedMachinePath
+  $env:FAKE_WINDOWS_POWERSHELL = $windowsPowerShell
   $env:LOCALAPPDATA = $fakeLocalAppData
   $env:PIP_NO_INDEX = "1"
   $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
@@ -106,6 +132,7 @@ try {
   $installerExit = $LASTEXITCODE
 } finally {
   $env:Path = $saved.Path
+  [Environment]::SetEnvironmentVariable("Path", $saved.MachinePath, "Machine")
   if ($null -eq $saved.Python) { Remove-Item Env:PYTHON -ErrorAction SilentlyContinue } else { $env:PYTHON = $saved.Python }
   if ($null -eq $saved.NoIndex) { Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue } else { $env:PIP_NO_INDEX = $saved.NoIndex }
   if ($null -eq $saved.DisableCheck) { Remove-Item Env:PIP_DISABLE_PIP_VERSION_CHECK -ErrorAction SilentlyContinue } else { $env:PIP_DISABLE_PIP_VERSION_CHECK = $saved.DisableCheck }
@@ -113,11 +140,15 @@ try {
 }
 
 $outputText = $output -join "`n"
-Write-Utf8NoBom -Path (Join-Path $evidenceRoot "python-bootstrap-output.txt") -Value ($outputText + "`n")
+Write-Utf8NoBom -Path (Join-Path $evidenceRoot "python-bootstrap-$PackageManager-output.txt") -Value ($outputText + "`n")
 if (Test-Path -LiteralPath $eventLog) {
-  Copy-Item -LiteralPath $eventLog -Destination (Join-Path $evidenceRoot "python-bootstrap-events.txt") -Force
+  Copy-Item -LiteralPath $eventLog -Destination (Join-Path $evidenceRoot "python-bootstrap-$PackageManager-events.txt") -Force
 }
-$installedPython = Join-Path $fakeLocalAppData "Programs\Python\Python311\python.exe"
+$installedPython = if ($PackageManager -eq "winget") {
+  Join-Path $fakeLocalAppData "Programs\Python\Python311\python.exe"
+} else {
+  Join-Path $fakeMachinePythonRoot "python.exe"
+}
 if ($installerExit -ne 0) {
   $installedState = "standard_python_exists=$(Test-Path -LiteralPath $installedPython)"
   throw "Windows isolated Python bootstrap failed with exit $installerExit ($installedState): $outputText"
@@ -130,14 +161,15 @@ if ($installEvents.Count -ne 1) {
 $installIndex = [Array]::IndexOf($events, $installEvents[0])
 $before = @($events[0..($installIndex - 1)] | Where-Object { $_ -like "py *" })
 if ($before.Count -lt 1) {
-  throw "The Windows replay did not prove Python was missing before winget."
+  throw "The Windows replay did not prove Python was missing before $PackageManager."
 }
 if (-not (Test-Path -LiteralPath $installedPython)) {
-  throw "The Windows replay did not materialize Python in the standard winget location."
+  throw "The Windows replay did not materialize Python through $PackageManager."
 }
+$runtimeDisplay = if ($PackageManager -eq "winget") { $installedPython } else { "python" }
 foreach ($marker in @(
   "No Python 3.11+ detected. Attempting online installation",
-  "Using Python runtime: $installedPython",
+  "Using Python runtime: $runtimeDisplay",
   "Online installation completed"
 )) {
   if (-not $outputText.Contains($marker)) {
@@ -153,12 +185,13 @@ if (-not (Test-Path -LiteralPath (Join-Path $installRoot "Scripts\ai-sdlc.exe"))
 
 $evidence = [ordered]@{
   platform = "Windows"
+  package_manager = $PackageManager
   python_missing_before_install = $true
   python_available_after_install = $true
   package_manager_install_calls = $installEvents.Count
   installer_completed = $true
 }
-$evidencePath = Join-Path $evidenceRoot "python-bootstrap.json"
+$evidencePath = Join-Path $evidenceRoot "python-bootstrap-$PackageManager.json"
 Write-Utf8NoBom -Path $evidencePath -Value (($evidence | ConvertTo-Json) + "`n")
 Write-Host "WINDOWS_PYTHON_BOOTSTRAP_OK"
 Write-Host $evidencePath
