@@ -173,6 +173,7 @@ def test_linux_online_routes_provide_executable_download_bootstrap_and_recovery(
         "yum install -y ca-certificates curl git",
         "command -v curl",
         "ca_bundle_available",
+        "/etc/ssl/ca-bundle.pem",
     )
 
     for state in ("new", "existing"):
@@ -194,6 +195,7 @@ def test_linux_offline_routes_bootstrap_connected_host_download_tools() -> None:
         "yum install -y ca-certificates curl",
         "command -v curl",
         "ca_bundle_available",
+        "/etc/ssl/ca-bundle.pem",
     )
 
     for state in ("new", "existing"):
@@ -224,10 +226,25 @@ def test_linux_offline_routes_gate_amd64_glibc_in_prerequisites_and_recovery() -
     _, routes = _route_sections(guide_text())
     required = (
         'ARCH="$(uname -m)"',
-        "getconf GNU_LIBC_VERSION",
+        "detect_linux_libc()",
+        "command -v getconf",
+        "LC_ALL=C getconf GNU_LIBC_VERSION",
+        "getconf_glibc_re='^glibc [0-9]+\\.[0-9]+$'",
+        "/lib64/ld-linux-x86-64.so.2",
+        "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        'LC_ALL=C "$loader" --version',
+        "loader_glibc_re='^ld\\.so",
+        "(GNU libc|[^)]+ GLIBC [0-9][^)]*)",
+        "[0-9]+\\.[0-9]+\\.?$'",
+        "command -v ldd",
+        "LC_ALL=C ldd --version",
+        "ldd_musl_re='^musl libc",
+        'if [ "$musl_seen" -eq 1 ]',
+        'if [ "$glibc_seen" -eq 1 ]',
+        "无法确定此主机使用的 libc",
         '"$ARCH" != "x86_64"',
         '"$ARCH" != "amd64"',
-        "grep -q '^glibc '",
+        '"$LIBC" != "glibc"',
         "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产",
         "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
         "exit 1",

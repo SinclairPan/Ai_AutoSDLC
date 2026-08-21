@@ -1152,6 +1152,11 @@ def test_linux_offline_compatibility_gates_execute_on_glibc_and_musl_hosts() -> 
             "container_image": "alpine:3.21",
             "expected_outcome": "fail",
         },
+        {
+            "host_kind": "unknown-libc",
+            "container_image": "alpine:3.21",
+            "expected_outcome": "unknown",
+        },
     ]
     replay = next(
         step
@@ -1169,9 +1174,43 @@ def test_linux_offline_compatibility_gates_execute_on_glibc_and_musl_hosts() -> 
     assert '"${CONTAINER_IMAGE}"' in replay
     assert 'test "${guard_exit}" -eq 0' in replay
     assert 'test "${guard_exit}" -ne 0' in replay
-    assert "grep -i '^musl libc' /evidence/host.txt" in replay
-    assert 'grep -i "musl" /evidence/host.txt' not in replay
+    assert 'test -z "$(command -v getconf || true)"' in replay
+    assert "rm -f /usr/bin/getconf" in replay
+    assert 'LC_ALL=C "${loader}" --version > /evidence/loader.txt' in replay
+    assert "grep -Eq '^ld\\.so" in replay
+    assert "grep -Eq '^musl libc" in replay
+    assert "test ! -s /evidence/loader.txt" in replay
+    assert "diagnostic: glibc compatibility could not be determined" in replay
+    assert "cat > \"${guard_root}/ldd\" <<'UNKNOWN_LDD'" in replay
+    assert 'test "$(command -v ldd)" = "/guards/ldd"' in replay
+    assert "无法确定此主机使用的 libc" in replay
+    assert "grep -Ei 'glibc|GNU C Library|GNU libc' /evidence/host.txt" not in replay
     assert "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in replay
+    assert "actions/upload-artifact@v7" in str(job["steps"])
+
+
+def test_linux_online_existing_python_path_replays_on_opensuse() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-online-opensuse-existing-python"]
+    assert job["runs-on"] == "ubuntu-latest"
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Replay exact openSUSE online prerequisites"
+    )["run"]
+    assert "opensuse/leap:15.6" in replay
+    assert "/etc/ssl/ca-bundle.pem" in replay
+    assert "python3.11" in replay
+    assert '"new" "existing"' in replay
+    assert '"prerequisites" "recover"' in replay
+    assert 'bash "${route_script}"' in replay
+    assert "AI_SDLC_PACKAGE_SPEC=/workspace" in replay
+    assert "bash /workspace/packaging/install_online.sh /tmp/ai-sdlc-venv" in replay
+    assert "/tmp/ai-sdlc-venv/bin/python -m ai_sdlc --version" in replay
+    assert "grep -F '3.0.1' /evidence/version.txt" in replay
+    assert '--volume "${GITHUB_WORKSPACE}:/workspace:ro"' in replay
     assert "actions/upload-artifact@v7" in str(job["steps"])
 
 

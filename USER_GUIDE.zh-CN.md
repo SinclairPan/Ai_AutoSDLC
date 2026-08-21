@@ -230,7 +230,7 @@ DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; exit 1; }
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install online prerequisites." >&2; return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
 if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
   if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl git
   elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl git
@@ -302,11 +302,13 @@ Git、curl 或 CA 证书不可用时执行：
 
 ```bash
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
-if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl git
-elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl git
-elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl git
-else echo "No supported prerequisite package manager" >&2; exit 1; fi
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
+if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl git
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl git
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl git
+  else echo "No supported prerequisite package manager (apt-get/dnf/yum)" >&2; exit 1; fi
+fi
 command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && ca_bundle_available
 git --version && curl --version
 ```
@@ -498,10 +500,41 @@ cd "$PROJECT_ROOT"
 
 ```bash
 set -e
+detect_linux_libc() {
+  local value="" first_line="" loader="" glibc_seen=0 musl_seen=0
+  local getconf_glibc_re='^glibc [0-9]+\.[0-9]+$'
+  local getconf_musl_re='^musl [0-9]+\.[0-9]+$'
+  local loader_glibc_re='^ld\.so \((GNU libc|[^)]+ GLIBC [0-9][^)]*)\) stable release version [0-9]+\.[0-9]+\.?$'
+  local ldd_musl_re='^musl libc \((x86_64|amd64)\)$'
+  if command -v getconf >/dev/null 2>&1; then
+    value="$(LC_ALL=C getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $getconf_glibc_re ]]; then glibc_seen=1
+    elif [[ "$first_line" =~ $getconf_musl_re ]]; then musl_seen=1; fi
+  fi
+  for loader in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
+    [ -x "$loader" ] || continue
+    value="$(LC_ALL=C "$loader" --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $loader_glibc_re ]]; then glibc_seen=1; fi
+  done
+  if command -v ldd >/dev/null 2>&1; then
+    value="$(LC_ALL=C ldd --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $ldd_musl_re ]]; then musl_seen=1; fi
+  fi
+  if [ "$musl_seen" -eq 1 ]; then printf 'musl\n'; return 0; fi
+  if [ "$glibc_seen" -eq 1 ]; then printf 'glibc\n'; return 0; fi
+  printf 'unknown\n'
+}
 ARCH="$(uname -m)"
-LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
-if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+LIBC="$(detect_linux_libc)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || [ "$LIBC" = "musl" ]; then
   echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
+if [ "$LIBC" != "glibc" ]; then
+  echo "停止：无法确定此主机使用的 libc；为避免误装，未下载、解压或安装 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
   exit 1
 fi
 PROJECT_ROOT="$HOME/projects/my-new-project"
@@ -521,7 +554,7 @@ set -e
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
 mkdir -p "$DOWNLOAD_ROOT"
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install download prerequisites." >&2; return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
 if ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
   if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
   elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
@@ -589,10 +622,41 @@ cd "$PROJECT_ROOT"
 在目标机重试前，先重新执行兼容性检查；若出现停止消息，不得继续下载、解压或安装：
 
 ```bash
+detect_linux_libc() {
+  local value="" first_line="" loader="" glibc_seen=0 musl_seen=0
+  local getconf_glibc_re='^glibc [0-9]+\.[0-9]+$'
+  local getconf_musl_re='^musl [0-9]+\.[0-9]+$'
+  local loader_glibc_re='^ld\.so \((GNU libc|[^)]+ GLIBC [0-9][^)]*)\) stable release version [0-9]+\.[0-9]+\.?$'
+  local ldd_musl_re='^musl libc \((x86_64|amd64)\)$'
+  if command -v getconf >/dev/null 2>&1; then
+    value="$(LC_ALL=C getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $getconf_glibc_re ]]; then glibc_seen=1
+    elif [[ "$first_line" =~ $getconf_musl_re ]]; then musl_seen=1; fi
+  fi
+  for loader in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
+    [ -x "$loader" ] || continue
+    value="$(LC_ALL=C "$loader" --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $loader_glibc_re ]]; then glibc_seen=1; fi
+  done
+  if command -v ldd >/dev/null 2>&1; then
+    value="$(LC_ALL=C ldd --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $ldd_musl_re ]]; then musl_seen=1; fi
+  fi
+  if [ "$musl_seen" -eq 1 ]; then printf 'musl\n'; return 0; fi
+  if [ "$glibc_seen" -eq 1 ]; then printf 'glibc\n'; return 0; fi
+  printf 'unknown\n'
+}
 ARCH="$(uname -m)"
-LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
-if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+LIBC="$(detect_linux_libc)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || [ "$LIBC" = "musl" ]; then
   echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
+if [ "$LIBC" != "glibc" ]; then
+  echo "停止：无法确定此主机使用的 libc；为避免误装，未下载、解压或安装 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
   exit 1
 fi
 ```
@@ -601,11 +665,13 @@ fi
 
 ```bash
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
-if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
-elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
-elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
-else echo "No supported prerequisite package manager" >&2; exit 1; fi
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
+if ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
+  else echo "No supported prerequisite package manager (apt-get/dnf/yum)" >&2; exit 1; fi
+fi
 command -v curl >/dev/null 2>&1 && ca_bundle_available
 ```
 
@@ -794,7 +860,7 @@ VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install online prerequisites." >&2; return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
 if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
   if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl git
   elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl git
@@ -869,11 +935,13 @@ Git、curl 或 CA 证书不可用时执行：
 
 ```bash
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
-if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl git
-elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl git
-elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl git
-else echo "No supported prerequisite package manager" >&2; exit 1; fi
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
+if ! command -v git >/dev/null 2>&1 || ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl git
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl git
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl git
+  else echo "No supported prerequisite package manager (apt-get/dnf/yum)" >&2; exit 1; fi
+fi
 command -v git >/dev/null 2>&1 && command -v curl >/dev/null 2>&1 && ca_bundle_available
 git --version && curl --version
 ```
@@ -1075,10 +1143,41 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 
 ```bash
 set -e
+detect_linux_libc() {
+  local value="" first_line="" loader="" glibc_seen=0 musl_seen=0
+  local getconf_glibc_re='^glibc [0-9]+\.[0-9]+$'
+  local getconf_musl_re='^musl [0-9]+\.[0-9]+$'
+  local loader_glibc_re='^ld\.so \((GNU libc|[^)]+ GLIBC [0-9][^)]*)\) stable release version [0-9]+\.[0-9]+\.?$'
+  local ldd_musl_re='^musl libc \((x86_64|amd64)\)$'
+  if command -v getconf >/dev/null 2>&1; then
+    value="$(LC_ALL=C getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $getconf_glibc_re ]]; then glibc_seen=1
+    elif [[ "$first_line" =~ $getconf_musl_re ]]; then musl_seen=1; fi
+  fi
+  for loader in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
+    [ -x "$loader" ] || continue
+    value="$(LC_ALL=C "$loader" --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $loader_glibc_re ]]; then glibc_seen=1; fi
+  done
+  if command -v ldd >/dev/null 2>&1; then
+    value="$(LC_ALL=C ldd --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $ldd_musl_re ]]; then musl_seen=1; fi
+  fi
+  if [ "$musl_seen" -eq 1 ]; then printf 'musl\n'; return 0; fi
+  if [ "$glibc_seen" -eq 1 ]; then printf 'glibc\n'; return 0; fi
+  printf 'unknown\n'
+}
 ARCH="$(uname -m)"
-LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
-if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+LIBC="$(detect_linux_libc)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || [ "$LIBC" = "musl" ]; then
   echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
+if [ "$LIBC" != "glibc" ]; then
+  echo "停止：无法确定此主机使用的 libc；为避免误装，未下载、解压或安装 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
   exit 1
 fi
 PROJECT_ROOT="$PWD"
@@ -1098,7 +1197,7 @@ set -e
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
 mkdir -p "$DOWNLOAD_ROOT"
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install download prerequisites." >&2; return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
 if ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
   if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
   elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
@@ -1167,10 +1266,41 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 在目标机重试前，先重新执行兼容性检查；若出现停止消息，不得继续下载、解压或安装：
 
 ```bash
+detect_linux_libc() {
+  local value="" first_line="" loader="" glibc_seen=0 musl_seen=0
+  local getconf_glibc_re='^glibc [0-9]+\.[0-9]+$'
+  local getconf_musl_re='^musl [0-9]+\.[0-9]+$'
+  local loader_glibc_re='^ld\.so \((GNU libc|[^)]+ GLIBC [0-9][^)]*)\) stable release version [0-9]+\.[0-9]+\.?$'
+  local ldd_musl_re='^musl libc \((x86_64|amd64)\)$'
+  if command -v getconf >/dev/null 2>&1; then
+    value="$(LC_ALL=C getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $getconf_glibc_re ]]; then glibc_seen=1
+    elif [[ "$first_line" =~ $getconf_musl_re ]]; then musl_seen=1; fi
+  fi
+  for loader in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
+    [ -x "$loader" ] || continue
+    value="$(LC_ALL=C "$loader" --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $loader_glibc_re ]]; then glibc_seen=1; fi
+  done
+  if command -v ldd >/dev/null 2>&1; then
+    value="$(LC_ALL=C ldd --version 2>&1 || true)"
+    first_line="${value%%$'\n'*}"
+    if [[ "$first_line" =~ $ldd_musl_re ]]; then musl_seen=1; fi
+  fi
+  if [ "$musl_seen" -eq 1 ]; then printf 'musl\n'; return 0; fi
+  if [ "$glibc_seen" -eq 1 ]; then printf 'glibc\n'; return 0; fi
+  printf 'unknown\n'
+}
 ARCH="$(uname -m)"
-LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
-if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+LIBC="$(detect_linux_libc)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || [ "$LIBC" = "musl" ]; then
   echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
+if [ "$LIBC" != "glibc" ]; then
+  echo "停止：无法确定此主机使用的 libc；为避免误装，未下载、解压或安装 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
   exit 1
 fi
 ```
@@ -1179,11 +1309,13 @@ fi
 
 ```bash
 run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
-ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
-if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
-elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
-elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
-else echo "No supported prerequisite package manager" >&2; exit 1; fi
+ca_bundle_available() { test -s "${CURL_CA_BUNDLE:-}" || test -s "${SSL_CERT_FILE:-}" || test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt || test -s /etc/ssl/ca-bundle.pem; }
+if ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
+  else echo "No supported prerequisite package manager (apt-get/dnf/yum)" >&2; exit 1; fi
+fi
 command -v curl >/dev/null 2>&1 && ca_bundle_available
 ```
 

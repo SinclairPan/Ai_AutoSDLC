@@ -872,6 +872,9 @@ jobs:
           - host_kind: rejected-musl
             container_image: alpine:3.21
             expected_outcome: fail
+          - host_kind: unknown-libc
+            container_image: alpine:3.21
+            expected_outcome: unknown
 
     steps:
       - name: Check out exact offline compatibility inputs
@@ -909,17 +912,30 @@ jobs:
           cat > "${guard_root}/driver.sh" <<'DRIVER'
           #!/usr/bin/env bash
           set -euo pipefail
-          {
-            printf 'host_kind=%s\n' "${HOST_KIND}"
-            printf 'container_image=%s\n' "${CONTAINER_IMAGE}"
-            uname -m
-            getconf GNU_LIBC_VERSION 2>&1 || true
-            ldd --version 2>&1 || true
-          } > /evidence/host.txt
+          printf 'host_kind=%s\ncontainer_image=%s\n' \
+            "${HOST_KIND}" "${CONTAINER_IMAGE}" > /evidence/metadata.txt
+          uname -m > /evidence/arch.txt
+          (getconf GNU_LIBC_VERSION 2>&1 || true) > /evidence/getconf.txt
+          : > /evidence/loader.txt
+          for loader in /lib64/ld-linux-x86-64.so.2 /lib/x86_64-linux-gnu/ld-linux-x86-64.so.2; do
+            if [[ -x "${loader}" ]]; then
+              LC_ALL=C "${loader}" --version > /evidence/loader.txt 2>&1 || true
+              break
+            fi
+          done
+          (LC_ALL=C ldd --version 2>&1 || true) > /evidence/ldd.txt
           if [[ "${EXPECTED_OUTCOME}" == "pass" ]]; then
-            grep -F "glibc " /evidence/host.txt
+            test -z "$(command -v getconf || true)"
+            head -n 1 /evidence/loader.txt | \
+              grep -Eq '^ld\.so \((GNU libc|[^)]+ GLIBC [0-9][^)]*)\) stable release version [0-9]+\.[0-9]+\.?$'
+          elif [[ "${EXPECTED_OUTCOME}" == "fail" ]]; then
+            head -n 1 /evidence/ldd.txt | grep -Eq '^musl libc \((x86_64|amd64)\)$'
           else
-            grep -i '^musl libc' /evidence/host.txt
+            test -z "$(command -v getconf || true)"
+            test "$(command -v ldd)" = "/guards/ldd"
+            test ! -s /evidence/loader.txt
+            head -n 1 /evidence/ldd.txt | \
+              grep -Fx 'diagnostic: glibc compatibility could not be determined'
           fi
 
           guard_count=0
@@ -937,10 +953,14 @@ jobs:
               >> /evidence/guards.txt
             if [[ "${EXPECTED_OUTCOME}" == "pass" ]]; then
               test "${guard_exit}" -eq 0
-            else
+            elif [[ "${EXPECTED_OUTCOME}" == "fail" ]]; then
               test "${guard_exit}" -ne 0
               printf '%s\n' "${guard_output}" | \
                 grep -F "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
+            else
+              test "${guard_exit}" -ne 0
+              printf '%s\n' "${guard_output}" | \
+                grep -F "无法确定此主机使用的 libc"
             fi
             guard_count=$((guard_count + 1))
           done
@@ -951,8 +971,18 @@ jobs:
           DRIVER
           chmod +x "${guard_root}/driver.sh"
 
+          if [[ "${HOST_KIND}" == "unknown-libc" ]]; then
+            cat > "${guard_root}/ldd" <<'UNKNOWN_LDD'
+          #!/bin/sh
+          printf '%s\n' 'diagnostic: glibc compatibility could not be determined'
+          UNKNOWN_LDD
+            chmod +x "${guard_root}/ldd"
+          fi
+
           if [[ "${HOST_KIND}" == "supported-glibc" ]]; then
-            bootstrap_command='apt-get update >/dev/null && apt-get install -y --no-install-recommends bash libc-bin coreutils grep >/dev/null'
+            bootstrap_command='apt-get update >/dev/null && apt-get install -y --no-install-recommends bash libc-bin coreutils grep >/dev/null && rm -f /usr/bin/getconf'
+          elif [[ "${HOST_KIND}" == "unknown-libc" ]]; then
+            bootstrap_command='apk add --no-cache bash coreutils grep >/dev/null && rm -f /usr/bin/getconf /usr/bin/ldd && export PATH="/guards:${PATH}"'
           else
             bootstrap_command='apk add --no-cache bash musl-utils coreutils grep >/dev/null'
           fi
@@ -965,7 +995,8 @@ jobs:
             --volume "${evidence_root}:/evidence" \
             "${CONTAINER_IMAGE}" \
             /bin/sh -ec "${bootstrap_command}; exec bash /guards/driver.sh"
-          test -s "${evidence_root}/host.txt"
+          test -s "${evidence_root}/metadata.txt"
+          test -s "${evidence_root}/arch.txt"
           test -s "${evidence_root}/guards.txt"
           test -s "${evidence_root}/receipt.json"
 
@@ -975,4 +1006,85 @@ jobs:
         with:
           name: linux-offline-compatibility-${{ matrix.host_kind }}
           path: ${{ runner.temp }}/linux-offline-compatibility-${{ matrix.host_kind }}
+          if-no-files-found: error
+
+  linux-online-opensuse-existing-python:
+    name: Linux online openSUSE existing-Python compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Check out exact online prerequisite inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Replay exact openSUSE online prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          replay_root="${RUNNER_TEMP}/opensuse-online-route-replay"
+          evidence_root="${RUNNER_TEMP}/opensuse-online-route-evidence"
+          mkdir -p "${replay_root}" "${evidence_root}"
+
+          for project_state in "new" "existing"; do
+            route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE: ${project_state}|online|linux-amd64 -->"
+            for step_name in "prerequisites" "recover"; do
+              route_script="${replay_root}/${project_state}-${step_name}.sh"
+              awk -v marker="${route_marker}" -v step_name="${step_name}" '
+                $0 == marker { in_route = 1; next }
+                in_route && index($0, "AI-SDLC-USER-GUIDE-STEP: " step_name) { in_step = 1; next }
+                in_step && /^```bash$/ { in_code = 1; next }
+                in_code && /^```$/ { exit }
+                in_code { print }
+              ' USER_GUIDE.zh-CN.md > "${route_script}"
+              test -s "${route_script}"
+            done
+          done
+
+          cat > "${replay_root}/driver.sh" <<'DRIVER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          test -x "$(command -v python3.11)"
+          test -x "$(command -v git)"
+          test -x "$(command -v curl)"
+          test -s /etc/ssl/ca-bundle.pem
+          mkdir -p /tmp/ai-sdlc-home /tmp/ai-sdlc-project /evidence
+          export HOME=/tmp/ai-sdlc-home
+          for route_script in \
+            /replay/new-prerequisites.sh \
+            /replay/new-recover.sh \
+            /replay/existing-prerequisites.sh \
+            /replay/existing-recover.sh; do
+            (
+              cd /tmp/ai-sdlc-project
+              bash "${route_script}"
+            ) >> /evidence/replay.txt 2>&1
+          done
+          AI_SDLC_PACKAGE_SPEC=/workspace \
+            PYTHON="$(command -v python3.11)" \
+            bash /workspace/packaging/install_online.sh /tmp/ai-sdlc-venv \
+            >> /evidence/install.txt 2>&1
+          /tmp/ai-sdlc-venv/bin/python -m ai_sdlc --version \
+            > /evidence/version.txt
+          grep -F '3.0.1' /evidence/version.txt
+          printf '{"distro":"opensuse-leap","python":"%s","ca_bundle":"/etc/ssl/ca-bundle.pem","replay_count":4}\n' \
+            "$(python3.11 --version 2>&1)" > /evidence/receipt.json
+          DRIVER
+          chmod +x "${replay_root}/driver.sh"
+
+          docker run --rm \
+            --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
+            --volume "${replay_root}:/replay:ro" \
+            --volume "${evidence_root}:/evidence" \
+            opensuse/leap:15.6 \
+            /bin/sh -ec 'zypper --non-interactive install -y bash python311 git-core curl ca-certificates coreutils grep gawk >/dev/null; exec bash /replay/driver.sh'
+          test -s "${evidence_root}/replay.txt"
+          test -s "${evidence_root}/receipt.json"
+
+      - name: Upload openSUSE prerequisite evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-online-opensuse-existing-python
+          path: ${{ runner.temp }}/opensuse-online-route-evidence
           if-no-files-found: error
