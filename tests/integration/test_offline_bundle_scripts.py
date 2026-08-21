@@ -21,6 +21,29 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _OFFLINE_DIR = _REPO_ROOT / "packaging" / "offline"
 _PACKAGING_DIR = _REPO_ROOT / "packaging"
+_DEBIAN12_OS_RELEASE = """PRETTY_NAME="Debian GNU/Linux 12 (bookworm)"
+NAME="Debian GNU/Linux"
+VERSION_ID="12"
+VERSION="12 (bookworm)"
+VERSION_CODENAME=bookworm
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
+"""
+_UBUNTU2204_OS_RELEASE = """PRETTY_NAME="Ubuntu 22.04.5 LTS"
+NAME="Ubuntu"
+VERSION_ID="22.04"
+VERSION="22.04.5 LTS (Jammy Jellyfish)"
+ID=ubuntu
+ID_LIKE=debian
+HOME_URL="https://www.ubuntu.com/"
+SUPPORT_URL="https://help.ubuntu.com/"
+BUG_REPORT_URL="https://bugs.launchpad.net/ubuntu/"
+PRIVACY_POLICY_URL="https://www.ubuntu.com/legal/terms-and-policies/privacy-policy"
+UBUNTU_CODENAME=jammy
+LOGO=ubuntu-logo
+"""
 
 
 def test_release_checklist_matches_the_standard_release_workflow() -> None:
@@ -1759,11 +1782,7 @@ def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
 ) -> None:
     script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
         tmp_path,
-        os_release=(
-            "# accepted comment\n\n"
-            'ID="debian"\nVERSION_ID="12"\n'
-            "UNRELATED_KEY=valid-value\n"
-        ),
+        os_release="# accepted comment\n\n" + _DEBIAN12_OS_RELEASE,
         arch="x86_64",
         libc="glibc 2.36",
         install_python_after_apt=True,
@@ -1792,7 +1811,7 @@ def test_install_online_rejects_ubuntu_glibc_without_python_before_any_mutation(
 ) -> None:
     script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
         tmp_path,
-        os_release="ID=ubuntu\nVERSION_ID=22.04\n",
+        os_release=_UBUNTU2204_OS_RELEASE,
         arch="x86_64",
         libc="glibc 2.35",
     )
@@ -1873,6 +1892,9 @@ def test_install_online_uses_existing_python_on_ubuntu_without_consulting_linux_
         None,
         "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n",
         "ID=debian\nVERSION_ID=12\nBROKEN_LINE\n",
+        "ID=debian\nVERSION_ID=12\nINVALID KEY=value\n",
+        "ID=debian\nVERSION_ID=12\nPRETTY_NAME=\"unterminated\n",
+        "ID=debian\nVERSION_ID=12\nHOME_URL=$(touch unsafe)\n",
     ],
 )
 def test_install_online_reports_unknown_for_missing_python_os_release(
