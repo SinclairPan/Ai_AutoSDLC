@@ -1173,6 +1173,26 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
     assert "dpkg-query -W" in bootstrap["run"]
     assert "python3.11 python3.11-venv python3-pip" in bootstrap["run"]
     assert "fake" not in bootstrap["run"].lower()
+    installer_command = 'bash "${installer_path}" "${install_root}" --add-to-path'
+    assert installer_command in bootstrap["run"]
+    for identity_check in (
+        '. /etc/os-release',
+        'test "${ID}" = "debian"',
+        'test "${VERSION_ID}" = "12"',
+        'uname -m',
+        'getconf GNU_LIBC_VERSION',
+    ):
+        assert identity_check in bootstrap["run"]
+        assert bootstrap["run"].index(identity_check) < bootstrap["run"].index(
+            installer_command
+        )
+    assert 'stable_cli="${HOME}/.local/bin/ai-sdlc"' in bootstrap["run"]
+    assert 'test -L "${stable_cli}"' in bootstrap["run"]
+    assert "profile-export-count.txt" in bootstrap["run"]
+    assert 'test "${profile_export_count}" -eq 1' in bootstrap["run"]
+    assert 'bash --noprofile --rcfile "${HOME}/.bashrc" -ic' in bootstrap["run"]
+    assert "ai-sdlc --version" in bootstrap["run"]
+    assert 'test "${fresh_shell_version}" = "${RELEASE_TAG#v}"' in bootstrap["run"]
     assert steps.index(bootstrap) < steps.index(complete)
     assert 'if [[ "${PROJECT_STATE}" == "existing" ]]' in complete["run"]
     assert "python3 scripts/posix_clean_user_e2e.py" in complete["run"]
@@ -1199,6 +1219,92 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
         encoding="utf-8"
     )
     assert 'shim_bin / "apt-get"' not in driver
+
+
+def test_linux_unsupported_python_bootstrap_fails_closed_without_mutation() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-unsupported-python-bootstrap"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["container"]["image"] == "ubuntu:22.04"
+    assert job["strategy"]["matrix"]["project_state"] == ["new", "existing"]
+    steps = job["steps"]
+    checkout = next(
+        step
+        for step in steps
+        if step.get("name") == "Check out the exact unsupported-host installer"
+    )
+    assert checkout["with"]["persist-credentials"] is False
+    assert "github.event.pull_request.head.repo.full_name" in checkout["with"][
+        "repository"
+    ]
+    assert "github.event.pull_request.head.sha" in checkout["with"]["ref"]
+
+    verify = next(
+        step
+        for step in steps
+        if step.get("name") == "Require unsupported Ubuntu to fail closed"
+    )
+    run = verify["run"]
+    assert 'export HOME="${RUNNER_TEMP}/ubuntu-unsupported-home-${PROJECT_STATE}"' in run
+    assert 'export SHELL="/bin/bash"' in run
+    assert 'project_root="${RUNNER_TEMP}/ubuntu-unsupported-${PROJECT_STATE}-project"' in run
+    assert "project-before.sha256" in run
+    assert "project-after.sha256" in run
+    for command in ("python3.11", "python3", "python"):
+        assert f'"${{shadow_bin}}/{command}"' in run
+    assert 'apt_sentinel_log="${evidence_root}/apt-get-calls.log"' in run
+    assert '"${shadow_bin}/apt-get"' in run
+    assert 'AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}"' in run
+    installer_command = (
+        'bash "${installer_path}" "${install_root}" --add-to-path'
+    )
+    assert installer_command in run
+    assert "installer_exit=$?" in run
+    assert 'test "${installer_exit}" -ne 0' in run
+    assert "distro=ubuntu version=22\\.04" in run
+    assert "Debian GNU/Linux 12 (bookworm)" in run
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in run
+    assert "route 6/12" in run
+    assert 'test "${python_package_install_calls}" -eq 0' in run
+    assert 'test ! -e "${install_root}"' in run
+    assert 'test ! -L "${stable_cli}"' in run
+    assert "profile-before.sha256" in run
+    assert "profile-after.sha256" in run
+    assert "diff -u" in run
+    assert 'installer_failed_closed="true"' in run
+    assert 'venv_created="false"' in run
+    assert 'project_mutated="false"' in run
+    receipt_write = run.index('> "${evidence_root}/fail-closed.json"')
+    for assertion in (
+        'test "${installer_exit}" -ne 0',
+        'test "${python_package_install_calls}" -eq 0',
+        'test ! -e "${install_root}"',
+        'test ! -L "${stable_cli}"',
+        "profile-after.sha256",
+        "project-after.sha256",
+    ):
+        assert run.index(assertion) < receipt_write
+    for evidence_field in (
+        '"platform":"ubuntu-22.04"',
+        '"project_state":"%s"',
+        '"installer_failed_closed":%s',
+        '"python_package_install_calls":%s',
+        '"venv_created":%s',
+        '"project_mutated":%s',
+        '"offline_recovery_asset":"ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"',
+    ):
+        assert evidence_field in run
+
+    upload = next(
+        step
+        for step in steps
+        if step.get("name") == "Upload unsupported Linux bootstrap evidence"
+    )
+    assert upload["if"] == "always()"
+    assert "ubuntu-unsupported-python-bootstrap-evidence" in upload["with"]["name"]
+    assert "ubuntu-unsupported-python-bootstrap-evidence" in upload["with"]["path"]
 
 
 def test_posix_python_bootstrap_driver_runs_from_checkout(tmp_path: Path) -> None:
