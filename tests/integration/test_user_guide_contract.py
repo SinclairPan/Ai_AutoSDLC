@@ -83,6 +83,23 @@ def test_posix_existing_routes_recognize_linked_git_worktrees() -> None:
         assert "test -d .git" not in routes[route_id], route_id
 
 
+def test_windows_existing_routes_guard_status_with_git_worktree_identity() -> None:
+    _, routes = _route_sections(guide_text())
+
+    for channel in ("online", "offline"):
+        route_id = f"existing|{channel}|windows-amd64"
+        _, steps = _step_sections(routes[route_id])
+        for step in ("prerequisites", "success"):
+            assert "git rev-parse --is-inside-work-tree" in steps[step], (
+                route_id,
+                step,
+            )
+            assert "git status --short --untracked-files=all" in steps[step], (
+                route_id,
+                step,
+            )
+
+
 def test_online_routes_check_git_in_their_own_prerequisite_step() -> None:
     _, routes = _route_sections(guide_text())
 
@@ -183,3 +200,21 @@ def test_windows_update_contract_prefers_supported_entrypoints() -> None:
     ):
         assert marker in text
     assert "$DirectCli" not in text
+
+
+def test_each_windows_route_locally_explains_direct_launcher_recovery() -> None:
+    _, routes = _route_sections(guide_text())
+
+    for state in ("new", "existing"):
+        for channel in ("online", "offline"):
+            route_id = f"{state}|{channel}|windows-amd64"
+            _, steps = _step_sections(routes[route_id])
+            recovery = steps["recover"]
+            for marker in (
+                "direct `Scripts\\ai-sdlc.exe`",
+                "不能安全原地替换",
+                "显式 direct self-update",
+                "返回非零",
+                "python -m ai_sdlc",
+            ):
+                assert marker in recovery, (route_id, marker)

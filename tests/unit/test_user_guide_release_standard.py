@@ -33,10 +33,25 @@ def _complete_route(route_id: str) -> str:
             "macos-arm64": "package.sha256 shasum -a 256",
             "linux-amd64": "package.sha256 sha256sum",
         }[platform]
+    prerequisites = f"适用平台：{platform}\n"
+    success = "当前结果 / Result\n下一步 / Next\n"
+    recovery = "失败时停止并按本路线恢复。\n"
+    if platform == "windows-amd64":
+        recovery += (
+            "运行时目录内的 direct Scripts\\ai-sdlc.exe 不能安全原地替换；"
+            "显式 direct self-update 返回非零，请使用 python -m ai_sdlc。\n"
+        )
+    if state == "existing" and platform == "windows-amd64":
+        git_guard = (
+            "git rev-parse --is-inside-work-tree\n"
+            "git status --short --untracked-files=all\n"
+        )
+        prerequisites += git_guard
+        success += git_guard
     return (
         f"<!-- AI-SDLC-USER-GUIDE-ROUTE: {route_id} -->\n"
         "<!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->\n"
-        f"适用平台：{platform}\n"
+        f"{prerequisites}"
         "<!-- AI-SDLC-USER-GUIDE-STEP: acquire -->\n"
         f"获取 {installer}\n"
         "<!-- AI-SDLC-USER-GUIDE-STEP: verify -->\n"
@@ -46,9 +61,9 @@ def _complete_route(route_id: str) -> str:
         "<!-- AI-SDLC-USER-GUIDE-STEP: initialize -->\n"
         f"{initialization}\n"
         "<!-- AI-SDLC-USER-GUIDE-STEP: success -->\n"
-        "当前结果 / Result\n下一步 / Next\n"
+        f"{success}"
         "<!-- AI-SDLC-USER-GUIDE-STEP: recover -->\n"
-        "失败时停止并按本路线恢复。\n"
+        f"{recovery}"
     )
 
 
@@ -180,5 +195,43 @@ def test_required_content_must_stay_in_its_declared_step() -> None:
     assert any(
         finding.marker == "guide-route-step-content-missing"
         and "windows-amd64:acquire: install_online.ps1" in finding.excerpt
+        for finding in findings
+    )
+
+
+def test_every_windows_route_requires_its_own_direct_launcher_recovery() -> None:
+    route_id = "new|online|windows-amd64"
+    route = _complete_route(route_id)
+    guide = _complete_guide().replace(
+        route,
+        route.replace(
+            "运行时目录内的 direct Scripts\\ai-sdlc.exe 不能安全原地替换；"
+            "显式 direct self-update 返回非零，请使用 python -m ai_sdlc。\n",
+            "",
+        ),
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-windows-direct-recovery-missing"
+        and finding.excerpt == route_id
+        for finding in findings
+    )
+
+
+def test_existing_windows_route_requires_git_worktree_guard_for_status() -> None:
+    route_id = "existing|offline|windows-amd64"
+    route = _complete_route(route_id)
+    guide = _complete_guide().replace(
+        route,
+        route.replace("git rev-parse --is-inside-work-tree\n", ""),
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-windows-git-worktree-guard-missing"
+        and finding.excerpt.startswith(f"{route_id}:")
         for finding in findings
     )

@@ -175,6 +175,31 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
         recovery_text = step_sections.get("recover", "")
         if not re.search(r"失败|错误|不可用|停止", recovery_text):
             findings.append(Finding("guide-route-recovery-empty", route_id))
+        if platform == "windows-amd64":
+            direct_recovery_markers = (
+                "Scripts\\ai-sdlc.exe",
+                "不能安全原地替换",
+                "显式 direct self-update",
+                "返回非零",
+                "python -m ai_sdlc",
+            )
+            if any(marker not in recovery_text for marker in direct_recovery_markers):
+                findings.append(
+                    Finding("guide-route-windows-direct-recovery-missing", route_id)
+                )
+        if state == "existing" and platform == "windows-amd64":
+            for step in ("prerequisites", "success"):
+                step_text = step_sections.get(step, "")
+                if (
+                    "git rev-parse --is-inside-work-tree" not in step_text
+                    or "git status --short --untracked-files=all" not in step_text
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-windows-git-worktree-guard-missing",
+                            f"{route_id}:{step}",
+                        )
+                    )
 
     return findings
 

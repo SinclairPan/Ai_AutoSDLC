@@ -19,6 +19,7 @@ on:
       - "packaging/offline/**"
       - ".github/workflows/posix-user-guide-e2e.yml"
       - "scripts/posix_clean_user_e2e.py"
+      - "scripts/macos_stock_host_prerequisite_e2e.py"
       - "tests/integration/test_github_workflows.py"
 
 permissions:
@@ -57,6 +58,11 @@ jobs:
         uses: actions/checkout@v6
         with:
           persist-credentials: false
+
+      - name: Replay stock macOS route prerequisites
+        if: matrix.asset_os == 'macos'
+        shell: bash
+        run: python3 scripts/macos_stock_host_prerequisite_e2e.py
 
       - name: Install from the pinned online source and replay both project states
         shell: bash

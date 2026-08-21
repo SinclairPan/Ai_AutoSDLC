@@ -128,7 +128,7 @@ Set-Location $ProjectRoot
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-下载失败时停止并重试固定标签 URL，不要改用未发布分支。PowerShell 阻止脚本时继续使用上面的单次 Bypass 命令。裸命令不可用时运行 `& $ModulePython -m ai_sdlc status`；若出现 `No module named ai_sdlc`，重跑 `install_online.ps1 -AddToPath`。若显示 `open gates`，按 CLI 提示查看详情；代理或 Shell 选错时运行 `ai-sdlc adapter select`、`ai-sdlc adapter shell-select`。
+下载失败时停止并重试固定标签 URL，不要改用未发布分支。PowerShell 阻止脚本时继续使用上面的单次 Bypass 命令。Windows 运行时目录内的 direct `Scripts\ai-sdlc.exe` 活动时不能安全原地替换；显式 direct self-update 零安装并返回非零，请改用 `python -m ai_sdlc`（本路线即 `& $ModulePython -m ai_sdlc self-update install --version 3.0.1`）或新终端中的 stable `ai-sdlc`。裸命令不可用时运行 `& $ModulePython -m ai_sdlc status`；若出现 `No module named ai_sdlc`，重跑 `install_online.ps1 -AddToPath`。若显示 `open gates`，按 CLI 提示查看详情；代理或 Shell 选错时运行 `ai-sdlc adapter select`、`ai-sdlc adapter shell-select`。
 
 <a id="route-new-online-macos-arm64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: new|online|macos-arm64 -->
@@ -369,7 +369,7 @@ Set-Location $ProjectRoot
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-出现 `SHA256 verification failed` 时停止，删除包和 sidecar 后重新获取。权限错误使用单次 Bypass。裸命令不可用时运行 `& $ModulePython -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_offline.ps1 -AddToPath`。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
+出现 `SHA256 verification failed` 时停止，删除包和 sidecar 后重新获取。权限错误使用单次 Bypass。Windows 运行时目录内的 direct `Scripts\ai-sdlc.exe` 活动时不能安全原地替换；显式 direct self-update 零安装并返回非零，请改用 `python -m ai_sdlc`（本路线即 `& $ModulePython -m ai_sdlc self-update install --version 3.0.1`）或新终端中的 stable `ai-sdlc`。裸命令不可用时运行 `& $ModulePython -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_offline.ps1 -AddToPath`。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
 
 <a id="route-new-offline-macos-arm64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: new|offline|macos-arm64 -->
@@ -556,7 +556,8 @@ New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadRoot | Out-Null
 $GitCommand = Get-Command git -ErrorAction SilentlyContinue
 if (-not $GitCommand) { throw "Git is required. Run: winget install --id Git.Git -e, then reopen PowerShell." }
 git --version
-git status --short --untracked-files=all
+git rev-parse --is-inside-work-tree *> $null
+if ($LASTEXITCODE -eq 0) { git status --short --untracked-files=all }
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -605,7 +606,8 @@ Set-Location $ProjectRoot
 ```powershell
 & $ModulePython -m ai_sdlc --version
 & $ModulePython -m ai_sdlc status
-if ($GitCommand) { git status --short --untracked-files=all }
+git rev-parse --is-inside-work-tree *> $null
+if ($LASTEXITCODE -eq 0) { git status --short --untracked-files=all }
 ```
 
 应看到 `3.0.1`、`Initialized AI-SDLC project`、`接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`当前结果 / Result`、`下一步 / Next` 和推荐继续点；Git 差异只应包含用户确认的 AI-SDLC 工件。
@@ -613,7 +615,7 @@ if ($GitCommand) { git status --short --untracked-files=all }
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-下载或安装错误时停止，不改用开发分支。PowerShell 受限时使用单次 Bypass。裸命令不可用时运行 `& $ModulePython -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_online.ps1 -AddToPath`。若 `git status --short --untracked-files=all` 出现未预期业务文件，停止并人工检查。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
+下载或安装错误时停止，不改用开发分支。PowerShell 受限时使用单次 Bypass。Windows 运行时目录内的 direct `Scripts\ai-sdlc.exe` 活动时不能安全原地替换；显式 direct self-update 零安装并返回非零，请改用 `python -m ai_sdlc`（本路线即 `& $ModulePython -m ai_sdlc self-update install --version 3.0.1`）或新终端中的 stable `ai-sdlc`。裸命令不可用时运行 `& $ModulePython -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_online.ps1 -AddToPath`。若 `git status --short --untracked-files=all` 出现未预期业务文件，停止并人工检查。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
 
 <a id="route-existing-online-macos-arm64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: existing|online|macos-arm64 -->
@@ -792,7 +794,10 @@ $InstallRoot = Join-Path $HOME "AI-SDLC"
 $DownloadRoot = Join-Path $HOME "Downloads\ai-sdlc-v3.0.1"
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadRoot | Out-Null
 $GitCommand = Get-Command git -ErrorAction SilentlyContinue
-if ($GitCommand) { git status --short }
+if ($GitCommand) {
+    git rev-parse --is-inside-work-tree *> $null
+    if ($LASTEXITCODE -eq 0) { git status --short --untracked-files=all }
+}
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -853,7 +858,10 @@ Set-Location $ProjectRoot
 ```powershell
 & $ModulePython -m ai_sdlc --version
 & $ModulePython -m ai_sdlc status
-if ($GitCommand) { git status --short --untracked-files=all }
+if ($GitCommand) {
+    git rev-parse --is-inside-work-tree *> $null
+    if ($LASTEXITCODE -eq 0) { git status --short --untracked-files=all }
+}
 ```
 
 必须看到 `Offline installation completed`、`3.0.1`、`Initialized AI-SDLC project`、`接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`当前结果 / Result`、`下一步 / Next` 和推荐继续点。
@@ -861,7 +869,7 @@ if ($GitCommand) { git status --short --untracked-files=all }
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-`SHA256 verification failed` 时停止并重新获取包与 sidecar。权限错误使用单次 Bypass；命令不可用时使用 `& $ModulePython -m ai_sdlc status`，`No module named ai_sdlc` 时重跑 `install_offline.ps1 -AddToPath`。若 Git 显示非预期业务变化，停止检查。`open gates`、代理和 Shell 问题分别按 CLI 指引、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
+`SHA256 verification failed` 时停止并重新获取包与 sidecar。权限错误使用单次 Bypass；Windows 运行时目录内的 direct `Scripts\ai-sdlc.exe` 活动时不能安全原地替换；显式 direct self-update 零安装并返回非零，请改用 `python -m ai_sdlc`（本路线即 `& $ModulePython -m ai_sdlc self-update install --version 3.0.1`）或新终端中的 stable `ai-sdlc`。命令不可用时使用 `& $ModulePython -m ai_sdlc status`，`No module named ai_sdlc` 时重跑 `install_offline.ps1 -AddToPath`。若 Git 显示非预期业务变化，停止检查。`open gates`、代理和 Shell 问题分别按 CLI 指引、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
 
 <a id="route-existing-offline-macos-arm64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: existing|offline|macos-arm64 -->
