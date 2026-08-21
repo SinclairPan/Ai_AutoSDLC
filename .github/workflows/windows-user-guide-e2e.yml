@@ -361,6 +361,74 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 -PackageManager choco
 
+      - name: Replay expected Windows Python bootstrap failure
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 -PackageManager winget -ExpectInstallFailure
+
+      - name: Verify isolated Python bootstrap receipts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          foreach ($name in @(
+            "python-bootstrap-winget-success.json",
+            "python-bootstrap-winget-success-output.txt",
+            "python-bootstrap-winget-success-events.txt",
+            "python-bootstrap-choco-success.json",
+            "python-bootstrap-choco-success-output.txt",
+            "python-bootstrap-choco-success-events.txt",
+            "python-bootstrap-winget-expected-failure.json",
+            "python-bootstrap-winget-expected-failure-output.txt",
+            "python-bootstrap-winget-expected-failure-events.txt"
+          )) {
+            $path = Join-Path $evidenceRoot $name
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing isolated bootstrap evidence: $path"
+            }
+          }
+          foreach ($scenario in @("winget-success", "choco-success", "winget-expected-failure")) {
+            $receiptPath = Join-Path $evidenceRoot "python-bootstrap-$scenario.json"
+            $outputPath = Join-Path $evidenceRoot "python-bootstrap-$scenario-output.txt"
+            $eventsPath = Join-Path $evidenceRoot "python-bootstrap-$scenario-events.txt"
+            foreach ($path in @($receiptPath, $outputPath, $eventsPath)) {
+              if (-not (Test-Path -LiteralPath $path)) {
+                throw "Missing isolated bootstrap evidence: $path"
+              }
+            }
+            $receipt = Get-Content -LiteralPath $receiptPath -Raw | ConvertFrom-Json
+            if ($receipt.scenario -ne $scenario -or $receipt.manager_transition_count -ne 1) {
+              throw "Invalid scenario identity or manager transition count in $receiptPath"
+            }
+            foreach ($field in @(
+              "machine_path_restored",
+              "user_path_restored",
+              "process_path_restored",
+              "local_app_data_restored",
+              "program_files_restored"
+            )) {
+              if ($receipt.$field -ne $true) {
+                throw "Restoration marker $field was not true in $receiptPath"
+              }
+            }
+            if ($scenario -eq "winget-expected-failure") {
+              if (
+                $receipt.installer_exit -eq 0 -or
+                $receipt.runtime_absent -ne $true -or
+                $receipt.venv_absent -ne $true
+              ) {
+                throw "Expected-failure receipt did not prove failure before runtime creation."
+              }
+            } elseif (
+              $receipt.installer_exit -ne 0 -or
+              $receipt.distribution_version -ne "3.0.1" -or
+              $receipt.distribution_version_exit -ne 0 -or
+              $receipt.cli_version -ne "3.0.1" -or
+              $receipt.cli_version_exit -ne 0
+            ) {
+              throw "Successful bootstrap receipt did not prove exact distribution and CLI 3.0.1."
+            }
+          }
+
       - name: Set up Node.js for the real Codex CLI
         uses: actions/setup-node@v6
         with:

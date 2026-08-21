@@ -976,6 +976,29 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
         "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
         "-PackageManager choco"
     )
+    failure_replay = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay expected Windows Python bootstrap failure"
+    )
+    assert failure_replay["shell"] == "pwsh"
+    assert failure_replay["run"] == (
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1 "
+        "-PackageManager winget -ExpectInstallFailure"
+    )
+    receipt_check = next(
+        step
+        for step in steps
+        if step.get("name") == "Verify isolated Python bootstrap receipts"
+    )
+    for scenario in (
+        "winget-success",
+        "choco-success",
+        "winget-expected-failure",
+    ):
+        assert f"python-bootstrap-{scenario}.json" in receipt_check["run"]
+        assert f"python-bootstrap-{scenario}-output.txt" in receipt_check["run"]
+        assert f"python-bootstrap-{scenario}-events.txt" in receipt_check["run"]
     prerequisite_index = next(
         index
         for index, step in enumerate(steps)
@@ -993,11 +1016,63 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert "xcopy" in driver
     assert "mklink /J" not in driver
     assert '[ValidateSet("winget", "choco")]' in driver
+    assert "[switch]$ExpectInstallFailure" in driver
+    assert (
+        '$scenario = if ($ExpectInstallFailure) { "winget-expected-failure" } '
+        'else { "$PackageManager-success" }'
+    ) in driver
     assert 'Join-Path $shimRoot "choco.cmd"' in driver
-    assert 'SetEnvironmentVariable("Path", $saved.MachinePath, "Machine")' in driver
-    assert 'SetEnvironmentVariable("Path", $saved.UserPath, "User")' in driver
-    assert "python-bootstrap-$PackageManager-output.txt" in driver
-    assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
+    isolated_path = '$isolatedPath = "$shimRoot;$env:SystemRoot\\System32"'
+    assert isolated_path in driver
+    assert (
+        '[Environment]::SetEnvironmentVariable("Path", $isolatedPath, "Machine")'
+        in driver
+    )
+    assert "$env:Path = $isolatedPath" in driver
+    assert (
+        '$isolatedPath = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"'
+        not in driver
+    )
+    assert (
+        '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"'
+        not in driver
+    )
+    assert '$fakeLocalAppData = Join-Path $root "local-app-data"' in driver
+    assert '$fakeProgramFiles = Join-Path $root "program-files"' in driver
+    assert "$env:LOCALAPPDATA = $fakeLocalAppData" in driver
+    assert "$env:ProgramFiles = $fakeProgramFiles" in driver
+    preflight_markers = (
+        "Get-Command py -All",
+        "Get-Command python -All",
+        '$whereExe = Join-Path $env:SystemRoot "System32\\where.exe"',
+        "& $whereExe py",
+        "$standardPythonRootsAbsent",
+    )
+    installer_call = driver.index(
+        '(Join-Path $PSScriptRoot "..\\packaging\\install_online.ps1")'
+    )
+    for marker in preflight_markers:
+        assert marker in driver
+        assert driver.index(marker) < installer_call
+    assert "python-bootstrap-$scenario-output.txt" in driver
+    assert "python-bootstrap-$scenario-events.txt" in driver
+    assert "python-bootstrap-$scenario.json" in driver
+    assert "importlib.metadata.version('dummy-ai-sdlc')" in driver
+    assert 'Join-Path $installRoot "Scripts\\ai-sdlc.exe"' in driver
+    assert "distribution_version" in driver
+    assert "cli_version" in driver
+    assert '"3.0.1"' in driver
+    for restoration_marker in (
+        "machine_path_restored",
+        "user_path_restored",
+        "process_path_restored",
+        "local_app_data_restored",
+        "program_files_restored",
+    ):
+        assert restoration_marker in driver
+    assert driver.count("restorationErrors.Add") >= 5
+    assert "runtime_absent" in driver
+    assert "venv_absent" in driver
     assert "$windowsPowerShell = (Get-Command powershell" in driver
     assert "& $windowsPowerShell -NoProfile" in driver
 
