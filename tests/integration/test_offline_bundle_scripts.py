@@ -1900,25 +1900,62 @@ def test_install_online_uses_existing_python_on_ubuntu_without_consulting_linux_
 
 
 @pytest.mark.parametrize(
-    "os_release",
+    ("os_release", "arch", "libc", "expected_identity", "expects_amd64_fallback"),
     [
-        None,
-        "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n",
-        "ID=debian\nVERSION_ID=12\nBROKEN_LINE\n",
-        "ID=debian\nVERSION_ID=12\nINVALID KEY=value\n",
-        'ID=debian\nVERSION_ID=12\nPRETTY_NAME="unterminated\n',
-        "ID=debian\nVERSION_ID=12\nHOME_URL=$(touch unsafe)\n",
+        (None, "x86_64", "glibc 2.35", "arch=x86_64 libc=glibc", True),
+        (
+            "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            "ID=debian\nVERSION_ID=12\nBROKEN_LINE\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            "ID=debian\nVERSION_ID=12\nINVALID KEY=value\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            'ID=debian\nVERSION_ID=12\nPRETTY_NAME="unterminated\n',
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (
+            "ID=debian\nVERSION_ID=12\nHOME_URL=$(touch unsafe)\n",
+            "x86_64",
+            "glibc 2.35",
+            "arch=x86_64 libc=glibc",
+            True,
+        ),
+        (None, "", "glibc 2.35", "arch=unknown libc=glibc", False),
+        (None, "x86_64", "", "arch=x86_64 libc=unknown", False),
     ],
 )
-def test_install_online_reports_unknown_for_missing_python_os_release(
-    tmp_path: Path, os_release: str | None
+def test_install_online_preserves_independent_linux_host_facts_when_os_release_is_unknown(
+    tmp_path: Path,
+    os_release: str | None,
+    arch: str,
+    libc: str,
+    expected_identity: str,
+    expects_amd64_fallback: bool,
 ) -> None:
     script_path, _, apt_log, env, _, project_dir = (
         _prepare_missing_python_linux_install(
             tmp_path,
             os_release=os_release,
-            arch="x86_64",
-            libc="glibc 2.35",
+            arch=arch,
+            libc=libc,
         )
     )
     home_dir = tmp_path / "home"
@@ -1942,7 +1979,13 @@ def test_install_online_reports_unknown_for_missing_python_os_release(
     )
 
     assert result.returncode != 0
-    assert "distro=unknown version=unknown arch=unknown libc=unknown" in result.stdout
+    assert f"distro=unknown version=unknown {expected_identity}" in result.stdout
+    if expects_amd64_fallback:
+        assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in result.stdout
+        assert "route 6/12" in result.stdout
+    else:
+        assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" not in result.stdout
+        assert "route 6/12" not in result.stdout
     _assert_unsupported_install_did_not_mutate(
         venv_target=venv_target,
         home_dir=home_dir,

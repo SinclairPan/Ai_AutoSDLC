@@ -133,11 +133,9 @@ install_python() {
   esac
 }
 
-set_linux_identity_unknown() {
+set_linux_distro_unknown() {
   LINUX_DISTRO="unknown"
   LINUX_VERSION="unknown"
-  LINUX_ARCH="unknown"
-  LINUX_LIBC="unknown"
 }
 
 normalize_os_release_value() {
@@ -186,10 +184,19 @@ read_linux_identity() {
   local id_seen=0
   local version_seen=0
 
-  set_linux_identity_unknown
+  set_linux_distro_unknown
+  LINUX_ARCH="unknown"
+  LINUX_LIBC="unknown"
   raw_arch="$(uname -m 2>/dev/null || true)"
   raw_libc="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
-  if [[ -z "${raw_arch}" || -z "${raw_libc}" || ! -r "${os_release_path}" ]]; then
+  if [[ "${raw_arch}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+    LINUX_ARCH="${raw_arch}"
+  fi
+  case "${raw_libc}" in
+    glibc*) LINUX_LIBC="glibc" ;;
+    musl*) LINUX_LIBC="musl" ;;
+  esac
+  if [[ ! -r "${os_release_path}" ]]; then
     return 1
   fi
 
@@ -198,24 +205,24 @@ read_linux_identity() {
       continue
     fi
     if [[ "${line}" != *=* ]]; then
-      set_linux_identity_unknown
+      set_linux_distro_unknown
       return 1
     fi
     IFS='=' read -r key value <<< "${line}"
     if [[ ! "${key}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
       || ! is_safe_os_release_value "${value}"; then
-      set_linux_identity_unknown
+      set_linux_distro_unknown
       return 1
     fi
     case "${key}" in
       ID)
         candidate="$(normalize_os_release_value "${value}")"
         if [[ ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-          set_linux_identity_unknown
+          set_linux_distro_unknown
           return 1
         fi
         if [[ "${id_seen}" -eq 1 && "${id_value}" != "${candidate}" ]]; then
-          set_linux_identity_unknown
+          set_linux_distro_unknown
           return 1
         fi
         id_seen=1
@@ -224,11 +231,11 @@ read_linux_identity() {
       VERSION_ID)
         candidate="$(normalize_os_release_value "${value}")"
         if [[ ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-          set_linux_identity_unknown
+          set_linux_distro_unknown
           return 1
         fi
         if [[ "${version_seen}" -eq 1 && "${version_value}" != "${candidate}" ]]; then
-          set_linux_identity_unknown
+          set_linux_distro_unknown
           return 1
         fi
         version_seen=1
@@ -238,18 +245,12 @@ read_linux_identity() {
   done < "${os_release_path}"
 
   if [[ "${id_seen}" -ne 1 || "${version_seen}" -ne 1 ]]; then
-    set_linux_identity_unknown
+    set_linux_distro_unknown
     return 1
   fi
 
   LINUX_DISTRO="${id_value}"
   LINUX_VERSION="${version_value}"
-  LINUX_ARCH="${raw_arch}"
-  case "${raw_libc}" in
-    glibc*) LINUX_LIBC="glibc" ;;
-    musl*) LINUX_LIBC="musl" ;;
-    *) LINUX_LIBC="unknown" ;;
-  esac
 }
 
 is_certified_debian_python_bootstrap() {
