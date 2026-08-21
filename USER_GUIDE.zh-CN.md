@@ -626,7 +626,7 @@ DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
 command -v git >/dev/null 2>&1 || { echo "Git is required. Run: xcode-select --install, then reopen Terminal." >&2; exit 1; }
 git --version
-test -d .git && git status --short --untracked-files=all || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -675,7 +675,7 @@ cd "$PROJECT_ROOT"
 ```bash
 "$MODULE_PYTHON" -m ai_sdlc --version
 "$MODULE_PYTHON" -m ai_sdlc status
-test -d .git && git status --short --untracked-files=all || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 输出应包含 `3.0.1`、`Initialized AI-SDLC project`、`接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`当前结果 / Result`、`下一步 / Next` 和推荐继续点。
@@ -703,7 +703,7 @@ DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
 command -v git >/dev/null 2>&1 || { echo "Git is required. Install it with apt/dnf/yum, then reopen the shell." >&2; exit 1; }
 git --version
-test -d .git && git status --short --untracked-files=all || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -752,7 +752,7 @@ cd "$PROJECT_ROOT"
 ```bash
 "$MODULE_PYTHON" -m ai_sdlc --version
 "$MODULE_PYTHON" -m ai_sdlc status
-test -d .git && git status --short --untracked-files=all || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 应看到 `3.0.1`、`Initialized AI-SDLC project`、`接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`当前结果 / Result`、`下一步 / Next` 和推荐继续点。
@@ -864,7 +864,7 @@ PROJECT_ROOT="$PWD"
 INSTALL_ROOT="$HOME/Applications/AI-SDLC/offline-v3.0.1"
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
 mkdir -p "$INSTALL_ROOT" "$DOWNLOAD_ROOT"
-test -d .git && git status --short || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -922,7 +922,7 @@ cd "$PROJECT_ROOT"
 ```bash
 "$MODULE_PYTHON" -m ai_sdlc --version
 "$MODULE_PYTHON" -m ai_sdlc status
-test -d .git && git status --short --untracked-files=all || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 应看到 `Offline installation completed`、`3.0.1`、`Initialized AI-SDLC project`、`接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`当前结果 / Result`、`下一步 / Next` 和推荐继续点。
@@ -947,7 +947,7 @@ PROJECT_ROOT="$PWD"
 INSTALL_ROOT="$HOME/.local/share/AI-SDLC/offline-v3.0.1"
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
 mkdir -p "$INSTALL_ROOT" "$DOWNLOAD_ROOT"
-test -d .git && git status --short || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -1005,7 +1005,7 @@ cd "$PROJECT_ROOT"
 ```bash
 "$MODULE_PYTHON" -m ai_sdlc --version
 "$MODULE_PYTHON" -m ai_sdlc status
-test -d .git && git status --short --untracked-files=all || true
+if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
 应看到 `Offline installation completed`、`3.0.1`、`Initialized AI-SDLC project`、`接入已有项目：已生成桥接结果`、`原任务文件不会被修改`、`当前结果 / Result`、`下一步 / Next` 和推荐继续点。

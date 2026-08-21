@@ -71,6 +71,18 @@ def test_existing_project_success_checks_include_untracked_files() -> None:
         assert "git status --short --untracked-files=all" in steps["success"], route_id
 
 
+def test_posix_existing_routes_recognize_linked_git_worktrees() -> None:
+    _, routes = _route_sections(guide_text())
+
+    for route_id in EXPECTED_ROUTE_IDS:
+        state, _, platform = route_id.split("|")
+        if state != "existing" or platform == "windows-amd64":
+            continue
+        _, steps = _step_sections(routes[route_id])
+        assert "git rev-parse --is-inside-work-tree" in steps["success"], route_id
+        assert "test -d .git" not in routes[route_id], route_id
+
+
 def test_online_routes_check_git_in_their_own_prerequisite_step() -> None:
     _, routes = _route_sections(guide_text())
 
