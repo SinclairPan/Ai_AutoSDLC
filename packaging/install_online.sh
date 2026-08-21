@@ -152,6 +152,7 @@ normalize_os_release_value() {
 
 read_linux_identity() {
   local os_release_path="/etc/os-release"
+  local line=""
   local key=""
   local value=""
   local candidate=""
@@ -169,14 +170,23 @@ read_linux_identity() {
     return 1
   fi
 
-  while IFS='=' read -r key value || [[ -n "${key}" || -n "${value}" ]]; do
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    if [[ -z "${line}" || "${line}" == \#* ]]; then
+      continue
+    fi
+    if [[ "${line}" != *=* ]]; then
+      set_linux_identity_unknown
+      return 1
+    fi
+    IFS='=' read -r key value <<< "${line}"
+    candidate="$(normalize_os_release_value "${value}")"
+    if [[ ! "${key}" =~ ^[A-Za-z0-9._-]+$ \
+      || ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+      set_linux_identity_unknown
+      return 1
+    fi
     case "${key}" in
       ID)
-        candidate="$(normalize_os_release_value "${value}")"
-        if [[ ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-          set_linux_identity_unknown
-          return 1
-        fi
         if [[ "${id_seen}" -eq 1 && "${id_value}" != "${candidate}" ]]; then
           set_linux_identity_unknown
           return 1
@@ -185,11 +195,6 @@ read_linux_identity() {
         id_value="${candidate}"
         ;;
       VERSION_ID)
-        candidate="$(normalize_os_release_value "${value}")"
-        if [[ ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
-          set_linux_identity_unknown
-          return 1
-        fi
         if [[ "${version_seen}" -eq 1 && "${version_value}" != "${candidate}" ]]; then
           set_linux_identity_unknown
           return 1

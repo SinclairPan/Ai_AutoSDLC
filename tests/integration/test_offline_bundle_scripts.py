@@ -1684,6 +1684,23 @@ def _prepare_unsupported_install_home(
     )
 
 
+def _snapshot_project_tree(project_dir: Path) -> list[tuple[str, str, str]]:
+    snapshot: list[tuple[str, str, str]] = []
+    for path in sorted(project_dir.rglob("*"), key=lambda item: item.relative_to(project_dir).as_posix()):
+        relative_path = path.relative_to(project_dir).as_posix()
+        if path.is_symlink():
+            snapshot.append((relative_path, "symlink", os.readlink(path)))
+        elif path.is_dir():
+            snapshot.append((relative_path, "directory", ""))
+        elif path.is_file():
+            snapshot.append(
+                (relative_path, "file", hashlib.sha256(path.read_bytes()).hexdigest())
+            )
+        else:
+            snapshot.append((relative_path, "other", ""))
+    return snapshot
+
+
 def _assert_unsupported_install_did_not_mutate(
     *,
     venv_target: Path,
@@ -1693,7 +1710,7 @@ def _assert_unsupported_install_did_not_mutate(
     bashrc_hash_before: str,
     profile_hash_before: str,
     project_dir: Path,
-    project_before: bytes,
+    project_before: list[tuple[str, str, str]],
     apt_log: Path,
 ) -> None:
     assert not venv_target.exists()
@@ -1702,8 +1719,39 @@ def _assert_unsupported_install_did_not_mutate(
     assert (home_dir / ".profile").read_bytes() == profile_before
     assert hashlib.sha256((home_dir / ".bashrc").read_bytes()).hexdigest() == bashrc_hash_before
     assert hashlib.sha256((home_dir / ".profile").read_bytes()).hexdigest() == profile_hash_before
-    assert (project_dir / "keep.txt").read_bytes() == project_before
+    assert _snapshot_project_tree(project_dir) == project_before
     assert not apt_log.exists()
+
+
+def test_online_unsupported_install_snapshot_detects_any_project_tree_change(
+    tmp_path: Path,
+) -> None:
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    (project_dir / "keep.txt").write_text("business data\n", encoding="utf-8")
+    nested_dir = project_dir / "nested"
+    nested_dir.mkdir()
+    (nested_dir / "config.txt").write_text("preserve\n", encoding="utf-8")
+    (project_dir / "keep-link").symlink_to("keep.txt")
+    project_before = _snapshot_project_tree(project_dir)
+    (project_dir / "unexpected.txt").write_text("mutation\n", encoding="utf-8")
+
+    with pytest.raises(AssertionError):
+        _assert_unsupported_install_did_not_mutate(
+            venv_target=tmp_path / "custom-venv",
+            home_dir=home_dir,
+            bashrc_before=bashrc_before,
+            profile_before=profile_before,
+            bashrc_hash_before=bashrc_hash_before,
+            profile_hash_before=profile_hash_before,
+            project_dir=project_dir,
+            project_before=project_before,
+            apt_log=tmp_path / "apt.log",
+        )
 
 
 def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
@@ -1711,7 +1759,11 @@ def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
 ) -> None:
     script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
         tmp_path,
-        os_release='ID="debian"\nVERSION_ID="12"\n',
+        os_release=(
+            "# accepted comment\n\n"
+            'ID="debian"\nVERSION_ID="12"\n'
+            "UNRELATED_KEY=valid-value\n"
+        ),
         arch="x86_64",
         libc="glibc 2.36",
         install_python_after_apt=True,
@@ -1749,8 +1801,8 @@ def test_install_online_rejects_ubuntu_glibc_without_python_before_any_mutation(
         _prepare_unsupported_install_home(home_dir)
     )
     project_dir.mkdir()
-    project_before = b"business data\n"
-    (project_dir / "keep.txt").write_bytes(project_before)
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
     env["HOME"] = str(home_dir)
     env["SHELL"] = "/bin/bash"
     venv_target = tmp_path / "custom-venv"
@@ -1815,7 +1867,14 @@ def test_install_online_uses_existing_python_on_ubuntu_without_consulting_linux_
     assert not identity_log.exists()
 
 
-@pytest.mark.parametrize("os_release", [None, "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n"])
+@pytest.mark.parametrize(
+    "os_release",
+    [
+        None,
+        "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n",
+        "ID=debian\nVERSION_ID=12\nBROKEN_LINE\n",
+    ],
+)
 def test_install_online_reports_unknown_for_missing_python_os_release(
     tmp_path: Path, os_release: str | None
 ) -> None:
@@ -1830,8 +1889,8 @@ def test_install_online_reports_unknown_for_missing_python_os_release(
         _prepare_unsupported_install_home(home_dir)
     )
     project_dir.mkdir()
-    project_before = b"business data\n"
-    (project_dir / "keep.txt").write_bytes(project_before)
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
     env["HOME"] = str(home_dir)
     env["SHELL"] = "/bin/bash"
     venv_target = tmp_path / "custom-venv"
@@ -1874,8 +1933,8 @@ def test_install_online_rejects_linux_aarch64_glibc_without_python_fallback(
         _prepare_unsupported_install_home(home_dir)
     )
     project_dir.mkdir()
-    project_before = b"business data\n"
-    (project_dir / "keep.txt").write_bytes(project_before)
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
     env["HOME"] = str(home_dir)
     env["SHELL"] = "/bin/bash"
     venv_target = tmp_path / "custom-venv"
@@ -1920,8 +1979,8 @@ def test_install_online_rejects_linux_x86_64_musl_without_python_fallback(
         _prepare_unsupported_install_home(home_dir)
     )
     project_dir.mkdir()
-    project_before = b"business data\n"
-    (project_dir / "keep.txt").write_bytes(project_before)
+    (project_dir / "keep.txt").write_bytes(b"business data\n")
+    project_before = _snapshot_project_tree(project_dir)
     env["HOME"] = str(home_dir)
     env["SHELL"] = "/bin/bash"
     venv_target = tmp_path / "custom-venv"
