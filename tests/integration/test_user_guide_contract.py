@@ -129,6 +129,25 @@ def test_macos_online_routes_bootstrap_homebrew_before_python_install() -> None:
         assert shellenv in steps["recover"], route_id
 
 
+def test_linux_online_routes_provide_executable_git_bootstrap_and_recovery() -> None:
+    _, routes = _route_sections(guide_text())
+    required = (
+        "command -v apt-get",
+        "apt-get install -y git",
+        "command -v dnf",
+        "dnf install -y git",
+        "command -v yum",
+        "yum install -y git",
+    )
+
+    for state in ("new", "existing"):
+        route_id = f"{state}|online|linux-amd64"
+        _, steps = _step_sections(routes[route_id])
+        for step in ("prerequisites", "recover"):
+            for marker in required:
+                assert marker in steps[step], (route_id, step, marker)
+
+
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
     text = guide_text()
     assert "全新用户 + 全新空项目" in text

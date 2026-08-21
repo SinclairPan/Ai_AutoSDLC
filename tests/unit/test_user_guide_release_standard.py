@@ -36,6 +36,14 @@ def _complete_route(route_id: str) -> str:
     prerequisites = f"适用平台：{platform}\n"
     success = "当前结果 / Result\n下一步 / Next\n"
     recovery = "失败时停止并按本路线恢复。\n"
+    if channel == "online" and platform == "linux-amd64":
+        git_bootstrap = (
+            "command -v apt-get; apt-get install -y git; "
+            "command -v dnf; dnf install -y git; "
+            "command -v yum; yum install -y git\n"
+        )
+        prerequisites += git_bootstrap
+        recovery += git_bootstrap
     if platform == "windows-amd64":
         recovery += (
             "运行时目录内的 direct Scripts\\ai-sdlc.exe 不能安全原地替换；"
@@ -232,6 +240,23 @@ def test_existing_windows_route_requires_git_worktree_guard_for_status() -> None
 
     assert any(
         finding.marker == "guide-route-windows-git-worktree-guard-missing"
+        and finding.excerpt.startswith(f"{route_id}:")
+        for finding in findings
+    )
+
+
+def test_linux_online_route_requires_executable_git_recovery() -> None:
+    route_id = "new|online|linux-amd64"
+    route = _complete_route(route_id)
+    guide = _complete_guide().replace(
+        route,
+        route.replace("command -v dnf; dnf install -y git; ", ""),
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-linux-git-bootstrap-missing"
         and finding.excerpt.startswith(f"{route_id}:")
         for finding in findings
     )

@@ -229,7 +229,14 @@ VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; exit 1; }
-command -v git >/dev/null 2>&1 || { echo "Git is required. Install it with apt/dnf/yum, then reopen the shell." >&2; exit 1; }
+run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install Git." >&2; return 1; fi; }
+if ! command -v git >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y git
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y git
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y git
+  else echo "No supported Git package manager (apt-get/dnf/yum) was found." >&2; exit 1; fi
+fi
+command -v git >/dev/null 2>&1 || { echo "Git installation did not produce an executable git command." >&2; exit 1; }
 git --version
 ```
 
@@ -285,7 +292,7 @@ cd "$PROJECT_ROOT"
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-下载或权限错误时停止，确认安装目录可写后重跑固定标签的 `install_online.sh --add-to-path`。裸命令不可用时使用 module 路径；`No module named ai_sdlc` 时重跑安装器。`open gates`、代理和 Shell 问题分别按 CLI 提示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 恢复。
+Git 不可用时执行：`run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }; if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y git; elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y git; elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y git; else echo "No supported Git package manager" >&2; exit 1; fi`，然后运行 `git --version`。下载或权限错误时停止，确认安装目录可写后重跑固定标签的 `install_online.sh --add-to-path`。裸命令不可用时使用 module 路径；`No module named ai_sdlc` 时重跑安装器。`open gates`、代理和 Shell 问题分别按 CLI 提示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 恢复。
 
 <a id="route-new-offline-windows-amd64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: new|offline|windows-amd64 -->
@@ -717,7 +724,14 @@ INSTALL_ROOT="$HOME/.local/share/AI-SDLC/online-v3.0.1"
 VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
-command -v git >/dev/null 2>&1 || { echo "Git is required. Install it with apt/dnf/yum, then reopen the shell." >&2; exit 1; }
+run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install Git." >&2; return 1; fi; }
+if ! command -v git >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y git
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y git
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y git
+  else echo "No supported Git package manager (apt-get/dnf/yum) was found." >&2; exit 1; fi
+fi
+command -v git >/dev/null 2>&1 || { echo "Git installation did not produce an executable git command." >&2; exit 1; }
 git --version
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
@@ -776,7 +790,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-网络或权限错误时停止，修正权限后重跑固定标签的 `install_online.sh --add-to-path`。裸命令不可用时使用 module 路径；`No module named ai_sdlc` 时重装。若业务文件出现非预期差异，停止并检查。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
+Git 不可用时执行：`run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }; if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y git; elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y git; elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y git; else echo "No supported Git package manager" >&2; exit 1; fi`，然后运行 `git --version`。网络或权限错误时停止，修正权限后重跑固定标签的 `install_online.sh --add-to-path`。裸命令不可用时使用 module 路径；`No module named ai_sdlc` 时重装。若业务文件出现非预期差异，停止并检查。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
 
 <a id="route-existing-offline-windows-amd64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: existing|offline|windows-amd64 -->

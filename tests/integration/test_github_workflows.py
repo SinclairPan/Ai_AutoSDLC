@@ -941,6 +941,37 @@ def test_user_guide_e2e_covers_both_project_states_through_online_installers() -
     assert '"${online_cli}" adopt .' in posix_online
 
 
+def test_windows_online_guide_replays_missing_python_bootstrap_before_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "windows_python_bootstrap_e2e.ps1"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    assert driver_path.is_file()
+    steps = workflow["jobs"]["clean-online-interactive-user-journey"]["steps"]
+    replay = next(
+        step
+        for step in steps
+        if step.get("name") == "Replay installer without a preinstalled Python"
+    )
+    assert replay["shell"] == "pwsh"
+    assert replay["run"] == (
+        "pwsh -NoProfile -File scripts/windows_python_bootstrap_e2e.ps1"
+    )
+    prerequisite_index = next(
+        index
+        for index, step in enumerate(steps)
+        if step.get("name") == "Assert fresh runner prerequisites"
+    )
+    assert steps.index(replay) < prerequisite_index
+
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert '- "scripts/windows_python_bootstrap_e2e.ps1"' in workflow_text
+    driver = driver_path.read_text(encoding="utf-8")
+    assert 'Join-Path $shimRoot "py.cmd"' in driver
+    assert 'Join-Path $shimRoot "python.cmd"' in driver
+    assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
+
+
 def test_macos_online_guide_replays_stock_host_prerequisites_before_install() -> None:
     workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
     driver_path = _REPO_ROOT / "scripts" / "macos_stock_host_prerequisite_e2e.py"
