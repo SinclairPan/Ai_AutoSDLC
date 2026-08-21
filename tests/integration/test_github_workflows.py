@@ -1204,10 +1204,21 @@ def test_linux_online_existing_python_path_replays_on_opensuse() -> None:
     assert "/etc/ssl/ca-bundle.pem" in replay
     assert "python3.11" in replay
     assert '"new" "existing"' in replay
-    assert '"prerequisites" "recover"' in replay
-    assert 'bash "${route_script}"' in replay
+    assert '"prerequisites" "acquire" "verify" "recover"' in replay
+    assert 'source "/replay/${project_state}-prerequisites.sh"' in replay
+    assert 'source "/replay/${project_state}-acquire.sh"' in replay
+    assert 'source "/replay/${project_state}-verify.sh"' in replay
+    assert (
+        "https://raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/v3.0.1/packaging/install_online.sh"
+        in replay
+    )
+    assert 'test -s "${INSTALLER_PATH}"' in replay
+    assert (
+        'cp "${INSTALLER_PATH}" "/evidence/${project_state}-install_online.sh"'
+        in replay
+    )
     assert "AI_SDLC_PACKAGE_SPEC=/workspace" in replay
-    assert "bash /workspace/packaging/install_online.sh /tmp/ai-sdlc-venv" in replay
+    assert "bash /evidence/new-install_online.sh /tmp/ai-sdlc-venv" in replay
     assert "/tmp/ai-sdlc-venv/bin/python -m ai_sdlc --version" in replay
     assert "grep -F '3.0.1' /evidence/version.txt" in replay
     assert '--volume "${GITHUB_WORKSPACE}:/workspace:ro"' in replay

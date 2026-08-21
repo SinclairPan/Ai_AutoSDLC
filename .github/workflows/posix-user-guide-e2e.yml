@@ -1012,6 +1012,10 @@ jobs:
     name: Linux online openSUSE existing-Python compatibility
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.1' || inputs.tag }}
+      PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
     steps:
       - name: Check out exact online prerequisite inputs
         uses: actions/checkout@v6
@@ -1025,10 +1029,25 @@ jobs:
           replay_root="${RUNNER_TEMP}/opensuse-online-route-replay"
           evidence_root="${RUNNER_TEMP}/opensuse-online-route-evidence"
           mkdir -p "${replay_root}" "${evidence_root}"
+          source_repository="SinclairPan/Ai_AutoSDLC"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            test -n "${PR_HEAD_REPOSITORY}" && test -n "${PR_HEAD_SHA}"
+            source_repository="${PR_HEAD_REPOSITORY}"
+            remote_sha="${PR_HEAD_SHA}"
+          else
+            tag_line="$(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/${RELEASE_TAG}^{}" | head -n 1)"
+            if [[ -z "${tag_line}" ]]; then
+              tag_line="$(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/${RELEASE_TAG}" | head -n 1)"
+            fi
+            remote_sha="${tag_line%%[[:space:]]*}"
+            test -n "${remote_sha}"
+          fi
+          guide_installer_url="https://raw.githubusercontent.com/SinclairPan/Ai_AutoSDLC/v3.0.1/packaging/install_online.sh"
+          candidate_installer_url="https://raw.githubusercontent.com/${source_repository}/${remote_sha}/packaging/install_online.sh"
 
           for project_state in "new" "existing"; do
             route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE: ${project_state}|online|linux-amd64 -->"
-            for step_name in "prerequisites" "recover"; do
+            for step_name in "prerequisites" "acquire" "verify" "recover"; do
               route_script="${replay_root}/${project_state}-${step_name}.sh"
               awk -v marker="${route_marker}" -v step_name="${step_name}" '
                 $0 == marker { in_route = 1; next }
@@ -1039,6 +1058,12 @@ jobs:
               ' USER_GUIDE.zh-CN.md > "${route_script}"
               test -s "${route_script}"
             done
+            if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+              sed -i "s#${guide_installer_url}#${candidate_installer_url}#" \
+                "${replay_root}/${project_state}-acquire.sh"
+              grep -F "${candidate_installer_url}" \
+                "${replay_root}/${project_state}-acquire.sh"
+            fi
           done
 
           cat > "${replay_root}/driver.sh" <<'DRIVER'
@@ -1050,25 +1075,31 @@ jobs:
           test -s /etc/ssl/ca-bundle.pem
           mkdir -p /tmp/ai-sdlc-home /tmp/ai-sdlc-project /evidence
           export HOME=/tmp/ai-sdlc-home
-          for route_script in \
-            /replay/new-prerequisites.sh \
-            /replay/new-recover.sh \
-            /replay/existing-prerequisites.sh \
-            /replay/existing-recover.sh; do
+          for project_state in new existing; do
             (
               cd /tmp/ai-sdlc-project
-              bash "${route_script}"
+              source "/replay/${project_state}-prerequisites.sh"
+              source "/replay/${project_state}-acquire.sh"
+              source "/replay/${project_state}-verify.sh"
+              test -s "${INSTALLER_PATH}"
+              cp "${INSTALLER_PATH}" "/evidence/${project_state}-install_online.sh"
+            ) >> /evidence/download.txt 2>&1
+            (
+              cd /tmp/ai-sdlc-project
+              bash "/replay/${project_state}-recover.sh"
             ) >> /evidence/replay.txt 2>&1
           done
+          cmp -s /evidence/new-install_online.sh /evidence/existing-install_online.sh
           AI_SDLC_PACKAGE_SPEC=/workspace \
             PYTHON="$(command -v python3.11)" \
-            bash /workspace/packaging/install_online.sh /tmp/ai-sdlc-venv \
+            bash /evidence/new-install_online.sh /tmp/ai-sdlc-venv \
             >> /evidence/install.txt 2>&1
           /tmp/ai-sdlc-venv/bin/python -m ai_sdlc --version \
             > /evidence/version.txt
           grep -F '3.0.1' /evidence/version.txt
-          printf '{"distro":"opensuse-leap","python":"%s","ca_bundle":"/etc/ssl/ca-bundle.pem","replay_count":4}\n' \
-            "$(python3.11 --version 2>&1)" > /evidence/receipt.json
+          printf '{"distro":"opensuse-leap","python":"%s","ca_bundle":"/etc/ssl/ca-bundle.pem","source_revision":"%s","replay_count":8}\n' \
+            "$(python3.11 --version 2>&1)" "${SOURCE_REVISION}" \
+            > /evidence/receipt.json
           DRIVER
           chmod +x "${replay_root}/driver.sh"
 
@@ -1076,9 +1107,14 @@ jobs:
             --volume "${GITHUB_WORKSPACE}:/workspace:ro" \
             --volume "${replay_root}:/replay:ro" \
             --volume "${evidence_root}:/evidence" \
+            --env SOURCE_REVISION="${remote_sha}" \
             opensuse/leap:15.6 \
             /bin/sh -ec 'zypper --non-interactive install -y bash python311 git-core curl ca-certificates coreutils grep gawk >/dev/null; exec bash /replay/driver.sh'
           test -s "${evidence_root}/replay.txt"
+          test -s "${evidence_root}/download.txt"
+          test -s "${evidence_root}/new-install_online.sh"
+          test -s "${evidence_root}/existing-install_online.sh"
+          test -s "${evidence_root}/version.txt"
           test -s "${evidence_root}/receipt.json"
 
       - name: Upload openSUSE prerequisite evidence
