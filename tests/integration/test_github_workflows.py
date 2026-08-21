@@ -1091,6 +1091,28 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert 'Join-Path $pythonHome "python.exe"' in installer
 
 
+def test_windows_python_bootstrap_preserves_execution_and_restoration_failures() -> (
+    None
+):
+    driver = (
+        _REPO_ROOT / "scripts" / "windows_python_bootstrap_e2e.ps1"
+    ).read_text(encoding="utf-8")
+
+    assert '$executionFailure = if ($capturedFailure)' in driver
+    assert '$restorationFailures = @($restorationErrors)' in driver
+    assert "execution_failure = $executionFailure" in driver
+    assert "restoration_failures = $restorationFailures" in driver
+    assert '$finalFailureParts += "Execution failure: $executionFailure"' in driver
+    assert (
+        '$finalFailureParts += "Environment restoration failures: '
+        '$($restorationFailures -join \'; \')"'
+    ) in driver
+    receipt_write = driver.index("Write-Utf8NoBom -Path $evidencePath")
+    final_throw = driver.index("throw $finalFailure")
+    assert receipt_write < final_throw
+    assert '$capturedFailure = "Environment restoration failed:' not in driver
+
+
 def test_linux_offline_acquisition_bootstrap_runs_on_fresh_connected_hosts() -> None:
     workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
     workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))

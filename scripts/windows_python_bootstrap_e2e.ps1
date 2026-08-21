@@ -360,9 +360,16 @@ if (-not $capturedFailure -and $ExpectInstallFailure) {
     $capturedFailure = "Expected failure did not preserve the no-runtime/no-venv state."
   }
 }
-if ($restorationErrors.Count -ne 0) {
-  $capturedFailure = "Environment restoration failed: $($restorationErrors -join '; ')"
+$executionFailure = if ($capturedFailure) { $capturedFailure.ToString() } else { $null }
+$restorationFailures = @($restorationErrors)
+$finalFailureParts = @()
+if ($executionFailure) {
+  $finalFailureParts += "Execution failure: $executionFailure"
 }
+if ($restorationFailures.Count -ne 0) {
+  $finalFailureParts += "Environment restoration failures: $($restorationFailures -join '; ')"
+}
+$finalFailure = if ($finalFailureParts.Count -ne 0) { $finalFailureParts -join " | " } else { $null }
 
 $evidence = [ordered]@{
   platform = "Windows"
@@ -387,12 +394,14 @@ $evidence = [ordered]@{
   cli_version_exit = $cliExit
   runtime_absent = $runtimeAbsent
   venv_absent = $venvAbsent
+  execution_failure = $executionFailure
+  restoration_failures = $restorationFailures
 }
 $evidencePath = Join-Path $evidenceRoot "python-bootstrap-$scenario.json"
 Write-Utf8NoBom -Path $evidencePath -Value (($evidence | ConvertTo-Json -Depth 4) + "`n")
 
-if ($capturedFailure) {
-  throw $capturedFailure
+if ($finalFailure) {
+  throw $finalFailure
 }
 Write-Host "WINDOWS_PYTHON_BOOTSTRAP_OK"
 Write-Host $evidencePath
