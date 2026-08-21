@@ -315,6 +315,10 @@ jobs:
             tee "${evidence_root}/initialize-and-adopt.txt"
           grep -F "POSIX_INTERACTIVE_SELECTION_COMPLETED" \
             "${evidence_root}/initialize-and-adopt.txt"
+          grep -F "AI 代理入口: Cursor" \
+            "${evidence_root}/initialize-and-adopt.txt"
+          grep -F "Project shell: bash" \
+            "${evidence_root}/initialize-and-adopt.txt"
           if [[ "${PROJECT_STATE}" == "existing" ]]; then
             (
               cd "${project_root}"
@@ -323,7 +327,7 @@ jobs:
           fi
 
           test -d "${project_root}/.ai-sdlc"
-          test -f "${project_root}/AGENTS.md"
+          test -f "${project_root}/.cursor/rules/ai-sdlc.mdc"
           grep -F "Initialized AI-SDLC project" "${evidence_root}/initialize-and-adopt.txt"
           if [[ "${PROJECT_STATE}" == "new" ]]; then
             test ! -e "${project_root}/src"
