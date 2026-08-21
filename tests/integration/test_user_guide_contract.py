@@ -97,6 +97,21 @@ def test_online_routes_check_git_in_their_own_prerequisite_step() -> None:
         assert "git --version" in prerequisites, route_id
 
 
+def test_macos_online_routes_bootstrap_homebrew_before_python_install() -> None:
+    _, routes = _route_sections(guide_text())
+    installer = "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh"
+    shellenv = 'eval "$(/opt/homebrew/bin/brew shellenv)"'
+
+    for state in ("new", "existing"):
+        route_id = f"{state}|online|macos-arm64"
+        _, steps = _step_sections(routes[route_id])
+        assert "command -v brew" in steps["prerequisites"], route_id
+        assert installer in steps["prerequisites"], route_id
+        assert shellenv in steps["prerequisites"], route_id
+        assert installer in steps["recover"], route_id
+        assert shellenv in steps["recover"], route_id
+
+
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
     text = guide_text()
     assert "全新用户 + 全新空项目" in text

@@ -149,6 +149,13 @@ mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; exit 1; }
 command -v git >/dev/null 2>&1 || { echo "Git is required. Run: xcode-select --install, then reopen Terminal." >&2; exit 1; }
 git --version
+if ! command -v brew >/dev/null 2>&1; then
+  if test ! -x /opt/homebrew/bin/brew; then
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+brew --version
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -203,7 +210,7 @@ cd "$PROJECT_ROOT"
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-网络错误时停止并重试固定 URL。裸命令不可用时运行 `"$MODULE_PYTHON" -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_online.sh --add-to-path`。出现 `open gates` 时按 CLI 指示查看详情；入口选择错误使用 `ai-sdlc adapter select`、`ai-sdlc adapter shell-select`。
+网络错误时停止并重试固定 URL。若缺少 Homebrew，运行 `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`，再运行 `eval "$(/opt/homebrew/bin/brew shellenv)"` 后重试安装。裸命令不可用时运行 `"$MODULE_PYTHON" -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_online.sh --add-to-path`。出现 `open gates` 时按 CLI 指示查看详情；入口选择错误使用 `ai-sdlc adapter select`、`ai-sdlc adapter shell-select`。
 
 <a id="route-new-online-linux-amd64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: new|online|linux-amd64 -->
@@ -626,6 +633,13 @@ DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
 command -v git >/dev/null 2>&1 || { echo "Git is required. Run: xcode-select --install, then reopen Terminal." >&2; exit 1; }
 git --version
+if ! command -v brew >/dev/null 2>&1; then
+  if test ! -x /opt/homebrew/bin/brew; then
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+  fi
+  eval "$(/opt/homebrew/bin/brew shellenv)"
+fi
+brew --version
 if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then git status --short --untracked-files=all; fi
 ```
 
@@ -683,7 +697,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
 
-网络错误时停止并重试固定标签 URL。裸命令不可用时运行 `"$MODULE_PYTHON" -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_online.sh --add-to-path`。若 Git 显示未预期业务差异，停止并检查。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 恢复。
+网络错误时停止并重试固定标签 URL。若缺少 Homebrew，运行 `/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"`，再运行 `eval "$(/opt/homebrew/bin/brew shellenv)"` 后重试安装。裸命令不可用时运行 `"$MODULE_PYTHON" -m ai_sdlc status`；`No module named ai_sdlc` 时重跑 `install_online.sh --add-to-path`。若 Git 显示未预期业务差异，停止并检查。`open gates`、代理和 Shell 问题分别按 CLI 指示、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 恢复。
 
 <a id="route-existing-online-linux-amd64"></a>
 <!-- AI-SDLC-USER-GUIDE-ROUTE: existing|online|linux-amd64 -->
