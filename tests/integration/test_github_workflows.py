@@ -1108,8 +1108,9 @@ def test_windows_python_bootstrap_preserves_execution_and_restoration_failures()
         '$($restorationFailures -join \'; \')"'
     ) in driver
     receipt_write = driver.index("Write-Utf8NoBom -Path $evidencePath")
+    final_failure_construction = driver.index("$finalFailureParts = @()")
     final_throw = driver.index("throw $finalFailure")
-    assert receipt_write < final_throw
+    assert receipt_write < final_failure_construction < final_throw
     assert '$capturedFailure = "Environment restoration failed:' not in driver
 
 

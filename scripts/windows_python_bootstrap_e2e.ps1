@@ -362,14 +362,6 @@ if (-not $capturedFailure -and $ExpectInstallFailure) {
 }
 $executionFailure = if ($capturedFailure) { $capturedFailure.ToString() } else { $null }
 $restorationFailures = @($restorationErrors)
-$finalFailureParts = @()
-if ($executionFailure) {
-  $finalFailureParts += "Execution failure: $executionFailure"
-}
-if ($restorationFailures.Count -ne 0) {
-  $finalFailureParts += "Environment restoration failures: $($restorationFailures -join '; ')"
-}
-$finalFailure = if ($finalFailureParts.Count -ne 0) { $finalFailureParts -join " | " } else { $null }
 
 $evidence = [ordered]@{
   platform = "Windows"
@@ -400,6 +392,14 @@ $evidence = [ordered]@{
 $evidencePath = Join-Path $evidenceRoot "python-bootstrap-$scenario.json"
 Write-Utf8NoBom -Path $evidencePath -Value (($evidence | ConvertTo-Json -Depth 4) + "`n")
 
+$finalFailureParts = @()
+if ($executionFailure) {
+  $finalFailureParts += "Execution failure: $executionFailure"
+}
+if ($restorationFailures.Count -ne 0) {
+  $finalFailureParts += "Environment restoration failures: $($restorationFailures -join '; ')"
+}
+$finalFailure = if ($finalFailureParts.Count -ne 0) { $finalFailureParts -join " | " } else { $null }
 if ($finalFailure) {
   throw $finalFailure
 }
