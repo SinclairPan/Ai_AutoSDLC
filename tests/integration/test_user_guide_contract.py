@@ -220,6 +220,30 @@ def test_linux_offline_routes_keep_exact_asset_without_debian_only_reclassificat
         assert "Debian GNU/Linux 12 (bookworm)" not in steps["prerequisites"], route_id
 
 
+def test_linux_offline_routes_gate_amd64_glibc_in_prerequisites_and_recovery() -> None:
+    _, routes = _route_sections(guide_text())
+    required = (
+        'ARCH="$(uname -m)"',
+        "getconf GNU_LIBC_VERSION",
+        '"$ARCH" != "x86_64"',
+        '"$ARCH" != "amd64"',
+        "grep -q '^glibc '",
+        "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产",
+        "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+        "exit 1",
+        "\nfi\n",
+    )
+
+    for route_id in (
+        "new|offline|linux-amd64",
+        "existing|offline|linux-amd64",
+    ):
+        _, steps = _step_sections(routes[route_id])
+        for step_name in ("prerequisites", "recover"):
+            for marker in required:
+                assert marker in steps[step_name], (route_id, step_name, marker)
+
+
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
     text = guide_text()
     assert "全新用户 + 全新空项目" in text

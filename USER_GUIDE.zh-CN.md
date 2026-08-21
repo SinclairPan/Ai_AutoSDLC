@@ -494,8 +494,16 @@ cd "$PROJECT_ROOT"
 
 适用于 `linux-amd64`。联网机器下载归档与 sidecar，目标机器可离线；安装目录必须由当前用户写入。
 
+该离线包只兼容 amd64/x86_64 + glibc。先在目标机执行以下检查；若架构或 libc 不兼容，必须停止，不得下载、解压或安装该包。
+
 ```bash
 set -e
+ARCH="$(uname -m)"
+LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+  echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
 PROJECT_ROOT="$HOME/projects/my-new-project"
 INSTALL_ROOT="$HOME/.local/share/AI-SDLC/offline-v3.0.1"
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
@@ -577,6 +585,17 @@ cd "$PROJECT_ROOT"
 
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
+
+在目标机重试前，先重新执行兼容性检查；若出现停止消息，不得继续下载、解压或安装：
+
+```bash
+ARCH="$(uname -m)"
+LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+  echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
+```
 
 联网获取机缺少 curl 或 CA 证书时执行：
 
@@ -1052,8 +1071,16 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 
 适用于 `linux-amd64`。在已有项目根目录使用 bash并保存当前工作；联网机器下载，目标机离线安装。
 
+该离线包只兼容 amd64/x86_64 + glibc。先在目标机执行以下检查；若架构或 libc 不兼容，必须停止，不得下载、解压或安装该包。
+
 ```bash
 set -e
+ARCH="$(uname -m)"
+LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+  echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
 PROJECT_ROOT="$PWD"
 INSTALL_ROOT="$HOME/.local/share/AI-SDLC/offline-v3.0.1"
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
@@ -1136,6 +1163,17 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
+
+在目标机重试前，先重新执行兼容性检查；若出现停止消息，不得继续下载、解压或安装：
+
+```bash
+ARCH="$(uname -m)"
+LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || ! printf '%s\n' "$LIBC" | grep -q '^glibc '; then
+  echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2
+  exit 1
+fi
+```
 
 联网获取机缺少 curl 或 CA 证书时执行：
 

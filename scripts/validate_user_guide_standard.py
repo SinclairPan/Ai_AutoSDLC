@@ -41,6 +41,15 @@ LINUX_PYTHON_BOOTSTRAP_BOUNDARY_MARKERS = (
     "v3.0.1 没有兼容的 Linux 发行资产",
     "不得使用路线 6/12 的 AMD64 离线包",
 )
+LINUX_OFFLINE_COMPATIBILITY_GATE_MARKERS = (
+    'ARCH="$(uname -m)"',
+    'LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"',
+    'if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } ||',
+    "! printf '%s\\n' \"$LIBC\" | grep -q '^glibc '; then",
+    'echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；'
+    '不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2',
+    "  exit 1\nfi",
+)
 
 _VERSION_PATTERN = re.compile(
     r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)(?:[^\"]*)"\s*$', re.MULTILINE
@@ -248,6 +257,18 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                         )
                     )
         if channel == "offline" and platform == "linux-amd64":
+            for step_name in ("prerequisites", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text
+                    for marker in LINUX_OFFLINE_COMPATIBILITY_GATE_MARKERS
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-offline-compatibility-gate-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
             acquisition_bootstrap_markers = (
                 "command -v apt-get",
                 "apt-get install -y ca-certificates curl",

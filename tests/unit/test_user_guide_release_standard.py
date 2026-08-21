@@ -62,14 +62,25 @@ def _complete_route(route_id: str) -> str:
         prerequisites += python_bootstrap_boundary + git_bootstrap
         recovery += python_bootstrap_boundary + git_bootstrap
     if channel == "offline" and platform == "linux-amd64":
+        offline_compatibility_check = (
+            'ARCH="$(uname -m)"\n'
+            'LIBC="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"\n'
+            'if { [ "$ARCH" != "x86_64" ] && [ "$ARCH" != "amd64" ]; } || '
+            "! printf '%s\\n' \"$LIBC\" | grep -q '^glibc '; then\n"
+            '  echo "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产；'
+            '不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" >&2\n'
+            "  exit 1\n"
+            "fi\n"
+        )
         download_bootstrap = (
             "ca_bundle_available; command -v curl; "
             "command -v apt-get; apt-get install -y ca-certificates curl; "
             "command -v dnf; dnf install -y ca-certificates curl; "
             "command -v yum; yum install -y ca-certificates curl\n"
         )
+        prerequisites += offline_compatibility_check
         acquisition += download_bootstrap
-        recovery += download_bootstrap
+        recovery += offline_compatibility_check + download_bootstrap
     if platform == "windows-amd64":
         recovery += (
             "运行时目录内的 direct Scripts\\ai-sdlc.exe 不能安全原地替换；"
@@ -364,5 +375,50 @@ def test_linux_offline_route_requires_connected_host_download_recovery() -> None
     assert any(
         finding.marker == "guide-route-linux-download-bootstrap-missing"
         and finding.excerpt.startswith(f"{route_id}:")
+        for finding in findings
+    )
+
+
+@pytest.mark.parametrize(
+    ("route_id", "step_name", "compatibility_marker"),
+    [
+        (route_id, step_name, compatibility_marker)
+        for route_id in ("new|offline|linux-amd64", "existing|offline|linux-amd64")
+        for step_name in ("prerequisites", "recover")
+        for compatibility_marker in (
+            'ARCH="$(uname -m)"',
+            "getconf GNU_LIBC_VERSION",
+            '"$ARCH" != "x86_64"',
+            '"$ARCH" != "amd64"',
+            "grep -q '^glibc '",
+            "停止：v3.0.1 没有与此主机兼容的 Linux 发行资产",
+            "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+            "exit 1",
+            "\nfi\n",
+        )
+    ],
+)
+def test_each_linux_offline_route_step_requires_executable_glibc_compatibility_gate(
+    route_id: str, step_name: str, compatibility_marker: str
+) -> None:
+    route = _complete_route(route_id)
+    step_marker = f"<!-- AI-SDLC-USER-GUIDE-STEP: {step_name} -->\n"
+    step_start = route.index(step_marker) + len(step_marker)
+    next_step_start = route.find("<!-- AI-SDLC-USER-GUIDE-STEP:", step_start)
+    step_end = len(route) if next_step_start == -1 else next_step_start
+    step_text = route[step_start:step_end]
+    assert compatibility_marker in step_text
+    corrupted_route = (
+        route[:step_start]
+        + step_text.replace(compatibility_marker, "", 1)
+        + route[step_end:]
+    )
+    guide = _complete_guide().replace(route, corrupted_route)
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-linux-offline-compatibility-gate-missing"
+        and finding.excerpt == f"{route_id}:{step_name}"
         for finding in findings
     )
