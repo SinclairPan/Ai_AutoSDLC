@@ -979,7 +979,9 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert 'Join-Path $shimRoot "python.cmd"' not in driver
     assert "FAKE_INSTALLED_PYTHON_ROOT" in driver
     assert "Programs\\Python\\Python311" in driver
-    assert "mklink /J" in driver
+    assert "xcopy" in driver
+    assert "mklink /J" not in driver
+    assert "python-bootstrap-output.txt" in driver
     assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
     assert "$windowsPowerShell = (Get-Command powershell" in driver
     assert "& $windowsPowerShell -NoProfile" in driver

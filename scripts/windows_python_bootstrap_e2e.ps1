@@ -74,8 +74,10 @@ Write-Utf8NoBom -Path (Join-Path $shimRoot "winget.cmd") -Value @'
 echo package-manager-install winget Python.Python.3.11>>"%FAKE_BOOTSTRAP_LOG%"
 set "PYTHON_PARENT=%LOCALAPPDATA%\Programs\Python"
 set "PYTHON_TARGET=%PYTHON_PARENT%\Python311"
-if not exist "%PYTHON_PARENT%" mkdir "%PYTHON_PARENT%"
-mklink /J "%PYTHON_TARGET%" "%FAKE_INSTALLED_PYTHON_ROOT%" >nul
+if not exist "%PYTHON_TARGET%" mkdir "%PYTHON_TARGET%"
+xcopy "%FAKE_INSTALLED_PYTHON_ROOT%\*" "%PYTHON_TARGET%\" /E /I /Q /Y >nul
+if errorlevel 1 exit /b %ERRORLEVEL%
+if not exist "%PYTHON_TARGET%\python.exe" exit /b 1
 exit /b 0
 '@
 
@@ -111,6 +113,10 @@ try {
 }
 
 $outputText = $output -join "`n"
+Write-Utf8NoBom -Path (Join-Path $evidenceRoot "python-bootstrap-output.txt") -Value ($outputText + "`n")
+if (Test-Path -LiteralPath $eventLog) {
+  Copy-Item -LiteralPath $eventLog -Destination (Join-Path $evidenceRoot "python-bootstrap-events.txt") -Force
+}
 if ($installerExit -ne 0) {
   throw "Windows isolated Python bootstrap failed with exit $installerExit`: $outputText"
 }
