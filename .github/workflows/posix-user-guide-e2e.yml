@@ -66,6 +66,7 @@ jobs:
         run: python3 scripts/macos_stock_host_prerequisite_e2e.py
 
       - name: Replay installer without a preinstalled Python
+        if: matrix.asset_os == 'macos'
         shell: bash
         run: python3 scripts/posix_python_bootstrap_e2e.py
 
@@ -166,6 +167,89 @@ jobs:
           path: ${{ runner.temp }}/posix-online-user-guide-e2e-evidence
           if-no-files-found: error
           include-hidden-files: true
+
+  linux-python-bootstrap:
+    name: linux real Python bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    container:
+      image: debian:12-slim
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.1' || inputs.tag }}
+      PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+
+    steps:
+      - name: Prepare a stock Linux host
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y ca-certificates curl git
+          test -z "$(command -v python3.11 || true)"
+          test -z "$(command -v python3 || true)"
+          test -z "$(command -v python || true)"
+
+      - name: Check out exact installer inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install Python through the exact online installer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          evidence_root="${RUNNER_TEMP}/linux-real-python-bootstrap-evidence"
+          install_root="${RUNNER_TEMP}/ai-sdlc-linux-bootstrap"
+          mkdir -p "${evidence_root}"
+          source_repository="SinclairPan/Ai_AutoSDLC"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            test -n "${PR_HEAD_REPOSITORY}" && test -n "${PR_HEAD_SHA}"
+            source_repository="${PR_HEAD_REPOSITORY}"
+            remote_sha="${PR_HEAD_SHA}"
+          else
+            tag_line="$(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/${RELEASE_TAG}^{}" | head -n 1)"
+            if [[ -z "${tag_line}" ]]; then
+              tag_line="$(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/${RELEASE_TAG}" | head -n 1)"
+            fi
+            remote_sha="${tag_line%%[[:space:]]*}"
+            test -n "${remote_sha}"
+          fi
+
+          installer_path="${RUNNER_TEMP}/install_online.sh"
+          installer_url="https://raw.githubusercontent.com/${source_repository}/${remote_sha}/packaging/install_online.sh"
+          package_spec="git+https://github.com/${source_repository}.git@${remote_sha}"
+          curl --fail --location --retry 3 --output "${installer_path}" "${installer_url}"
+          chmod +x "${installer_path}"
+          test -z "$(command -v python3.11 || true)"
+          test -z "$(command -v python3 || true)"
+          test -z "$(command -v python || true)"
+          AI_SDLC_PACKAGE_SPEC="${package_spec}" \
+            bash "${installer_path}" "${install_root}" 2>&1 | \
+            tee "${evidence_root}/install-online.txt"
+
+          dpkg-query -W python3.11 python3.11-venv python3-pip | \
+            tee "${evidence_root}/installed-packages.txt"
+          test -x "${install_root}/bin/python"
+          test -x "${install_root}/bin/ai-sdlc"
+          test "$("${install_root}/bin/ai-sdlc" --version)" = "${RELEASE_TAG#v}"
+          grep -F "No Python 3.11+ detected. Attempting online installation" \
+            "${evidence_root}/install-online.txt"
+          grep -F "Using Python runtime: python3.11" \
+            "${evidence_root}/install-online.txt"
+          grep -F "Online installation completed" \
+            "${evidence_root}/install-online.txt"
+          printf '{"platform":"debian-12","real_apt":true,"source_revision":"%s","installed_cli_version":"%s"}\n' \
+            "${remote_sha}" "${RELEASE_TAG#v}" > "${evidence_root}/python-bootstrap.json"
+
+      - name: Upload real Linux bootstrap evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-real-python-bootstrap-evidence
+          path: ${{ runner.temp }}/linux-real-python-bootstrap-evidence
+          if-no-files-found: error
 
   replay-published-guide:
     name: ${{ matrix.asset_os }} published guide

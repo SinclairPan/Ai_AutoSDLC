@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""隔离宿主 Python，执行 POSIX 在线安装器的自动 Python 安装分支。"""
+"""隔离宿主 Python，执行 macOS 在线安装器的自动 Python 安装分支。"""
 
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ exit 2
 
 
 def _write_platform_shims(shim_bin: Path, platform_name: str) -> None:
-    """用确定性包管理器边界模拟本机 Python 安装。"""
+    """用确定性 Homebrew 边界模拟 macOS Python 安装。"""
 
     _write_executable(
         shim_bin / "git",
@@ -91,25 +91,9 @@ exit 2
 """,
         )
         return
-    if platform_name == "Linux":
-        _write_executable(
-            shim_bin / "apt-get",
-            """#!/bin/sh
-set -eu
-if test "${1:-}" = "update"; then
-  printf '%s\n' 'package-manager-update apt-get' >> "$FAKE_BOOTSTRAP_LOG"
-  exit 0
-fi
-if test "${1:-}" = "install"; then
-  printf '%s\n' 'package-manager-install apt-get python3.11' >> "$FAKE_BOOTSTRAP_LOG"
-  : > "$FAKE_PYTHON_READY"
-  exit 0
-fi
-exit 2
-""",
-        )
-        return
-    raise RuntimeError(f"unsupported POSIX platform: {platform_name}")
+    raise RuntimeError(
+        f"unsupported platform for macOS bootstrap replay: {platform_name}"
+    )
 
 
 def _run_bootstrap(root: Path) -> dict[str, object]:

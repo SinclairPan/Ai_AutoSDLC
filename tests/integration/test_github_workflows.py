@@ -970,8 +970,8 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert 'Join-Path $shimRoot "py.cmd"' in driver
     assert 'Join-Path $shimRoot "python.cmd"' in driver
     assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
-    assert '$windowsPowerShell = (Get-Command powershell' in driver
-    assert '& $windowsPowerShell -NoProfile' in driver
+    assert "$windowsPowerShell = (Get-Command powershell" in driver
+    assert "& $windowsPowerShell -NoProfile" in driver
 
 
 def test_macos_online_guide_replays_stock_host_prerequisites_before_install() -> None:
@@ -1056,6 +1056,7 @@ def test_posix_online_guide_replays_missing_python_bootstrap_before_install() ->
         for step in online_steps
         if step.get("name") == "Replay installer without a preinstalled Python"
     )
+    assert replay["if"] == "matrix.asset_os == 'macos'"
     assert replay["run"] == "python3 scripts/posix_python_bootstrap_e2e.py"
     install_index = next(
         index
@@ -1069,9 +1070,40 @@ def test_posix_online_guide_replays_missing_python_bootstrap_before_install() ->
     assert '- "scripts/posix_python_bootstrap_e2e.py"' in workflow_text
 
 
+def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-python-bootstrap"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["container"]["image"] == "debian:12-slim"
+    steps = job["steps"]
+    prepare = next(
+        step for step in steps if step.get("name") == "Prepare a stock Linux host"
+    )
+    bootstrap = next(
+        step
+        for step in steps
+        if step.get("name") == "Install Python through the exact online installer"
+    )
+    assert "apt-get install -y ca-certificates curl git" in prepare["run"]
+    assert 'test -z "$(command -v python3.11 || true)"' in prepare["run"]
+    assert 'test -z "$(command -v python3 || true)"' in prepare["run"]
+    assert 'test -z "$(command -v python || true)"' in prepare["run"]
+    assert 'bash "${installer_path}" "${install_root}"' in bootstrap["run"]
+    assert "dpkg-query -W" in bootstrap["run"]
+    assert "python3.11 python3.11-venv python3-pip" in bootstrap["run"]
+    assert "fake" not in bootstrap["run"].lower()
+
+    driver = (_REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'shim_bin / "apt-get"' not in driver
+
+
 def test_posix_python_bootstrap_driver_runs_from_checkout(tmp_path: Path) -> None:
     driver_path = _REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py"
-    if os.name == "nt":
+    if sys.platform != "darwin":
         assert driver_path.is_file()
         return
 
