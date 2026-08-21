@@ -4,7 +4,7 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 当前公开稳定版本为 `v3.0.0`。普通用户请按[中文用户指南](USER_GUIDE.zh-CN.md)安装；从 `v2.0.0` 升级前请阅读 [v3 迁移说明](docs/v3-migration.zh-CN.md)，从 `v1.0.2` 跨大版本升级还应先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
+> 当前公开稳定版本与比赛最终版本均为 `v3.0.0`。第一次使用时，请在下面的 12 条路线中只选择一条完整执行；从 `v2.0.0` 升级前请阅读 [v3 迁移说明](docs/v3-migration.zh-CN.md)，从 `v1.0.2` 跨大版本升级还应先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
 
 ## 核心特性
 
@@ -25,9 +25,22 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 
 ## 安装
 
+### 新用户路线选择器
+
+无需理解 Python、venv 或仓库结构。先判断项目目录是空的还是已有内容，再选择在线或离线渠道和操作系统。每个链接都包含准备、下载、校验、安装、初始化或接入、成功证据和就地恢复，不需要跳转到其他路线补步骤。
+
+| 项目状态 | 渠道 | Windows AMD64 | macOS Apple Silicon | Linux AMD64 |
+| --- | --- | --- | --- | --- |
+| 全新空项目 | 在线 | [执行路线](USER_GUIDE.zh-CN.md#route-new-online-windows-amd64) | [执行路线](USER_GUIDE.zh-CN.md#route-new-online-macos-arm64) | [执行路线](USER_GUIDE.zh-CN.md#route-new-online-linux-amd64) |
+| 全新空项目 | 离线 | [执行路线](USER_GUIDE.zh-CN.md#route-new-offline-windows-amd64) | [执行路线](USER_GUIDE.zh-CN.md#route-new-offline-macos-arm64) | [执行路线](USER_GUIDE.zh-CN.md#route-new-offline-linux-amd64) |
+| 已有项目 | 在线 | [执行路线](USER_GUIDE.zh-CN.md#route-existing-online-windows-amd64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-online-macos-arm64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-online-linux-amd64) |
+| 已有项目 | 离线 | [执行路线](USER_GUIDE.zh-CN.md#route-existing-offline-windows-amd64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-offline-macos-arm64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-offline-linux-amd64) |
+
+普通用户优先使用安装器创建的 `ai-sdlc`。若当前终端还没有刷新 PATH，就使用该路线给出的 `python -m ai_sdlc ...` 命令；不要自行创建 Python 环境或手工补依赖。
+
 运行要求：Python 3.11 或更高版本、Git。源码开发推荐使用 [uv](https://docs.astral.sh/uv/)。
 
-### 从 Git 安装
+### 高级安装：从 Git 安装
 
 ```powershell
 python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0"
@@ -38,7 +51,7 @@ ai-sdlc --version
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
-### 从源码运行
+### 开发者入口：从源码运行
 
 ```powershell
 git clone --branch v3.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git

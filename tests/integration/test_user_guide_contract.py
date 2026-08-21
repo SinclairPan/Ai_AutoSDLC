@@ -2,14 +2,31 @@
 
 from pathlib import Path
 
+from scripts.validate_user_guide_standard import EXPECTED_ROUTE_IDS, validate_guide_text
+
 from ai_sdlc.integrations.agent_target import AGENT_TARGET_OPTIONS, agent_target_label
 
 ROOT = Path(__file__).resolve().parents[2]
 GUIDE = ROOT / "USER_GUIDE.zh-CN.md"
+README = ROOT / "README.md"
 
 
 def guide_text() -> str:
     return GUIDE.read_text(encoding="utf-8")
+
+
+def test_current_v3_guide_meets_the_final_twelve_route_contract() -> None:
+    assert validate_guide_text(guide_text(), version=(3, 0, 1)) == []
+
+
+def test_readme_links_every_final_new_user_route() -> None:
+    readme = README.read_text(encoding="utf-8")
+    guide = guide_text()
+
+    for route_id in EXPECTED_ROUTE_IDS:
+        anchor = f"route-{route_id.replace('|', '-')}"
+        assert f"USER_GUIDE.zh-CN.md#{anchor}" in readme
+        assert f'<a id="{anchor}"></a>' in guide
 
 
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
