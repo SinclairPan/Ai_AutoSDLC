@@ -105,6 +105,7 @@ $fakeMachinePythonRoot = Join-Path $root "machine-python\Python311"
 $saved = @{
   Path = $env:Path
   MachinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
+  UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
   Python = $env:PYTHON
   NoIndex = $env:PIP_NO_INDEX
   DisableCheck = $env:PIP_DISABLE_PIP_VERSION_CHECK
@@ -114,6 +115,7 @@ try {
   Remove-Item Env:PYTHON -ErrorAction SilentlyContinue
   $isolatedMachinePath = "$env:SystemRoot\System32;$env:SystemRoot"
   [Environment]::SetEnvironmentVariable("Path", $isolatedMachinePath, "Machine")
+  [Environment]::SetEnvironmentVariable("Path", "", "User")
   $env:FAKE_BOOTSTRAP_LOG = $eventLog
   $env:FAKE_INSTALLED_PYTHON_ROOT = Split-Path -Parent $realPython
   $env:FAKE_MACHINE_PYTHON_ROOT = $fakeMachinePythonRoot
@@ -133,6 +135,7 @@ try {
 } finally {
   $env:Path = $saved.Path
   [Environment]::SetEnvironmentVariable("Path", $saved.MachinePath, "Machine")
+  [Environment]::SetEnvironmentVariable("Path", $saved.UserPath, "User")
   if ($null -eq $saved.Python) { Remove-Item Env:PYTHON -ErrorAction SilentlyContinue } else { $env:PYTHON = $saved.Python }
   if ($null -eq $saved.NoIndex) { Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue } else { $env:PIP_NO_INDEX = $saved.NoIndex }
   if ($null -eq $saved.DisableCheck) { Remove-Item Env:PIP_DISABLE_PIP_VERSION_CHECK -ErrorAction SilentlyContinue } else { $env:PIP_DISABLE_PIP_VERSION_CHECK = $saved.DisableCheck }

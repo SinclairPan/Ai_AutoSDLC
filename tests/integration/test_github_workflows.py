@@ -995,6 +995,7 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert '[ValidateSet("winget", "choco")]' in driver
     assert 'Join-Path $shimRoot "choco.cmd"' in driver
     assert 'SetEnvironmentVariable("Path", $saved.MachinePath, "Machine")' in driver
+    assert 'SetEnvironmentVariable("Path", $saved.UserPath, "User")' in driver
     assert "python-bootstrap-$PackageManager-output.txt" in driver
     assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
     assert "$windowsPowerShell = (Get-Command powershell" in driver
