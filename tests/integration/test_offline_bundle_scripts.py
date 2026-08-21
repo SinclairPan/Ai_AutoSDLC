@@ -1640,7 +1640,7 @@ def _copy_online_installer_with_os_release_fixture(
     script = (_PACKAGING_DIR / "install_online.sh").read_text(encoding="utf-8")
     fixture_path = tmp_path / "os-release"
     if os_release is not None:
-        fixture_path.write_text(os_release, encoding="utf-8")
+        fixture_path.write_bytes(os_release.encode("utf-8"))
     os_release_reads = script.count("/etc/os-release")
     assert os_release_reads == 1
     script_path.write_text(
@@ -1648,6 +1648,27 @@ def _copy_online_installer_with_os_release_fixture(
     )
     script_path.chmod(0o755)
     return script_path
+
+
+def test_os_release_fixture_preserves_linux_line_endings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original_write_text = Path.write_text
+
+    def reject_text_mode_os_release_write(
+        path: Path, data: str, *args: object, **kwargs: object
+    ) -> int:
+        if path.name == "os-release":
+            raise AssertionError("Linux os-release fixtures must be written as bytes")
+        return original_write_text(path, data, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", reject_text_mode_os_release_write)
+
+    _copy_online_installer_with_os_release_fixture(
+        tmp_path, "ID=debian\nVERSION_ID=12\n"
+    )
+
+    assert (tmp_path / "os-release").read_bytes() == b"ID=debian\nVERSION_ID=12\n"
 
 
 def _make_linux_identity_wrappers(
