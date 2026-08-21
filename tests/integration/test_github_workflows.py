@@ -836,7 +836,11 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "Direct shim" in workflow
     assert "Codex \\+ PowerShell project init" in workflow
     assert "released-package-guide-gap.txt" in workflow
-    assert "& $directShim init . --agent-target vscode --shell powershell" in workflow
+    assert workflow.count("--init-only") >= 2
+    assert "--allow-existing-project" in workflow
+    assert (
+        "& $directShim init . --agent-target vscode --shell powershell" not in workflow
+    )
     assert "当前结果 / Result" in workflow
     assert "下一步 / Next" in workflow
     assert "adapter ingress|materialized|unverified|host ingress" in workflow
@@ -847,9 +851,11 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "Compare-Object" in workflow
     assert "init/adopt modified existing business files" in workflow
     assert "my-new-project" in workflow
-    assert "& $directShim init . --agent-target cursor --shell powershell" in workflow
-    assert "windows-empty-project-init.txt" in workflow
-    assert ".cursor\\rules\\ai-sdlc.mdc" in workflow
+    assert (
+        "& $directShim init . --agent-target cursor --shell powershell" not in workflow
+    )
+    assert "interactive-init.txt" in workflow
+    assert "AGENTS.md" in workflow
     assert "windows-user-guide-existing-project-evidence" in workflow
     assert "actions/upload-artifact@v7" in workflow
 
@@ -892,9 +898,9 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "sha256sum -c" in workflow
     assert "./install_offline.sh --add-to-path" in workflow
     assert '"$DIRECT_CLI" --version' in workflow
-    assert '"$DIRECT_CLI" init .' in workflow
     assert '"$DIRECT_CLI" adopt .' in workflow
-    assert "python3 scripts/posix_clean_user_e2e.py" in workflow
+    assert workflow.count("python3 scripts/posix_clean_user_e2e.py") >= 2
+    assert '"$DIRECT_CLI" init . --agent-target vscode' not in workflow
     assert "POSIX_INTERACTIVE_SELECTION_COMPLETED" in workflow
     assert "pty.fork()" in driver
     assert 'os.execv(str(cli_path), [str(cli_path), "init", "."])' in driver
@@ -970,10 +976,41 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert '- "scripts/windows_python_bootstrap_e2e.ps1"' in workflow_text
     driver = driver_path.read_text(encoding="utf-8")
     assert 'Join-Path $shimRoot "py.cmd"' in driver
-    assert 'Join-Path $shimRoot "python.cmd"' in driver
+    assert 'Join-Path $shimRoot "python.cmd"' not in driver
+    assert "FAKE_INSTALLED_PYTHON_ROOT" in driver
+    assert "Programs\\Python\\Python311" in driver
+    assert "mklink /J" in driver
     assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
     assert "$windowsPowerShell = (Get-Command powershell" in driver
     assert "& $windowsPowerShell -NoProfile" in driver
+
+    installer = (_REPO_ROOT / "packaging" / "install_online.ps1").read_text(
+        encoding="utf-8"
+    )
+    assert "Update-ProcessPathFromPersistentEnvironment" in installer
+    assert 'Join-Path $env:LOCALAPPDATA "Programs\\Python"' in installer
+    assert 'Join-Path $pythonHome "python.exe"' in installer
+
+
+def test_linux_offline_acquisition_bootstrap_runs_on_fresh_connected_hosts() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-offline-acquisition-bootstrap"]
+    assert job["container"]["image"] == "debian:12-slim"
+    assert job["strategy"]["matrix"]["project_state"] == ["new", "existing"]
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Replay exact offline acquisition bootstrap"
+    )["run"]
+    assert "|offline|linux-amd64" in replay
+    assert 'test -z "$(command -v curl || true)"' in replay
+    assert "AI-SDLC-USER-GUIDE-STEP: acquire" in replay
+    assert "sed '/^PACKAGE_NAME=/,$d'" in replay
+    assert 'bash "${bootstrap_script}"' in replay
+    assert "curl --fail --location" in replay
+    assert "actions/upload-artifact@v7" in str(job["steps"])
 
 
 def test_macos_online_guide_replays_stock_host_prerequisites_before_install() -> None:

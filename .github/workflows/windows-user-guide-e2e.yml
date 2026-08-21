@@ -45,7 +45,6 @@ jobs:
         uses: actions/checkout@v6
 
       - name: Set up package build Python
-        if: ${{ github.event_name == 'pull_request' }}
         uses: actions/setup-python@v6
         with:
           python-version: "3.11"
@@ -73,6 +72,14 @@ jobs:
             AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64" \
             AI_SDLC_OFFLINE_TARGET_PLATFORM="win_amd64" \
             bash packaging/offline/build_offline_bundle.sh
+
+      - name: Install ConPTY interaction driver dependency
+        shell: pwsh
+        run: |
+          py -3.11 -m pip install --disable-pip-version-check "pywinpty==3.0.5"
+          if ($LASTEXITCODE -ne 0) {
+            throw "Unable to install the ConPTY-only offline E2E dependency."
+          }
 
       - name: Replay Windows existing-project guide path
         shell: pwsh
@@ -238,14 +245,19 @@ jobs:
           }
 
           # USER_GUIDE.zh-CN.md Chapter 2: return to the existing project root,
-          # then use the Direct shim with a non-Codex adapter target.
+          # then exercise the documented argument-free interactive init.
           Set-Location $projectRoot
-          & $directShim init . --agent-target vscode --shell powershell *>&1 |
-            Tee-Object -FilePath (Join-Path $evidenceRoot "init-existing-project.txt")
+          $existingInteractiveEvidence = Join-Path $evidenceRoot "existing-interactive"
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_clean_user_e2e.py" `
+            --cli $directShim `
+            --project-root $projectRoot `
+            --evidence-root $existingInteractiveEvidence `
+            --init-only `
+            --allow-existing-project
           if ($LASTEXITCODE -ne 0) {
-            throw "Direct shim VS Code + PowerShell init failed with exit code $LASTEXITCODE"
+            throw "Offline existing-project ConPTY init failed with exit code $LASTEXITCODE"
           }
-          $initOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "init-existing-project.txt") -Raw
+          $initOutput = Get-Content -LiteralPath (Join-Path $existingInteractiveEvidence "interactive-init.txt") -Raw
           if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
             throw "init output did not include the guide's bilingual Result/Next surface"
           }
@@ -255,8 +267,8 @@ jobs:
           if (-not (Test-Path (Join-Path $projectRoot ".ai-sdlc"))) {
             throw "init did not create .ai-sdlc in the existing project"
           }
-          if (-not (Test-Path (Join-Path $projectRoot ".github\copilot-instructions.md"))) {
-            throw "init did not create the VS Code adapter guidance file"
+          if (-not (Test-Path (Join-Path $projectRoot "AGENTS.md"))) {
+            throw "init did not create the selected Codex adapter guidance file"
           }
 
           & $directShim adopt . *>&1 |
@@ -292,16 +304,20 @@ jobs:
             Out-File -FilePath (Join-Path $evidenceRoot "existing-project-after.txt") -Encoding utf8
 
           # USER_GUIDE.zh-CN.md Chapter 1: an empty Windows project uses the
-          # same installed Direct shim and can select another supported adapter.
+          # same installed Direct shim through the documented interactive prompts.
           $emptyProjectRoot = Join-Path $workRoot "my-new-project"
           New-Item -ItemType Directory -Force -Path $emptyProjectRoot | Out-Null
           Set-Location $emptyProjectRoot
-          & $directShim init . --agent-target cursor --shell powershell *>&1 |
-            Tee-Object -FilePath (Join-Path $evidenceRoot "windows-empty-project-init.txt")
+          $emptyInteractiveEvidence = Join-Path $evidenceRoot "empty-interactive"
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_clean_user_e2e.py" `
+            --cli $directShim `
+            --project-root $emptyProjectRoot `
+            --evidence-root $emptyInteractiveEvidence `
+            --init-only
           if ($LASTEXITCODE -ne 0) {
-            throw "Direct shim Cursor + PowerShell empty-project init failed with exit code $LASTEXITCODE"
+            throw "Offline empty-project ConPTY init failed with exit code $LASTEXITCODE"
           }
-          $emptyInitOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "windows-empty-project-init.txt") -Raw
+          $emptyInitOutput = Get-Content -LiteralPath (Join-Path $emptyInteractiveEvidence "interactive-init.txt") -Raw
           if (
             ($emptyInitOutput -notmatch "Initialized AI-SDLC project") -or
             ($emptyInitOutput -notmatch "当前结果 / Result") -or
@@ -309,8 +325,8 @@ jobs:
           ) {
             throw "empty-project init output did not match the user-guide Result/Next contract"
           }
-          if (-not (Test-Path (Join-Path $emptyProjectRoot ".cursor\rules\ai-sdlc.mdc"))) {
-            throw "empty-project init did not create the Cursor adapter guidance file"
+          if (-not (Test-Path (Join-Path $emptyProjectRoot "AGENTS.md"))) {
+            throw "empty-project init did not create the selected Codex adapter guidance file"
           }
 
       - name: Upload guide replay evidence

@@ -307,11 +307,38 @@ function Update-GitBashProfilePath {
   }
 }
 
+function Update-ProcessPathFromPersistentEnvironment {
+  $entries = @(
+    [Environment]::GetEnvironmentVariable("Path", "User"),
+    $env:Path
+  ) | Where-Object { $_ }
+  $env:Path = ($entries -join [IO.Path]::PathSeparator)
+}
+
 function Get-PythonCommand {
   $candidates = @(
     @{ Command = "py"; Args = @("-3") },
     @{ Command = "python"; Args = @() }
   )
+
+  $pythonRoots = @()
+  if ($env:LOCALAPPDATA) {
+    $pythonRoots += (Join-Path $env:LOCALAPPDATA "Programs\Python")
+  }
+  if ($env:ProgramFiles) {
+    $pythonRoots += $env:ProgramFiles
+  }
+  foreach ($root in $pythonRoots) {
+    if (-not (Test-Path -LiteralPath $root)) {
+      continue
+    }
+    foreach ($pythonHome in @(Get-ChildItem -LiteralPath $root -Directory -Filter "Python3*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+      $pythonExe = Join-Path $pythonHome "python.exe"
+      if (Test-Path -LiteralPath $pythonExe) {
+        $candidates += @{ Command = $pythonExe; Args = @() }
+      }
+    }
+  }
 
   foreach ($candidate in $candidates) {
     if (Get-Command $candidate.Command -ErrorAction SilentlyContinue) {
@@ -327,10 +354,12 @@ function Get-PythonCommand {
 function Install-PythonOnline {
   if (Get-Command winget -ErrorAction SilentlyContinue) {
     winget install --id Python.Python.3.11 -e --accept-package-agreements --accept-source-agreements
+    Assert-LastExitCode "winget install Python.Python.3.11"
     return $true
   }
   if (Get-Command choco -ErrorAction SilentlyContinue) {
     choco install python311 -y
+    Assert-LastExitCode "choco install python311"
     return $true
   }
   return $false
@@ -368,6 +397,7 @@ if (-not $python) {
   if (-not $installAttempted) {
     Write-Host "Automatic Python installation could not be completed on this host."
   }
+  Update-ProcessPathFromPersistentEnvironment
   $python = Get-PythonCommand
 }
 

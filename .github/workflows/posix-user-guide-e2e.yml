@@ -558,11 +558,14 @@ jobs:
             shasum -a 256 "${business_files[@]}" | sort > "${evidence_root}/business-before.sha256"
           fi
 
+          python3 scripts/posix_clean_user_e2e.py \
+            --cli "$DIRECT_CLI" \
+            --project "${existing_project_root}" 2>&1 |
+            tee "${evidence_root}/existing-init-adopt.txt"
           (
             cd "${existing_project_root}"
-            "$DIRECT_CLI" init . --agent-target vscode --shell "${PROJECT_SHELL}"
             "$DIRECT_CLI" adopt .
-          ) 2>&1 | tee "${evidence_root}/existing-init-adopt.txt"
+          ) 2>&1 | tee -a "${evidence_root}/existing-init-adopt.txt"
 
           if command -v sha256sum >/dev/null 2>&1; then
             sha256sum "${business_files[@]}" | sort > "${evidence_root}/business-after.sha256"
@@ -574,6 +577,12 @@ jobs:
             "${evidence_root}/business-after.sha256"
 
           grep -F "Detected existing project" \
+            "${evidence_root}/existing-init-adopt.txt"
+          grep -F "POSIX_INTERACTIVE_SELECTION_COMPLETED" \
+            "${evidence_root}/existing-init-adopt.txt"
+          grep -F "AI 代理入口: Cursor" \
+            "${evidence_root}/existing-init-adopt.txt"
+          grep -F "Project shell: ${PROJECT_SHELL}" \
             "${evidence_root}/existing-init-adopt.txt"
           grep -F "接入已有项目：已生成桥接结果" \
             "${evidence_root}/existing-init-adopt.txt"
@@ -588,4 +597,59 @@ jobs:
         with:
           name: posix-user-guide-e2e-evidence-${{ matrix.asset_os }}
           path: ${{ runner.temp }}/posix-user-guide-e2e-evidence
+          if-no-files-found: error
+
+  linux-offline-acquisition-bootstrap:
+    name: ${{ matrix.project_state }} linux offline connected-host bootstrap
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        project_state: [new, existing]
+    container:
+      image: debian:12-slim
+
+    steps:
+      - name: Check out exact offline guide inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Replay exact offline acquisition bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -z "$(command -v curl || true)"
+          test ! -s /etc/ssl/certs/ca-certificates.crt
+          test ! -s /etc/pki/tls/certs/ca-bundle.crt
+          route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE: ${{ matrix.project_state }}|offline|linux-amd64 -->"
+          acquire_script="${RUNNER_TEMP}/linux-offline-acquire.sh"
+          bootstrap_script="${RUNNER_TEMP}/linux-offline-bootstrap.sh"
+          evidence_root="${RUNNER_TEMP}/linux-offline-acquisition-${{ matrix.project_state }}"
+          mkdir -p "${evidence_root}"
+          awk -v marker="${route_marker}" '
+            $0 == marker { in_route = 1; next }
+            in_route && /AI-SDLC-USER-GUIDE-STEP: acquire/ { in_step = 1; next }
+            in_step && /^```bash$/ { in_code = 1; next }
+            in_code && /^```$/ { exit }
+            in_code { print }
+          ' USER_GUIDE.zh-CN.md > "${acquire_script}"
+          sed '/^PACKAGE_NAME=/,$d' "${acquire_script}" > "${bootstrap_script}"
+          test -s "${bootstrap_script}"
+          bash "${bootstrap_script}"
+          command -v curl
+          test -s /etc/ssl/certs/ca-certificates.crt || \
+            test -s /etc/pki/tls/certs/ca-bundle.crt
+          curl --fail --location --retry 3 \
+            --output "${evidence_root}/github-download-probe.txt" \
+            https://raw.githubusercontent.com/github/gitignore/main/Python.gitignore
+          test -s "${evidence_root}/github-download-probe.txt"
+
+      - name: Upload offline acquisition evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-offline-acquisition-${{ matrix.project_state }}
+          path: ${{ runner.temp }}/linux-offline-acquisition-${{ matrix.project_state }}
           if-no-files-found: error

@@ -60,17 +60,10 @@ Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $evidenceRoot, $root | Out-Null
 $shimRoot = Join-Path $root "shims"
 $installRoot = Join-Path $root "runtime"
-$ready = Join-Path $root "python-ready"
 $eventLog = Join-Path $root "bootstrap.log"
+$fakeLocalAppData = Join-Path $root "local-app-data"
 New-Item -ItemType Directory -Force -Path $shimRoot | Out-Null
 
-Write-Utf8NoBom -Path (Join-Path $shimRoot "python.cmd") -Value @'
-@echo off
-echo python %*>>"%FAKE_BOOTSTRAP_LOG%"
-if not exist "%FAKE_PYTHON_READY%" exit /b 1
-"%FAKE_INSTALLED_PYTHON%" %*
-exit /b %ERRORLEVEL%
-'@
 Write-Utf8NoBom -Path (Join-Path $shimRoot "py.cmd") -Value @'
 @echo off
 echo py %*>>"%FAKE_BOOTSTRAP_LOG%"
@@ -79,7 +72,10 @@ exit /b 1
 Write-Utf8NoBom -Path (Join-Path $shimRoot "winget.cmd") -Value @'
 @echo off
 echo package-manager-install winget Python.Python.3.11>>"%FAKE_BOOTSTRAP_LOG%"
-type nul > "%FAKE_PYTHON_READY%"
+set "PYTHON_PARENT=%LOCALAPPDATA%\Programs\Python"
+set "PYTHON_TARGET=%PYTHON_PARENT%\Python311"
+if not exist "%PYTHON_PARENT%" mkdir "%PYTHON_PARENT%"
+mklink /J "%PYTHON_TARGET%" "%FAKE_INSTALLED_PYTHON_ROOT%" >nul
 exit /b 0
 '@
 
@@ -89,12 +85,13 @@ $saved = @{
   Python = $env:PYTHON
   NoIndex = $env:PIP_NO_INDEX
   DisableCheck = $env:PIP_DISABLE_PIP_VERSION_CHECK
+  LocalAppData = $env:LOCALAPPDATA
 }
 try {
   Remove-Item Env:PYTHON -ErrorAction SilentlyContinue
   $env:FAKE_BOOTSTRAP_LOG = $eventLog
-  $env:FAKE_PYTHON_READY = $ready
-  $env:FAKE_INSTALLED_PYTHON = $realPython
+  $env:FAKE_INSTALLED_PYTHON_ROOT = Split-Path -Parent $realPython
+  $env:LOCALAPPDATA = $fakeLocalAppData
   $env:PIP_NO_INDEX = "1"
   $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
   $env:Path = "$shimRoot;$env:SystemRoot\System32;$env:SystemRoot"
@@ -110,6 +107,7 @@ try {
   if ($null -eq $saved.Python) { Remove-Item Env:PYTHON -ErrorAction SilentlyContinue } else { $env:PYTHON = $saved.Python }
   if ($null -eq $saved.NoIndex) { Remove-Item Env:PIP_NO_INDEX -ErrorAction SilentlyContinue } else { $env:PIP_NO_INDEX = $saved.NoIndex }
   if ($null -eq $saved.DisableCheck) { Remove-Item Env:PIP_DISABLE_PIP_VERSION_CHECK -ErrorAction SilentlyContinue } else { $env:PIP_DISABLE_PIP_VERSION_CHECK = $saved.DisableCheck }
+  if ($null -eq $saved.LocalAppData) { Remove-Item Env:LOCALAPPDATA -ErrorAction SilentlyContinue } else { $env:LOCALAPPDATA = $saved.LocalAppData }
 }
 
 $outputText = $output -join "`n"
@@ -122,14 +120,17 @@ if ($installEvents.Count -ne 1) {
   throw "The Windows replay did not execute exactly one Python package install."
 }
 $installIndex = [Array]::IndexOf($events, $installEvents[0])
-$before = @($events[0..($installIndex - 1)] | Where-Object { $_ -like "python *" })
-$after = @($events[($installIndex + 1)..($events.Count - 1)] | Where-Object { $_ -like "python *" })
-if ($before.Count -lt 1 -or $after.Count -lt 1) {
-  throw "The Windows replay did not prove the missing-to-installed Python transition."
+$before = @($events[0..($installIndex - 1)] | Where-Object { $_ -like "py *" })
+if ($before.Count -lt 1) {
+  throw "The Windows replay did not prove Python was missing before winget."
+}
+$installedPython = Join-Path $fakeLocalAppData "Programs\Python\Python311\python.exe"
+if (-not (Test-Path -LiteralPath $installedPython)) {
+  throw "The Windows replay did not materialize Python in the standard winget location."
 }
 foreach ($marker in @(
   "No Python 3.11+ detected. Attempting online installation",
-  "Using Python runtime: python",
+  "Using Python runtime: $installedPython",
   "Online installation completed"
 )) {
   if (-not $outputText.Contains($marker)) {

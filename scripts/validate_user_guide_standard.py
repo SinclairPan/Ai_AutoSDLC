@@ -224,6 +224,28 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                             f"{route_id}:{step_name}",
                         )
                     )
+        if channel == "offline" and platform == "linux-amd64":
+            acquisition_bootstrap_markers = (
+                "command -v apt-get",
+                "apt-get install -y ca-certificates curl",
+                "command -v dnf",
+                "dnf install -y ca-certificates curl",
+                "command -v yum",
+                "yum install -y ca-certificates curl",
+                "command -v curl",
+                "ca_bundle_available",
+            )
+            for step_name in ("acquire", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text for marker in acquisition_bootstrap_markers
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-download-bootstrap-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
         if state == "existing" and platform == "windows-amd64":
             for step in ("prerequisites", "success"):
                 step_text = step_sections.get(step, "")

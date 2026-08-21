@@ -171,6 +171,27 @@ def test_linux_online_routes_provide_executable_download_bootstrap_and_recovery(
                 assert marker in steps[step], (route_id, step, marker)
 
 
+def test_linux_offline_routes_bootstrap_connected_host_download_tools() -> None:
+    _, routes = _route_sections(guide_text())
+    required = (
+        "command -v apt-get",
+        "apt-get install -y ca-certificates curl",
+        "command -v dnf",
+        "dnf install -y ca-certificates curl",
+        "command -v yum",
+        "yum install -y ca-certificates curl",
+        "command -v curl",
+        "ca_bundle_available",
+    )
+
+    for state in ("new", "existing"):
+        route_id = f"{state}|offline|linux-amd64"
+        _, steps = _step_sections(routes[route_id])
+        for step in ("acquire", "recover"):
+            for marker in required:
+                assert marker in steps[step], (route_id, step, marker)
+
+
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
     text = guide_text()
     assert "全新用户 + 全新空项目" in text

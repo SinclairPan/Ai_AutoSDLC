@@ -510,6 +510,16 @@ test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; 
 set -e
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
 mkdir -p "$DOWNLOAD_ROOT"
+run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install download prerequisites." >&2; return 1; fi; }
+ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+if ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
+  else echo "No supported prerequisite package manager (apt-get/dnf/yum) was found." >&2; exit 1; fi
+fi
+command -v curl >/dev/null 2>&1 || { echo "Prerequisite installation did not produce curl." >&2; exit 1; }
+ca_bundle_available || { echo "Prerequisite installation did not produce a readable CA bundle." >&2; exit 1; }
 PACKAGE_NAME="ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
 PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PACKAGE_NAME"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -565,6 +575,18 @@ cd "$PROJECT_ROOT"
 
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
+
+联网获取机缺少 curl 或 CA 证书时执行：
+
+```bash
+run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
+ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
+elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
+elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
+else echo "No supported prerequisite package manager" >&2; exit 1; fi
+command -v curl >/dev/null 2>&1 && ca_bundle_available
+```
 
 `sha256sum` 失败时立即停止，重新复制归档与 `.sha256`。权限错误先修正 `$INSTALL_ROOT` 的当前用户写权限，再重跑 `install_offline.sh --add-to-path`。命令不可用时使用 module 路径；`No module named ai_sdlc` 时重装。`open gates`、代理和 Shell 问题分别按 CLI 指引、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
 
@@ -1044,6 +1066,16 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 set -e
 DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
 mkdir -p "$DOWNLOAD_ROOT"
+run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else echo "Root or sudo is required to install download prerequisites." >&2; return 1; fi; }
+ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+if ! command -v curl >/dev/null 2>&1 || ! ca_bundle_available; then
+  if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
+  elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
+  elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
+  else echo "No supported prerequisite package manager (apt-get/dnf/yum) was found." >&2; exit 1; fi
+fi
+command -v curl >/dev/null 2>&1 || { echo "Prerequisite installation did not produce curl." >&2; exit 1; }
+ca_bundle_available || { echo "Prerequisite installation did not produce a readable CA bundle." >&2; exit 1; }
 PACKAGE_NAME="ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
 PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PACKAGE_NAME"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -1100,6 +1132,18 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
+
+联网获取机缺少 curl 或 CA 证书时执行：
+
+```bash
+run_as_root() { if [ "$(id -u)" -eq 0 ]; then "$@"; elif command -v sudo >/dev/null 2>&1; then sudo "$@"; else return 1; fi; }
+ca_bundle_available() { test -s /etc/ssl/certs/ca-certificates.crt || test -s /etc/pki/tls/certs/ca-bundle.crt; }
+if command -v apt-get >/dev/null 2>&1; then run_as_root apt-get update && run_as_root apt-get install -y ca-certificates curl
+elif command -v dnf >/dev/null 2>&1; then run_as_root dnf install -y ca-certificates curl
+elif command -v yum >/dev/null 2>&1; then run_as_root yum install -y ca-certificates curl
+else echo "No supported prerequisite package manager" >&2; exit 1; fi
+command -v curl >/dev/null 2>&1 && ca_bundle_available
+```
 
 `sha256sum` 失败时停止并重新复制归档与 sidecar。目录权限错误时修复当前用户写权限，再重跑 `install_offline.sh --add-to-path`。裸命令不可用时使用 `"$MODULE_PYTHON" -m ai_sdlc status`；`No module named ai_sdlc` 时重装。若业务文件出现非预期变化，停止检查。`open gates`、代理和 Shell 问题分别按 CLI 指引、`ai-sdlc adapter select`、`ai-sdlc adapter shell-select` 处理。
 

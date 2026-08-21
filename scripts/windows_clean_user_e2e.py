@@ -578,13 +578,17 @@ def run_interactive_init_only(
     cli_path: str,
     project_root: Path,
     evidence_root: Path,
+    *,
+    allow_existing_project: bool = False,
 ) -> None:
     project_root.mkdir(parents=True, exist_ok=True)
     evidence_root.mkdir(parents=True, exist_ok=True)
-    if any(project_root.iterdir()):
+    if not allow_existing_project and any(project_root.iterdir()):
         raise AssertionError("交互式空项目 E2E 必须从空目录开始")
     _verify_interactive_init(cli_path, project_root, evidence_root)
-    if (project_root / "src").exists() or (project_root / "package.json").exists():
+    if not allow_existing_project and (
+        (project_root / "src").exists() or (project_root / "package.json").exists()
+    ):
         raise AssertionError("交互式空项目 init 生成了意外的业务示例文件")
 
 
@@ -594,12 +598,14 @@ def main() -> int:
     parser.add_argument("--project-root", type=Path, required=True)
     parser.add_argument("--evidence-root", type=Path, required=True)
     parser.add_argument("--init-only", action="store_true")
+    parser.add_argument("--allow-existing-project", action="store_true")
     args = parser.parse_args()
     if args.init_only:
         run_interactive_init_only(
             args.cli,
             args.project_root.resolve(),
             args.evidence_root.resolve(),
+            allow_existing_project=args.allow_existing_project,
         )
         print("WINDOWS_INTERACTIVE_INIT_E2E_PASSED")
     else:
