@@ -216,8 +216,12 @@ def test_loop_e2e_stages_windows_frontend_delivery_artifacts_for_local_review(
         path.write_text(f"fixture: {relative_path}\n", encoding="utf-8")
     managed_root = project_root / "managed" / "frontend"
     (managed_root / "index.html").parent.mkdir(parents=True, exist_ok=True)
-    (managed_root / "index.html").write_text("<main>review me</main>\n", encoding="utf-8")
-    (managed_root / "package.json").write_text('{"dependencies":{"temp":"1"}}\n', encoding="utf-8")
+    (managed_root / "index.html").write_text(
+        "<main>review me</main>\n", encoding="utf-8"
+    )
+    (managed_root / "package.json").write_text(
+        '{"dependencies":{"temp":"1"}}\n', encoding="utf-8"
+    )
     ignored_noise = managed_root / "node_modules" / "noise"
     ignored_noise.parent.mkdir(parents=True, exist_ok=True)
     ignored_noise.write_text("ignored\n", encoding="utf-8")
@@ -466,7 +470,9 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     ]
     assert upload_job["permissions"] == {"contents": "write"}
     assert upload_job["needs"] == "build-smoke"
-    assert not any("actions/checkout" in step.get("uses", "") for step in upload_job["steps"])
+    assert not any(
+        "actions/checkout" in step.get("uses", "") for step in upload_job["steps"]
+    )
 
 
 def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> None:
@@ -742,9 +748,7 @@ fi
     complete_asset_names = "\n".join(
         [asset.name, sidecar.name, *(item.name for item in other_assets)]
     )
-    asset_state.write_text(
-        f"{complete_asset_names}\n", encoding="utf-8", newline="\n"
-    )
+    asset_state.write_text(f"{complete_asset_names}\n", encoding="utf-8", newline="\n")
     complete = subprocess.run(
         [bash, "-c", upload_script],
         cwd=tmp_path,
@@ -906,6 +910,35 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     assert "diff -u" in workflow
     assert "posix-user-guide-e2e-evidence" in workflow
     assert "actions/upload-artifact@v7" in workflow
+
+
+def test_user_guide_e2e_covers_both_project_states_through_online_installers() -> None:
+    windows = (_WORKFLOWS_DIR / "windows-user-guide-e2e.yml").read_text(
+        encoding="utf-8"
+    )
+    posix = (_WORKFLOWS_DIR / "posix-user-guide-e2e.yml").read_text(encoding="utf-8")
+    windows_driver = (_REPO_ROOT / "scripts" / "windows_clean_user_e2e.py").read_text(
+        encoding="utf-8"
+    )
+
+    windows_online = windows.split("clean-online-interactive-user-journey:", 1)[1]
+    assert "install_online.ps1" in windows_online
+    assert "windows-online-empty-project" in windows_online
+    assert "windows-online-existing-project" in windows_online
+    assert "init . --agent-target codex --shell powershell" in windows_online
+    assert '["adopt", "."]' in windows_driver
+
+    assert "online-install:" in posix
+    posix_online = posix.split("online-install:", 1)[1]
+    assert "macos-latest" in posix_online
+    assert "ubuntu-latest" in posix_online
+    assert "install_online.sh" in posix_online
+    assert "remote-pull-request-head" in posix_online
+    assert "remote-release-tag" in posix_online
+    assert "posix-online-empty-project" in posix_online
+    assert "posix-online-existing-project" in posix_online
+    assert '"${online_cli}" init . --agent-target codex' in posix_online
+    assert '"${online_cli}" adopt .' in posix_online
 
 
 def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() -> None:

@@ -553,8 +553,15 @@ def run_journey(cli_path: str, project_root: Path, evidence_root: Path) -> None:
     hashes_before = _business_hashes(project_root, business_files)
     _write_hashes(evidence_root / "business-hashes-before.json", hashes_before)
     _verify_interactive_init(cli_path, project_root, evidence_root)
+    adopt_output = _run_cli(
+        cli_path,
+        ["adopt", "."],
+        cwd=project_root,
+        evidence_path=evidence_root / "adopt-existing-project.txt",
+    )
+    _assert_contains(adopt_output, "接入已有项目：已生成桥接结果")
     if _business_hashes(project_root, business_files) != hashes_before:
-        raise AssertionError("交互式 init 修改了已有业务文件")
+        raise AssertionError("交互式 init/adopt 修改了已有业务文件")
     _commit_current_state(project_root, "initialize AI-SDLC")
     _run_requirement_and_workitem_flow(cli_path, project_root, evidence_root)
     _run_default_solution(cli_path, project_root, evidence_root)

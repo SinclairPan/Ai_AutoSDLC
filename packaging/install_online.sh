@@ -138,6 +138,25 @@ install_python() {
   esac
 }
 
+require_git_for_package_source() {
+  if [[ "${PACKAGE_SPEC}" != git+* ]]; then
+    return 0
+  fi
+  if command -v git >/dev/null 2>&1; then
+    git --version
+    return 0
+  fi
+  print_status \
+    "当前安装源使用 git+ 地址，但主机未检测到 Git。" \
+    "Git is required for the configured git+ package source, but it was not detected." \
+    "Install Git, then rerun this installer." \
+    "macOS 可运行 xcode-select --install；Debian/Ubuntu 可运行 sudo apt-get install -y git；Fedora/RHEL 可运行 sudo dnf install -y git。" \
+    "On macOS run xcode-select --install; on Debian/Ubuntu run sudo apt-get install -y git; on Fedora/RHEL run sudo dnf install -y git."
+  exit 1
+}
+
+require_git_for_package_source
+
 if ! PYTHON_BIN="$(pick_python)"; then
   echo "No Python 3.11+ detected. Attempting online installation…"
   if ! install_python; then

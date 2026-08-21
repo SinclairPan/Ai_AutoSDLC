@@ -515,6 +515,43 @@ jobs:
           if ($LASTEXITCODE -ne 0) {
             throw "The ConPTY ordinary-user journey failed with exit code $LASTEXITCODE."
           }
+          "online_installer=true; project_state=existing" |
+            Out-File -FilePath (Join-Path $evidenceRoot "windows-online-existing-project.txt") -Encoding utf8
+
+      - name: Replay the empty-project online route
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $projectRoot = Join-Path $env:RUNNER_TEMP "windows-online-empty-project"
+          $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          Remove-Item -Recurse -Force $projectRoot -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force -Path $projectRoot | Out-Null
+          if ((Get-ChildItem -LiteralPath $projectRoot -Force).Count -ne 0) {
+            throw "The online empty-project route did not start from an empty directory."
+          }
+          Push-Location $projectRoot
+          try {
+            & $env:AI_SDLC_E2E_CLI init . --agent-target codex --shell powershell *>&1 |
+              Tee-Object -FilePath (Join-Path $evidenceRoot "windows-online-empty-project.txt")
+            if ($LASTEXITCODE -ne 0) {
+              throw "The online empty-project init failed with exit code $LASTEXITCODE."
+            }
+          } finally {
+            Pop-Location
+          }
+          $initOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "windows-online-empty-project.txt") -Raw
+          if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
+            throw "The online empty-project init did not expose the guide Result/Next contract."
+          }
+          if (-not (Test-Path (Join-Path $projectRoot ".ai-sdlc"))) {
+            throw "The online empty-project route did not create .ai-sdlc."
+          }
+          if (-not (Test-Path (Join-Path $projectRoot "AGENTS.md"))) {
+            throw "The online empty-project route did not create Codex AGENTS.md."
+          }
+          if ((Test-Path (Join-Path $projectRoot "src")) -or (Test-Path (Join-Path $projectRoot "package.json"))) {
+            throw "The online empty-project route created unexpected example business files."
+          }
 
       - name: Upload clean online ordinary-user evidence
         if: always()

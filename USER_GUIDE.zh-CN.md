@@ -61,7 +61,7 @@
 <!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->
 ### 1. 准备
 
-适用于 64 位 Windows（`windows-amd64`）和 PowerShell。需要联网访问 GitHub，并允许在当前用户目录创建项目与运行环境；不需要手工创建 Python、venv 或安装依赖。
+适用于 64 位 Windows（`windows-amd64`）和 PowerShell。需要联网访问 GitHub，并允许在当前用户目录创建项目与运行环境；安装器负责 Python、venv 和依赖，但在线 Git 安装源要求主机已有 Git。
 
 ```powershell
 $ErrorActionPreference = "Stop"
@@ -71,6 +71,9 @@ $VenvRoot = Join-Path $InstallRoot ".venv"
 $DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v3.0.1-online"
 New-Item -ItemType Directory -Force -Path $ProjectRoot, $InstallRoot, $DownloadRoot | Out-Null
 if ((Get-ChildItem -LiteralPath $ProjectRoot -Force).Count -ne 0) { throw "Project directory must be empty" }
+$GitCommand = Get-Command git -ErrorAction SilentlyContinue
+if (-not $GitCommand) { throw "Git is required. Run: winget install --id Git.Git -e, then reopen PowerShell." }
+git --version
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -134,7 +137,7 @@ Set-Location $ProjectRoot
 <!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->
 ### 1. 准备
 
-适用于 Apple Silicon macOS（`macos-arm64`）和 Terminal 中的 zsh/bash。需要联网访问 GitHub；安装器负责运行环境。
+适用于 Apple Silicon macOS（`macos-arm64`）和 Terminal 中的 zsh/bash。需要联网访问 GitHub；安装器负责 Python 运行环境，但在线 Git 安装源要求主机已有 Git。
 
 ```bash
 set -e
@@ -144,6 +147,8 @@ VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "Git is required. Run: xcode-select --install, then reopen Terminal." >&2; exit 1; }
+git --version
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -207,7 +212,7 @@ cd "$PROJECT_ROOT"
 <!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->
 ### 1. 准备
 
-适用于 64 位 Linux（`linux-amd64`）和 bash。需要联网访问 GitHub，当前用户应能写入 `$HOME/.local/share`。
+适用于 64 位 Linux（`linux-amd64`）和 bash。需要联网访问 GitHub，当前用户应能写入 `$HOME/.local/share`；在线 Git 安装源要求主机已有 Git。
 
 ```bash
 set -e
@@ -217,6 +222,8 @@ VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$PROJECT_ROOT" "$INSTALL_ROOT"
 test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; exit 1; }
+command -v git >/dev/null 2>&1 || { echo "Git is required. Install it with apt/dnf/yum, then reopen the shell." >&2; exit 1; }
+git --version
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -540,7 +547,9 @@ $VenvRoot = Join-Path $InstallRoot ".venv"
 $DownloadRoot = Join-Path $env:TEMP "ai-sdlc-v3.0.1-online"
 New-Item -ItemType Directory -Force -Path $InstallRoot, $DownloadRoot | Out-Null
 $GitCommand = Get-Command git -ErrorAction SilentlyContinue
-if ($GitCommand) { git status --short --untracked-files=all }
+if (-not $GitCommand) { throw "Git is required. Run: winget install --id Git.Git -e, then reopen PowerShell." }
+git --version
+git status --short --untracked-files=all
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -615,7 +624,9 @@ INSTALL_ROOT="$HOME/Applications/AI-SDLC/online-v3.0.1"
 VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
-test -d .git && git status --short || true
+command -v git >/dev/null 2>&1 || { echo "Git is required. Run: xcode-select --install, then reopen Terminal." >&2; exit 1; }
+git --version
+test -d .git && git status --short --untracked-files=all || true
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->
@@ -690,7 +701,9 @@ INSTALL_ROOT="$HOME/.local/share/AI-SDLC/online-v3.0.1"
 VENV_ROOT="$INSTALL_ROOT/.venv"
 DOWNLOAD_ROOT="$(mktemp -d)"
 mkdir -p "$INSTALL_ROOT"
-test -d .git && git status --short || true
+command -v git >/dev/null 2>&1 || { echo "Git is required. Install it with apt/dnf/yum, then reopen the shell." >&2; exit 1; }
+git --version
+test -d .git && git status --short --untracked-files=all || true
 ```
 
 <!-- AI-SDLC-USER-GUIDE-STEP: acquire -->

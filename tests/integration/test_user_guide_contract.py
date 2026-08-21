@@ -71,6 +71,20 @@ def test_existing_project_success_checks_include_untracked_files() -> None:
         assert "git status --short --untracked-files=all" in steps["success"], route_id
 
 
+def test_online_routes_check_git_in_their_own_prerequisite_step() -> None:
+    _, routes = _route_sections(guide_text())
+
+    for route_id in EXPECTED_ROUTE_IDS:
+        state, channel, platform = route_id.split("|")
+        if channel != "online":
+            continue
+        _, steps = _step_sections(routes[route_id])
+        prerequisites = steps["prerequisites"]
+        marker = "Get-Command git" if platform == "windows-amd64" else "command -v git"
+        assert marker in prerequisites, route_id
+        assert "git --version" in prerequisites, route_id
+
+
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
     text = guide_text()
     assert "全新用户 + 全新空项目" in text

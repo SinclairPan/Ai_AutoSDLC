@@ -15,6 +15,7 @@ on:
       - "README.md"
       - "USER_GUIDE.zh-CN.md"
       - "templates/**"
+      - "packaging/install_online.sh"
       - "packaging/offline/**"
       - ".github/workflows/posix-user-guide-e2e.yml"
       - "scripts/posix_clean_user_e2e.py"
@@ -28,6 +29,133 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  online-install:
+    name: ${{ matrix.asset_os }} online guide
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset_os: macos
+            runner: macos-latest
+            project_shell: zsh
+          - asset_os: linux
+            runner: ubuntu-latest
+            project_shell: bash
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'pull_request' && 'v3.0.1' || inputs.tag }}
+      PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
+      PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
+      PROJECT_SHELL: ${{ matrix.project_shell }}
+      AI_SDLC_DISABLE_UPDATE_CHECK: "1"
+      PYTHONUTF8: "1"
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - name: Check out online guide driver inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Install from the pinned online source and replay both project states
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          evidence_root="${RUNNER_TEMP}/posix-online-user-guide-e2e-evidence"
+          export HOME="${RUNNER_TEMP}/online-guide-home"
+          install_root="${RUNNER_TEMP}/ai-sdlc-online"
+          new_project_root="${HOME}/projects/posix-online-empty-project"
+          existing_project_root="${HOME}/projects/posix-online-existing-project"
+          source_kind="remote-release-tag"
+          source_repository="SinclairPan/Ai_AutoSDLC"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            test -n "${PR_HEAD_REPOSITORY}" && test -n "${PR_HEAD_SHA}"
+            source_kind="remote-pull-request-head"
+            source_repository="${PR_HEAD_REPOSITORY}"
+            remote_sha="${PR_HEAD_SHA}"
+          else
+            tag_line="$(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/${RELEASE_TAG}^{}" | head -n 1)"
+            if [[ -z "${tag_line}" ]]; then
+              tag_line="$(git ls-remote https://github.com/SinclairPan/Ai_AutoSDLC.git "refs/tags/${RELEASE_TAG}" | head -n 1)"
+            fi
+            remote_sha="${tag_line%%[[:space:]]*}"
+            test -n "${remote_sha}"
+          fi
+
+          mkdir -p "${evidence_root}" "${new_project_root}" "${existing_project_root}/src"
+          installer_url="https://raw.githubusercontent.com/${source_repository}/${remote_sha}/packaging/install_online.sh"
+          installer_path="${RUNNER_TEMP}/install_online.sh"
+          package_spec="git+https://github.com/${source_repository}.git@${remote_sha}"
+          curl --fail --location --retry 3 --output "${installer_path}" "${installer_url}"
+          chmod +x "${installer_path}"
+          AI_SDLC_PACKAGE_SPEC="${package_spec}" \
+            bash "${installer_path}" "${install_root}" --add-to-path 2>&1 |
+            tee "${evidence_root}/install-online.txt"
+
+          online_cli="${HOME}/.local/bin/ai-sdlc"
+          test -x "${online_cli}"
+          expected_version="${RELEASE_TAG#v}"
+          test "$("${online_cli}" --version)" = "${expected_version}"
+          printf 'source_kind=%s\nsource_repository=%s\nsource_revision=%s\n' \
+            "${source_kind}" "${source_repository}" "${remote_sha}" > \
+            "${evidence_root}/remote-source.txt"
+
+          test -z "$(ls -A "${new_project_root}")"
+          (
+            cd "${new_project_root}"
+            "${online_cli}" init . --agent-target codex --shell "${PROJECT_SHELL}"
+          ) 2>&1 | tee "${evidence_root}/posix-online-empty-project.txt"
+          test -d "${new_project_root}/.ai-sdlc"
+          test -f "${new_project_root}/AGENTS.md"
+          test ! -e "${new_project_root}/src"
+          test ! -e "${new_project_root}/package.json"
+          grep -F "当前结果 / Result" "${evidence_root}/posix-online-empty-project.txt"
+          grep -F "下一步 / Next" "${evidence_root}/posix-online-empty-project.txt"
+
+          printf '%s\n' '{"scripts":{"build":"echo build"}}' > "${existing_project_root}/package.json"
+          printf '%s\n' "console.log('existing');" > "${existing_project_root}/src/main.js"
+          printf '%s\n' "- [ ] Existing imported task" > "${existing_project_root}/TODO.md"
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            shasum -a 256 \
+              "${existing_project_root}/package.json" \
+              "${existing_project_root}/src/main.js" \
+              "${existing_project_root}/TODO.md" | sort > "${evidence_root}/business-before.sha256"
+          else
+            sha256sum \
+              "${existing_project_root}/package.json" \
+              "${existing_project_root}/src/main.js" \
+              "${existing_project_root}/TODO.md" | sort > "${evidence_root}/business-before.sha256"
+          fi
+          (
+            cd "${existing_project_root}"
+            "${online_cli}" init . --agent-target codex --shell "${PROJECT_SHELL}"
+            "${online_cli}" adopt .
+          ) 2>&1 | tee "${evidence_root}/posix-online-existing-project.txt"
+          if [[ "$(uname -s)" == "Darwin" ]]; then
+            shasum -a 256 \
+              "${existing_project_root}/package.json" \
+              "${existing_project_root}/src/main.js" \
+              "${existing_project_root}/TODO.md" | sort > "${evidence_root}/business-after.sha256"
+          else
+            sha256sum \
+              "${existing_project_root}/package.json" \
+              "${existing_project_root}/src/main.js" \
+              "${existing_project_root}/TODO.md" | sort > "${evidence_root}/business-after.sha256"
+          fi
+          diff -u "${evidence_root}/business-before.sha256" "${evidence_root}/business-after.sha256"
+          grep -F "Detected existing project" "${evidence_root}/posix-online-existing-project.txt"
+
+      - name: Upload online guide evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: posix-online-user-guide-e2e-evidence-${{ matrix.asset_os }}
+          path: ${{ runner.temp }}/posix-online-user-guide-e2e-evidence
+          if-no-files-found: error
+          include-hidden-files: true
+
   replay-published-guide:
     name: ${{ matrix.asset_os }} published guide
     runs-on: ${{ matrix.runner }}

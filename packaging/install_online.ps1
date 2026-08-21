@@ -336,6 +336,26 @@ function Install-PythonOnline {
   return $false
 }
 
+function Assert-GitSourcePrerequisite {
+  if ($PackageSpec -notmatch "^git\+") {
+    return
+  }
+  if (Get-Command git -ErrorAction SilentlyContinue) {
+    git --version
+    Assert-LastExitCode "git --version"
+    return
+  }
+  Write-BilingualStatus `
+    -Status "Git is required for the configured git+ package source, but it was not detected." `
+    -StatusEn "Git is required for the configured git+ package source, but it was not detected." `
+    -Command "winget install --id Git.Git -e" `
+    -Purpose "Install Git, then rerun this installer. If winget is unavailable, install Git for Windows from https://git-scm.com/download/win." `
+    -PurposeEn "Install Git, then rerun this installer. If winget is unavailable, install Git for Windows from https://git-scm.com/download/win."
+  exit 1
+}
+
+Assert-GitSourcePrerequisite
+
 $python = Get-PythonCommand
 if (-not $python) {
   Write-Host "No Python 3.11+ detected. Attempting online installation..."
