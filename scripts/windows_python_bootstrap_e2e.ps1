@@ -10,7 +10,7 @@ function New-MinimalWheel {
 
   $wheelRoot = Join-Path $Root "wheel-root"
   $packageRoot = Join-Path $wheelRoot "dummy_ai_sdlc"
-  $distInfo = Join-Path $wheelRoot "dummy_ai_sdlc-0.0.0.dist-info"
+  $distInfo = Join-Path $wheelRoot "dummy_ai_sdlc-3.0.1.dist-info"
   New-Item -ItemType Directory -Force -Path $packageRoot, $distInfo | Out-Null
   Write-Utf8NoBom -Path (Join-Path $packageRoot "__init__.py") -Value @'
 def main():
@@ -19,7 +19,7 @@ def main():
   Write-Utf8NoBom -Path (Join-Path $distInfo "METADATA") -Value @'
 Metadata-Version: 2.1
 Name: dummy-ai-sdlc
-Version: 0.0.0
+Version: 3.0.1
 '@
   Write-Utf8NoBom -Path (Join-Path $distInfo "WHEEL") -Value @'
 Wheel-Version: 1.0
@@ -33,13 +33,13 @@ ai-sdlc = dummy_ai_sdlc:main
 '@
   Write-Utf8NoBom -Path (Join-Path $distInfo "RECORD") -Value @'
 dummy_ai_sdlc/__init__.py,,
-dummy_ai_sdlc-0.0.0.dist-info/METADATA,,
-dummy_ai_sdlc-0.0.0.dist-info/WHEEL,,
-dummy_ai_sdlc-0.0.0.dist-info/entry_points.txt,,
-dummy_ai_sdlc-0.0.0.dist-info/RECORD,,
+dummy_ai_sdlc-3.0.1.dist-info/METADATA,,
+dummy_ai_sdlc-3.0.1.dist-info/WHEEL,,
+dummy_ai_sdlc-3.0.1.dist-info/entry_points.txt,,
+dummy_ai_sdlc-3.0.1.dist-info/RECORD,,
 '@
   Add-Type -AssemblyName System.IO.Compression.FileSystem
-  $wheelPath = Join-Path $Root "dummy_ai_sdlc-0.0.0-py3-none-any.whl"
+  $wheelPath = Join-Path $Root "dummy_ai_sdlc-3.0.1-py3-none-any.whl"
   [IO.Compression.ZipFile]::CreateFromDirectory($wheelRoot, $wheelPath)
   return $wheelPath
 }
@@ -58,11 +58,10 @@ $root = Join-Path $env:RUNNER_TEMP "windows-python-bootstrap-replay"
 Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $evidenceRoot, $root | Out-Null
 $shimRoot = Join-Path $root "shims"
-$home = Join-Path $root "home"
 $installRoot = Join-Path $root "runtime"
 $ready = Join-Path $root "python-ready"
 $eventLog = Join-Path $root "bootstrap.log"
-New-Item -ItemType Directory -Force -Path $shimRoot, $home | Out-Null
+New-Item -ItemType Directory -Force -Path $shimRoot | Out-Null
 
 Write-Utf8NoBom -Path (Join-Path $shimRoot "python.cmd") -Value @'
 @echo off
