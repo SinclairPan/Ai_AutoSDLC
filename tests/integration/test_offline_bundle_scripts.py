@@ -1553,22 +1553,52 @@ def test_install_online_fails_before_creating_venv_when_git_package_lacks_git(
     assert not (tmp_path / ".venv").exists()
 
 
-def test_install_online_auto_installs_python_when_linux_package_manager_is_available(
-    tmp_path: Path,
-) -> None:
+def _copy_online_installer_with_os_release_fixture(
+    tmp_path: Path, os_release: str | None
+) -> Path:
     script_path = tmp_path / "install_online.sh"
-    shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
+    script = (_PACKAGING_DIR / "install_online.sh").read_text(encoding="utf-8")
+    fixture_path = tmp_path / "os-release"
+    if os_release is not None:
+        fixture_path.write_text(os_release, encoding="utf-8")
+    os_release_reads = script.count("/etc/os-release")
+    assert os_release_reads == 1
+    script_path.write_text(
+        script.replace("/etc/os-release", _bash_path(fixture_path)), encoding="utf-8"
+    )
     script_path.chmod(0o755)
+    return script_path
 
-    wrapper_dir = tmp_path / "wrappers"
-    wrapper_dir.mkdir()
-    fake_python = _make_fake_python(wrapper_dir)
-    apt_log = tmp_path / "apt.log"
 
+def _make_linux_identity_wrappers(
+    wrapper_dir: Path, *, arch: str, libc: str, identity_log: Path
+) -> None:
     _write_executable(
         wrapper_dir / "uname",
         f"""#!{_bash_shebang_python()}
-print("Linux")
+import sys
+from pathlib import Path
+
+Path({str(identity_log)!r}).open("a", encoding="utf-8").write("uname " + " ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1:] == ["-s"]:
+    print("Linux")
+elif sys.argv[1:] == ["-m"]:
+    print({arch!r})
+else:
+    raise SystemExit(1)
+""",
+    )
+    _write_executable(
+        wrapper_dir / "getconf",
+        f"""#!{_bash_shebang_python()}
+import sys
+from pathlib import Path
+
+Path({str(identity_log)!r}).open("a", encoding="utf-8").write("getconf " + " ".join(sys.argv[1:]) + "\\n")
+if sys.argv[1:] == ["GNU_LIBC_VERSION"]:
+    print({libc!r})
+else:
+    raise SystemExit(1)
 """,
     )
     _write_executable(
@@ -1576,49 +1606,200 @@ print("Linux")
         f"""#!{_bash_shebang_python()}
 import sys
 if sys.argv[1:] == ["-u"]:
-    print("501")
+    print("0")
     raise SystemExit(0)
 raise SystemExit(1)
 """,
     )
-    _write_executable(
-        wrapper_dir / "sudo",
-        f"""#!{_bash_shebang_python()}
-import subprocess
-import sys
-from pathlib import Path
 
-command = Path(__file__).resolve().parent / sys.argv[1]
-completed = subprocess.run([sys.executable, str(command), *sys.argv[2:]], check=False)
-raise SystemExit(completed.returncode)
-""",
-    )
-    _write_executable(
-        wrapper_dir / "apt-get",
-        f"""#!{_bash_shebang_python()}
-import os
-import shutil
-import sys
-from pathlib import Path
 
-log_path = Path({str(apt_log)!r})
-with log_path.open("a", encoding="utf-8") as handle:
-    handle.write(" ".join(sys.argv[1:]) + "\\n")
-
+def _make_fake_apt_bootstrap(
+    wrapper_dir: Path, apt_log: Path, fake_python: Path | None
+) -> None:
+    install_body = ""
+    if fake_python is not None:
+        install_body = f"""
 if sys.argv[1:2] == ["install"]:
     source = Path({str(fake_python)!r})
     target = Path({str(wrapper_dir / "python3.11")!r})
     shutil.copy2(source, target)
     target.chmod(0o755)
+"""
+    _write_executable(
+        wrapper_dir / "apt-get",
+        f"""#!{_bash_shebang_python()}
+import shutil
+import sys
+from pathlib import Path
 
+with Path({str(apt_log)!r}).open("a", encoding="utf-8") as handle:
+    handle.write(" ".join(sys.argv[1:]) + "\\n")
+{install_body}
 raise SystemExit(0)
 """,
     )
 
+
+def _prepare_missing_python_linux_install(
+    tmp_path: Path,
+    *,
+    os_release: str | None,
+    arch: str,
+    libc: str,
+    install_python_after_apt: bool = False,
+) -> tuple[Path, Path, Path, dict[str, str], Path, Path]:
+    script_path = _copy_online_installer_with_os_release_fixture(tmp_path, os_release)
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    identity_log = tmp_path / "identity.log"
+    apt_log = tmp_path / "apt.log"
+    _make_linux_identity_wrappers(
+        wrapper_dir, arch=arch, libc=libc, identity_log=identity_log
+    )
+    fake_python = _make_fake_python(wrapper_dir) if install_python_after_apt else None
+    _make_fake_apt_bootstrap(wrapper_dir, apt_log, fake_python)
+    _make_fake_git(wrapper_dir)
     env = dict(os.environ)
     _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
     env["AI_SDLC_PACKAGE_SPEC"] = "ai-sdlc==1.0.1"
     env.pop("PYTHON", None)
+    return script_path, wrapper_dir, apt_log, env, identity_log, tmp_path / "project"
+
+
+def _prepare_unsupported_install_home(
+    home_dir: Path,
+) -> tuple[bytes, bytes, str, str]:
+    home_dir.mkdir()
+    bashrc = home_dir / ".bashrc"
+    profile = home_dir / ".profile"
+    bashrc.write_bytes(b"# unchanged bashrc\\n")
+    profile.write_bytes(b"# unchanged profile\\n")
+    bashrc_before = bashrc.read_bytes()
+    profile_before = profile.read_bytes()
+    return (
+        bashrc_before,
+        profile_before,
+        hashlib.sha256(bashrc_before).hexdigest(),
+        hashlib.sha256(profile_before).hexdigest(),
+    )
+
+
+def _assert_unsupported_install_did_not_mutate(
+    *,
+    venv_target: Path,
+    home_dir: Path,
+    bashrc_before: bytes,
+    profile_before: bytes,
+    bashrc_hash_before: str,
+    profile_hash_before: str,
+    project_dir: Path,
+    project_before: bytes,
+    apt_log: Path,
+) -> None:
+    assert not venv_target.exists()
+    assert not (home_dir / ".local" / "bin" / "ai-sdlc").exists()
+    assert (home_dir / ".bashrc").read_bytes() == bashrc_before
+    assert (home_dir / ".profile").read_bytes() == profile_before
+    assert hashlib.sha256((home_dir / ".bashrc").read_bytes()).hexdigest() == bashrc_hash_before
+    assert hashlib.sha256((home_dir / ".profile").read_bytes()).hexdigest() == profile_hash_before
+    assert (project_dir / "keep.txt").read_bytes() == project_before
+    assert not apt_log.exists()
+
+
+def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
+    tmp_path: Path,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
+        tmp_path,
+        os_release='ID="debian"\nVERSION_ID="12"\n',
+        arch="x86_64",
+        libc="glibc 2.36",
+        install_python_after_apt=True,
+    )
+    project_dir.mkdir()
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path)],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (project_dir / ".venv" / "bin" / "ai-sdlc").is_file()
+    assert apt_log.read_text(encoding="utf-8").splitlines() == [
+        "update",
+        "install -y python3.11 python3.11-venv python3-pip",
+    ]
+
+
+def test_install_online_rejects_ubuntu_glibc_without_python_before_any_mutation(
+    tmp_path: Path,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
+        tmp_path,
+        os_release="ID=ubuntu\nVERSION_ID=22.04\n",
+        arch="x86_64",
+        libc="glibc 2.35",
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    project_before = b"business data\n"
+    (project_dir / "keep.txt").write_bytes(project_before)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=ubuntu version=22.04 arch=x86_64 libc=glibc" in result.stdout
+    assert "Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc" in result.stdout
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in result.stdout
+    assert "route 6/12" in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_uses_existing_python_on_ubuntu_without_consulting_linux_guard(
+    tmp_path: Path,
+) -> None:
+    script_path = _copy_online_installer_with_os_release_fixture(
+        tmp_path, "ID=ubuntu\nVERSION_ID=22.04\n"
+    )
+    wrapper_dir = tmp_path / "wrappers"
+    wrapper_dir.mkdir()
+    identity_log = tmp_path / "identity.log"
+    _make_linux_identity_wrappers(
+        wrapper_dir, arch="x86_64", libc="glibc 2.35", identity_log=identity_log
+    )
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_path_alias(fake_python, wrapper_dir / "python3.11")
+    _make_fake_git(wrapper_dir)
+    env = dict(os.environ)
+    _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
+    env["AI_SDLC_PACKAGE_SPEC"] = "ai-sdlc==1.0.1"
 
     result = subprocess.run(
         [_bash_command(), str(script_path)],
@@ -1631,72 +1812,164 @@ raise SystemExit(0)
 
     assert result.returncode == 0, result.stderr
     assert (tmp_path / ".venv" / "bin" / "ai-sdlc").is_file()
-    assert "No Python 3.11+ detected. Attempting online installation" in result.stdout
-    assert "Using Python runtime: python3.11" in result.stdout
-    assert "当前结果 / Result" in result.stdout
-    assert apt_log.read_text(encoding="utf-8").splitlines() == [
-        "update",
-        "install -y python3.11 python3.11-venv python3-pip",
-    ]
+    assert not identity_log.exists()
 
 
-def test_install_online_reports_bilingual_failure_when_python_is_still_missing_after_auto_install(
+@pytest.mark.parametrize("os_release", [None, "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n"])
+def test_install_online_reports_unknown_for_missing_python_os_release(
+    tmp_path: Path, os_release: str | None
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
+        tmp_path,
+        os_release=os_release,
+        arch="x86_64",
+        libc="glibc 2.35",
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    project_before = b"business data\n"
+    (project_dir / "keep.txt").write_bytes(project_before)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=unknown version=unknown arch=unknown libc=unknown" in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_rejects_linux_aarch64_glibc_without_python_fallback(
     tmp_path: Path,
 ) -> None:
-    script_path = tmp_path / "install_online.sh"
-    shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
-    script_path.chmod(0o755)
+    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
+        tmp_path,
+        os_release="ID=debian\nVERSION_ID=12\n",
+        arch="aarch64",
+        libc="glibc 2.36",
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    project_before = b"business data\n"
+    (project_dir / "keep.txt").write_bytes(project_before)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
 
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=debian version=12 arch=aarch64 libc=glibc" in result.stdout
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" not in result.stdout
+    assert "route 6/12" not in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_rejects_linux_x86_64_musl_without_python_fallback(
+    tmp_path: Path,
+) -> None:
+    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
+        tmp_path,
+        os_release="ID=debian\nVERSION_ID=12\n",
+        arch="x86_64",
+        libc="musl 1.2.4",
+    )
+    home_dir = tmp_path / "home"
+    bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
+        _prepare_unsupported_install_home(home_dir)
+    )
+    project_dir.mkdir()
+    project_before = b"business data\n"
+    (project_dir / "keep.txt").write_bytes(project_before)
+    env["HOME"] = str(home_dir)
+    env["SHELL"] = "/bin/bash"
+    venv_target = tmp_path / "custom-venv"
+
+    result = subprocess.run(
+        [_bash_command(), str(script_path), str(venv_target), "--add-to-path"],
+        cwd=project_dir,
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+
+    assert result.returncode != 0
+    assert "distro=debian version=12 arch=x86_64 libc=musl" in result.stdout
+    assert "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" not in result.stdout
+    assert "route 6/12" not in result.stdout
+    _assert_unsupported_install_did_not_mutate(
+        venv_target=venv_target,
+        home_dir=home_dir,
+        bashrc_before=bashrc_before,
+        profile_before=profile_before,
+        bashrc_hash_before=bashrc_hash_before,
+        profile_hash_before=profile_hash_before,
+        project_dir=project_dir,
+        project_before=project_before,
+        apt_log=apt_log,
+    )
+
+
+def test_install_online_uses_existing_python_on_musl_without_consulting_linux_guard(
+    tmp_path: Path,
+) -> None:
+    script_path = _copy_online_installer_with_os_release_fixture(
+        tmp_path, "ID=debian\nVERSION_ID=12\n"
+    )
     wrapper_dir = tmp_path / "wrappers"
     wrapper_dir.mkdir()
+    identity_log = tmp_path / "identity.log"
+    _make_linux_identity_wrappers(
+        wrapper_dir, arch="x86_64", libc="musl 1.2.4", identity_log=identity_log
+    )
+    fake_python = _make_fake_python(wrapper_dir)
+    _make_path_alias(fake_python, wrapper_dir / "python3.11")
     _make_fake_git(wrapper_dir)
-    apt_log = tmp_path / "apt.log"
-
-    _write_executable(
-        wrapper_dir / "uname",
-        f"""#!{_bash_shebang_python()}
-print("Linux")
-""",
-    )
-    _write_executable(
-        wrapper_dir / "id",
-        f"""#!{_bash_shebang_python()}
-import sys
-if sys.argv[1:] == ["-u"]:
-    print("501")
-    raise SystemExit(0)
-raise SystemExit(1)
-""",
-    )
-    _write_executable(
-        wrapper_dir / "sudo",
-        f"""#!{_bash_shebang_python()}
-import subprocess
-import sys
-from pathlib import Path
-
-command = Path(__file__).resolve().parent / sys.argv[1]
-completed = subprocess.run([sys.executable, str(command), *sys.argv[2:]], check=False)
-raise SystemExit(completed.returncode)
-""",
-    )
-    _write_executable(
-        wrapper_dir / "apt-get",
-        f"""#!{_bash_shebang_python()}
-import sys
-from pathlib import Path
-
-log_path = Path({str(apt_log)!r})
-with log_path.open("a", encoding="utf-8") as handle:
-    handle.write(" ".join(sys.argv[1:]) + "\\n")
-
-raise SystemExit(0)
-""",
-    )
-
     env = dict(os.environ)
     _set_bash_wrapper_env(env, wrapper_dir, tmp_path)
-    env.pop("PYTHON", None)
+    env["AI_SDLC_PACKAGE_SPEC"] = "ai-sdlc==1.0.1"
 
     result = subprocess.run(
         [_bash_command(), str(script_path)],
@@ -1707,50 +1980,9 @@ raise SystemExit(0)
         check=False,
     )
 
-    assert result.returncode != 0
-    assert "当前结果 / Result" in result.stdout
-    assert "无法自动完成在线安装" in result.stdout
-    assert "Python 3.11+ was not detected" in result.stdout
-    assert "./packaging/install_online.sh" in result.stdout
-    assert apt_log.read_text(encoding="utf-8").splitlines() == [
-        "update",
-        "install -y python3.11 python3.11-venv python3-pip",
-    ]
-
-
-def test_install_online_reports_bilingual_failure_when_python_cannot_be_installed(
-    tmp_path: Path,
-) -> None:
-    script_path = tmp_path / "install_online.sh"
-    shutil.copy2(_PACKAGING_DIR / "install_online.sh", script_path)
-    script_path.chmod(0o755)
-
-    wrapper_dir = tmp_path / "wrappers"
-    wrapper_dir.mkdir()
-    _make_fake_git(wrapper_dir)
-    _write_executable(
-        wrapper_dir / "uname",
-        "#!/usr/bin/env bash\nprintf 'UnknownOS\\n'\n",
-    )
-
-    env = dict(os.environ)
-    _set_env_path(env, _bash_wrapper_path(wrapper_dir))
-    env.pop("PYTHON", None)
-
-    result = subprocess.run(
-        [_bash_command(), str(script_path)],
-        cwd=tmp_path,
-        capture_output=True,
-        text=True,
-        env=env,
-        check=False,
-    )
-
-    assert result.returncode != 0
-    assert "当前结果 / Result" in result.stdout
-    assert "无法自动完成在线安装" in result.stdout
-    assert "Python 3.11+ was not detected" in result.stdout
-    assert "./packaging/install_online.sh" in result.stdout
+    assert result.returncode == 0, result.stderr
+    assert (tmp_path / ".venv" / "bin" / "ai-sdlc").is_file()
+    assert not identity_log.exists()
 
 
 def test_windows_online_installer_catches_auto_install_failure_before_bilingual_guidance() -> (

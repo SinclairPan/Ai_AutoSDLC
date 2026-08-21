@@ -121,21 +121,128 @@ install_python() {
       brew install python@3.11
       ;;
     Linux)
-      if command -v apt-get >/dev/null 2>&1; then
-        run_privileged apt-get update
-        run_privileged apt-get install -y python3.11 python3.11-venv python3-pip
-      elif command -v dnf >/dev/null 2>&1; then
-        run_privileged dnf install -y python3.11 python3.11-pip
-      elif command -v yum >/dev/null 2>&1; then
-        run_privileged yum install -y python3.11 python3.11-pip
-      else
+      if ! command -v apt-get >/dev/null 2>&1; then
         return 1
       fi
+      run_privileged apt-get update
+      run_privileged apt-get install -y python3.11 python3.11-venv python3-pip
       ;;
     *)
       return 1
       ;;
   esac
+}
+
+set_linux_identity_unknown() {
+  LINUX_DISTRO="unknown"
+  LINUX_VERSION="unknown"
+  LINUX_ARCH="unknown"
+  LINUX_LIBC="unknown"
+}
+
+normalize_os_release_value() {
+  local value="$1"
+  if [[ "${value:0:1}" == '"' && "${value: -1}" == '"' ]]; then
+    value="${value:1:${#value}-2}"
+  elif [[ "${value:0:1}" == "'" && "${value: -1}" == "'" ]]; then
+    value="${value:1:${#value}-2}"
+  fi
+  printf '%s' "${value}"
+}
+
+read_linux_identity() {
+  local os_release_path="/etc/os-release"
+  local key=""
+  local value=""
+  local candidate=""
+  local raw_arch=""
+  local raw_libc=""
+  local id_value=""
+  local version_value=""
+  local id_seen=0
+  local version_seen=0
+
+  set_linux_identity_unknown
+  raw_arch="$(uname -m 2>/dev/null || true)"
+  raw_libc="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+  if [[ -z "${raw_arch}" || -z "${raw_libc}" || ! -r "${os_release_path}" ]]; then
+    return 1
+  fi
+
+  while IFS='=' read -r key value || [[ -n "${key}" || -n "${value}" ]]; do
+    case "${key}" in
+      ID)
+        candidate="$(normalize_os_release_value "${value}")"
+        if [[ ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          set_linux_identity_unknown
+          return 1
+        fi
+        if [[ "${id_seen}" -eq 1 && "${id_value}" != "${candidate}" ]]; then
+          set_linux_identity_unknown
+          return 1
+        fi
+        id_seen=1
+        id_value="${candidate}"
+        ;;
+      VERSION_ID)
+        candidate="$(normalize_os_release_value "${value}")"
+        if [[ ! "${candidate}" =~ ^[A-Za-z0-9._-]+$ ]]; then
+          set_linux_identity_unknown
+          return 1
+        fi
+        if [[ "${version_seen}" -eq 1 && "${version_value}" != "${candidate}" ]]; then
+          set_linux_identity_unknown
+          return 1
+        fi
+        version_seen=1
+        version_value="${candidate}"
+        ;;
+    esac
+  done < "${os_release_path}"
+
+  if [[ "${id_seen}" -ne 1 || "${version_seen}" -ne 1 ]]; then
+    set_linux_identity_unknown
+    return 1
+  fi
+
+  LINUX_DISTRO="${id_value}"
+  LINUX_VERSION="${version_value}"
+  LINUX_ARCH="${raw_arch}"
+  case "${raw_libc}" in
+    glibc*) LINUX_LIBC="glibc" ;;
+    musl*) LINUX_LIBC="musl" ;;
+    *) LINUX_LIBC="unknown" ;;
+  esac
+}
+
+is_certified_debian_python_bootstrap() {
+  [[ "${LINUX_DISTRO}" == "debian" && "${LINUX_VERSION}" == "12" ]] \
+    && [[ "${LINUX_ARCH}" == "x86_64" || "${LINUX_ARCH}" == "amd64" ]] \
+    && [[ "${LINUX_LIBC}" == "glibc" ]] \
+    && command -v apt-get >/dev/null 2>&1
+}
+
+is_amd64_glibc_linux() {
+  [[ "${LINUX_ARCH}" == "x86_64" || "${LINUX_ARCH}" == "amd64" ]] \
+    && [[ "${LINUX_LIBC}" == "glibc" ]]
+}
+
+print_unsupported_linux_host() {
+  print_status \
+    "当前 Linux 主机不在缺少 Python 的在线自动安装认证范围内：distro=${LINUX_DISTRO} version=${LINUX_VERSION} arch=${LINUX_ARCH} libc=${LINUX_LIBC}。未执行 Python 包或 AI-SDLC 安装。" \
+    "Unsupported Linux Python bootstrap host: distro=${LINUX_DISTRO} version=${LINUX_VERSION} arch=${LINUX_ARCH} libc=${LINUX_LIBC}. No Python package or AI-SDLC install was performed." \
+    "Use ai-sdlc-offline-3.0.1-linux-amd64.tar.gz from User Guide route 6/12." \
+    "缺少 Python 的在线自动安装仅认证 Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc；请使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。" \
+    "Missing-Python online bootstrap is certified only for Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc; use the exact v3.0.1 Linux offline asset from route 6/12."
+}
+
+print_unsupported_linux_arch_or_libc() {
+  print_status \
+    "当前 Linux 架构或 libc 不受支持：distro=${LINUX_DISTRO} version=${LINUX_VERSION} arch=${LINUX_ARCH} libc=${LINUX_LIBC}。未执行 Python 包或 AI-SDLC 安装。" \
+    "Unsupported Linux architecture or libc: distro=${LINUX_DISTRO} version=${LINUX_VERSION} arch=${LINUX_ARCH} libc=${LINUX_LIBC}. No Python package or AI-SDLC install was performed." \
+    "Use a host with a compatible v3.0.1 Linux distribution asset." \
+    "缺少 Python 的在线自动安装仅认证 Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc；该架构或 libc 没有兼容的 v3.0.1 Linux 发行资产。" \
+    "Missing-Python online bootstrap is certified only for Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc; no compatible v3.0.1 Linux distribution asset exists for this architecture or libc."
 }
 
 require_git_for_package_source() {
@@ -158,14 +265,26 @@ require_git_for_package_source() {
 require_git_for_package_source
 
 if ! PYTHON_BIN="$(pick_python)"; then
+  OS_NAME="$(uname -s)"
+  if [[ "${OS_NAME}" == "Linux" ]]; then
+    read_linux_identity || true
+    if ! is_certified_debian_python_bootstrap; then
+      if is_amd64_glibc_linux; then
+        print_unsupported_linux_host
+      else
+        print_unsupported_linux_arch_or_libc
+      fi
+      exit 1
+    fi
+  fi
   echo "No Python 3.11+ detected. Attempting online installation…"
   if ! install_python; then
     print_status \
       "当前主机未检测到 Python 3.11+，且无法自动完成在线安装。" \
       "Python 3.11+ was not detected, and online auto-install could not be completed on this host." \
       "./packaging/install_online.sh" \
-      "在具备 Homebrew、apt、dnf 或 yum 权限的环境中重新执行此脚本。" \
-      "Rerun this script on a host with Homebrew, apt, dnf, or yum privileges available."
+      "在具备 Homebrew 或 apt 权限的环境中重新执行此脚本。" \
+      "Rerun this script on a host with Homebrew or apt privileges available."
     exit 1
   fi
   if ! PYTHON_BIN="$(pick_python)"; then
