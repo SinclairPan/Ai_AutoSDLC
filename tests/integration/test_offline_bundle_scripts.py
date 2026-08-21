@@ -1709,7 +1709,10 @@ def _prepare_unsupported_install_home(
 
 def _snapshot_project_tree(project_dir: Path) -> list[tuple[str, str, str]]:
     snapshot: list[tuple[str, str, str]] = []
-    for path in sorted(project_dir.rglob("*"), key=lambda item: item.relative_to(project_dir).as_posix()):
+    for path in sorted(
+        project_dir.rglob("*"),
+        key=lambda item: item.relative_to(project_dir).as_posix(),
+    ):
         relative_path = path.relative_to(project_dir).as_posix()
         if path.is_symlink():
             snapshot.append((relative_path, "symlink", os.readlink(path)))
@@ -1740,8 +1743,14 @@ def _assert_unsupported_install_did_not_mutate(
     assert not (home_dir / ".local" / "bin" / "ai-sdlc").exists()
     assert (home_dir / ".bashrc").read_bytes() == bashrc_before
     assert (home_dir / ".profile").read_bytes() == profile_before
-    assert hashlib.sha256((home_dir / ".bashrc").read_bytes()).hexdigest() == bashrc_hash_before
-    assert hashlib.sha256((home_dir / ".profile").read_bytes()).hexdigest() == profile_hash_before
+    assert (
+        hashlib.sha256((home_dir / ".bashrc").read_bytes()).hexdigest()
+        == bashrc_hash_before
+    )
+    assert (
+        hashlib.sha256((home_dir / ".profile").read_bytes()).hexdigest()
+        == profile_hash_before
+    )
     assert _snapshot_project_tree(project_dir) == project_before
     assert not apt_log.exists()
 
@@ -1780,12 +1789,14 @@ def test_online_unsupported_install_snapshot_detects_any_project_tree_change(
 def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
     tmp_path: Path,
 ) -> None:
-    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
-        tmp_path,
-        os_release="# accepted comment\n\n" + _DEBIAN12_OS_RELEASE,
-        arch="x86_64",
-        libc="glibc 2.36",
-        install_python_after_apt=True,
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release="# accepted comment\n\n" + _DEBIAN12_OS_RELEASE,
+            arch="x86_64",
+            libc="glibc 2.36",
+            install_python_after_apt=True,
+        )
     )
     project_dir.mkdir()
 
@@ -1809,11 +1820,13 @@ def test_install_online_bootstraps_only_debian12_x86_64_glibc_without_python(
 def test_install_online_rejects_ubuntu_glibc_without_python_before_any_mutation(
     tmp_path: Path,
 ) -> None:
-    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
-        tmp_path,
-        os_release=_UBUNTU2204_OS_RELEASE,
-        arch="x86_64",
-        libc="glibc 2.35",
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release=_UBUNTU2204_OS_RELEASE,
+            arch="x86_64",
+            libc="glibc 2.35",
+        )
     )
     home_dir = tmp_path / "home"
     bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
@@ -1893,18 +1906,20 @@ def test_install_online_uses_existing_python_on_ubuntu_without_consulting_linux_
         "ID=ubuntu\nID=debian\nVERSION_ID=22.04\n",
         "ID=debian\nVERSION_ID=12\nBROKEN_LINE\n",
         "ID=debian\nVERSION_ID=12\nINVALID KEY=value\n",
-        "ID=debian\nVERSION_ID=12\nPRETTY_NAME=\"unterminated\n",
+        'ID=debian\nVERSION_ID=12\nPRETTY_NAME="unterminated\n',
         "ID=debian\nVERSION_ID=12\nHOME_URL=$(touch unsafe)\n",
     ],
 )
 def test_install_online_reports_unknown_for_missing_python_os_release(
     tmp_path: Path, os_release: str | None
 ) -> None:
-    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
-        tmp_path,
-        os_release=os_release,
-        arch="x86_64",
-        libc="glibc 2.35",
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release=os_release,
+            arch="x86_64",
+            libc="glibc 2.35",
+        )
     )
     home_dir = tmp_path / "home"
     bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
@@ -1944,11 +1959,13 @@ def test_install_online_reports_unknown_for_missing_python_os_release(
 def test_install_online_rejects_linux_aarch64_glibc_without_python_fallback(
     tmp_path: Path,
 ) -> None:
-    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
-        tmp_path,
-        os_release="ID=debian\nVERSION_ID=12\n",
-        arch="aarch64",
-        libc="glibc 2.36",
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release="ID=debian\nVERSION_ID=12\n",
+            arch="aarch64",
+            libc="glibc 2.36",
+        )
     )
     home_dir = tmp_path / "home"
     bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (
@@ -1990,11 +2007,13 @@ def test_install_online_rejects_linux_aarch64_glibc_without_python_fallback(
 def test_install_online_rejects_linux_x86_64_musl_without_python_fallback(
     tmp_path: Path,
 ) -> None:
-    script_path, _, apt_log, env, _, project_dir = _prepare_missing_python_linux_install(
-        tmp_path,
-        os_release="ID=debian\nVERSION_ID=12\n",
-        arch="x86_64",
-        libc="musl 1.2.4",
+    script_path, _, apt_log, env, _, project_dir = (
+        _prepare_missing_python_linux_install(
+            tmp_path,
+            os_release="ID=debian\nVERSION_ID=12\n",
+            arch="x86_64",
+            libc="musl 1.2.4",
+        )
     )
     home_dir = tmp_path / "home"
     bashrc_before, profile_before, bashrc_hash_before, profile_hash_before = (

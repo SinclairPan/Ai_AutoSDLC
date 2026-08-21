@@ -204,7 +204,9 @@ def test_linux_offline_routes_bootstrap_connected_host_download_tools() -> None:
                 assert marker in steps[step], (route_id, step, marker)
 
 
-def test_linux_offline_routes_keep_exact_asset_without_debian_only_reclassification() -> None:
+def test_linux_offline_routes_keep_exact_asset_without_debian_only_reclassification() -> (
+    None
+):
     _, routes = _route_sections(guide_text())
     asset = "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
 

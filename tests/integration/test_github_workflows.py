@@ -1094,18 +1094,18 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
 def test_windows_python_bootstrap_preserves_execution_and_restoration_failures() -> (
     None
 ):
-    driver = (
-        _REPO_ROOT / "scripts" / "windows_python_bootstrap_e2e.ps1"
-    ).read_text(encoding="utf-8")
+    driver = (_REPO_ROOT / "scripts" / "windows_python_bootstrap_e2e.ps1").read_text(
+        encoding="utf-8"
+    )
 
-    assert '$executionFailure = if ($capturedFailure)' in driver
-    assert '$restorationFailures = @($restorationErrors)' in driver
+    assert "$executionFailure = if ($capturedFailure)" in driver
+    assert "$restorationFailures = @($restorationErrors)" in driver
     assert "execution_failure = $executionFailure" in driver
     assert "restoration_failures = $restorationFailures" in driver
     assert '$finalFailureParts += "Execution failure: $executionFailure"' in driver
     assert (
         '$finalFailureParts += "Environment restoration failures: '
-        '$($restorationFailures -join \'; \')"'
+        "$($restorationFailures -join '; ')\""
     ) in driver
     receipt_write = driver.index("Write-Utf8NoBom -Path $evidencePath")
     final_failure_construction = driver.index("$finalFailureParts = @()")
@@ -1274,11 +1274,11 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
     installer_command = 'bash "${installer_path}" "${install_root}" --add-to-path'
     assert installer_command in bootstrap["run"]
     for identity_check in (
-        '. /etc/os-release',
+        ". /etc/os-release",
         'test "${ID}" = "debian"',
         'test "${VERSION_ID}" = "12"',
-        'uname -m',
-        'getconf GNU_LIBC_VERSION',
+        "uname -m",
+        "getconf GNU_LIBC_VERSION",
     ):
         assert identity_check in bootstrap["run"]
         assert bootstrap["run"].index(identity_check) < bootstrap["run"].index(
@@ -1334,9 +1334,10 @@ def test_linux_unsupported_python_bootstrap_fails_closed_without_mutation() -> N
         if step.get("name") == "Check out the exact unsupported-host installer"
     )
     assert checkout["with"]["persist-credentials"] is False
-    assert "github.event.pull_request.head.repo.full_name" in checkout["with"][
-        "repository"
-    ]
+    assert (
+        "github.event.pull_request.head.repo.full_name"
+        in checkout["with"]["repository"]
+    )
     assert "github.event.pull_request.head.sha" in checkout["with"]["ref"]
 
     verify = next(
@@ -1345,9 +1346,14 @@ def test_linux_unsupported_python_bootstrap_fails_closed_without_mutation() -> N
         if step.get("name") == "Require unsupported Ubuntu to fail closed"
     )
     run = verify["run"]
-    assert 'export HOME="${RUNNER_TEMP}/ubuntu-unsupported-home-${PROJECT_STATE}"' in run
+    assert (
+        'export HOME="${RUNNER_TEMP}/ubuntu-unsupported-home-${PROJECT_STATE}"' in run
+    )
     assert 'export SHELL="/bin/bash"' in run
-    assert 'project_root="${RUNNER_TEMP}/ubuntu-unsupported-${PROJECT_STATE}-project"' in run
+    assert (
+        'project_root="${RUNNER_TEMP}/ubuntu-unsupported-${PROJECT_STATE}-project"'
+        in run
+    )
     assert "project-before.sha256" in run
     assert "project-after.sha256" in run
     for command in ("python3.11", "python3", "python"):
@@ -1355,12 +1361,10 @@ def test_linux_unsupported_python_bootstrap_fails_closed_without_mutation() -> N
     assert 'apt_sentinel_log="${evidence_root}/apt-get-calls.log"' in run
     assert '"${shadow_bin}/apt-get"' in run
     assert 'AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}"' in run
-    installer_command = (
-        'bash "${installer_path}" "${install_root}" --add-to-path'
-    )
+    installer_command = 'bash "${installer_path}" "${install_root}" --add-to-path'
     assert installer_command in run
     installer_from_hashed_project = (
-        '(\n'
+        "(\n"
         '  cd "${project_root}"\n'
         '  AI_SDLC_PACKAGE_SPEC="${GITHUB_WORKSPACE}" \\\n'
         '    bash "${installer_path}" "${install_root}" --add-to-path\n'
