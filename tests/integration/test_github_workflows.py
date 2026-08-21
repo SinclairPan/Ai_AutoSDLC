@@ -1135,6 +1135,46 @@ def test_linux_offline_acquisition_bootstrap_runs_on_fresh_connected_hosts() -> 
     assert "actions/upload-artifact@v7" in str(job["steps"])
 
 
+def test_linux_offline_compatibility_gates_execute_on_glibc_and_musl_hosts() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    job = workflow["jobs"]["linux-offline-compatibility-gates"]
+    assert job["runs-on"] == "ubuntu-latest"
+    assert job["strategy"]["matrix"]["include"] == [
+        {
+            "host_kind": "supported-glibc",
+            "container_image": "debian:12-slim",
+            "expected_outcome": "pass",
+        },
+        {
+            "host_kind": "rejected-musl",
+            "container_image": "alpine:3.21",
+            "expected_outcome": "fail",
+        },
+    ]
+    replay = next(
+        step
+        for step in job["steps"]
+        if step.get("name") == "Execute exact offline compatibility gates"
+    )["run"]
+    for project_state in ("new", "existing"):
+        assert f'"{project_state}"' in replay
+    for step_name in ("prerequisites", "recover"):
+        assert f'"{step_name}"' in replay
+    assert '"AI-SDLC-USER-GUIDE-STEP: " step_name' in replay
+    assert 'route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE:' in replay
+    assert 'bash "${guard_script}"' in replay
+    assert "docker run --rm" in replay
+    assert '"${CONTAINER_IMAGE}"' in replay
+    assert 'test "${guard_exit}" -eq 0' in replay
+    assert 'test "${guard_exit}" -ne 0' in replay
+    assert "grep -i '^musl libc' /evidence/host.txt" in replay
+    assert 'grep -i "musl" /evidence/host.txt' not in replay
+    assert "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz" in replay
+    assert "actions/upload-artifact@v7" in str(job["steps"])
+
+
 def test_macos_online_guide_replays_stock_host_prerequisites_before_install() -> None:
     workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
     driver_path = _REPO_ROOT / "scripts" / "macos_stock_host_prerequisite_e2e.py"

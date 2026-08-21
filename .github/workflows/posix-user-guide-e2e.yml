@@ -857,3 +857,122 @@ jobs:
           name: linux-offline-acquisition-${{ matrix.project_state }}
           path: ${{ runner.temp }}/linux-offline-acquisition-${{ matrix.project_state }}
           if-no-files-found: error
+
+  linux-offline-compatibility-gates:
+    name: linux offline compatibility gates (${{ matrix.host_kind }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - host_kind: supported-glibc
+            container_image: debian:12-slim
+            expected_outcome: pass
+          - host_kind: rejected-musl
+            container_image: alpine:3.21
+            expected_outcome: fail
+
+    steps:
+      - name: Check out exact offline compatibility inputs
+        uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Execute exact offline compatibility gates
+        shell: bash
+        env:
+          HOST_KIND: ${{ matrix.host_kind }}
+          CONTAINER_IMAGE: ${{ matrix.container_image }}
+          EXPECTED_OUTCOME: ${{ matrix.expected_outcome }}
+        run: |
+          set -euo pipefail
+          guard_root="${RUNNER_TEMP}/linux-offline-guards-${HOST_KIND}"
+          evidence_root="${RUNNER_TEMP}/linux-offline-compatibility-${HOST_KIND}"
+          mkdir -p "${guard_root}" "${evidence_root}"
+
+          for project_state in "new" "existing"; do
+            route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE: ${project_state}|offline|linux-amd64 -->"
+            for step_name in "prerequisites" "recover"; do
+              guard_script="${guard_root}/${project_state}-${step_name}.sh"
+              awk -v marker="${route_marker}" -v step_name="${step_name}" '
+                $0 == marker { in_route = 1; next }
+                in_route && index($0, "AI-SDLC-USER-GUIDE-STEP: " step_name) { in_step = 1; next }
+                in_step && /^```bash$/ { in_code = 1; next }
+                in_code && /^```$/ { exit }
+                in_code { print }
+              ' USER_GUIDE.zh-CN.md > "${guard_script}"
+              test -s "${guard_script}"
+            done
+          done
+
+          cat > "${guard_root}/driver.sh" <<'DRIVER'
+          #!/usr/bin/env bash
+          set -euo pipefail
+          {
+            printf 'host_kind=%s\n' "${HOST_KIND}"
+            printf 'container_image=%s\n' "${CONTAINER_IMAGE}"
+            uname -m
+            getconf GNU_LIBC_VERSION 2>&1 || true
+            ldd --version 2>&1 || true
+          } > /evidence/host.txt
+          if [[ "${EXPECTED_OUTCOME}" == "pass" ]]; then
+            grep -F "glibc " /evidence/host.txt
+          else
+            grep -i '^musl libc' /evidence/host.txt
+          fi
+
+          guard_count=0
+          for guard_script in \
+            /guards/new-prerequisites.sh \
+            /guards/new-recover.sh \
+            /guards/existing-prerequisites.sh \
+            /guards/existing-recover.sh; do
+            set +e
+            guard_output="$(bash "${guard_script}" 2>&1)"
+            guard_exit=$?
+            set -e
+            printf '%s exit=%s\n%s\n' \
+              "$(basename "${guard_script}")" "${guard_exit}" "${guard_output}" \
+              >> /evidence/guards.txt
+            if [[ "${EXPECTED_OUTCOME}" == "pass" ]]; then
+              test "${guard_exit}" -eq 0
+            else
+              test "${guard_exit}" -ne 0
+              printf '%s\n' "${guard_output}" | \
+                grep -F "不得使用 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
+            fi
+            guard_count=$((guard_count + 1))
+          done
+          test "${guard_count}" -eq 4
+          printf '{"host_kind":"%s","container_image":"%s","expected_outcome":"%s","guard_count":%s}\n' \
+            "${HOST_KIND}" "${CONTAINER_IMAGE}" "${EXPECTED_OUTCOME}" "${guard_count}" \
+            > /evidence/receipt.json
+          DRIVER
+          chmod +x "${guard_root}/driver.sh"
+
+          if [[ "${HOST_KIND}" == "supported-glibc" ]]; then
+            bootstrap_command='apt-get update >/dev/null && apt-get install -y --no-install-recommends bash libc-bin coreutils grep >/dev/null'
+          else
+            bootstrap_command='apk add --no-cache bash musl-utils coreutils grep >/dev/null'
+          fi
+          docker run --rm \
+            --env HOST_KIND \
+            --env CONTAINER_IMAGE \
+            --env EXPECTED_OUTCOME \
+            --env HOME=/tmp/ai-sdlc-home \
+            --volume "${guard_root}:/guards:ro" \
+            --volume "${evidence_root}:/evidence" \
+            "${CONTAINER_IMAGE}" \
+            /bin/sh -ec "${bootstrap_command}; exec bash /guards/driver.sh"
+          test -s "${evidence_root}/host.txt"
+          test -s "${evidence_root}/guards.txt"
+          test -s "${evidence_root}/receipt.json"
+
+      - name: Upload offline compatibility evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-offline-compatibility-${{ matrix.host_kind }}
+          path: ${{ runner.temp }}/linux-offline-compatibility-${{ matrix.host_kind }}
+          if-no-files-found: error

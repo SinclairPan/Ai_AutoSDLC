@@ -106,10 +106,25 @@ def _write_executable(path: Path, content: str) -> Path:
     return path
 
 
+def _find_cygpath_command() -> str | None:
+    cygpath = shutil.which("cygpath")
+    if cygpath:
+        return cygpath
+    bash = shutil.which("bash")
+    if not bash:
+        return None
+    git_bin = Path(bash).resolve().parent
+    for name in ("cygpath.exe", "cygpath"):
+        candidate = git_bin.parent / "usr" / "bin" / name
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
 def _bash_shebang_python() -> str:
     if os.name != "nt":
         return sys.executable
-    cygpath = shutil.which("cygpath")
+    cygpath = _find_cygpath_command()
     if not cygpath:
         return sys.executable
     result = subprocess.run(
@@ -124,7 +139,7 @@ def _bash_shebang_python() -> str:
 def _bash_path(path: Path) -> str:
     if os.name != "nt":
         return str(path)
-    cygpath = shutil.which("cygpath")
+    cygpath = _find_cygpath_command()
     if not cygpath:
         return str(path)
     result = subprocess.run(
@@ -145,6 +160,27 @@ def _bash_wrapper_path(wrapper_dir: Path) -> str:
         git_bin = Path(bash).resolve().parent
         git_paths = [str(git_bin.parent / "usr" / "bin"), str(git_bin)]
     return os.pathsep.join([str(wrapper_dir), *git_paths])
+
+
+def test_cygpath_discovery_falls_back_to_the_git_bash_sibling(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    git_root = tmp_path / "Git"
+    bash = git_root / "bin" / "bash.exe"
+    cygpath = git_root / "usr" / "bin" / "cygpath.exe"
+    bash.parent.mkdir(parents=True)
+    cygpath.parent.mkdir(parents=True)
+    bash.touch()
+    cygpath.touch()
+
+    def fake_which(command: str) -> str | None:
+        if command == "bash":
+            return str(bash)
+        return None
+
+    monkeypatch.setattr(shutil, "which", fake_which)
+
+    assert _find_cygpath_command() == str(cygpath)
 
 
 def _bash_command() -> str:
