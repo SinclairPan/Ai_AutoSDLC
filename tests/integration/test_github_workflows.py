@@ -1011,6 +1011,61 @@ def test_macos_stock_host_prerequisite_driver_runs_from_checkout(
     }
 
 
+def test_posix_online_guide_replays_missing_python_bootstrap_before_install() -> None:
+    workflow_path = _WORKFLOWS_DIR / "posix-user-guide-e2e.yml"
+    driver_path = _REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py"
+    workflow = yaml.safe_load(workflow_path.read_text(encoding="utf-8"))
+
+    assert driver_path.is_file()
+    online_steps = workflow["jobs"]["online-install"]["steps"]
+    replay = next(
+        step
+        for step in online_steps
+        if step.get("name") == "Replay installer without a preinstalled Python"
+    )
+    assert replay["run"] == "python3 scripts/posix_python_bootstrap_e2e.py"
+    install_index = next(
+        index
+        for index, step in enumerate(online_steps)
+        if step.get("name")
+        == "Install from the pinned online source and replay both project states"
+    )
+    assert online_steps.index(replay) < install_index
+
+    workflow_text = workflow_path.read_text(encoding="utf-8")
+    assert '- "scripts/posix_python_bootstrap_e2e.py"' in workflow_text
+
+
+def test_posix_python_bootstrap_driver_runs_from_checkout(tmp_path: Path) -> None:
+    driver_path = _REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py"
+    if os.name == "nt":
+        assert driver_path.is_file()
+        return
+
+    env = os.environ.copy()
+    env["RUNNER_TEMP"] = str(tmp_path)
+    completed = subprocess.run(
+        [sys.executable, str(driver_path)],
+        cwd=_REPO_ROOT,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "POSIX_PYTHON_BOOTSTRAP_OK" in completed.stdout
+    evidence = json.loads(
+        (
+            tmp_path / "posix-online-user-guide-e2e-evidence" / "python-bootstrap.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert evidence["python_missing_before_install"] is True
+    assert evidence["python_available_after_install"] is True
+    assert evidence["package_manager_install_calls"] == 1
+    assert evidence["installer_completed"] is True
+
+
 def test_windows_clean_user_e2e_uses_remote_install_and_real_interactive_init() -> None:
     workflow_path = _WORKFLOWS_DIR / "windows-user-guide-e2e.yml"
     driver_path = _REPO_ROOT / "scripts" / "windows_clean_user_e2e.py"
