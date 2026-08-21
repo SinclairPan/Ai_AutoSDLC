@@ -309,13 +309,18 @@ jobs:
               "${project_root}/TODO.md" | sort > "${evidence_root}/business-before.sha256"
           fi
 
-          (
-            cd "${project_root}"
-            "${module_python}" -m ai_sdlc init . --agent-target codex --shell bash
-            if [[ "${PROJECT_STATE}" == "existing" ]]; then
+          python3 scripts/posix_clean_user_e2e.py \
+            --cli "${install_root}/bin/ai-sdlc" \
+            --project "${project_root}" 2>&1 | \
+            tee "${evidence_root}/initialize-and-adopt.txt"
+          grep -F "POSIX_INTERACTIVE_SELECTION_COMPLETED" \
+            "${evidence_root}/initialize-and-adopt.txt"
+          if [[ "${PROJECT_STATE}" == "existing" ]]; then
+            (
+              cd "${project_root}"
               "${module_python}" -m ai_sdlc adopt .
-            fi
-          ) 2>&1 | tee "${evidence_root}/initialize-and-adopt.txt"
+            ) 2>&1 | tee -a "${evidence_root}/initialize-and-adopt.txt"
+          fi
 
           test -d "${project_root}/.ai-sdlc"
           test -f "${project_root}/AGENTS.md"

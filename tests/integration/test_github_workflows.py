@@ -1112,7 +1112,12 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
     assert "fake" not in bootstrap["run"].lower()
     assert steps.index(bootstrap) < steps.index(complete)
     assert 'if [[ "${PROJECT_STATE}" == "existing" ]]' in complete["run"]
-    assert '"${module_python}" -m ai_sdlc init .' in complete["run"]
+    assert "python3 scripts/posix_clean_user_e2e.py" in complete["run"]
+    assert '--cli "${install_root}/bin/ai-sdlc"' in complete["run"]
+    assert '--project "${project_root}"' in complete["run"]
+    assert "POSIX_INTERACTIVE_SELECTION_COMPLETED" in complete["run"]
+    assert "--agent-target" not in complete["run"]
+    assert "--shell bash" not in complete["run"]
     assert '"${module_python}" -m ai_sdlc adopt .' in complete["run"]
     assert "AI-SDLC-USER-GUIDE-STEP: success" in complete["run"]
     assert "AI-SDLC-USER-GUIDE-STEP: recover" in complete["run"]
