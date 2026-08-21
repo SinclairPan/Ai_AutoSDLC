@@ -1092,6 +1092,11 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
         for step in steps
         if step.get("name") == "Install Python through the exact online installer"
     )
+    complete = next(
+        step
+        for step in steps
+        if step.get("name") == "Complete the exact Linux route after bootstrap"
+    )
     assert steps.index(checkout) < steps.index(prepare)
     assert "AI-SDLC-USER-GUIDE-ROUTE" in prepare["run"]
     assert "USER_GUIDE.zh-CN.md" in prepare["run"]
@@ -1105,6 +1110,18 @@ def test_linux_online_guide_bootstraps_python_with_real_apt() -> None:
     assert "dpkg-query -W" in bootstrap["run"]
     assert "python3.11 python3.11-venv python3-pip" in bootstrap["run"]
     assert "fake" not in bootstrap["run"].lower()
+    assert steps.index(bootstrap) < steps.index(complete)
+    assert 'if [[ "${PROJECT_STATE}" == "existing" ]]' in complete["run"]
+    assert '"${module_python}" -m ai_sdlc init .' in complete["run"]
+    assert '"${module_python}" -m ai_sdlc adopt .' in complete["run"]
+    assert "AI-SDLC-USER-GUIDE-STEP: success" in complete["run"]
+    assert "AI-SDLC-USER-GUIDE-STEP: recover" in complete["run"]
+    assert 'bash "${success_script}"' in complete["run"]
+    assert 'bash "${recover_script}"' in complete["run"]
+    assert "git status --short --untracked-files=all" in complete["run"]
+    assert "business-before.sha256" in complete["run"]
+    assert "business-after.sha256" in complete["run"]
+    assert "route-completion.json" in complete["run"]
 
     driver = (_REPO_ROOT / "scripts" / "posix_python_bootstrap_e2e.py").read_text(
         encoding="utf-8"

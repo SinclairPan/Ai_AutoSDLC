@@ -183,6 +183,7 @@ jobs:
       PR_HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name || '' }}
       PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || '' }}
       PROJECT_STATE: ${{ matrix.project_state }}
+      AI_SDLC_DISABLE_UPDATE_CHECK: "1"
 
     steps:
       - name: Check out exact guide inputs
@@ -264,6 +265,106 @@ jobs:
             "${evidence_root}/install-online.txt"
           printf '{"platform":"debian-12","project_state":"%s","real_prerequisite_apt":true,"real_python_apt":true,"source_revision":"%s","installed_cli_version":"%s"}\n' \
             "${PROJECT_STATE}" "${remote_sha}" "${RELEASE_TAG#v}" > "${evidence_root}/python-bootstrap.json"
+
+      - name: Complete the exact Linux route after bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          evidence_root="${RUNNER_TEMP}/linux-real-python-bootstrap-evidence-${PROJECT_STATE}"
+          install_root="${RUNNER_TEMP}/ai-sdlc-linux-bootstrap-${PROJECT_STATE}"
+          module_python="${install_root}/bin/python"
+          project_root="${RUNNER_TEMP}/linux-clean-host-${PROJECT_STATE}-project"
+          route_marker="<!-- AI-SDLC-USER-GUIDE-ROUTE: ${PROJECT_STATE}|online|linux-amd64 -->"
+          mkdir -p "${project_root}"
+
+          extract_route_step() {
+            local step_name="$1"
+            local output_path="$2"
+            awk -v marker="${route_marker}" -v step="${step_name}" '
+              $0 == marker { in_route = 1; next }
+              in_route && $0 ~ "AI-SDLC-USER-GUIDE-STEP: " step { in_step = 1; next }
+              in_step && /^```bash$/ { in_code = 1; next }
+              in_code && /^```$/ { exit }
+              in_code { print }
+            ' USER_GUIDE.zh-CN.md > "${output_path}"
+            test -s "${output_path}"
+          }
+
+          if [[ "${PROJECT_STATE}" == "new" ]]; then
+            test -z "$(ls -A "${project_root}")"
+          else
+            mkdir -p "${project_root}/src"
+            printf '%s\n' '{"scripts":{"build":"echo build"}}' > "${project_root}/package.json"
+            printf '%s\n' "console.log('existing');" > "${project_root}/src/main.js"
+            printf '%s\n' "- [ ] Existing imported task" > "${project_root}/TODO.md"
+            git -C "${project_root}" init --initial-branch=main
+            git -C "${project_root}" config user.name "AI-SDLC Route E2E"
+            git -C "${project_root}" config user.email "route-e2e@example.invalid"
+            git -C "${project_root}" add package.json src/main.js TODO.md
+            git -C "${project_root}" commit -m "seed existing project"
+            sha256sum \
+              "${project_root}/package.json" \
+              "${project_root}/src/main.js" \
+              "${project_root}/TODO.md" | sort > "${evidence_root}/business-before.sha256"
+          fi
+
+          (
+            cd "${project_root}"
+            "${module_python}" -m ai_sdlc init . --agent-target codex --shell bash
+            if [[ "${PROJECT_STATE}" == "existing" ]]; then
+              "${module_python}" -m ai_sdlc adopt .
+            fi
+          ) 2>&1 | tee "${evidence_root}/initialize-and-adopt.txt"
+
+          test -d "${project_root}/.ai-sdlc"
+          test -f "${project_root}/AGENTS.md"
+          grep -F "Initialized AI-SDLC project" "${evidence_root}/initialize-and-adopt.txt"
+          if [[ "${PROJECT_STATE}" == "new" ]]; then
+            test ! -e "${project_root}/src"
+            test ! -e "${project_root}/package.json"
+          else
+            grep -F "Detected existing project" "${evidence_root}/initialize-and-adopt.txt"
+            grep -F "接入已有项目：已生成桥接结果" "${evidence_root}/initialize-and-adopt.txt"
+            grep -F "原任务文件不会被修改" "${evidence_root}/initialize-and-adopt.txt"
+            sha256sum \
+              "${project_root}/package.json" \
+              "${project_root}/src/main.js" \
+              "${project_root}/TODO.md" | sort > "${evidence_root}/business-after.sha256"
+            diff -u "${evidence_root}/business-before.sha256" "${evidence_root}/business-after.sha256"
+          fi
+
+          success_script="${RUNNER_TEMP}/linux-${PROJECT_STATE}-success.sh"
+          recover_script="${RUNNER_TEMP}/linux-${PROJECT_STATE}-recover.sh"
+          # AI-SDLC-USER-GUIDE-STEP: success
+          extract_route_step success "${success_script}"
+          # AI-SDLC-USER-GUIDE-STEP: recover
+          extract_route_step recover "${recover_script}"
+          (
+            cd "${project_root}"
+            export MODULE_PYTHON="${module_python}"
+            bash "${success_script}"
+            if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+              git status --short --untracked-files=all
+            fi
+          ) 2>&1 | tee "${evidence_root}/success.txt"
+          grep -F "${RELEASE_TAG#v}" "${evidence_root}/success.txt"
+          grep -F "当前结果 / Result" "${evidence_root}/success.txt"
+          grep -F "下一步 / Next" "${evidence_root}/success.txt"
+          if [[ "${PROJECT_STATE}" == "existing" ]]; then
+            grep -F ".ai-sdlc" "${evidence_root}/success.txt"
+          fi
+
+          bash "${recover_script}" 2>&1 | tee "${evidence_root}/recover.txt"
+          command -v git
+          command -v curl
+          test -s /etc/ssl/certs/ca-certificates.crt || \
+            test -s /etc/pki/tls/certs/ca-bundle.crt
+          adopted=false
+          if [[ "${PROJECT_STATE}" == "existing" ]]; then adopted=true; fi
+          printf '{"platform":"debian-12","project_state":"%s","initialized":true,"adopted":%s,"success_checked":true,"recovery_replayed":true}\n' \
+            "${PROJECT_STATE}" "${adopted}" > \
+            "${evidence_root}/route-completion.json"
 
       - name: Upload real Linux bootstrap evidence
         if: always()
