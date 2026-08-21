@@ -991,6 +991,8 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     )
     assert "Update-ProcessPathFromPersistentEnvironment" in installer
     assert 'Join-Path $env:LOCALAPPDATA "Programs\\Python"' in installer
+    assert "foreach ($minorVersion in @(14, 13, 12, 11))" in installer
+    assert 'Join-Path $root "Python3$minorVersion"' in installer
     assert 'Join-Path $pythonHome "python.exe"' in installer
 
 

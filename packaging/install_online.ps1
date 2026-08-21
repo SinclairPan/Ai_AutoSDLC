@@ -332,7 +332,16 @@ function Get-PythonCommand {
     if (-not (Test-Path -LiteralPath $root)) {
       continue
     }
-    foreach ($pythonHome in @(Get-ChildItem -LiteralPath $root -Directory -Filter "Python3*" -ErrorAction SilentlyContinue | Sort-Object Name -Descending)) {
+    $pythonHomes = @()
+    foreach ($minorVersion in @(14, 13, 12, 11)) {
+      $pythonHomes += (Join-Path $root "Python3$minorVersion")
+    }
+    $pythonHomes += @(
+      Get-ChildItem -LiteralPath $root -Directory -Filter "Python3*" -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending |
+        Select-Object -ExpandProperty FullName
+    )
+    foreach ($pythonHome in @($pythonHomes | Select-Object -Unique)) {
       $pythonExe = Join-Path $pythonHome "python.exe"
       if (Test-Path -LiteralPath $pythonExe) {
         $candidates += @{ Command = $pythonExe; Args = @() }

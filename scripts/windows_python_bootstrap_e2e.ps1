@@ -117,8 +117,10 @@ Write-Utf8NoBom -Path (Join-Path $evidenceRoot "python-bootstrap-output.txt") -V
 if (Test-Path -LiteralPath $eventLog) {
   Copy-Item -LiteralPath $eventLog -Destination (Join-Path $evidenceRoot "python-bootstrap-events.txt") -Force
 }
+$installedPython = Join-Path $fakeLocalAppData "Programs\Python\Python311\python.exe"
 if ($installerExit -ne 0) {
-  throw "Windows isolated Python bootstrap failed with exit $installerExit`: $outputText"
+  $installedState = "standard_python_exists=$(Test-Path -LiteralPath $installedPython)"
+  throw "Windows isolated Python bootstrap failed with exit $installerExit ($installedState): $outputText"
 }
 $events = @(Get-Content -LiteralPath $eventLog)
 $installEvents = @($events | Where-Object { $_ -like "package-manager-install *" })
@@ -130,7 +132,6 @@ $before = @($events[0..($installIndex - 1)] | Where-Object { $_ -like "py *" })
 if ($before.Count -lt 1) {
   throw "The Windows replay did not prove Python was missing before winget."
 }
-$installedPython = Join-Path $fakeLocalAppData "Programs\Python\Python311\python.exe"
 if (-not (Test-Path -LiteralPath $installedPython)) {
   throw "The Windows replay did not materialize Python in the standard winget location."
 }
