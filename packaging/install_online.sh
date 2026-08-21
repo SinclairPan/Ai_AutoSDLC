@@ -5,12 +5,12 @@
 #   ./packaging/install_online.sh /path/to/venv
 #   ./packaging/install_online.sh --add-to-path
 # Env:
-#   AI_SDLC_PACKAGE_SPEC=git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0   optional published package spec for pip install
+#   AI_SDLC_PACKAGE_SPEC=git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.1   optional published package spec for pip install
 #   PYTHON=/path/to/python3.11            optional interpreter override
 
 set -euo pipefail
 
-PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0}"
+PACKAGE_SPEC="${AI_SDLC_PACKAGE_SPEC:-git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.1}"
 ADD_TO_PATH=0
 POSITIONAL_VENV_TARGET=""
 while [[ $# -gt 0 ]]; do

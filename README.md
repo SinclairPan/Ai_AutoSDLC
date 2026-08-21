@@ -1,10 +1,12 @@
-# AI-SDLC 3.0.0
+# AI-SDLC 3.0.1
 
 AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它把需求澄清、设计契约、任务执行、质量门禁、对抗审查和交付证据组织成一套可由 AI 代理与工程师共同执行的命令行工作流。
 
 项目地址：<https://github.com/SinclairPan/Ai_AutoSDLC>
 
-> 当前公开稳定版本与比赛最终版本均为 `v3.0.0`。第一次使用时，请在下面的 12 条路线中只选择一条完整执行；从 `v2.0.0` 升级前请阅读 [v3 迁移说明](docs/v3-migration.zh-CN.md)，从 `v1.0.2` 跨大版本升级还应先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
+> 当前公开稳定版本与比赛最终版本均为 `v3.0.1`。第一次使用时，请在下面的 12 条路线中只选择一条完整执行；从 `v2.0.0` 升级前请阅读 [v3 迁移说明](docs/v3-migration.zh-CN.md)，从 `v1.0.2` 跨大版本升级还应先阅读 [v2 迁移说明](docs/v2-migration.zh-CN.md)。
+
+`v3.0.1` 是比赛最终补丁版本：运行时能力与 `v3.0.0` 保持一致，正式启用面向全新用户的 12 条安装、初始化与恢复路线，并修正跨机器离线安装和已有项目核对说明。
 
 ## 核心特性
 
@@ -43,18 +45,18 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 ### 高级安装：从 Git 安装
 
 ```powershell
-python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.0"
+python -m pip install "git+https://github.com/SinclairPan/Ai_AutoSDLC.git@v3.0.1"
 ai-sdlc --version
 ```
 
-版本输出应为 `3.0.0`。
+版本输出应为 `3.0.1`。
 
 需要验证尚未发布的开发版时，可显式把安装地址末尾改为 `@main`；开发版不承诺输出稳定版版本号。
 
 ### 开发者入口：从源码运行
 
 ```powershell
-git clone --branch v3.0.0 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
+git clone --branch v3.0.1 --depth 1 https://github.com/SinclairPan/Ai_AutoSDLC.git
 Set-Location Ai_AutoSDLC
 uv sync
 uv run ai-sdlc --version
@@ -230,11 +232,11 @@ AI-SDLC 将前端质量作为可验证交付的一部分：
 
 ## 离线打包
 
-离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。`v3.0.0` 的正式产物名称为：
+离线包会包含 AI-SDLC wheel、依赖 wheel、安装脚本、包内 `SHA256SUMS` 校验清单和可选的 Python 运行时。每个正式压缩包同时发布同名 `.sha256` 文件。`v3.0.1` 的正式产物名称为：
 
-- `ai-sdlc-offline-3.0.0-windows-amd64.zip`
-- `ai-sdlc-offline-3.0.0-macos-arm64.tar.gz`
-- `ai-sdlc-offline-3.0.0-linux-amd64.tar.gz`
+- `ai-sdlc-offline-3.0.1-windows-amd64.zip`
+- `ai-sdlc-offline-3.0.1-macos-arm64.tar.gz`
+- `ai-sdlc-offline-3.0.1-linux-amd64.tar.gz`
 
 具体下载与校验命令见[中文用户指南](USER_GUIDE.zh-CN.md)。
 

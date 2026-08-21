@@ -363,7 +363,7 @@ def test_release_artifact_smoke_workflow_installs_published_assets() -> None:
 
     assert "workflow_dispatch:" in workflow
     assert "release:" in workflow
-    assert "default: v3.0.0" in workflow
+    assert "default: v3.0.1" in workflow
     assert "gh release download" in workflow
     assert "windows-latest" in workflow
     assert "macos-latest" in workflow
@@ -426,7 +426,7 @@ def test_release_build_uses_standard_cross_platform_release_flow() -> None:
     workflow = workflow_path.read_text(encoding="utf-8")
 
     assert "workflow_dispatch:" in workflow
-    assert "default: v3.0.0" in workflow
+    assert "default: v3.0.1" in workflow
     assert "ref: ${{ inputs.tag }}" in workflow
     assert 'git rev-parse "${RELEASE_TAG}^{commit}"' in workflow
     assert all(
@@ -485,7 +485,7 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
     repository = tmp_path / "repository"
     repository.mkdir()
     (repository / "pyproject.toml").write_text(
-        '[project]\nname = "ai-sdlc"\nversion = "3.0.0"\n',
+        '[project]\nname = "ai-sdlc"\nversion = "3.0.1"\n',
         encoding="utf-8",
     )
     for command in (
@@ -494,7 +494,7 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
         [git, "config", "user.email", "release@example.invalid"],
         [git, "add", "pyproject.toml"],
         [git, "commit", "-m", "release source"],
-        [git, "tag", "-a", "v3.0.0", "-m", "v3.0.0"],
+        [git, "tag", "-a", "v3.0.1", "-m", "v3.0.1"],
     ):
         subprocess.run(command, cwd=repository, check=True, capture_output=True)
     head = subprocess.run(
@@ -506,8 +506,8 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
     ).stdout.strip()
     base_env = {
         **os.environ,
-        "RELEASE_TAG": "v3.0.0",
-        "ALLOWED_RELEASE_TAG": "v3.0.0",
+        "RELEASE_TAG": "v3.0.1",
+        "ALLOWED_RELEASE_TAG": "v3.0.1",
         "DISPATCH_REF": "refs/heads/main",
         "DISPATCH_SHA": head,
     }
@@ -547,7 +547,7 @@ def test_release_build_rejects_frozen_tags_and_non_main_dispatch(tmp_path) -> No
 
     assert accepted.returncode == 0, accepted.stderr
     assert frozen_tag.returncode != 0
-    assert "Only v3.0.0" in frozen_tag.stderr
+    assert "Only v3.0.1" in frozen_tag.stderr
     assert non_main.returncode != 0
     assert wrong_commit.returncode != 0
 
@@ -628,17 +628,17 @@ fi
         encoding="utf-8",
     )
     fake_gh.chmod(0o755)
-    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-3.0.0-linux-amd64.tar.gz"
+    asset = tmp_path / "dist-offline" / "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
     asset.parent.mkdir()
     asset.write_bytes(b"archive")
     sidecar = Path(f"{asset}.sha256")
     sidecar.write_text("digest  archive\n", encoding="utf-8")
     other_assets = []
     for name in (
-        "ai-sdlc-offline-3.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-3.0.0-windows-amd64.zip.sha256",
-        "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz.sha256",
+        "ai-sdlc-offline-3.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-3.0.1-windows-amd64.zip.sha256",
+        "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz.sha256",
     ):
         path = asset.parent / name
         path.write_bytes(name.encode("utf-8"))
@@ -650,8 +650,8 @@ fi
     base_env = {
         **os.environ,
         "PATH": f"{fake_bin}{os.pathsep}{os.environ['PATH']}",
-        "RELEASE_TAG": "v3.0.0",
-        "ALLOWED_RELEASE_TAG": "v3.0.0",
+        "RELEASE_TAG": "v3.0.1",
+        "ALLOWED_RELEASE_TAG": "v3.0.1",
         "DISPATCH_REF": "refs/heads/main",
         "DISPATCH_SHA": "a" * 40,
         "GITHUB_REPOSITORY": "SinclairPan/Ai_AutoSDLC",
@@ -813,14 +813,14 @@ def test_windows_user_guide_e2e_replays_existing_project_install_path() -> None:
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
     assert "windows-latest" in workflow
-    assert "default: v3.0.0" in workflow
+    assert "default: v3.0.1" in workflow
     assert "Build Windows offline bundle for pull request replay" in workflow
     assert "build_offline_bundle.sh" in workflow
     assert 'AI_SDLC_OFFLINE_ASSET_SUFFIX="-windows-amd64"' in workflow
     assert "pull_request_local_bundle" in workflow
     assert "USER_GUIDE.zh-CN.md Chapter 2: existing project" in workflow
     assert "my-existing-project" in workflow
-    assert "v3.0.0" in workflow
+    assert "v3.0.1" in workflow
     assert "ai-sdlc-offline-$releaseVersion-windows-amd64" in workflow
     assert "releases/download/$env:RELEASE_TAG" in workflow
     assert "Invoke-WebRequest" in workflow
@@ -861,8 +861,8 @@ def test_posix_user_guide_e2e_replays_published_guide_commands() -> None:
     driver = driver_path.read_text(encoding="utf-8")
     assert "workflow_dispatch:" in workflow
     assert "pull_request:" in workflow
-    assert 'default: "v3.0.0"' in workflow
-    assert "v3.0.0" in workflow
+    assert 'default: "v3.0.1"' in workflow
+    assert "v3.0.1" in workflow
     for path_filter in (
         '      - "src/**"',
         '      - "pyproject.toml"',

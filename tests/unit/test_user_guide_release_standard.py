@@ -60,8 +60,8 @@ def _complete_guide() -> str:
     )
 
 
-def test_repository_records_standard_without_rewriting_v3_guide() -> None:
-    assert parse_project_version((ROOT / "pyproject.toml").read_text()) == (3, 0, 0)
+def test_repository_activates_the_standard_in_v3_0_1() -> None:
+    assert parse_project_version((ROOT / "pyproject.toml").read_text()) == (3, 0, 1)
     assert validate_repository(ROOT) == []
 
 

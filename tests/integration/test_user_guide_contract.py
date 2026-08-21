@@ -2,7 +2,12 @@
 
 from pathlib import Path
 
-from scripts.validate_user_guide_standard import EXPECTED_ROUTE_IDS, validate_guide_text
+from scripts.validate_user_guide_standard import (
+    EXPECTED_ROUTE_IDS,
+    _route_sections,
+    _step_sections,
+    validate_guide_text,
+)
 
 from ai_sdlc.integrations.agent_target import AGENT_TARGET_OPTIONS, agent_target_label
 
@@ -15,7 +20,7 @@ def guide_text() -> str:
     return GUIDE.read_text(encoding="utf-8")
 
 
-def test_current_v3_guide_meets_the_final_twelve_route_contract() -> None:
+def test_current_v3_0_1_guide_meets_the_final_twelve_route_contract() -> None:
     assert validate_guide_text(guide_text(), version=(3, 0, 1)) == []
 
 
@@ -27,6 +32,43 @@ def test_readme_links_every_final_new_user_route() -> None:
         anchor = f"route-{route_id.replace('|', '-')}"
         assert f"USER_GUIDE.zh-CN.md#{anchor}" in readme
         assert f'<a id="{anchor}"></a>' in guide
+
+
+def test_offline_routes_redefine_target_host_variables_before_verification() -> None:
+    _, routes = _route_sections(guide_text())
+
+    for route_id in EXPECTED_ROUTE_IDS:
+        state, channel, platform = route_id.split("|")
+        if channel != "offline":
+            continue
+        _, steps = _step_sections(routes[route_id])
+        verify = steps["verify"]
+        if platform == "windows-amd64":
+            required = (
+                "$ProjectRoot =",
+                "$InstallRoot =",
+                "$DownloadRoot =",
+                "$PackageName =",
+            )
+        else:
+            required = (
+                "PROJECT_ROOT=",
+                "INSTALL_ROOT=",
+                "DOWNLOAD_ROOT=",
+                "PACKAGE_NAME=",
+            )
+        for marker in required:
+            assert marker in verify, f"{route_id} target verify missing {marker}"
+
+
+def test_existing_project_success_checks_include_untracked_files() -> None:
+    _, routes = _route_sections(guide_text())
+
+    for route_id in EXPECTED_ROUTE_IDS:
+        if not route_id.startswith("existing|"):
+            continue
+        _, steps = _step_sections(routes[route_id])
+        assert "git status --short --untracked-files=all" in steps["success"], route_id
 
 
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:
@@ -50,17 +92,17 @@ def test_guide_lists_every_runtime_adapter_in_both_scenarios() -> None:
 def test_guide_pins_published_assets_and_stable_output_contract() -> None:
     text = guide_text()
     for asset in (
-        "ai-sdlc-offline-3.0.0-windows-amd64.zip",
-        "ai-sdlc-offline-3.0.0-macos-arm64.tar.gz",
-        "ai-sdlc-offline-3.0.0-linux-amd64.tar.gz",
+        "ai-sdlc-offline-3.0.1-windows-amd64.zip",
+        "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz",
+        "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
     ):
         assert asset in text
-        assert f"releases/download/v3.0.0/{asset}" in text
+        assert f"releases/download/v3.0.1/{asset}" in text
         assert f"{asset}.sha256" in text
     assert "releases/download/v1.0.4/" not in text
     for anchor in (
         "Offline installation completed",
-        "3.0.0",
+        "3.0.1",
         "Initialized AI-SDLC project",
         "当前结果 / Result",
         "下一步 / Next",
