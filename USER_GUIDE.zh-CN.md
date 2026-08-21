@@ -219,7 +219,7 @@ cd "$PROJECT_ROOT"
 <!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->
 ### 1. 准备
 
-适用于 64 位 Linux（`linux-amd64`）和 bash。需要联网访问 GitHub，当前用户应能写入 `$HOME/.local/share`；下载与在线 Git 安装源要求主机具备 CA 证书、curl 和 Git。
+适用于 64 位 Linux（`linux-amd64`）和 bash。已存在 Python 3.11+ 时，保持发行版无关的在线兼容路径；缺少 Python 3.11+ 时，自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) 的 amd64/x86_64 + glibc 主机。其他无 Python 的 amd64/x86_64 + glibc 主机应使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。非 AMD64 或非 glibc 的 Linux 主机，v3.0.1 没有兼容的 Linux 发行资产；不得使用路线 6/12 的 AMD64 离线包。需要联网访问 GitHub，当前用户应能写入 `$HOME/.local/share`；下载与在线 Git 安装源要求主机具备 CA 证书、curl 和 Git。
 
 ```bash
 set -e
@@ -295,6 +295,8 @@ cd "$PROJECT_ROOT"
 
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
+
+已存在 Python 3.11+ 时，保持发行版无关的在线兼容路径；缺少 Python 3.11+ 时，自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) 的 amd64/x86_64 + glibc 主机。其他无 Python 的 amd64/x86_64 + glibc 主机应使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。非 AMD64 或非 glibc 的 Linux 主机，v3.0.1 没有兼容的 Linux 发行资产；不得使用路线 6/12 的 AMD64 离线包。
 
 Git、curl 或 CA 证书不可用时执行：
 
@@ -763,7 +765,7 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 <!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->
 ### 1. 准备
 
-适用于 `linux-amd64`。在已有项目根目录使用 bash并保存当前工作，确认当前用户可写安装目录。
+适用于 `linux-amd64`。已存在 Python 3.11+ 时，保持发行版无关的在线兼容路径；缺少 Python 3.11+ 时，自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) 的 amd64/x86_64 + glibc 主机。其他无 Python 的 amd64/x86_64 + glibc 主机应使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。非 AMD64 或非 glibc 的 Linux 主机，v3.0.1 没有兼容的 Linux 发行资产；不得使用路线 6/12 的 AMD64 离线包。在已有项目根目录使用 bash 并保存当前工作，确认当前用户可写安装目录。
 
 ```bash
 set -e
@@ -841,6 +843,8 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 
 <!-- AI-SDLC-USER-GUIDE-STEP: recover -->
 ### 7. 就地恢复
+
+已存在 Python 3.11+ 时，保持发行版无关的在线兼容路径；缺少 Python 3.11+ 时，自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) 的 amd64/x86_64 + glibc 主机。其他无 Python 的 amd64/x86_64 + glibc 主机应使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。非 AMD64 或非 glibc 的 Linux 主机，v3.0.1 没有兼容的 Linux 发行资产；不得使用路线 6/12 的 AMD64 离线包。
 
 Git、curl 或 CA 证书不可用时执行：
 

@@ -30,6 +30,17 @@ EXPECTED_ROUTE_IDS = tuple(
     for channel in INSTALL_CHANNELS
     for platform in PLATFORMS
 )
+LINUX_PYTHON_BOOTSTRAP_BOUNDARY_MARKERS = (
+    "Debian GNU/Linux 12 (bookworm)",
+    "amd64/x86_64",
+    "glibc",
+    "Python 3.11+",
+    "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+    "路线 6/12",
+    "非 AMD64 或非 glibc",
+    "v3.0.1 没有兼容的 Linux 发行资产",
+    "不得使用路线 6/12 的 AMD64 离线包",
+)
 
 _VERSION_PATTERN = re.compile(
     r'^version\s*=\s*"(\d+)\.(\d+)\.(\d+)(?:[^\"]*)"\s*$', re.MULTILINE
@@ -203,6 +214,18 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                     Finding("guide-route-windows-direct-recovery-missing", route_id)
                 )
         if channel == "online" and platform == "linux-amd64":
+            for step_name in ("prerequisites", "recover"):
+                step_text = step_sections.get(step_name, "")
+                if any(
+                    marker not in step_text
+                    for marker in LINUX_PYTHON_BOOTSTRAP_BOUNDARY_MARKERS
+                ):
+                    findings.append(
+                        Finding(
+                            "guide-route-linux-python-bootstrap-boundary-missing",
+                            f"{route_id}:{step_name}",
+                        )
+                    )
             prerequisite_bootstrap_markers = (
                 "command -v apt-get",
                 "apt-get install -y ca-certificates curl git",

@@ -34,6 +34,18 @@ def test_readme_links_every_final_new_user_route() -> None:
         assert f'<a id="{anchor}"></a>' in guide
 
 
+def test_readme_linux_selector_states_certified_python_bootstrap_boundary() -> None:
+    readme = README.read_text(encoding="utf-8")
+
+    for marker in (
+        "已存在 Python 3.11+ 的 Linux 主机保持发行版无关的在线兼容路径",
+        "缺少 Python 时，在线自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc",
+        "其他缺少 Python 的 amd64/x86_64 + glibc Linux 主机使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+    ):
+        assert marker in readme
+    assert "所有 Linux AMD64 都会自动安装 Python" not in readme
+
+
 def test_offline_routes_redefine_target_host_variables_before_verification() -> None:
     _, routes = _route_sections(guide_text())
 
@@ -190,6 +202,20 @@ def test_linux_offline_routes_bootstrap_connected_host_download_tools() -> None:
         for step in ("acquire", "recover"):
             for marker in required:
                 assert marker in steps[step], (route_id, step, marker)
+
+
+def test_linux_offline_routes_keep_exact_asset_without_debian_only_reclassification() -> None:
+    _, routes = _route_sections(guide_text())
+    asset = "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
+
+    for route_id in (
+        "new|offline|linux-amd64",
+        "existing|offline|linux-amd64",
+    ):
+        _, steps = _step_sections(routes[route_id])
+        assert asset in steps["acquire"], route_id
+        assert asset in steps["verify"], route_id
+        assert "Debian GNU/Linux 12 (bookworm)" not in steps["prerequisites"], route_id
 
 
 def test_guide_is_scoped_to_two_new_user_scenarios() -> None:

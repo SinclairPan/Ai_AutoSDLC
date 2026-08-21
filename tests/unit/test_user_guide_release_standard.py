@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from scripts.validate_user_guide_standard import (
     EXPECTED_ROUTE_IDS,
     MATRIX_MARKER,
@@ -44,14 +45,22 @@ def _complete_route(route_id: str) -> str:
     success = "当前结果 / Result\n下一步 / Next\n"
     recovery = "失败时停止并按本路线恢复。\n"
     if channel == "online" and platform == "linux-amd64":
+        python_bootstrap_boundary = (
+            "已存在 Python 3.11+ 时，保持发行版无关的在线兼容路径。"
+            "缺少 Python 3.11+ 时，自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) 的 "
+            "amd64/x86_64 + glibc 主机。其他无 Python 的 amd64/x86_64 + glibc 主机应使用 "
+            "路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。"
+            "非 AMD64 或非 glibc 的 Linux 主机，v3.0.1 没有兼容的 Linux 发行资产；"
+            "不得使用路线 6/12 的 AMD64 离线包。\n"
+        )
         git_bootstrap = (
             "ca_bundle_available; command -v curl; "
             "command -v apt-get; apt-get install -y ca-certificates curl git; "
             "command -v dnf; dnf install -y ca-certificates curl git; "
             "command -v yum; yum install -y ca-certificates curl git\n"
         )
-        prerequisites += git_bootstrap
-        recovery += git_bootstrap
+        prerequisites += python_bootstrap_boundary + git_bootstrap
+        recovery += python_bootstrap_boundary + git_bootstrap
     if channel == "offline" and platform == "linux-amd64":
         download_bootstrap = (
             "ca_bundle_available; command -v curl; "
@@ -292,6 +301,52 @@ def test_linux_online_route_requires_executable_download_recovery() -> None:
     assert any(
         finding.marker == "guide-route-linux-download-bootstrap-missing"
         and finding.excerpt.startswith(f"{route_id}:")
+        for finding in findings
+    )
+
+
+@pytest.mark.parametrize(
+    ("route_id", "step_name", "boundary_marker"),
+    [
+        (route_id, step_name, boundary_marker)
+        for route_id in ("new|online|linux-amd64", "existing|online|linux-amd64")
+        for step_name in ("prerequisites", "recover")
+        for boundary_marker in (
+            "Debian GNU/Linux 12 (bookworm)",
+            "amd64/x86_64",
+            "glibc",
+            "Python 3.11+",
+            "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+            "路线 6/12",
+            "非 AMD64 或非 glibc",
+            "v3.0.1 没有兼容的 Linux 发行资产",
+            "不得使用路线 6/12 的 AMD64 离线包",
+        )
+    ],
+)
+def test_linux_online_route_requires_each_python_bootstrap_boundary_marker(
+    route_id: str, step_name: str, boundary_marker: str
+) -> None:
+    route = _complete_route(route_id)
+    step_marker = f"<!-- AI-SDLC-USER-GUIDE-STEP: {step_name} -->\n"
+    step_start = route.index(step_marker) + len(step_marker)
+    next_step_start = route.find("<!-- AI-SDLC-USER-GUIDE-STEP:", step_start)
+    step_end = len(route) if next_step_start == -1 else next_step_start
+    corrupted_route = (
+        route[:step_start]
+        + route[step_start:step_end].replace(boundary_marker, "")
+        + route[step_end:]
+    )
+    guide = _complete_guide().replace(
+        route,
+        corrupted_route,
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-linux-python-bootstrap-boundary-missing"
+        and finding.excerpt == f"{route_id}:{step_name}"
         for finding in findings
     )
 

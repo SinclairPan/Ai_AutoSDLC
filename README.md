@@ -38,6 +38,8 @@ AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发�
 | 已有项目 | 在线 | [执行路线](USER_GUIDE.zh-CN.md#route-existing-online-windows-amd64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-online-macos-arm64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-online-linux-amd64) |
 | 已有项目 | 离线 | [执行路线](USER_GUIDE.zh-CN.md#route-existing-offline-windows-amd64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-offline-macos-arm64) | [执行路线](USER_GUIDE.zh-CN.md#route-existing-offline-linux-amd64) |
 
+Linux 选择边界：已存在 Python 3.11+ 的 Linux 主机保持发行版无关的在线兼容路径。缺少 Python 时，在线自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc；其他缺少 Python 的 amd64/x86_64 + glibc Linux 主机使用路线 6/12 的 ai-sdlc-offline-3.0.1-linux-amd64.tar.gz。非 AMD64 或非 glibc 的 Linux 主机没有兼容的 v3.0.1 Linux 发行资产，不得使用路线 6/12 的 AMD64 离线包。
+
 普通用户优先使用安装器创建的 `ai-sdlc`。若当前终端还没有刷新 PATH，就使用该路线给出的 `python -m ai_sdlc ...` 命令；不要自行创建 Python 环境或手工补依赖。
 
 运行要求：Python 3.11 或更高版本、Git。源码开发推荐使用 [uv](https://docs.astral.sh/uv/)。

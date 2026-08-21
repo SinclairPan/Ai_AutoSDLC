@@ -46,6 +46,7 @@
 - Windows 使用 PowerShell 语法；macOS 与 Linux 使用各自真实可用的 shell 命令，不得把一种语法机械复制到另一平台。
 - Windows 正常入口优先使用外部 stable shim 或 `python -m ai_sdlc`。运行时目录内 direct `Scripts\\ai-sdlc.exe` 的自动更新限制、迁移提示和显式更新非零行为必须在相关路线中就地说明。
 - `-AddToPath` 或 `--add-to-path` 成功后，重开终端的主路径必须是裸 `ai-sdlc`；当前窗口的 module 命令仅作为明确标注的安装后或排障入口。
+- Linux 在线路线中，已有 Python 3.11+ 的路径保持发行版无关；缺少 Python 3.11+ 的自动 bootstrap 仅认证 Debian GNU/Linux 12 (bookworm) + amd64/x86_64 + glibc。其他缺少 Python 的 amd64/x86_64 + glibc 主机必须就地指向路线 6/12 的 `ai-sdlc-offline-3.0.1-linux-amd64.tar.gz`；非 AMD64 或非 glibc 主机必须明确 v3.0.1 没有兼容的 Linux 发行资产，且不得使用路线 6/12 的 AMD64 离线包。该边界必须同时出现在每条 Linux 在线路线的 `prerequisites` 和 `recover`，不得用共享文本或“同上”替代。
 
 ## 初始化与已有项目保护
 
