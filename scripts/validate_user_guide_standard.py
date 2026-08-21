@@ -168,6 +168,21 @@ def validate_guide_text(text: str, *, version: tuple[int, int, int]) -> list[Fin
                         )
                     )
 
+        if channel == "offline":
+            acquire_text = step_sections.get("acquire", "")
+            download_root_markers = (
+                ("$DownloadRoot =", "New-Item", "$DownloadRoot")
+                if platform == "windows-amd64"
+                else ("DOWNLOAD_ROOT=", 'mkdir -p "$DOWNLOAD_ROOT"')
+            )
+            if any(marker not in acquire_text for marker in download_root_markers):
+                findings.append(
+                    Finding(
+                        "guide-route-offline-acquire-download-root-missing",
+                        route_id,
+                    )
+                )
+
         if state == "existing":
             initialize_text = step_sections.get("initialize", "")
             if initialize_text.rfind("init .") > initialize_text.find("adopt ."):

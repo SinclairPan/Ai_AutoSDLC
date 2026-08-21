@@ -61,6 +61,25 @@ def test_offline_routes_redefine_target_host_variables_before_verification() -> 
             assert marker in verify, f"{route_id} target verify missing {marker}"
 
 
+def test_offline_routes_define_download_root_inside_connected_host_acquisition() -> (
+    None
+):
+    _, routes = _route_sections(guide_text())
+
+    for route_id in EXPECTED_ROUTE_IDS:
+        _, channel, platform = route_id.split("|")
+        if channel != "offline":
+            continue
+        _, steps = _step_sections(routes[route_id])
+        acquire = steps["acquire"]
+        if platform == "windows-amd64":
+            required = ("$DownloadRoot =", "New-Item", "$DownloadRoot")
+        else:
+            required = ("DOWNLOAD_ROOT=", 'mkdir -p "$DOWNLOAD_ROOT"')
+        for marker in required:
+            assert marker in acquire, f"{route_id} acquisition missing {marker}"
+
+
 def test_existing_project_success_checks_include_untracked_files() -> None:
     _, routes = _route_sections(guide_text())
 

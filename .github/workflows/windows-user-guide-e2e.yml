@@ -529,22 +529,21 @@ jobs:
           $ErrorActionPreference = "Stop"
           $projectRoot = Join-Path $env:RUNNER_TEMP "windows-online-empty-project"
           $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
+          $emptyEvidenceRoot = Join-Path $evidenceRoot "empty-project"
           Remove-Item -Recurse -Force $projectRoot -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force -Path $projectRoot | Out-Null
           if ((Get-ChildItem -LiteralPath $projectRoot -Force).Count -ne 0) {
             throw "The online empty-project route did not start from an empty directory."
           }
-          Push-Location $projectRoot
-          try {
-            & $env:AI_SDLC_E2E_CLI init . --agent-target codex --shell powershell *>&1 |
-              Tee-Object -FilePath (Join-Path $evidenceRoot "windows-online-empty-project.txt")
-            if ($LASTEXITCODE -ne 0) {
-              throw "The online empty-project init failed with exit code $LASTEXITCODE."
-            }
-          } finally {
-            Pop-Location
+          py -3.11 "$env:GITHUB_WORKSPACE\scripts\windows_clean_user_e2e.py" `
+            --cli $env:AI_SDLC_E2E_CLI `
+            --project-root $projectRoot `
+            --evidence-root $emptyEvidenceRoot `
+            --init-only
+          if ($LASTEXITCODE -ne 0) {
+            throw "The ConPTY online empty-project init failed with exit code $LASTEXITCODE."
           }
-          $initOutput = Get-Content -LiteralPath (Join-Path $evidenceRoot "windows-online-empty-project.txt") -Raw
+          $initOutput = Get-Content -LiteralPath (Join-Path $emptyEvidenceRoot "interactive-init.txt") -Raw
           if (($initOutput -notmatch "当前结果 / Result") -or ($initOutput -notmatch "下一步 / Next")) {
             throw "The online empty-project init did not expose the guide Result/Next contract."
           }

@@ -335,6 +335,9 @@ if ((Get-ChildItem -LiteralPath $ProjectRoot -Force).Count -ne 0) { throw "Proje
 离线包内包含 `install_offline.ps1`。联网机器下载两项后原样复制到目标机器。
 
 ```powershell
+$ErrorActionPreference = "Stop"
+$DownloadRoot = Join-Path $HOME "Downloads\ai-sdlc-v3.0.1"
+New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
 $PackageName = "ai-sdlc-offline-3.0.1-windows-amd64.zip"
 $PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PackageName"
 Invoke-WebRequest -Uri $PackageUrl -OutFile (Join-Path $DownloadRoot $PackageName)
@@ -419,6 +422,9 @@ test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; 
 归档内包含 `install_offline.sh`。联网机器下载两项后原样复制到目标 Mac。
 
 ```bash
+set -e
+DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
+mkdir -p "$DOWNLOAD_ROOT"
 PACKAGE_NAME="ai-sdlc-offline-3.0.1-macos-arm64.tar.gz"
 PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PACKAGE_NAME"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -501,6 +507,9 @@ test -z "$(ls -A "$PROJECT_ROOT")" || { echo "Project directory must be empty"; 
 归档内包含 `install_offline.sh`。联网机器下载两项后原样复制到目标机。
 
 ```bash
+set -e
+DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
+mkdir -p "$DOWNLOAD_ROOT"
 PACKAGE_NAME="ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
 PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PACKAGE_NAME"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -854,6 +863,9 @@ if ($GitCommand) {
 包内包含 `install_offline.ps1`。联网机器下载两项后原样复制到目标机。
 
 ```powershell
+$ErrorActionPreference = "Stop"
+$DownloadRoot = Join-Path $HOME "Downloads\ai-sdlc-v3.0.1"
+New-Item -ItemType Directory -Force -Path $DownloadRoot | Out-Null
 $PackageName = "ai-sdlc-offline-3.0.1-windows-amd64.zip"
 $PackageUrl = "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PackageName"
 Invoke-WebRequest -Uri $PackageUrl -OutFile (Join-Path $DownloadRoot $PackageName)
@@ -943,6 +955,9 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 归档内包含 `install_offline.sh`。联网机器下载两项后原样复制。
 
 ```bash
+set -e
+DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
+mkdir -p "$DOWNLOAD_ROOT"
 PACKAGE_NAME="ai-sdlc-offline-3.0.1-macos-arm64.tar.gz"
 PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PACKAGE_NAME"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"
@@ -1026,6 +1041,9 @@ if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/n
 归档内包含 `install_offline.sh`。联网机器下载两项后原样复制。
 
 ```bash
+set -e
+DOWNLOAD_ROOT="$HOME/Downloads/ai-sdlc-v3.0.1"
+mkdir -p "$DOWNLOAD_ROOT"
 PACKAGE_NAME="ai-sdlc-offline-3.0.1-linux-amd64.tar.gz"
 PACKAGE_URL="https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/$PACKAGE_NAME"
 curl --fail --location --retry 3 --output "$DOWNLOAD_ROOT/$PACKAGE_NAME" "$PACKAGE_URL"

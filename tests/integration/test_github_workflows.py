@@ -925,7 +925,8 @@ def test_user_guide_e2e_covers_both_project_states_through_online_installers() -
     assert "install_online.ps1" in windows_online
     assert "windows-online-empty-project" in windows_online
     assert "windows-online-existing-project" in windows_online
-    assert "init . --agent-target codex --shell powershell" in windows_online
+    assert "--init-only" in windows_online
+    assert "init . --agent-target codex --shell powershell" not in windows_online
     assert '["adopt", "."]' in windows_driver
 
     assert "online-install:" in posix
@@ -937,7 +938,8 @@ def test_user_guide_e2e_covers_both_project_states_through_online_installers() -
     assert "remote-release-tag" in posix_online
     assert "posix-online-empty-project" in posix_online
     assert "posix-online-existing-project" in posix_online
-    assert '"${online_cli}" init . --agent-target codex' in posix_online
+    assert posix_online.count("python3 scripts/posix_clean_user_e2e.py") >= 2
+    assert '"${online_cli}" init . --agent-target codex' not in posix_online
     assert '"${online_cli}" adopt .' in posix_online
 
 

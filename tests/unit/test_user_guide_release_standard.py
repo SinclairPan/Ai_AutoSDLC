@@ -27,12 +27,19 @@ def _complete_route(route_id: str) -> str:
         ("offline", "linux-amd64"): "install_offline.sh --add-to-path",
     }[(channel, platform)]
     verification = "ai-sdlc --version"
+    acquisition = f"获取 {installer}\n"
     if channel == "offline":
         verification = {
             "windows-amd64": "package.sha256 Get-FileHash",
             "macos-arm64": "package.sha256 shasum -a 256",
             "linux-amd64": "package.sha256 sha256sum",
         }[platform]
+        acquisition += (
+            "$DownloadRoot = Join-Path $HOME Downloads\n"
+            "New-Item -ItemType Directory -Force -Path $DownloadRoot\n"
+            if platform == "windows-amd64"
+            else 'DOWNLOAD_ROOT="$HOME/Downloads"\nmkdir -p "$DOWNLOAD_ROOT"\n'
+        )
     prerequisites = f"适用平台：{platform}\n"
     success = "当前结果 / Result\n下一步 / Next\n"
     recovery = "失败时停止并按本路线恢复。\n"
@@ -62,7 +69,7 @@ def _complete_route(route_id: str) -> str:
         "<!-- AI-SDLC-USER-GUIDE-STEP: prerequisites -->\n"
         f"{prerequisites}"
         "<!-- AI-SDLC-USER-GUIDE-STEP: acquire -->\n"
-        f"获取 {installer}\n"
+        f"{acquisition}"
         "<!-- AI-SDLC-USER-GUIDE-STEP: verify -->\n"
         f"{verification}\n"
         "<!-- AI-SDLC-USER-GUIDE-STEP: install -->\n"
@@ -168,6 +175,23 @@ def test_windows_offline_route_rejects_posix_installer() -> None:
     assert any(
         finding.marker == "guide-route-step-content-missing"
         and "windows-amd64:acquire: install_offline.ps1" in finding.excerpt
+        for finding in findings
+    )
+
+
+def test_offline_route_requires_download_root_inside_acquisition_step() -> None:
+    route_id = "existing|offline|macos-arm64"
+    route = _complete_route(route_id)
+    guide = _complete_guide().replace(
+        route,
+        route.replace('mkdir -p "$DOWNLOAD_ROOT"\n', ""),
+    )
+
+    findings = validate_guide_text(guide, version=(3, 0, 1))
+
+    assert any(
+        finding.marker == "guide-route-offline-acquire-download-root-missing"
+        and finding.excerpt == route_id
         for finding in findings
     )
 
