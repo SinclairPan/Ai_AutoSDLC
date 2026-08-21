@@ -52,6 +52,7 @@ $realPython = (& py -3.11 -c "import sys; print(sys.executable)").Trim()
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $realPython)) {
   throw "The Windows CI orchestrator Python is unavailable."
 }
+$windowsPowerShell = (Get-Command powershell -ErrorAction Stop).Source
 
 $evidenceRoot = Join-Path $env:RUNNER_TEMP "windows-clean-online-user-e2e-evidence"
 $root = Join-Path $env:RUNNER_TEMP "windows-python-bootstrap-replay"
@@ -98,7 +99,7 @@ try {
   $env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
   $env:Path = "$shimRoot;$env:SystemRoot\System32;$env:SystemRoot"
   $output = @(
-    & powershell -NoProfile -ExecutionPolicy Bypass -File `
+    & $windowsPowerShell -NoProfile -ExecutionPolicy Bypass -File `
       (Join-Path $PSScriptRoot "..\packaging\install_online.ps1") `
       -VenvPath $installRoot `
       -PackageSpec $wheelPath 2>&1

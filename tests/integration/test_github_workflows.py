@@ -970,6 +970,8 @@ def test_windows_online_guide_replays_missing_python_bootstrap_before_install() 
     assert 'Join-Path $shimRoot "py.cmd"' in driver
     assert 'Join-Path $shimRoot "python.cmd"' in driver
     assert '$env:Path = "$shimRoot;$env:SystemRoot\\System32;$env:SystemRoot"' in driver
+    assert '$windowsPowerShell = (Get-Command powershell' in driver
+    assert '& $windowsPowerShell -NoProfile' in driver
 
 
 def test_macos_online_guide_replays_stock_host_prerequisites_before_install() -> None:
