@@ -63,13 +63,12 @@
 
 ## 离线页面验收
 
-- 内容提交：`4f1d0ca82f62f800aef69e033c80a10e75116364`。
-- 移动端布局修复提交：`42269521c960ec69f4de15a157612a048ee65a1f`。
-- 浏览器 receipt SHA-256：`ba885ff1a3c128ad02ce68e2a6f1a4aa5968e7abca73baa8af063cf36c66c561`。
-- Loop 截图 SHA-256：`d0ca95b88abc5fa474fb5a9051f2281c5f7dce3a6b4a43f5e0dbf0cee36cffd4`。
-- Dynamic Expert Review 截图 SHA-256：`a4cbf3c7e502a45a78abe26a435c771edd16eb195ca38c0327bf590b543ed1b7`。
-- Platform Capabilities 截图 SHA-256：`3684f4cedfe04a0b3177475802065b36fd3f0e49e9b6f7d96737e0ca3d9d27df`。
-- 浏览器状态：135 / 135 通过。
+- 验收输入提交：`343f087d43dd803e1ea2154d29fade92338a6da3`。
+- 浏览器 receipt SHA-256：`f4c4040c736d18f1e738a532e9723a40367ae58d8c1d89ac16e697c4773919f5`。
+- Loop 截图 SHA-256：`1f2547a0c88cf285f572f75ad0fc9e4003800e4bbec177bfb85ec901247886c4`。
+- Dynamic Expert Review 截图 SHA-256：`0959de97d6b07aebb0a0b0300cb4097eca7ff8b63acf2821e5b605f131c0630f`。
+- Platform Capabilities 截图 SHA-256：`d4cf65d91052a757b658bcbacf1c014a2d3afb4ed537b93baf47ce4530d92f5f`。
+- 浏览器状态：80 / 80 通过。
 - 无 JavaScript 分组：12 / 12 通过。
 - viewport / ancestor clipping：0。
 - 控件重叠：0。

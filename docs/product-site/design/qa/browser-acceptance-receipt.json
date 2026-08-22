@@ -1,13 +1,13 @@
 {
   "schemaVersion": 3,
   "inputs": {
-    "inputCommit": "3c9a834e82f7102066fe8a9aded4cc0b63391a2f",
-    "manifestSha256": "46fe51cc9ca47f69471966c29f688e113ecb0415d1a025b4d5ff844695333327",
+    "inputCommit": "343f087d43dd803e1ea2154d29fade92338a6da3",
+    "manifestSha256": "c08a89e3ab9b899c58559082261e95d6452d0ac5743db3e6f2cfd6374153483a",
     "manifestEntryCount": 16,
     "sourceSiteRoot": "/Users/sinclairpan/project/AI-SDLC_ParticipatingVersion/deliverables/ai-sdlc-2.0-offline-product-site",
-    "copiedSiteRoot": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site",
+    "copiedSiteRoot": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site",
     "copyRootKind": "fresh-external-copy",
-    "copiedManifestSha256": "46fe51cc9ca47f69471966c29f688e113ecb0415d1a025b4d5ff844695333327",
+    "copiedManifestSha256": "c08a89e3ab9b899c58559082261e95d6452d0ac5743db3e6f2cfd6374153483a",
     "runnerSha256": "597a852fe8b70d3d2893ddad56e2ac5578bd9b3e50fe23034daa3a374d1128d8",
     "playwrightModule": "/Users/sinclairpan/.nvm/versions/node/v24.11.1/lib/node_modules/@playwright/cli/node_modules/playwright/index.mjs",
     "browserExecutable": "/Users/sinclairpan/Library/Caches/ms-playwright/chromium_headless_shell-1228/chrome-headless-shell-mac-arm64/chrome-headless-shell"
@@ -30751,8 +30751,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2233,
-              "bottom": 2277,
+              "top": 2257,
+              "bottom": 2301,
               "width": 128,
               "height": 44
             },
@@ -30777,8 +30777,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 70.359375,
               "height": 44
             },
@@ -30803,8 +30803,8 @@
             "documentRect": {
               "left": 830.328125,
               "right": 876.328125,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 46,
               "height": 44
             },
@@ -30829,8 +30829,8 @@
             "documentRect": {
               "left": 892.328125,
               "right": 1008,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 115.671875,
               "height": 44
             },
@@ -30855,8 +30855,8 @@
             "documentRect": {
               "left": 49,
               "right": 951,
-              "top": 2077.53125,
-              "bottom": 2121.53125,
+              "top": 2101.328125,
+              "bottom": 2145.328125,
               "width": 902,
               "height": 44
             },
@@ -30864,8 +30864,8 @@
             "viewportRect": {
               "left": 49,
               "right": 951,
-              "top": 361.53125,
-              "bottom": 405.53125,
+              "top": 362.328125,
+              "bottom": 406.328125,
               "width": 902,
               "height": 44
             },
@@ -30881,8 +30881,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -30890,8 +30890,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -30907,8 +30907,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -30916,8 +30916,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -30933,8 +30933,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -30942,8 +30942,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -30959,8 +30959,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -30968,8 +30968,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -30985,8 +30985,8 @@
             "documentRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 3749.703125,
-              "bottom": 3802.09375,
+              "top": 3773.5,
+              "bottom": 3825.890625,
               "width": 200.125,
               "height": 52.390625
             },
@@ -30994,8 +30994,8 @@
             "viewportRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 576.703125,
-              "bottom": 629.09375,
+              "top": 576.5,
+              "bottom": 628.890625,
               "width": 200.125,
               "height": 52.390625
             },
@@ -31038,8 +31038,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2233,
-              "bottom": 2277,
+              "top": 2257,
+              "bottom": 2301,
               "width": 128,
               "height": 44
             },
@@ -31064,8 +31064,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 70.359375,
               "height": 44
             },
@@ -31090,8 +31090,8 @@
             "documentRect": {
               "left": 830.328125,
               "right": 876.328125,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 46,
               "height": 44
             },
@@ -31116,8 +31116,8 @@
             "documentRect": {
               "left": 892.328125,
               "right": 1008,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 115.671875,
               "height": 44
             },
@@ -31142,8 +31142,8 @@
             "documentRect": {
               "left": 49,
               "right": 951,
-              "top": 2077.53125,
-              "bottom": 2121.53125,
+              "top": 2101.328125,
+              "bottom": 2145.328125,
               "width": 902,
               "height": 44
             },
@@ -31151,8 +31151,8 @@
             "viewportRect": {
               "left": 49,
               "right": 951,
-              "top": 361.53125,
-              "bottom": 405.53125,
+              "top": 362.328125,
+              "bottom": 406.328125,
               "width": 902,
               "height": 44
             },
@@ -31168,8 +31168,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31177,8 +31177,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31194,8 +31194,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31203,8 +31203,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31220,8 +31220,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31229,8 +31229,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31246,8 +31246,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31255,8 +31255,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31272,8 +31272,8 @@
             "documentRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 4051.109375,
-              "bottom": 4103.5,
+              "top": 4074.90625,
+              "bottom": 4127.296875,
               "width": 200.125,
               "height": 52.390625
             },
@@ -31281,8 +31281,8 @@
             "viewportRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 577.109375,
-              "bottom": 629.5,
+              "top": 576.90625,
+              "bottom": 629.296875,
               "width": 200.125,
               "height": 52.390625
             },
@@ -31325,8 +31325,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2233,
-              "bottom": 2277,
+              "top": 2257,
+              "bottom": 2301,
               "width": 128,
               "height": 44
             },
@@ -31351,8 +31351,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 70.359375,
               "height": 44
             },
@@ -31377,8 +31377,8 @@
             "documentRect": {
               "left": 830.328125,
               "right": 876.328125,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 46,
               "height": 44
             },
@@ -31403,8 +31403,8 @@
             "documentRect": {
               "left": 892.328125,
               "right": 1008,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 115.671875,
               "height": 44
             },
@@ -31429,8 +31429,8 @@
             "documentRect": {
               "left": 49,
               "right": 951,
-              "top": 2077.53125,
-              "bottom": 2121.53125,
+              "top": 2101.328125,
+              "bottom": 2145.328125,
               "width": 902,
               "height": 44
             },
@@ -31438,8 +31438,8 @@
             "viewportRect": {
               "left": 49,
               "right": 951,
-              "top": 361.53125,
-              "bottom": 405.53125,
+              "top": 362.328125,
+              "bottom": 406.328125,
               "width": 902,
               "height": 44
             },
@@ -31455,8 +31455,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31464,8 +31464,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31481,8 +31481,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31490,8 +31490,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31507,8 +31507,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31516,8 +31516,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31533,8 +31533,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31542,8 +31542,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31559,8 +31559,8 @@
             "documentRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 4726.375,
-              "bottom": 4778.765625,
+              "top": 4750.171875,
+              "bottom": 4802.5625,
               "width": 200.125,
               "height": 52.390625
             },
@@ -31568,8 +31568,8 @@
             "viewportRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 577.375,
-              "bottom": 629.765625,
+              "top": 577.171875,
+              "bottom": 629.5625,
               "width": 200.125,
               "height": 52.390625
             },
@@ -31612,8 +31612,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2233,
-              "bottom": 2277,
+              "top": 2257,
+              "bottom": 2301,
               "width": 128,
               "height": 44
             },
@@ -31638,8 +31638,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 70.359375,
               "height": 44
             },
@@ -31664,8 +31664,8 @@
             "documentRect": {
               "left": 830.328125,
               "right": 876.328125,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 46,
               "height": 44
             },
@@ -31690,8 +31690,8 @@
             "documentRect": {
               "left": 892.328125,
               "right": 1008,
-              "top": 2307,
-              "bottom": 2351,
+              "top": 2331,
+              "bottom": 2375,
               "width": 115.671875,
               "height": 44
             },
@@ -31716,8 +31716,8 @@
             "documentRect": {
               "left": 49,
               "right": 951,
-              "top": 2077.53125,
-              "bottom": 2121.53125,
+              "top": 2101.328125,
+              "bottom": 2145.328125,
               "width": 902,
               "height": 44
             },
@@ -31725,8 +31725,8 @@
             "viewportRect": {
               "left": 49,
               "right": 951,
-              "top": 361.53125,
-              "bottom": 405.53125,
+              "top": 362.328125,
+              "bottom": 406.328125,
               "width": 902,
               "height": 44
             },
@@ -31742,8 +31742,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31751,8 +31751,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31768,8 +31768,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2394.046875,
-              "bottom": 2445.4375,
+              "top": 2417.84375,
+              "bottom": 2469.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31777,8 +31777,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.046875,
-              "bottom": 457.4375,
+              "top": 405.84375,
+              "bottom": 457.234375,
               "width": 496,
               "height": 51.390625
             },
@@ -31794,8 +31794,8 @@
             "documentRect": {
               "left": 16,
               "right": 512,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31803,8 +31803,8 @@
             "viewportRect": {
               "left": 16,
               "right": 512,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31820,8 +31820,8 @@
             "documentRect": {
               "left": 512,
               "right": 1008,
-              "top": 2445.4375,
-              "bottom": 2496.828125,
+              "top": 2469.234375,
+              "bottom": 2520.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31829,8 +31829,8 @@
             "viewportRect": {
               "left": 512,
               "right": 1008,
-              "top": 406.4375,
-              "bottom": 457.828125,
+              "top": 406.234375,
+              "bottom": 457.625,
               "width": 496,
               "height": 51.390625
             },
@@ -31846,8 +31846,8 @@
             "documentRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 3766.21875,
-              "bottom": 3818.609375,
+              "top": 3790.015625,
+              "bottom": 3842.40625,
               "width": 200.125,
               "height": 52.390625
             },
@@ -31855,8 +31855,8 @@
             "viewportRect": {
               "left": 807.875,
               "right": 1008,
-              "top": 577.21875,
-              "bottom": 629.609375,
+              "top": 577.015625,
+              "bottom": 629.40625,
               "width": 200.125,
               "height": 52.390625
             },
@@ -38318,8 +38318,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2727,
-              "bottom": 2771,
+              "top": 2775,
+              "bottom": 2819,
               "width": 128,
               "height": 44
             },
@@ -38344,8 +38344,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 70.359375,
               "height": 44
             },
@@ -38370,8 +38370,8 @@
             "documentRect": {
               "left": 196.328125,
               "right": 242.328125,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 46,
               "height": 44
             },
@@ -38396,8 +38396,8 @@
             "documentRect": {
               "left": 258.328125,
               "right": 374,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 115.671875,
               "height": 44
             },
@@ -38422,8 +38422,8 @@
             "documentRect": {
               "left": 33,
               "right": 357,
-              "top": 2498.921875,
-              "bottom": 2542.921875,
+              "top": 2546.515625,
+              "bottom": 2590.515625,
               "width": 324,
               "height": 44
             },
@@ -38431,8 +38431,8 @@
             "viewportRect": {
               "left": 33,
               "right": 357,
-              "top": 399.921875,
-              "bottom": 443.921875,
+              "top": 399.515625,
+              "bottom": 443.515625,
               "width": 324,
               "height": 44
             },
@@ -38448,8 +38448,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2888.078125,
-              "bottom": 2939.46875,
+              "top": 2935.671875,
+              "bottom": 2987.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -38457,8 +38457,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.078125,
-              "bottom": 495.46875,
+              "top": 444.671875,
+              "bottom": 496.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -38474,8 +38474,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2939.46875,
-              "bottom": 2990.859375,
+              "top": 2987.0625,
+              "bottom": 3038.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -38483,8 +38483,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.46875,
-              "bottom": 495.859375,
+              "top": 444.0625,
+              "bottom": 495.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -38500,8 +38500,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2990.859375,
-              "bottom": 3042.25,
+              "top": 3038.453125,
+              "bottom": 3089.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -38509,8 +38509,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 443.859375,
-              "bottom": 495.25,
+              "top": 444.453125,
+              "bottom": 495.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -38526,8 +38526,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 3042.25,
-              "bottom": 3093.640625,
+              "top": 3089.84375,
+              "bottom": 3141.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -38535,8 +38535,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.25,
-              "bottom": 495.640625,
+              "top": 443.84375,
+              "bottom": 495.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -38552,8 +38552,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 5016.421875,
-              "bottom": 5068.8125,
+              "top": 5064.015625,
+              "bottom": 5116.40625,
               "width": 358,
               "height": 52.390625
             },
@@ -38561,8 +38561,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 695.421875,
-              "bottom": 747.8125,
+              "top": 696.015625,
+              "bottom": 748.40625,
               "width": 358,
               "height": 52.390625
             },
@@ -38605,8 +38605,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2727,
-              "bottom": 2771,
+              "top": 2775,
+              "bottom": 2819,
               "width": 128,
               "height": 44
             },
@@ -38631,8 +38631,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 70.359375,
               "height": 44
             },
@@ -38657,8 +38657,8 @@
             "documentRect": {
               "left": 196.328125,
               "right": 242.328125,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 46,
               "height": 44
             },
@@ -38683,8 +38683,8 @@
             "documentRect": {
               "left": 258.328125,
               "right": 374,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 115.671875,
               "height": 44
             },
@@ -38709,8 +38709,8 @@
             "documentRect": {
               "left": 33,
               "right": 357,
-              "top": 2498.921875,
-              "bottom": 2542.921875,
+              "top": 2546.515625,
+              "bottom": 2590.515625,
               "width": 324,
               "height": 44
             },
@@ -38718,8 +38718,8 @@
             "viewportRect": {
               "left": 33,
               "right": 357,
-              "top": 399.921875,
-              "bottom": 443.921875,
+              "top": 399.515625,
+              "bottom": 443.515625,
               "width": 324,
               "height": 44
             },
@@ -38735,8 +38735,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2888.078125,
-              "bottom": 2939.46875,
+              "top": 2935.671875,
+              "bottom": 2987.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -38744,8 +38744,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.078125,
-              "bottom": 495.46875,
+              "top": 444.671875,
+              "bottom": 496.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -38761,8 +38761,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2939.46875,
-              "bottom": 2990.859375,
+              "top": 2987.0625,
+              "bottom": 3038.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -38770,8 +38770,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.46875,
-              "bottom": 495.859375,
+              "top": 444.0625,
+              "bottom": 495.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -38787,8 +38787,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2990.859375,
-              "bottom": 3042.25,
+              "top": 3038.453125,
+              "bottom": 3089.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -38796,8 +38796,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 443.859375,
-              "bottom": 495.25,
+              "top": 444.453125,
+              "bottom": 495.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -38813,8 +38813,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 3042.25,
-              "bottom": 3093.640625,
+              "top": 3089.84375,
+              "bottom": 3141.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -38822,8 +38822,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.25,
-              "bottom": 495.640625,
+              "top": 443.84375,
+              "bottom": 495.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -38839,8 +38839,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 5207.296875,
-              "bottom": 5259.6875,
+              "top": 5254.890625,
+              "bottom": 5307.28125,
               "width": 358,
               "height": 52.390625
             },
@@ -38848,8 +38848,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 695.296875,
-              "bottom": 747.6875,
+              "top": 695.890625,
+              "bottom": 748.28125,
               "width": 358,
               "height": 52.390625
             },
@@ -38892,8 +38892,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2727,
-              "bottom": 2771,
+              "top": 2775,
+              "bottom": 2819,
               "width": 128,
               "height": 44
             },
@@ -38918,8 +38918,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 70.359375,
               "height": 44
             },
@@ -38944,8 +38944,8 @@
             "documentRect": {
               "left": 196.328125,
               "right": 242.328125,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 46,
               "height": 44
             },
@@ -38970,8 +38970,8 @@
             "documentRect": {
               "left": 258.328125,
               "right": 374,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 115.671875,
               "height": 44
             },
@@ -38996,8 +38996,8 @@
             "documentRect": {
               "left": 33,
               "right": 357,
-              "top": 2498.921875,
-              "bottom": 2542.921875,
+              "top": 2546.515625,
+              "bottom": 2590.515625,
               "width": 324,
               "height": 44
             },
@@ -39005,8 +39005,8 @@
             "viewportRect": {
               "left": 33,
               "right": 357,
-              "top": 399.921875,
-              "bottom": 443.921875,
+              "top": 399.515625,
+              "bottom": 443.515625,
               "width": 324,
               "height": 44
             },
@@ -39022,8 +39022,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2888.078125,
-              "bottom": 2939.46875,
+              "top": 2935.671875,
+              "bottom": 2987.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -39031,8 +39031,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.078125,
-              "bottom": 495.46875,
+              "top": 444.671875,
+              "bottom": 496.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -39048,8 +39048,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2939.46875,
-              "bottom": 2990.859375,
+              "top": 2987.0625,
+              "bottom": 3038.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -39057,8 +39057,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.46875,
-              "bottom": 495.859375,
+              "top": 444.0625,
+              "bottom": 495.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -39074,8 +39074,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2990.859375,
-              "bottom": 3042.25,
+              "top": 3038.453125,
+              "bottom": 3089.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -39083,8 +39083,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 443.859375,
-              "bottom": 495.25,
+              "top": 444.453125,
+              "bottom": 495.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -39100,8 +39100,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 3042.25,
-              "bottom": 3093.640625,
+              "top": 3089.84375,
+              "bottom": 3141.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -39109,8 +39109,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.25,
-              "bottom": 495.640625,
+              "top": 443.84375,
+              "bottom": 495.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -39126,8 +39126,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 6220.328125,
-              "bottom": 6272.71875,
+              "top": 6267.921875,
+              "bottom": 6320.3125,
               "width": 358,
               "height": 52.390625
             },
@@ -39135,8 +39135,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 695.328125,
-              "bottom": 747.71875,
+              "top": 695.921875,
+              "bottom": 748.3125,
               "width": 358,
               "height": 52.390625
             },
@@ -39179,8 +39179,8 @@
             "documentRect": {
               "left": 12,
               "right": 140,
-              "top": 2727,
-              "bottom": 2771,
+              "top": 2775,
+              "bottom": 2819,
               "width": 128,
               "height": 44
             },
@@ -39205,8 +39205,8 @@
             "documentRect": {
               "left": 16,
               "right": 86.359375,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 70.359375,
               "height": 44
             },
@@ -39231,8 +39231,8 @@
             "documentRect": {
               "left": 196.328125,
               "right": 242.328125,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 46,
               "height": 44
             },
@@ -39257,8 +39257,8 @@
             "documentRect": {
               "left": 258.328125,
               "right": 374,
-              "top": 2799,
-              "bottom": 2843,
+              "top": 2847,
+              "bottom": 2891,
               "width": 115.671875,
               "height": 44
             },
@@ -39283,8 +39283,8 @@
             "documentRect": {
               "left": 33,
               "right": 357,
-              "top": 2498.921875,
-              "bottom": 2542.921875,
+              "top": 2546.515625,
+              "bottom": 2590.515625,
               "width": 324,
               "height": 44
             },
@@ -39292,8 +39292,8 @@
             "viewportRect": {
               "left": 33,
               "right": 357,
-              "top": 399.921875,
-              "bottom": 443.921875,
+              "top": 399.515625,
+              "bottom": 443.515625,
               "width": 324,
               "height": 44
             },
@@ -39309,8 +39309,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2888.078125,
-              "bottom": 2939.46875,
+              "top": 2935.671875,
+              "bottom": 2987.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -39318,8 +39318,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.078125,
-              "bottom": 495.46875,
+              "top": 444.671875,
+              "bottom": 496.0625,
               "width": 358,
               "height": 51.390625
             },
@@ -39335,8 +39335,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2939.46875,
-              "bottom": 2990.859375,
+              "top": 2987.0625,
+              "bottom": 3038.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -39344,8 +39344,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.46875,
-              "bottom": 495.859375,
+              "top": 444.0625,
+              "bottom": 495.453125,
               "width": 358,
               "height": 51.390625
             },
@@ -39361,8 +39361,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 2990.859375,
-              "bottom": 3042.25,
+              "top": 3038.453125,
+              "bottom": 3089.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -39370,8 +39370,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 443.859375,
-              "bottom": 495.25,
+              "top": 444.453125,
+              "bottom": 495.84375,
               "width": 358,
               "height": 51.390625
             },
@@ -39387,8 +39387,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 3042.25,
-              "bottom": 3093.640625,
+              "top": 3089.84375,
+              "bottom": 3141.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -39396,8 +39396,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 444.25,
-              "bottom": 495.640625,
+              "top": 443.84375,
+              "bottom": 495.234375,
               "width": 358,
               "height": 51.390625
             },
@@ -39413,8 +39413,8 @@
             "documentRect": {
               "left": 16,
               "right": 374,
-              "top": 5295.25,
-              "bottom": 5347.640625,
+              "top": 5342.84375,
+              "bottom": 5395.234375,
               "width": 358,
               "height": 52.390625
             },
@@ -39422,8 +39422,8 @@
             "viewportRect": {
               "left": 16,
               "right": 374,
-              "top": 695.25,
-              "bottom": 747.640625,
+              "top": 695.84375,
+              "bottom": 748.234375,
               "width": 358,
               "height": 52.390625
             },
@@ -45035,265 +45035,265 @@
     "requests": [
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/index.html",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/index.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/index.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/index.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/video-config.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/video-config.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/video-config.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/video-config.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/images/video-poster.png",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/images/video-poster.png",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/images/video-poster.png",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/images/video-poster.png",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "index.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/images/hero-layers.png",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/images/hero-layers.png",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/images/hero-layers.png",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/images/hero-layers.png",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/loop-engineering.html",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/loop-engineering.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/loop-engineering.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/loop-engineering.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "loop-engineering.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/dynamic-expert-review.html",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/dynamic-expert-review.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/dynamic-expert-review.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/dynamic-expert-review.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "dynamic-expert-review.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/platform-capabilities.html",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/platform-capabilities.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/platform-capabilities.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/platform-capabilities.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "platform-capabilities.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/downloads-docs.html",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/downloads-docs.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/downloads-docs.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/downloads-docs.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "downloads-docs.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/docs/USER_GUIDE.zh-CN.html",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/docs/USER_GUIDE.zh-CN.html",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/docs/USER_GUIDE.zh-CN.html",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/docs/USER_GUIDE.zh-CN.html",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/tokens.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/tokens.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/site.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/site.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/css/pages.css",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/css/pages.css",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       },
       {
         "page": "docs/USER_GUIDE.zh-CN.html",
-        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "url": "file:///private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "protocol": "file:",
-        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site/assets/js/site.js",
+        "resolvedPath": "/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site/assets/js/site.js",
         "ownership": "copied-site-root",
         "repositoryBackReference": false
       }

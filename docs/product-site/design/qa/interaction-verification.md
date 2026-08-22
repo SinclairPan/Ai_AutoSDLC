@@ -1,8 +1,8 @@
 # AI-SDLC v3.0.1 产品站交互验收记录
 
-验收输入提交：`3c9a834e82f7102066fe8a9aded4cc0b63391a2f`
+验收输入提交：`343f087d43dd803e1ea2154d29fade92338a6da3`
 
-执行环境使用 Playwright `chromium_headless_shell`，从 `/private/tmp/ai-sdlc-v3-product-site-final-copy-2/site` 的全新外部副本加载；浏览器离线，device scale factor 为 1。系统 Chrome 未启动。
+执行环境使用 Playwright `chromium_headless_shell`，从 `/private/tmp/ai-sdlc-v3-product-site-final-copy-4/site` 的全新外部副本加载；浏览器离线，device scale factor 为 1。系统 Chrome 未启动。
 
 ## 验收矩阵
 
@@ -25,9 +25,9 @@
 
 ## 绑定摘要
 
-- receipt SHA-256：`55a9aec31a75f17af38d863107a986a8c00527fcb808fd94227be9351e544b12`
+- receipt SHA-256：`f4c4040c736d18f1e738a532e9723a40367ae58d8c1d89ac16e697c4773919f5`
 - runner SHA-256：`597a852fe8b70d3d2893ddad56e2ac5578bd9b3e50fe23034daa3a374d1128d8`
-- manifest SHA-256：`46fe51cc9ca47f69471966c29f688e113ecb0415d1a025b4d5ff844695333327`
+- manifest SHA-256：`c08a89e3ab9b899c58559082261e95d6452d0ac5743db3e6f2cfd6374153483a`
 - manifest entries：16
 
 `node scripts/run_offline_product_site_browser_acceptance.mjs --verify-receipt ...` 返回 `BROWSER_ACCEPTANCE_RECEIPT_VALID`。

@@ -1,6 +1,6 @@
 # AI-SDLC v3.0.1 产品站最终对抗记录
 
-Reviewed implementation commit: `3c9a834e82f7102066fe8a9aded4cc0b63391a2f`
+Reviewed implementation commit: `343f087d43dd803e1ea2154d29fade92338a6da3`
 
 本记录汇总实现后的可复验事实，不替代 `docs/product-site/design/qa/reviewers/` 中后续独立 reviewer attestations。
 
@@ -39,8 +39,8 @@ Reviewed implementation commit: `3c9a834e82f7102066fe8a9aded4cc0b63391a2f`
 
 ## 绑定证据
 
-- receipt：`55a9aec31a75f17af38d863107a986a8c00527fcb808fd94227be9351e544b12`
-- manifest：`46fe51cc9ca47f69471966c29f688e113ecb0415d1a025b4d5ff844695333327`
+- receipt：`f4c4040c736d18f1e738a532e9723a40367ae58d8c1d89ac16e697c4773919f5`
+- manifest：`c08a89e3ab9b899c58559082261e95d6452d0ac5743db3e6f2cfd6374153483a`
 - runner：`597a852fe8b70d3d2893ddad56e2ac5578bd9b3e50fe23034daa3a374d1128d8`
 - validator：`f030b8aa27380036f5cd6946598d1de14a61aee9ae9b6536d868724105513406`
 - home desktop：`4ae4c25e2285dc74401f2900cc6256e3cf6327c4a7e913cff8f71c22246ee126`
