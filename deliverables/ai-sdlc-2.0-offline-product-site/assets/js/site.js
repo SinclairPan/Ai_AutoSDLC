@@ -120,6 +120,21 @@
     });
   };
 
+  const setupGuideRouteLinks = (root = document) => {
+    root.querySelectorAll("[data-guide-route-link]").forEach((link) => {
+      link.addEventListener("click", (event) => {
+        const id = link.getAttribute("href")?.slice(1);
+        const target = id ? root.getElementById(id) : null;
+        if (!target) return;
+        event.preventDefault();
+        if (location.hash !== `#${id}`) history.pushState(null, "", `#${id}`);
+        target.tabIndex = -1;
+        target.focus({ preventScroll: true });
+        target.scrollIntoView({ block: "start" });
+      });
+    });
+  };
+
   const fallbackCopyText = (text, root = document) => {
     const textarea = root.createElement("textarea");
     textarea.value = text;
@@ -218,6 +233,7 @@
     setupSkipLink();
     setupMobileNavigation();
     setupTabs();
+    setupGuideRouteLinks();
     setupExternalLinks();
     setupCopyCommands();
     setupVideo();

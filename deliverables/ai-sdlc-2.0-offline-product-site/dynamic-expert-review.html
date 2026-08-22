@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Dynamic Expert Review | AI-SDLC 2.0</title>
+    <title>Dynamic Expert Review | AI-SDLC v3.0.1</title>
     <link rel="stylesheet" href="assets/css/tokens.css">
     <link rel="stylesheet" href="assets/css/site.css">
     <link rel="stylesheet" href="assets/css/pages.css">
@@ -13,7 +13,8 @@
     <a class="skip-link" href="#main">跳到主要内容</a>
     <header class="site-header">
       <div class="site-shell">
-        <a class="brand" href="index.html">AI-SDLC 2.0</a>
+        <a class="brand" href="index.html">AI-SDLC</a>
+        <span class="release-badge" data-release-version="3.0.1">v3.0.1 · 比赛最终版本</span>
         <button
           type="button"
           data-nav-toggle
@@ -23,7 +24,7 @@
           菜单
         </button>
         <nav id="site-nav" class="site-nav" data-nav-menu aria-label="主导航">
-          <a href="index.html">AI-SDLC 2.0</a>
+          <a href="index.html">AI-SDLC</a>
           <a href="loop-engineering.html">Loop Engineering</a>
           <a href="dynamic-expert-review.html" aria-current="page">Dynamic Expert Review</a>
           <a href="platform-capabilities.html">Platform Capabilities</a>
@@ -40,7 +41,8 @@
         <h1 id="page-title">让关键结果先经独立挑战，再进入下一步</h1>
         <p class="expert-hero-summary">
           AI-SDLC 根据当前结果的主要风险选择一名 Primary Expert；只有出现明确第二风险面时，
-          才加入一名 Cross-risk Expert。专家只读同一冻结输入，原 Writer 保留修改权。
+          才加入一名 Cross-risk Expert。最多两名只读专家共享同一冻结输入，原 Writer 保留修改权；
+          每个角色最多一次修复与一次复核。
         </p>
         <a class="button-primary" href="#expert-workspace">查看专家如何被选择</a>
       </section>
@@ -53,7 +55,7 @@
         <div class="benefit-heading">
           <div>
             <p class="page-eyebrow">Expert effect benchmark</p>
-            <h2 id="expert-benefit-title">相同五阶段，动态专家把问题留在 Close 之前</h2>
+            <h2 id="expert-benefit-title">相同五类生成物，动态专家把问题留在 Close 之前</h2>
           </div>
           <p class="benefit-model">同一 Writer · 同一冻结输入 · 专家只读</p>
         </div>
@@ -62,7 +64,7 @@
             <p>阶段问题发现率</p><strong>54% → 89%</strong><span>+35 pts</span>
           </article>
           <article class="benefit-card" data-benefit-card="stage_artifact_completeness" data-without-expert-value="79" data-with-expert-value="94">
-            <p>五阶段生成物完整度</p><strong>79% → 94%</strong><span>+15 pts</span>
+            <p>五类生成物完整度</p><strong>79% → 94%</strong><span>+15 pts</span>
           </article>
           <article class="benefit-card" data-benefit-card="residual_severe_defects" data-without-expert-value="9" data-with-expert-value="2">
             <p>残余严重缺陷</p><strong>9 → 2</strong><span>-78%</span>
@@ -71,7 +73,7 @@
             <p>最终首轮验收率</p><strong>76% → 91%</strong><span>+15 pts</span>
           </article>
         </div>
-        <div class="benefit-stage-table" role="table" aria-label="五阶段生成物质量比较">
+        <div class="benefit-stage-table" role="table" aria-label="五类生成物质量比较">
           <div role="row" class="benefit-stage-row benefit-stage-header">
             <span role="columnheader">阶段生成物</span><span role="columnheader">无专家</span><span role="columnheader">动态专家</span>
           </div>
@@ -95,11 +97,15 @@
           Primary / Cross-risk Expert 只输出 Findings；原 Writer 修复，输入重新绑定后再复审，
           未关闭问题不能被多数意见掩盖。
         </p>
-        <p class="benefit-disclosure">
-          <strong>证据锚定合成基准：</strong>对照组保留相同五阶段与 Close 合同，只关闭独立专家；
-          场景为 advantage-aligned engineering scenarios，不代表客户生产统计。
-          <a href="assets/data/expert-review-benefit-data.json">查看完整数据</a>
-        </p>
+        <div class="evidence-disclosure" data-evidence-disclosure="summary">
+          <p><strong>证据锚定合成评估：</strong>相同五类生成物与 Close 合同，只改变动态专家对抗；非生产统计。</p>
+          <details data-evidence-methodology>
+            <summary>查看方法、边界与可信链</summary>
+            <p>同一 Writer、同一冻结输入；专家只读，Findings 回到原 Writer。优势导向场景存在选择偏差，不能外推为生产统计或因果证明。</p>
+            <p>能力事实绑定 AI-SDLC v3.0.1，source commit <code>9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4</code>。</p>
+          </details>
+          <a href="assets/data/expert-review-benefit-data.json">查看原始 JSON 与指标定义</a>
+        </div>
       </section>
 
       <section

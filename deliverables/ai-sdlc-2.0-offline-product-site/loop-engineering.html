@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Loop Engineering | AI-SDLC 2.0</title>
+    <title>Loop Engineering | AI-SDLC v3.0.1</title>
     <link rel="stylesheet" href="assets/css/tokens.css">
     <link rel="stylesheet" href="assets/css/site.css">
     <link rel="stylesheet" href="assets/css/pages.css">
@@ -13,7 +13,8 @@
     <a class="skip-link" href="#main">跳到主要内容</a>
     <header class="site-header">
       <div class="site-shell">
-        <a class="brand" href="index.html">AI-SDLC 2.0</a>
+        <a class="brand" href="index.html">AI-SDLC</a>
+        <span class="release-badge" data-release-version="3.0.1">v3.0.1 · 比赛最终版本</span>
         <button
           type="button"
           data-nav-toggle
@@ -23,7 +24,7 @@
           菜单
         </button>
         <nav id="site-nav" class="site-nav" data-nav-menu aria-label="主导航">
-          <a href="index.html">AI-SDLC 2.0</a>
+          <a href="index.html">AI-SDLC</a>
           <a href="loop-engineering.html" aria-current="page">Loop Engineering</a>
           <a href="dynamic-expert-review.html">Dynamic Expert Review</a>
           <a href="platform-capabilities.html">Platform Capabilities</a>
@@ -48,16 +49,17 @@
       <section
         class="benefit-benchmark benefit-benchmark-loop"
         data-benefit-dataset="loop"
+        data-loop-taxonomy="five-types"
         aria-labelledby="loop-benefit-title"
       >
         <div class="benefit-heading">
           <div>
             <p class="page-eyebrow">Current benefit benchmark</p>
-            <h2 id="loop-benefit-title">五阶段 Loop，把一次生成推进为可验证交付</h2>
+            <h2 id="loop-benefit-title">五类 Loop，把一次生成推进为可验证交付</h2>
           </div>
           <p class="benefit-model">gpt-5.6-sol / high · 50 个优势工程场景</p>
         </div>
-        <div class="benefit-card-grid" aria-label="裸 LLM 与五阶段 Loop 主指标比较">
+        <div class="benefit-card-grid" aria-label="裸 LLM 与五类 Loop 主指标比较">
           <article class="benefit-card" data-benefit-card="requirement_understanding" data-native-value="76" data-ai-sdlc-value="94">
             <p>需求理解</p><strong>76% → 94%</strong><span>+18 pts</span>
           </article>
@@ -71,7 +73,7 @@
             <p>代码质量</p><strong>58% → 87%</strong><span>+29 pts</span>
           </article>
         </div>
-        <div class="benefit-stage-table" role="table" aria-label="五阶段累计缺口消除进度">
+        <div class="benefit-stage-table" role="table" aria-label="五类 Loop 累计缺口消除进度">
           <div role="row" class="benefit-stage-row benefit-stage-header">
             <span role="columnheader">阶段</span><span role="columnheader">累计消除</span><span role="columnheader">核心作用</span>
           </div>
@@ -91,11 +93,15 @@
             <strong role="cell">Local PR Review</strong><span role="cell">92%</span><span role="cell">拦截跨阶段漂移和发布前回归</span>
           </div>
         </div>
-        <p class="benefit-disclosure">
-          <strong>证据锚定合成基准：</strong>场景为 advantage-aligned engineering scenarios，
-          用于展示 AI-SDLC 在复杂工程交付中的机制优势，不代表随机总体或客户生产统计。
-          <a href="assets/data/loop-benefit-data.json">查看完整数据</a>
-        </p>
+        <div class="evidence-disclosure" data-evidence-disclosure="summary">
+          <p><strong>证据锚定合成评估：</strong>50 个优势导向场景，用于说明五类 Loop 的收敛机制；非生产统计。</p>
+          <details data-evidence-methodology>
+            <summary>查看方法、边界与可信链</summary>
+            <p>同一 gpt-5.6-sol / high，对照裸 LLM 与 AI-SDLC 五类 Loop。场景经过优势导向选择，存在选择偏差，不代表统计显著性或生产 SLA。</p>
+            <p>能力事实绑定 AI-SDLC v3.0.1，source commit <code>9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4</code>。</p>
+          </details>
+          <a href="assets/data/loop-benefit-data.json">查看原始 JSON 与指标定义</a>
+        </div>
       </section>
 
       <section
@@ -444,7 +450,7 @@
           <li><strong>Findings</strong><span>检查跨阶段回归、修复与当前验证证据。</span></li>
           <li><strong>fix/rerun</strong><span>原 Writer 修复候选并重跑必要验证。</span></li>
           <li
-            data-pr-review-close-policy="v2.0.0"
+          data-pr-review-close-policy="v3.0.1"
             data-unresolved-blocker="blocked"
             data-unresolved-required="blocked-or-risk-accepted"
             data-advisory-waiver="recorded-and-disclosed"

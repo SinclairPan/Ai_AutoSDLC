@@ -1493,6 +1493,11 @@ html:not(.js) .platform-panel + .platform-panel {
   gap: clamp(var(--space-7), 7vw, var(--space-8));
 }
 
+.guide-main {
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+}
+
 .downloads-hero,
 .guide-hero {
   min-width: 0;
@@ -1770,8 +1775,13 @@ html:not(.js) .platform-panel + .platform-panel {
 
 .guide-main a:not(.guide-scenario-link) {
   display: inline-flex;
+  max-width: 100%;
+  min-width: 0;
   min-height: 2.75rem;
+  flex-wrap: wrap;
   align-items: center;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .guide-source-intro .guide-table-wrap {
@@ -1802,6 +1812,43 @@ html:not(.js) .platform-panel + .platform-panel {
   max-width: 38rem;
   margin: 0;
   color: var(--ink-700);
+}
+
+.guide-route-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin-top: var(--space-6);
+}
+
+.guide-route-grid a {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: var(--space-3);
+  align-items: center;
+  min-height: 4.5rem;
+  padding: var(--space-3) var(--space-4);
+  color: var(--brand-900);
+  border: 1px solid var(--line-200);
+  border-radius: 0.75rem;
+  background: var(--surface);
+  font-size: 0.86rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.guide-route-grid a:hover {
+  background: var(--brand-050);
+}
+
+.guide-route-grid span {
+  color: var(--brand-600);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+}
+
+.guide-route-content {
+  padding-bottom: var(--space-8);
 }
 
 .guide-scenario-links {
@@ -2044,7 +2091,8 @@ html:not(.js) .guide-path + .guide-path {
   grid-column: 2;
 }
 
-.guide-step-part pre {
+.guide-step-part pre,
+.guide-command-shell pre {
   min-width: 0;
   max-width: 100%;
   margin: 0;
@@ -2060,7 +2108,8 @@ html:not(.js) .guide-path + .guide-path {
   margin-top: var(--space-4);
 }
 
-.guide-step-part pre code {
+.guide-step-part pre code,
+.guide-command-shell pre code {
   display: block;
   width: max-content;
   min-width: 100%;
@@ -2089,6 +2138,19 @@ html:not(.js) .guide-path + .guide-path {
 .guide-reference p,
 .guide-reference li {
   color: var(--ink-700);
+}
+
+.loop-main,
+.expert-main,
+.platform-main {
+  gap: var(--space-7);
+  padding-top: var(--space-7);
+}
+
+.loop-main > .benefit-benchmark,
+.expert-main > .benefit-benchmark,
+.platform-main > .benefit-benchmark {
+  margin-block: 0;
 }
 
 .benefit-benchmark {
@@ -2210,7 +2272,7 @@ html:not(.js) .guide-path + .guide-path {
 
 .overall-headlines {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: var(--space-3);
   margin-top: var(--space-5);
 }
@@ -2247,6 +2309,15 @@ html:not(.js) .guide-path + .guide-path {
   background: var(--brand-050);
 }
 
+.overall-metric-table .metric-group-label th {
+  color: var(--brand-900);
+  background: #f8faff;
+  font-size: 0.75rem;
+  letter-spacing: 0.08em;
+  text-align: left;
+  text-transform: uppercase;
+}
+
 .overall-metric-table tbody tr:last-child th,
 .overall-metric-table tbody tr:last-child td {
   border-bottom: 0;
@@ -2269,6 +2340,56 @@ html:not(.js) .guide-path + .guide-path {
   align-items: center;
   min-height: 2.75rem;
   white-space: nowrap;
+}
+
+.evidence-disclosure {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-3) var(--space-5);
+  align-items: start;
+  margin-top: var(--space-4);
+  padding-top: var(--space-4);
+  color: var(--ink-700);
+  border-top: 1px solid var(--line-200);
+  font-size: 0.875rem;
+  line-height: 1.7;
+}
+
+.evidence-disclosure > p {
+  margin: 0;
+}
+
+.evidence-disclosure > a {
+  display: inline-flex;
+  min-height: 2.75rem;
+  align-items: center;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.evidence-disclosure details {
+  grid-column: 1 / -1;
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--line-200);
+  border-radius: 0.75rem;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.evidence-disclosure summary {
+  min-height: 2.75rem;
+  display: flex;
+  align-items: center;
+  color: var(--brand-900);
+  font-weight: 750;
+  cursor: pointer;
+}
+
+.asset-digest {
+  display: block;
+  margin-top: var(--space-2);
+  color: var(--ink-700);
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
 }
 
 @media (max-width: 64rem) {
@@ -2300,6 +2421,10 @@ html:not(.js) .guide-path + .guide-path {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .guide-route-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .guide-scenario-link:nth-child(3) {
     border-left: 0;
   }
@@ -2314,9 +2439,73 @@ html:not(.js) .guide-path + .guide-path {
     padding: var(--space-4);
   }
 
+  .guide-route-grid {
+    grid-template-columns: 1fr;
+  }
+
   .benefit-card-grid,
   .overall-headlines {
     grid-template-columns: 1fr;
+  }
+
+  .evidence-disclosure {
+    grid-template-columns: 1fr;
+  }
+
+  .evidence-disclosure > a,
+  .evidence-disclosure details {
+    grid-column: 1;
+  }
+
+  .overall-table-wrap {
+    overflow: visible;
+    border: 0;
+    background: transparent;
+  }
+
+  .overall-metric-table,
+  .overall-metric-table tbody,
+  .overall-metric-table tr,
+  .overall-metric-table th,
+  .overall-metric-table td {
+    display: block;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .overall-metric-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+  }
+
+  .overall-metric-table tbody {
+    margin-top: var(--space-4);
+  }
+
+  .overall-metric-table tr[data-overall-metric-row] {
+    display: grid;
+    grid-template-columns: 1fr repeat(3, auto);
+    gap: var(--space-2);
+    margin-top: var(--space-2);
+    padding: var(--space-3);
+    border: 1px solid var(--line-200);
+    border-radius: 0.75rem;
+    background: var(--surface);
+  }
+
+  .overall-metric-table tr[data-overall-metric-row] th,
+  .overall-metric-table tr[data-overall-metric-row] td {
+    padding: 0;
+    border: 0;
+    text-align: right;
+  }
+
+  .overall-metric-table tr[data-overall-metric-row] th {
+    text-align: left;
   }
 
   .benefit-stage-row,
@@ -2381,7 +2570,8 @@ html:not(.js) .guide-path + .guide-path {
     text-align: left;
   }
 
-  .guide-step-part pre {
+  .guide-step-part pre,
+  .guide-command-shell pre {
     padding: var(--space-4);
   }
 }

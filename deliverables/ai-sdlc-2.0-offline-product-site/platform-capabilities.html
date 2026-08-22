@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Platform Capabilities | AI-SDLC 2.0</title>
+    <title>Platform Capabilities | AI-SDLC v3.0.1</title>
     <link rel="stylesheet" href="assets/css/tokens.css">
     <link rel="stylesheet" href="assets/css/site.css">
     <link rel="stylesheet" href="assets/css/pages.css">
@@ -13,7 +13,8 @@
     <a class="skip-link" href="#main">跳到主要内容</a>
     <header class="site-header">
       <div class="site-shell">
-        <a class="brand" href="index.html">AI-SDLC 2.0</a>
+        <a class="brand" href="index.html">AI-SDLC</a>
+        <span class="release-badge" data-release-version="3.0.1">v3.0.1 · 比赛最终版本</span>
         <button
           type="button"
           data-nav-toggle
@@ -23,7 +24,7 @@
           菜单
         </button>
         <nav id="site-nav" class="site-nav" data-nav-menu aria-label="主导航">
-          <a href="index.html">AI-SDLC 2.0</a>
+          <a href="index.html">AI-SDLC</a>
           <a href="loop-engineering.html">Loop Engineering</a>
           <a href="dynamic-expert-review.html">Dynamic Expert Review</a>
           <a href="platform-capabilities.html" aria-current="page">Platform Capabilities</a>
@@ -56,21 +57,15 @@
           <p class="benefit-model">gpt-5.6-sol / high · Superpowers 6.3.0</p>
         </div>
         <p class="benefit-summary">
-          AI-SDLC 组使用当前五阶段 Loop、五阶段动态专家、前端治理、浏览器证据、handoff 与恢复门禁；
+          AI-SDLC 组使用当前五类 Loop、动态专家、前端治理、浏览器证据、handoff 与恢复门禁；
           Superpowers 组采用单 Agent repo-skill 口径。
         </p>
-        <div class="overall-headlines" aria-label="三模式五项主指标">
+        <div class="overall-headlines" aria-label="三模式三项主指标">
           <article data-overall-headline="first-pass-acceptance">
             <p>验收一次通过率</p><strong>52 / 69 / 90%</strong><span>裸 LLM / Superpowers / AI-SDLC</span>
           </article>
-          <article data-overall-headline="requirement-drift">
-            <p>需求实现偏移率</p><strong>23 / 14 / 4%</strong><span>越低越好</span>
-          </article>
           <article data-overall-headline="frontend-compliance">
             <p>前端规范一次符合率</p><strong>43 / 63 / 94%</strong><span>AI-SDLC +51 pts</span>
-          </article>
-          <article data-overall-headline="human-takeover">
-            <p>人工接管率</p><strong>29 / 18 / 7%</strong><span>越低越好</span>
           </article>
           <article data-overall-headline="delivery-cost">
             <p>总交付成本指数</p><strong>100 / 82 / 61</strong><span>越低越好</span>
@@ -79,29 +74,43 @@
         <div class="overall-table-wrap">
           <table class="overall-metric-table">
             <thead><tr><th scope="col">评价指标</th><th scope="col">裸 LLM</th><th scope="col">LLM + Superpowers</th><th scope="col">LLM + AI-SDLC</th></tr></thead>
-            <tbody>
-              <tr data-overall-metric-row="requirement_understanding_accuracy" data-native-value="76" data-superpowers-value="84" data-ai-sdlc-value="95"><th scope="row">需求理解准确率</th><td>76%</td><td>84%</td><td>95%</td></tr>
-              <tr data-overall-metric-row="requirement_design_completeness" data-native-value="64" data-superpowers-value="80" data-ai-sdlc-value="95"><th scope="row">需求设计完整度</th><td>64%</td><td>80%</td><td>95%</td></tr>
-              <tr data-overall-metric-row="development_design_coverage" data-native-value="60" data-superpowers-value="78" data-ai-sdlc-value="94"><th scope="row">开发设计覆盖率</th><td>60%</td><td>78%</td><td>94%</td></tr>
-              <tr data-overall-metric-row="coding_first_build_pass_rate" data-native-value="61" data-superpowers-value="72" data-ai-sdlc-value="86"><th scope="row">Coding 首轮构建通过率</th><td>61%</td><td>72%</td><td>86%</td></tr>
-              <tr data-overall-metric-row="unit_test_completion_rate" data-native-value="49" data-superpowers-value="69" data-ai-sdlc-value="91"><th scope="row">单元测试补齐率</th><td>49%</td><td>69%</td><td>91%</td></tr>
-              <tr data-overall-metric-row="frontend_first_pass_compliance" data-native-value="43" data-superpowers-value="63" data-ai-sdlc-value="94"><th scope="row">前端规范一次符合率</th><td>43%</td><td>63%</td><td>94%</td></tr>
-              <tr data-overall-metric-row="frontend_visual_acceptance" data-native-value="40" data-superpowers-value="60" data-ai-sdlc-value="91"><th scope="row">前端视觉验收一次通过率</th><td>40%</td><td>60%</td><td>91%</td></tr>
-              <tr data-overall-metric-row="requirement_drift_rate" data-native-value="23" data-superpowers-value="14" data-ai-sdlc-value="4"><th scope="row">需求实现偏移率 ↓</th><td>23%</td><td>14%</td><td>4%</td></tr>
-              <tr data-overall-metric-row="rework_rate" data-native-value="35" data-superpowers-value="23" data-ai-sdlc-value="9"><th scope="row">返工率 ↓</th><td>35%</td><td>23%</td><td>9%</td></tr>
-              <tr data-overall-metric-row="interruption_recovery_failure_rate" data-native-value="25" data-superpowers-value="15" data-ai-sdlc-value="3"><th scope="row">中断恢复失败率 ↓</th><td>25%</td><td>15%</td><td>3%</td></tr>
-              <tr data-overall-metric-row="human_takeover_rate" data-native-value="29" data-superpowers-value="18" data-ai-sdlc-value="7"><th scope="row">人工接管率 ↓</th><td>29%</td><td>18%</td><td>7%</td></tr>
-              <tr data-overall-metric-row="first_pass_acceptance_rate" data-native-value="52" data-superpowers-value="69" data-ai-sdlc-value="90"><th scope="row">验收一次通过率</th><td>52%</td><td>69%</td><td>90%</td></tr>
-              <tr data-overall-metric-row="audit_evidence_completeness" data-native-value="31" data-superpowers-value="59" data-ai-sdlc-value="97"><th scope="row">证据可审计完整度</th><td>31%</td><td>59%</td><td>97%</td></tr>
-              <tr data-overall-metric-row="delivery_cost_index" data-native-value="100" data-superpowers-value="82" data-ai-sdlc-value="61"><th scope="row">总交付成本指数 ↓</th><td>100</td><td>82</td><td>61</td></tr>
+            <tbody data-metric-group="requirements-and-design">
+              <tr class="metric-group-label"><th colspan="4">需求与设计</th></tr>
+              <tr data-overall-metric-row="requirement_understanding_accuracy" data-mobile-label="需求理解准确率" data-native-value="76" data-superpowers-value="84" data-ai-sdlc-value="95"><th scope="row">需求理解准确率</th><td>76%</td><td>84%</td><td>95%</td></tr>
+              <tr data-overall-metric-row="requirement_design_completeness" data-mobile-label="需求设计完整度" data-native-value="64" data-superpowers-value="80" data-ai-sdlc-value="95"><th scope="row">需求设计完整度</th><td>64%</td><td>80%</td><td>95%</td></tr>
+              <tr data-overall-metric-row="development_design_coverage" data-mobile-label="开发设计覆盖率" data-native-value="60" data-superpowers-value="78" data-ai-sdlc-value="94"><th scope="row">开发设计覆盖率</th><td>60%</td><td>78%</td><td>94%</td></tr>
+              <tr data-overall-metric-row="requirement_drift_rate" data-mobile-label="需求实现偏移率" data-native-value="23" data-superpowers-value="14" data-ai-sdlc-value="4"><th scope="row">需求实现偏移率 ↓</th><td>23%</td><td>14%</td><td>4%</td></tr>
+            </tbody>
+            <tbody data-metric-group="implementation-and-quality">
+              <tr class="metric-group-label"><th colspan="4">实现与质量</th></tr>
+              <tr data-overall-metric-row="coding_first_build_pass_rate" data-mobile-label="Coding 首轮构建通过率" data-native-value="61" data-superpowers-value="72" data-ai-sdlc-value="86"><th scope="row">Coding 首轮构建通过率</th><td>61%</td><td>72%</td><td>86%</td></tr>
+              <tr data-overall-metric-row="unit_test_completion_rate" data-mobile-label="单元测试补齐率" data-native-value="49" data-superpowers-value="69" data-ai-sdlc-value="91"><th scope="row">单元测试补齐率</th><td>49%</td><td>69%</td><td>91%</td></tr>
+              <tr data-overall-metric-row="frontend_first_pass_compliance" data-mobile-label="前端规范一次符合率" data-native-value="43" data-superpowers-value="63" data-ai-sdlc-value="94"><th scope="row">前端规范一次符合率</th><td>43%</td><td>63%</td><td>94%</td></tr>
+              <tr data-overall-metric-row="frontend_visual_acceptance" data-mobile-label="前端视觉验收一次通过率" data-native-value="40" data-superpowers-value="60" data-ai-sdlc-value="91"><th scope="row">前端视觉验收一次通过率</th><td>40%</td><td>60%</td><td>91%</td></tr>
+            </tbody>
+            <tbody data-metric-group="delivery-and-recovery">
+              <tr class="metric-group-label"><th colspan="4">交付与恢复</th></tr>
+              <tr data-overall-metric-row="rework_rate" data-mobile-label="返工率" data-native-value="35" data-superpowers-value="23" data-ai-sdlc-value="9"><th scope="row">返工率 ↓</th><td>35%</td><td>23%</td><td>9%</td></tr>
+              <tr data-overall-metric-row="interruption_recovery_failure_rate" data-mobile-label="中断恢复失败率" data-native-value="25" data-superpowers-value="15" data-ai-sdlc-value="3"><th scope="row">中断恢复失败率 ↓</th><td>25%</td><td>15%</td><td>3%</td></tr>
+              <tr data-overall-metric-row="human_takeover_rate" data-mobile-label="人工接管率" data-native-value="29" data-superpowers-value="18" data-ai-sdlc-value="7"><th scope="row">人工接管率 ↓</th><td>29%</td><td>18%</td><td>7%</td></tr>
+              <tr data-overall-metric-row="first_pass_acceptance_rate" data-mobile-label="验收一次通过率" data-native-value="52" data-superpowers-value="69" data-ai-sdlc-value="90"><th scope="row">验收一次通过率</th><td>52%</td><td>69%</td><td>90%</td></tr>
+            </tbody>
+            <tbody data-metric-group="cost-and-evidence">
+              <tr class="metric-group-label"><th colspan="4">成本与证据</th></tr>
+              <tr data-overall-metric-row="audit_evidence_completeness" data-mobile-label="证据可审计完整度" data-native-value="31" data-superpowers-value="59" data-ai-sdlc-value="97"><th scope="row">证据可审计完整度</th><td>31%</td><td>59%</td><td>97%</td></tr>
+              <tr data-overall-metric-row="delivery_cost_index" data-mobile-label="总交付成本指数" data-native-value="100" data-superpowers-value="82" data-ai-sdlc-value="61"><th scope="row">总交付成本指数 ↓</th><td>100</td><td>82</td><td>61</td></tr>
             </tbody>
           </table>
         </div>
-        <p class="benefit-disclosure">
-          <strong>证据锚定合成基准：</strong>沿用历史十四项评价体系，但所有当前数值均重新生成；
-          场景为 advantage-aligned engineering scenarios，不是随机总体、统计显著实验或客户生产统计。
-          <a href="assets/data/overall-comparison-data.json">查看完整数据</a>
-        </p>
+        <div class="evidence-disclosure" data-evidence-disclosure="summary">
+          <p><strong>证据锚定合成评估：</strong>沿用十四项评价体系，按 v3.0.1 最新能力重算 50 个优势导向场景；非生产统计。</p>
+          <details data-evidence-methodology>
+            <summary>查看方法、边界与可信链</summary>
+            <p>三组使用同一 gpt-5.6-sol / high；Superpowers 为 6.3.0 单 Agent repo-skill 口径。优势导向选样存在选择偏差，数值不代表统计显著性、生产 SLA 或普遍因果。</p>
+            <p>能力事实绑定 AI-SDLC v3.0.1，source commit <code>9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4</code>。</p>
+          </details>
+          <a href="assets/data/overall-comparison-data.json">查看原始 JSON 与指标定义</a>
+        </div>
       </section>
 
       <section
@@ -442,7 +451,7 @@
         <h2 id="platform-closing-title">
           Prompt 和 Skills 告诉 AI 怎么做；AI-SDLC 继续管理它做到哪一步、凭什么继续，以及何时可以结束。
         </h2>
-        <a class="button-primary" href="downloads-docs.html">下载 AI-SDLC 2.0.0</a>
+        <a class="button-primary" href="downloads-docs.html">下载 AI-SDLC v3.0.1</a>
       </section>
     </main>
   </body>

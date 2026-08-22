@@ -41,46 +41,40 @@ const SURFACES = [
   {
     key: "guide",
     file: "docs/USER_GUIDE.zh-CN.html",
-    states: [
-      "path-1a", "path-1b", "path-1c", "path-2a", "path-2b", "path-2c",
-      "path-3a", "path-3b", "path-3c", "path-4a", "path-4b", "path-4c",
-    ],
+    states: [null],
   },
 ];
 
 const INTERACTION_SURFACES = SURFACES.filter((surface) =>
-  ["loop", "expert", "platform", "guide"].includes(surface.key));
+  ["loop", "expert", "platform"].includes(surface.key));
 const INTERACTION_VIEWPORTS = [
   { width: 1366, height: 768 },
   { width: 390, height: 844 },
 ];
-const GUIDE_SCENARIOS = Object.freeze({
-  "existing-offline": "path-1a",
-  "existing-online": "path-2a",
-  "new-offline": "path-3a",
-  "new-online": "path-4a",
-});
+const GUIDE_ROUTES = Object.freeze(Object.fromEntries(
+  Array.from({ length: 12 }, (_, index) => [`route-${index + 1}`, `route-${index + 1}`]),
+));
 const INTERACTIVE_AUDIT_DEFINITION =
   "visible key controls within a shared interaction region; text-only lines excluded";
 
 const EXPECTED_SUMMARY = Object.freeze({
-  stateCount: 135,
+  stateCount: 80,
   stateFailures: 0,
-  stateGeometryCheckCount: 135,
+  stateGeometryCheckCount: 80,
   viewportClippingFailures: 0,
   ancestorClippingFailures: 0,
   controlOverlapFailures: 0,
   mobileMenuCount: 1,
   mobileMenuFailures: 0,
-  historyCount: 4,
+  historyCount: 3,
   historyFailures: 0,
-  tabKeyboardCount: 8,
+  tabKeyboardCount: 6,
   tabKeyboardFailures: 0,
   skipLinkCount: 5,
   skipLinkFailures: 0,
-  guideScenarioCount: 8,
+  guideScenarioCount: 24,
   guideScenarioFailures: 0,
-  copyCount: 240,
+  copyCount: 390,
   copyFailures: 0,
   noJsGroupCount: 12,
   noJsFailures: 0,
@@ -286,7 +280,7 @@ const verifyReceipt = async (options) => {
     "tab keyboard surface/viewport coverage drifted",
   );
   const expectedScenarioPairs = new Set(INTERACTION_VIEWPORTS.flatMap((viewport) =>
-    Object.keys(GUIDE_SCENARIOS).map((scenario) => `${scenario}:${viewport.width}x${viewport.height}`)));
+    Object.keys(GUIDE_ROUTES).map((scenario) => `${scenario}:${viewport.width}x${viewport.height}`)));
   const scenarioPairs = new Set(receipt.guideScenarioResults?.map(
     (item) => `${item.scenario}:${item.viewport.width}x${item.viewport.height}`,
   ));
@@ -336,7 +330,7 @@ const verifyReceipt = async (options) => {
   }
   for (const item of receipt.tabKeyboardResults || []) {
     const surface = INTERACTION_SURFACES.find((candidate) => candidate.key === item.surface);
-    const visibleStates = item.surface === "guide" ? surface?.states.slice(0, 3) : surface?.states;
+    const visibleStates = surface?.states;
     check(
       item.steps?.start === visibleStates?.[0]
         && item.steps?.ArrowRight === visibleStates?.[1]
@@ -356,14 +350,13 @@ const verifyReceipt = async (options) => {
     );
   }
   for (const item of receipt.guideScenarioResults || []) {
-    const expected = GUIDE_SCENARIOS[item.scenario];
+    const expected = GUIDE_ROUTES[item.scenario];
     check(
       item.expectedState === expected
-        && item.selected === expected
         && item.hash === `#${expected}`
         && item.focused === expected
-        && item.ariaCurrent === "true",
-      `guide scenario observations drifted for ${item.scenario}`,
+        && item.targetVisible === true,
+      `guide route observations drifted for ${item.scenario}`,
     );
   }
   for (const state of receipt.stateResults || []) {
@@ -773,7 +766,7 @@ const runAcceptance = async (options) => {
       await context.setOffline(true);
       const page = await context.newPage();
       const first = surface.states[0];
-      const visibleStates = surface.key === "guide" ? surface.states.slice(0, 3) : surface.states;
+      const visibleStates = surface.states;
       await page.goto(urlFor(surface.file), { waitUntil: "load" });
       await page.locator(`[data-tab="${first}"]`).focus();
       const steps = { start: await page.evaluate(() => document.activeElement?.dataset?.tab || null) };
@@ -799,27 +792,28 @@ const runAcceptance = async (options) => {
     await context.setOffline(true);
     const page = await context.newPage();
     await page.goto(urlFor("docs/USER_GUIDE.zh-CN.html"), { waitUntil: "load" });
-    for (const [scenario, expectedState] of Object.entries(GUIDE_SCENARIOS)) {
-      const selector = page.locator(`[data-guide-scenario-selector="${scenario}"]`);
+    for (const [scenario, expectedState] of Object.entries(GUIDE_ROUTES)) {
+      const selector = page.locator(`[data-guide-route-link="${scenario}"]`);
       await selector.focus();
       await page.keyboard.press("Enter");
-      await page.waitForFunction((id) => document.querySelector(`[data-tab="${id}"]`)?.getAttribute("aria-selected") === "true", expectedState);
+      await page.waitForFunction((id) => location.hash === `#${id}`, expectedState);
       const observed = await page.evaluate(({ scenarioId, expected }) => {
-        const selected = document.querySelector('[role="tab"][aria-selected="true"]');
-        const scenarioNode = document.querySelector(`[data-guide-scenario-selector="${scenarioId}"]`);
+        const target = document.getElementById(expected);
+        const rect = target?.getBoundingClientRect();
         return {
           scenario: scenarioId,
           expectedState: expected,
-          selected: selected?.dataset.tab || null,
           hash: location.hash,
-          focused: document.activeElement?.dataset?.tab || document.activeElement?.tagName || null,
-          ariaCurrent: scenarioNode?.getAttribute("aria-current"),
-          visibleTabCount: [...document.querySelectorAll('[role="tab"]')].filter((tab) => !tab.hidden).length,
+          focused: document.activeElement?.id
+            || document.activeElement?.dataset?.guideRouteLink
+            || document.activeElement?.tagName
+            || null,
+          targetVisible: Boolean(rect && rect.width > 0 && rect.height > 0),
         };
       }, { scenarioId: scenario, expected: expectedState });
       const failures = [];
-      if (observed.selected !== expectedState || observed.hash !== `#${expectedState}` || observed.focused !== expectedState) failures.push("scenario-state");
-      if (observed.ariaCurrent !== "true" || observed.visibleTabCount !== 3) failures.push("scenario-contract");
+      if (observed.hash !== `#${expectedState}` || observed.focused !== expectedState) failures.push("route-state");
+      if (!observed.targetVisible) failures.push("route-contract");
       guideScenarioResults.push({ viewport, ...observed, failures });
     }
     await context.close();
@@ -853,9 +847,9 @@ const runAcceptance = async (options) => {
     const commandIds = await page.locator("code[data-guide-command]").evaluateAll((nodes) => nodes.map((node) => node.dataset.guideCommand));
     const results = [];
     for (const commandId of commandIds) {
-      const pathId = commandId.match(/^path-[1-4][a-c]/)?.[0];
+      const pathId = commandId.match(/^route-(?:[1-9]|1[0-2])/)?.[0];
       await page.evaluate((id) => { location.hash = id; }, pathId);
-      await page.waitForFunction((id) => !document.getElementById(id)?.hidden, pathId);
+      await page.waitForFunction((id) => Boolean(document.getElementById(id)), pathId);
       const button = page.locator(`[data-copy-command="${commandId}"]`);
       await button.focus();
       await page.keyboard.press("Enter");
@@ -1052,7 +1046,7 @@ const captureScreenshots = async (browser, screenshotRoot, repositoryRoot, urlFo
     ["loop-engineering.html", "design-contract", "loop-1366x768.png"],
     ["platform-capabilities.html", "continuity", "platform-1366x768.png"],
     ["downloads-docs.html", null, "downloads-1366x768.png"],
-    ["docs/USER_GUIDE.zh-CN.html", "path-1b", "guide-1366x768.png"],
+    ["docs/USER_GUIDE.zh-CN.html", null, "guide-1366x768.png"],
   ];
   for (const [file, state, name] of cases) {
     const context = await browser.newContext({ viewport: { width: 1366, height: 768 }, reducedMotion: "reduce" });
@@ -1067,8 +1061,8 @@ const captureScreenshots = async (browser, screenshotRoot, repositoryRoot, urlFo
     const context = await browser.newContext({ viewport: { width: 390, height: 844 }, reducedMotion: "reduce" });
     await context.setOffline(true);
     const page = await context.newPage();
-    await page.goto(urlFor("docs/USER_GUIDE.zh-CN.html", "path-1b"), { waitUntil: "load" });
-    await settlePage(page, "path-1b", false);
+    await page.goto(urlFor("docs/USER_GUIDE.zh-CN.html", "route-2"), { waitUntil: "load" });
+    await settlePage(page, null, false);
     await capture(page, "guide-390x844.png");
     await context.close();
   }

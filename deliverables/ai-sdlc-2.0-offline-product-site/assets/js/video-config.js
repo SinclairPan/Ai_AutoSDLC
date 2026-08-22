@@ -3,5 +3,5 @@ window.AISDLC_VIDEO = Object.freeze({
   type: "video/mp4",
   captions: "",
   poster: "assets/images/video-poster.png",
-  title: "AI-SDLC 2.0 产品实录",
+    title: "AI-SDLC v3.0.1 产品实录",
 });

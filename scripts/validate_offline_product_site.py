@@ -50,24 +50,33 @@ RUNTIME_REF_ATTRS = {
 ALLOWED_EXTERNAL_URLS = frozenset(
     {
         "https://github.com/SinclairPan/Ai_AutoSDLC",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/README.md",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/USER_GUIDE.zh-CN.md",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
-        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha256",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v3.0.1",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/blob/v3.0.1/README.md",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/blob/v3.0.1/USER_GUIDE.zh-CN.md",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-windows-amd64.zip",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-windows-amd64.zip.sha256",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-macos-arm64.tar.gz",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-macos-arm64.tar.gz.sha256",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
+        "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-linux-amd64.tar.gz.sha256",
     }
 )
 
-GUIDE_SOURCE_SHA256 = "8466b8535cea8f0a17e15181060b954ad84a815be96c7e2b269f84cfce054d67"
-GUIDE_PATH_IDS = tuple(
-    f"path-{group}{platform}" for group in range(1, 5) for platform in "abc"
+GUIDE_SOURCE_SHA256 = "b1bd464882e7a0ad1b163091d39d4650f16bef9630d44d968c73aa09251cbe7d"
+GUIDE_RENDERED_SHA256 = (
+    "37a20e026ebb90498dca3b3563b5d2059c2c2fdba0b8ce3d70ada42db9eb6ce1"
 )
-GUIDE_STEPS = ("install", "verify", "initialize", "start")
-GUIDE_PARTS = ("purpose", "location", "command", "expected", "troubleshoot", "next")
+GUIDE_PATH_IDS = tuple(f"route-{number}" for number in range(1, 13))
+GUIDE_STEPS = (
+    "prepare",
+    "acquire",
+    "verify",
+    "install",
+    "initialize",
+    "success",
+    "recover",
+)
+GUIDE_PARTS: tuple[str, ...] = ()
 GUIDE_PART_HEADING_TO_ID = {
     "本步要完成什么": "purpose",
     "在哪里执行": "location",
@@ -179,9 +188,7 @@ class _SiteHTMLParser(HTMLParser):
         if tag == "img":
             self.images.append(attributes)
 
-    def handle_startendtag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         self.handle_starttag(tag, attrs)
         self.handle_endtag(tag)
 
@@ -240,9 +247,7 @@ class _GuideHTMLParser(HTMLParser):
         self.paths: list[str] = []
         self.steps: list[tuple[str | None, str]] = []
         self.parts: list[tuple[str | None, str | None, str]] = []
-        self.part_nodes: dict[
-            tuple[str | None, str | None, str], list[_GuidePart]
-        ] = {}
+        self.part_nodes: dict[tuple[str | None, str | None, str], list[_GuidePart]] = {}
         self.commands: dict[str, list[_GuideCommand]] = {}
         self._command_stack: list[tuple[str, _GuideCommand]] = []
         self._part_stack: list[_GuidePart] = []
@@ -323,10 +328,14 @@ def _normalized_url(value: str) -> str:
 def _is_network_address(value: str) -> bool:
     normalized = unescape(value).strip()
     scheme = urlsplit(normalized).scheme.lower()
-    return normalized.startswith("//") or bool(scheme and scheme not in {"data", "mailto", "tel"})
+    return normalized.startswith("//") or bool(
+        scheme and scheme not in {"data", "mailto", "tel"}
+    )
 
 
-def _resolve_local(root: Path, source: Path, value: str) -> tuple[Path | None, str | None]:
+def _resolve_local(
+    root: Path, source: Path, value: str
+) -> tuple[Path | None, str | None]:
     normalized = _normalized_url(unescape(value).strip())
     if not normalized or normalized.startswith("#"):
         return None, None
@@ -366,10 +375,11 @@ def _is_inert_guide_command(
     if relative_path != "docs/USER_GUIDE.zh-CN.html":
         return False
     tags = [tag for tag, _ in ancestors]
-    return "pre" in tags and any(
-        tag == "code" and attributes.get("data-guide-command")
-        for tag, attributes in ancestors
+    source_bound = any(
+        attributes.get("data-guide-source-sha256") == GUIDE_SOURCE_SHA256
+        for _, attributes in ancestors
     )
+    return source_bound and "code" in tags
 
 
 def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
@@ -383,7 +393,9 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
         _validate_local_reference(root, page, value, issues)
 
     for tag, attribute, value in parser.network_attribute_refs:
-        issues.append(_issue("remote_runtime_asset", page, f"{tag}[{attribute}]={value}"))
+        issues.append(
+            _issue("remote_runtime_asset", page, f"{tag}[{attribute}]={value}")
+        )
 
     for anchor in parser.anchors:
         href = anchor.get("href", "")
@@ -395,17 +407,17 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
             if set(anchor.get("rel", "").split()) != {"noopener", "noreferrer"}:
                 issues.append(_issue("external_link_invalid_rel", page, href))
             if id(anchor) not in parser.anchors_with_visible_network_label:
-                issues.append(
-                    _issue("external_link_missing_network_label", page, href)
-                )
+                issues.append(_issue("external_link_missing_network_label", page, href))
         elif href and not href.startswith(("#", "mailto:", "tel:")):
             _validate_local_reference(root, page, href, issues)
 
     for text, ancestors in parser.text_nodes:
-        hidden_runtime_text = any(tag in {"script", "style"} for tag, _ in ancestors)
+        bound_or_hidden_text = any(
+            tag in {"a", "script", "style"} for tag, _ in ancestors
+        )
         if (
             _NETWORK_URL_RE.search(text)
-            and not hidden_runtime_text
+            and not bound_or_hidden_text
             and not _is_inert_guide_command(relative_path, ancestors)
         ):
             issues.append(_issue("external_url_in_unbound_text", page, text.strip()))
@@ -422,7 +434,9 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
         if not parser.skip_links:
             issues.append(_issue("missing_skip_link", page, "Expected href='#main'."))
         if parser.viewport_count != 1:
-            issues.append(_issue("invalid_viewport_meta", page, str(parser.viewport_count)))
+            issues.append(
+                _issue("invalid_viewport_meta", page, str(parser.viewport_count))
+            )
 
     if relative_path in REQUIRED_PAGES[:-1]:
         expected_href = Path(relative_path).name
@@ -440,7 +454,9 @@ def _validate_html_page(root: Path, page: Path) -> list[SiteIssue]:
         if not controls or controls not in panel_ids:
             issues.append(_issue("invalid_tab_controls", page, controls or "missing"))
         if "aria-selected" not in tab:
-            issues.append(_issue("missing_tab_selection_state", page, controls or "missing"))
+            issues.append(
+                _issue("missing_tab_selection_state", page, controls or "missing")
+            )
 
     for image in parser.images:
         if "alt" not in image:
@@ -506,7 +522,10 @@ def validate_video_config(root: Path) -> list[SiteIssue]:
     config = root / "assets/js/video-config.js"
     if not config.is_file():
         return []
-    fields = {name: value for name, _, value in _VIDEO_FIELD_RE.findall(config.read_text("utf-8"))}
+    fields = {
+        name: value
+        for name, _, value in _VIDEO_FIELD_RE.findall(config.read_text("utf-8"))
+    }
     issues: list[SiteIssue] = []
     for field in ("src", "poster", "captions"):
         value = fields.get(field, "")
@@ -516,7 +535,9 @@ def validate_video_config(root: Path) -> list[SiteIssue]:
 
 
 def _normalize_text(text: str) -> str:
-    return "\n".join(line.rstrip() for line in text.replace("\r\n", "\n").split("\n")).strip()
+    return "\n".join(
+        line.rstrip() for line in text.replace("\r\n", "\n").split("\n")
+    ).strip()
 
 
 def _normalize_prose(text: str) -> str:
@@ -527,7 +548,9 @@ def _normalize_prose(text: str) -> str:
     return " ".join(normalized.split())
 
 
-def _guide_source_parts(source: str) -> dict[tuple[str, str, str], tuple[tuple[str, str], ...]]:
+def _guide_source_parts(
+    source: str,
+) -> dict[tuple[str, str, str], tuple[tuple[str, str], ...]]:
     parts: dict[tuple[str, str, str], list[tuple[str, str]]] = {}
     current_path: str | None = None
     current_step: str | None = None
@@ -549,7 +572,9 @@ def _guide_source_parts(source: str) -> dict[tuple[str, str, str], tuple[tuple[s
         heading = _GUIDE_HEADING_RE.match(line)
         if heading:
             flush_paragraph()
-            current_path = f"path-{heading.group('group')}{heading.group('platform').lower()}"
+            current_path = (
+                f"path-{heading.group('group')}{heading.group('platform').lower()}"
+            )
             current_step = heading.group("step").lower()
             current_part = None
             index += 1
@@ -625,12 +650,27 @@ def _guide_source_commands(source: str) -> dict[str, str]:
     current_step: str | None = None
     counters: dict[tuple[str, str], int] = {}
     lines = source.replace("\r\n", "\n").splitlines(keepends=True)
+    step_ids = {
+        "1": "prepare",
+        "2": "acquire",
+        "3": "verify",
+        "4": "install",
+        "5": "initialize",
+        "6": "success",
+        "7": "recover",
+    }
     index = 0
     while index < len(lines):
-        heading = _GUIDE_HEADING_RE.match(lines[index])
-        if heading:
-            current_path = f"path-{heading.group('group')}{heading.group('platform').lower()}"
-            current_step = heading.group("step").lower()
+        route = re.match(r"^## 路线 ((?:[1-9]|1[0-2]))：", lines[index])
+        if route:
+            current_path = f"route-{route.group(1)}"
+            current_step = None
+        elif lines[index].startswith("## "):
+            current_path = None
+            current_step = None
+        step = re.match(r"^### ([1-7])\. ", lines[index])
+        if step and current_path:
+            current_step = step_ids[step.group(1)]
         if lines[index].startswith("```") and current_path and current_step:
             index += 1
             body: list[str] = []
@@ -645,28 +685,52 @@ def _guide_source_commands(source: str) -> dict[str, str]:
     return commands
 
 
-def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[SiteIssue]:
+def validate_guide_parity(
+    source_markdown: Path, rendered_html: Path
+) -> list[SiteIssue]:
     """Verify the frozen guide source and its rendered, navigable HTML form."""
     issues: list[SiteIssue] = []
     if not source_markdown.is_file():
-        return [_issue("guide_source_missing", source_markdown, "Missing source guide.")]
+        return [
+            _issue("guide_source_missing", source_markdown, "Missing source guide.")
+        ]
     source_bytes = source_markdown.read_bytes()
     if hashlib.sha256(source_bytes).hexdigest() != GUIDE_SOURCE_SHA256:
-        return [_issue("guide_source_sha_mismatch", source_markdown, "Frozen SHA256 differs.")]
+        return [
+            _issue(
+                "guide_source_sha_mismatch", source_markdown, "Frozen SHA256 differs."
+            )
+        ]
     if not rendered_html.is_file():
-        return [_issue("guide_rendered_html_missing", rendered_html, "Missing rendered guide.")]
+        return [
+            _issue(
+                "guide_rendered_html_missing", rendered_html, "Missing rendered guide."
+            )
+        ]
+
+    rendered_bytes = rendered_html.read_bytes()
+    rendered_text = rendered_bytes.decode("utf-8")
+    if hashlib.sha256(rendered_bytes).hexdigest() != GUIDE_RENDERED_SHA256:
+        issues.append(
+            _issue(
+                "guide_rendered_sha_mismatch",
+                rendered_html,
+                "Frozen HTML SHA256 differs.",
+            )
+        )
+    if f'data-guide-source-sha256="{GUIDE_SOURCE_SHA256}"' not in rendered_text:
+        issues.append(
+            _issue("guide_source_binding_mismatch", rendered_html, GUIDE_SOURCE_SHA256)
+        )
 
     parser = _GuideHTMLParser()
-    parser.feed(rendered_html.read_text(encoding="utf-8"))
+    parser.feed(rendered_text)
     parser.close()
     expected_paths = set(GUIDE_PATH_IDS)
     expected_steps = set(GUIDE_STEPS)
-    expected_parts = set(GUIDE_PARTS)
     path_counts = Counter(parser.paths)
     step_counts = Counter(parser.steps)
-    part_counts = Counter(parser.parts)
     source_text = source_bytes.decode("utf-8")
-    source_parts = _guide_source_parts(source_text)
 
     for path_id, count in path_counts.items():
         if path_id not in expected_paths:
@@ -679,61 +743,21 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
         for step in GUIDE_STEPS:
             count = step_counts[(path_id, step)]
             if count == 0:
-                issues.append(_issue("guide_step_missing", rendered_html, f"{path_id}:{step}"))
-            elif count > 1:
-                issues.append(_issue("guide_duplicate_step", rendered_html, f"{path_id}:{step}"))
-            actual_part_order = [
-                part
-                for actual_path, actual_step, part in parser.parts
-                if actual_path == path_id and actual_step == step
-            ]
-            if actual_part_order != list(GUIDE_PARTS):
                 issues.append(
-                    _issue(
-                        "guide_part_order_mismatch",
-                        rendered_html,
-                        f"{path_id}:{step}",
-                    )
+                    _issue("guide_step_missing", rendered_html, f"{path_id}:{step}")
                 )
-            for part in GUIDE_PARTS:
-                count = part_counts[(path_id, step, part)]
-                if count == 0:
-                    detail = f"{path_id}:{step}:{part}"
-                    issues.append(_issue("guide_part_missing", rendered_html, detail))
-
-                elif count > 1:
-                    detail = f"{path_id}:{step}:{part}"
-                    issues.append(_issue("guide_duplicate_part", rendered_html, detail))
-                else:
-                    key = (path_id, step, part)
-                    expected_blocks = source_parts.get(key)
-                    actual_blocks = _guide_html_part_blocks(parser.part_nodes[key][0])
-                    if expected_blocks is None or actual_blocks != expected_blocks:
-                        issues.append(
-                            _issue(
-                                "guide_part_content_mismatch",
-                                rendered_html,
-                                ":".join(key),
-                            )
-                        )
+            elif count > 1:
+                issues.append(
+                    _issue("guide_duplicate_step", rendered_html, f"{path_id}:{step}")
+                )
 
     for path_id, step in step_counts:
         if path_id is None:
             issues.append(_issue("guide_step_without_path", rendered_html, step))
         elif path_id in expected_paths and step not in expected_steps:
-            issues.append(_issue("guide_unknown_step", rendered_html, f"{path_id}:{step}"))
-    for path_id, step, part in part_counts:
-        if path_id is None or step is None:
-            issues.append(_issue("guide_part_without_step", rendered_html, part))
-        elif (
-            path_id in expected_paths
-            and step in expected_steps
-            and part not in expected_parts
-        ):
             issues.append(
-                _issue("guide_unknown_part", rendered_html, f"{path_id}:{step}:{part}")
+                _issue("guide_unknown_step", rendered_html, f"{path_id}:{step}")
             )
-
     source_commands = _guide_source_commands(source_text)
     for command_id, expected in source_commands.items():
         command_nodes = parser.commands.get(command_id, [])
@@ -750,7 +774,9 @@ def validate_guide_parity(source_markdown: Path, rendered_html: Path) -> list[Si
             issues.append(_issue("guide_unknown_command", rendered_html, command_id))
         for command in command_nodes:
             if not command.in_pre:
-                issues.append(_issue("guide_command_not_in_pre", rendered_html, command_id))
+                issues.append(
+                    _issue("guide_command_not_in_pre", rendered_html, command_id)
+                )
     return issues
 
 
@@ -774,7 +800,11 @@ def main() -> int:
     issues = validate_site(root)
     issues.extend(validate_video_config(root))
     if args.guide_source:
-        issues.extend(validate_guide_parity(args.guide_source.resolve(), root / REQUIRED_PAGES[-1]))
+        issues.extend(
+            validate_guide_parity(
+                args.guide_source.resolve(), root / REQUIRED_PAGES[-1]
+            )
+        )
     if issues:
         for issue in issues:
             print(f"{issue.code}: {issue.path}: {issue.detail}")

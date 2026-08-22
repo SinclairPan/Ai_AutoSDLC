@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 from scripts.validate_offline_product_site import (
     ALLOWED_EXTERNAL_URLS,
-    GUIDE_PARTS,
     GUIDE_PATH_IDS,
     GUIDE_SOURCE_SHA256,
     GUIDE_STEPS,
@@ -912,9 +911,9 @@ def test_loop_page_renders_current_loop_benefit_dataset() -> None:
         "local-pr-review",
     ]
     text = _node_text(section)
-    assert "证据锚定合成基准" in text
+    assert "证据锚定合成评估" in text
     assert "gpt-5.6-sol / high" in text
-    assert "advantage-aligned engineering scenarios" in text
+    assert "优势导向场景" in text
 
 
 def test_expert_page_compares_same_five_stages_with_and_without_experts() -> None:
@@ -938,7 +937,7 @@ def test_expert_page_compares_same_five_stages_with_and_without_experts() -> Non
     text = _node_text(section)
     assert "原 Writer" in text
     assert "只读" in text
-    assert "证据锚定合成基准" in text
+    assert "证据锚定合成评估" in text
 
 
 def test_platform_page_uses_refreshed_current_overall_comparison() -> None:
@@ -953,7 +952,7 @@ def test_platform_page_uses_refreshed_current_overall_comparison() -> None:
     assert "Superpowers 6.3.0" in text
     assert "动态专家" in text
     assert "GPT-5.4" not in text
-    assert len(_find_nodes(section, attribute="data-overall-headline")) == 5
+    assert len(_find_nodes(section, attribute="data-overall-headline")) == 3
     assert len(_find_nodes(section, attribute="data-overall-metric-row")) == 14
 
 
@@ -1108,7 +1107,7 @@ def test_loop_page_keeps_pr_review_cross_stage() -> None:
     _assert_local_pr_review_contract(document)
 
 
-def test_local_pr_review_close_policy_matches_v2_release_contract() -> None:
+def test_local_pr_review_close_policy_matches_v3_release_contract() -> None:
     markup = Path(
         "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
     ).read_text(encoding="utf-8")
@@ -1117,7 +1116,7 @@ def test_local_pr_review_close_policy_matches_v2_release_contract() -> None:
     policies = _find_nodes(document, attribute="data-pr-review-close-policy")
     assert len(policies) == 1
     assert policies[0].attributes == {
-        "data-pr-review-close-policy": "v2.0.0",
+        "data-pr-review-close-policy": "v3.0.1",
         "data-unresolved-blocker": "blocked",
         "data-unresolved-required": "blocked-or-risk-accepted",
         "data-advisory-waiver": "recorded-and-disclosed",
@@ -1560,7 +1559,7 @@ def test_platform_page_closes_with_bounded_claims_and_download_cta() -> None:
         node
         for node in _find_nodes(closing, tag="a")
         if node.attributes.get("href") == "downloads-docs.html"
-        and _node_text(node) == "下载 AI-SDLC 2.0.0"
+        and _node_text(node) == "下载 AI-SDLC v3.0.1"
     ]
     assert len(ctas) == 1
 
@@ -1738,7 +1737,8 @@ def test_source_bound_guide_command_url_is_inert(tmp_path: Path) -> None:
     _write(
         tmp_path,
         "docs/USER_GUIDE.zh-CN.html",
-        '<main><pre><code data-guide-command="path-2a-install-1">'
+        f'<main data-guide-source-sha256="{GUIDE_SOURCE_SHA256}">'
+        '<pre><code data-guide-command="route-1-prepare-1">'
         "git clone https://github.com/SinclairPan/Ai_AutoSDLC.git"
         "</code></pre></main>",
     )
@@ -1752,7 +1752,7 @@ def test_homepage_exposes_approved_value_and_video_contract() -> None:
     root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
     homepage = (root / "index.html").read_text(encoding="utf-8")
 
-    assert "把不确定的 AI 生成，变成可验证的工程交付" in homepage
+    assert "让 AI 开发从会生成，走到可交付" in homepage
     assert "data-video-empty" in homepage
     assert "data-video-empty-poster" in homepage
     assert "data-video-player" in homepage
@@ -1828,7 +1828,7 @@ def test_video_configuration_is_immutable_and_defaults_to_empty_state() -> None:
         "type": "video/mp4",
         "captions": "",
         "poster": "assets/images/video-poster.png",
-        "title": "AI-SDLC 2.0 产品实录",
+        "title": "AI-SDLC v3.0.1 产品实录",
     }
 
     observed = _execute_video_config(config_path)
@@ -1951,35 +1951,22 @@ def test_guide_parity_rejects_wrong_frozen_source_sha(tmp_path: Path) -> None:
 @pytest.mark.parametrize(
     ("fragment", "expected_code"),
     (
-        ('<section data-guide-path="path-9z"></section>', "guide_unknown_path"),
+        ('<section data-guide-path="route-99"></section>', "guide_unknown_path"),
         (
-            '<section data-guide-path="path-1a"></section>'
-            '<section data-guide-path="path-1a"></section>',
+            '<section data-guide-path="route-1"></section>'
+            '<section data-guide-path="route-1"></section>',
             "guide_duplicate_path",
         ),
         (
-            '<section data-guide-path="path-1a">'
+            '<section data-guide-path="route-1">'
             '<article data-guide-step="publish"></article></section>',
             "guide_unknown_step",
         ),
         (
-            '<section data-guide-path="path-1a">'
-            '<article data-guide-step="install"></article>'
-            '<article data-guide-step="install"></article></section>',
+            '<section data-guide-path="route-1">'
+            '<article data-guide-step="prepare"></article>'
+            '<article data-guide-step="prepare"></article></section>',
             "guide_duplicate_step",
-        ),
-        (
-            '<section data-guide-path="path-1a">'
-            '<article data-guide-step="install">'
-            '<p data-guide-part="warning"></p></article></section>',
-            "guide_unknown_part",
-        ),
-        (
-            '<section data-guide-path="path-1a">'
-            '<article data-guide-step="install">'
-            '<p data-guide-part="purpose"></p><p data-guide-part="purpose"></p>'
-            "</article></section>",
-            "guide_duplicate_part",
         ),
     ),
 )
@@ -1999,7 +1986,7 @@ def test_guide_parity_rejects_command_outside_pre(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
     rendered.write_text(
-        '<main><code data-guide-command="path-1a-install-1">command</code></main>',
+        '<main><code data-guide-command="route-1-prepare-1">command</code></main>',
         encoding="utf-8",
     )
 
@@ -2011,62 +1998,37 @@ def test_guide_parity_rejects_command_outside_pre(tmp_path: Path) -> None:
 DOWNLOAD_ASSET_CONTRACTS = (
     (
         "Windows AMD64",
-        "ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "ai-sdlc-offline-3.0.1-windows-amd64.zip",
         "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
-        "v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip",
+        "v3.0.1/ai-sdlc-offline-3.0.1-windows-amd64.zip",
     ),
     (
         "macOS Apple Silicon",
-        "ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "ai-sdlc-offline-3.0.1-macos-arm64.tar.gz",
         "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
-        "v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz",
+        "v3.0.1/ai-sdlc-offline-3.0.1-macos-arm64.tar.gz",
     ),
     (
         "Linux AMD64",
-        "ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
+        "ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
         "https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/"
-        "v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz",
+        "v3.0.1/ai-sdlc-offline-3.0.1-linux-amd64.tar.gz",
     ),
 )
 
 GUIDE_PATH_CONTRACTS = (
-    ("path-1a", "existing-offline", "windows"),
-    ("path-1b", "existing-offline", "macos"),
-    ("path-1c", "existing-offline", "linux"),
-    ("path-2a", "existing-online", "windows"),
-    ("path-2b", "existing-online", "macos"),
-    ("path-2c", "existing-online", "linux"),
-    ("path-3a", "new-offline", "windows"),
-    ("path-3b", "new-offline", "macos"),
-    ("path-3c", "new-offline", "linux"),
-    ("path-4a", "new-online", "windows"),
-    ("path-4b", "new-online", "macos"),
-    ("path-4c", "new-online", "linux"),
-)
-
-GUIDE_PATH_LABEL_CONTRACTS = (
-    ("path-1a", "1A", "Windows AMD64", "已有项目 · 离线包 · Windows AMD64"),
-    (
-        "path-1b",
-        "1B",
-        "macOS Apple Silicon",
-        "已有项目 · 离线包 · macOS Apple Silicon",
-    ),
-    ("path-1c", "1C", "Linux AMD64", "已有项目 · 离线包 · Linux AMD64"),
-    ("path-2a", "2A", "Windows", "已有项目 · 在线安装 · Windows"),
-    ("path-2b", "2B", "macOS", "已有项目 · 在线安装 · macOS"),
-    ("path-2c", "2C", "Linux", "已有项目 · 在线安装 · Linux"),
-    ("path-3a", "3A", "Windows AMD64", "全新项目 · 离线包 · Windows AMD64"),
-    (
-        "path-3b",
-        "3B",
-        "macOS Apple Silicon",
-        "全新项目 · 离线包 · macOS Apple Silicon",
-    ),
-    ("path-3c", "3C", "Linux AMD64", "全新项目 · 离线包 · Linux AMD64"),
-    ("path-4a", "4A", "Windows", "全新项目 · 在线安装 · Windows"),
-    ("path-4b", "4B", "macOS", "全新项目 · 在线安装 · macOS"),
-    ("path-4c", "4C", "Linux", "全新项目 · 在线安装 · Linux"),
+    ("route-1", "new-online", "windows"),
+    ("route-2", "new-online", "macos"),
+    ("route-3", "new-online", "linux"),
+    ("route-4", "new-offline", "windows"),
+    ("route-5", "new-offline", "macos"),
+    ("route-6", "new-offline", "linux"),
+    ("route-7", "existing-online", "windows"),
+    ("route-8", "existing-online", "macos"),
+    ("route-9", "existing-online", "linux"),
+    ("route-10", "existing-offline", "windows"),
+    ("route-11", "existing-offline", "macos"),
+    ("route-12", "existing-offline", "linux"),
 )
 
 
@@ -2089,9 +2051,9 @@ def test_downloads_resource_contract() -> None:
         "下载正确版本，按一份指南完成接入"
     )
     for identity in (
-        "v2.0.0",
-        "737bda39e05c53450e180a20581b7b7a70db9cf0",
-        "3db58121e228a7a1c4c6b760c535d6df1ffdbe84",
+        "v3.0.1",
+        "9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4",
+        "fd5c2dac0a216f0eb17855d03cc7900d872d3c61",
     ):
         assert identity in visible_text
 
@@ -2172,10 +2134,6 @@ def test_user_guide_source_parity() -> None:
             GUIDE_STEPS
         )
         for step in steps:
-            parts = _find_nodes(step, attribute="data-guide-part")
-            assert [part.attributes.get("data-guide-part") for part in parts] == list(
-                GUIDE_PARTS
-            )
             step_text = _node_text(step)
             for redirect in ("去看另一", "查看另一", "另一节后继续", "另一章后继续"):
                 assert redirect not in step_text
@@ -2185,53 +2143,28 @@ def test_user_guide_source_parity() -> None:
                 assert command.parent is not None
                 assert command.parent.tag == "pre"
 
-    scenario_tabs = _find_nodes(
-        document, tag="a", attribute="data-guide-scenario-selector"
-    )
+    route_links = _find_nodes(document, tag="a", attribute="data-guide-route-link")
+    assert [link.attributes.get("href") for link in route_links] == [
+        f"#route-{number}" for number in range(1, 13)
+    ]
     assert [
-        tab.attributes.get("data-guide-scenario-selector") for tab in scenario_tabs
-    ] == [
-        "existing-offline",
-        "existing-online",
-        "new-offline",
-        "new-online",
-    ]
-    assert [_node_text(tab) for tab in scenario_tabs] == [
-        "已有项目 + 离线安装包",
-        "已有项目 + 在线安装",
-        "全新项目 + 离线安装包",
-        "全新项目 + 在线安装",
-    ]
-    assert [tab.attributes.get("href") for tab in scenario_tabs] == [
-        "#path-1a",
-        "#path-2a",
-        "#path-3a",
-        "#path-4a",
-    ]
-    os_tabs = _find_nodes(document, tag="button", attribute="data-guide-tab-scenario")
-    assert [tab.attributes.get("data-guide-tab-scenario") for tab in os_tabs] == [
-        scenario for _, scenario, _ in GUIDE_PATH_CONTRACTS
-    ]
+        (
+            link.attributes.get("data-guide-route-link"),
+            link.attributes.get("data-guide-scenario"),
+            link.attributes.get("data-guide-os"),
+        )
+        for link in route_links
+    ] == list(GUIDE_PATH_CONTRACTS)
 
 
-def test_guide_offline_and_online_os_labels_are_scenario_specific() -> None:
+def test_guide_offline_and_online_routes_are_labeled_for_each_platform() -> None:
     document = _parse_document(_guide_markup())
+    links = _find_nodes(document, tag="a", attribute="data-guide-route-link")
 
-    for path_id, path_code, os_label, current_path_label in GUIDE_PATH_LABEL_CONTRACTS:
-        tab = _single_node(
-            document, tag="button", attribute="id", value=f"{path_id}-tab"
-        )
-        panel = _single_node(document, tag="section", attribute="id", value=path_id)
-        path_index = _single_node(
-            panel, tag="p", attribute="class", value="guide-path-index"
-        )
-        current_path = _single_node(
-            panel, tag="aside", attribute="class", value="guide-note"
-        )
-
-        assert _node_text(tab) == f"{path_code} {os_label}"
-        assert _node_text(path_index) == f"{path_code} / {os_label}"
-        assert _node_text(current_path).startswith(f"当前路径：{current_path_label}")
+    assert len(links) == 12
+    assert sum("Windows AMD64" in _node_text(link) for link in links) == 4
+    assert sum("macOS Apple Silicon" in _node_text(link) for link in links) == 4
+    assert sum("Linux AMD64" in _node_text(link) for link in links) == 4
 
 
 def test_every_guide_command_has_an_accessible_copy_control() -> None:
@@ -2240,7 +2173,7 @@ def test_every_guide_command_has_an_accessible_copy_control() -> None:
     controls = _find_nodes(document, tag="button", attribute="data-copy-command")
     statuses = _find_nodes(document, attribute="data-copy-status")
 
-    assert len(commands) == len(controls) == len(statuses) == 48
+    assert len(commands) == len(controls) == len(statuses) == 78
     for command in commands:
         command_id = command.attributes["data-guide-command"]
         control = _single_node(
@@ -2264,7 +2197,7 @@ def test_every_guide_command_has_an_accessible_copy_control() -> None:
 def test_guide_parity_rejects_one_missing_path(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
-    markup = _guide_markup().replace(' data-guide-path="path-1a"', "", 1)
+    markup = _guide_markup().replace(' data-guide-path="route-1"', "", 1)
     rendered.write_text(markup, encoding="utf-8")
 
     issues = validate_guide_parity(source, rendered)
@@ -2272,15 +2205,15 @@ def test_guide_parity_rejects_one_missing_path(tmp_path: Path) -> None:
     assert "guide_path_missing" in {issue.code for issue in issues}
 
 
-def test_guide_parity_rejects_one_missing_part(tmp_path: Path) -> None:
+def test_guide_parity_rejects_one_missing_step(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
-    markup = _guide_markup().replace(' data-guide-part="purpose"', "", 1)
+    markup = _guide_markup().replace(' data-guide-step="prepare"', "", 1)
     rendered.write_text(markup, encoding="utf-8")
 
     issues = validate_guide_parity(source, rendered)
 
-    assert "guide_part_missing" in {issue.code for issue in issues}
+    assert "guide_step_missing" in {issue.code for issue in issues}
 
 
 def test_guide_parity_rejects_one_altered_command(tmp_path: Path) -> None:
@@ -2302,23 +2235,22 @@ def test_guide_parity_rejects_altered_expected_result(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
     markup = _guide_markup().replace(
-        "输出包含 <code>SHA256 verified</code>",
-        "输出包含 <code>任何版本都可以继续</code>",
+        "当前公开稳定版本与比赛最终版本均为",
+        "任何版本都可以继续",
         1,
     )
     rendered.write_text(markup, encoding="utf-8")
 
     issues = validate_guide_parity(source, rendered)
 
-    assert "guide_part_content_mismatch" in {issue.code for issue in issues}
+    assert "guide_rendered_sha_mismatch" in {issue.code for issue in issues}
 
 
 def test_guide_parity_rejects_empty_troubleshooting(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
     markup, replacements = re.subn(
-        r'(<section class="guide-step-part" data-guide-part="troubleshoot">'
-        r"<h4>如果结果不同</h4>).*?(</section>)",
+        r'(<article class="guide-step" data-guide-step="recover">).*?(</article>)',
         r"\1\2",
         _guide_markup(),
         count=1,
@@ -2329,51 +2261,42 @@ def test_guide_parity_rejects_empty_troubleshooting(tmp_path: Path) -> None:
 
     issues = validate_guide_parity(source, rendered)
 
-    assert "guide_part_content_mismatch" in {issue.code for issue in issues}
+    assert "guide_rendered_sha_mismatch" in {issue.code for issue in issues}
 
 
 def test_guide_parity_rejects_wrong_next_action(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
     markup = _guide_markup().replace(
-        "保留当前 PowerShell 窗口，继续验证 Direct CLI。",
-        "忽略验证，直接开始下一阶段。",
+        "选择唯一一条完整路线",
+        "忽略验证，直接开始",
         1,
     )
     rendered.write_text(markup, encoding="utf-8")
 
     issues = validate_guide_parity(source, rendered)
 
-    assert "guide_part_content_mismatch" in {issue.code for issue in issues}
+    assert "guide_rendered_sha_mismatch" in {issue.code for issue in issues}
 
 
-def test_guide_parity_rejects_swapped_expected_and_troubleshoot_parts(
-    tmp_path: Path,
-) -> None:
+def test_guide_parity_rejects_reordered_steps(tmp_path: Path) -> None:
     source = Path("docs/product-site/content/USER_GUIDE.zh-CN.md")
     rendered = tmp_path / "USER_GUIDE.zh-CN.html"
     markup = _guide_markup()
-    markup = markup.replace('data-guide-part="expected"', 'data-guide-part="swap"', 1)
-    markup = markup.replace(
-        'data-guide-part="troubleshoot"', 'data-guide-part="expected"', 1
-    )
-    markup = markup.replace(
-        'data-guide-part="swap"', 'data-guide-part="troubleshoot"', 1
-    )
+    markup = markup.replace('data-guide-step="prepare"', 'data-guide-step="swap"', 1)
+    markup = markup.replace('data-guide-step="acquire"', 'data-guide-step="prepare"', 1)
+    markup = markup.replace('data-guide-step="swap"', 'data-guide-step="acquire"', 1)
     rendered.write_text(markup, encoding="utf-8")
 
     issues = validate_guide_parity(source, rendered)
-    codes = {issue.code for issue in issues}
-
-    assert "guide_part_order_mismatch" in codes
-    assert "guide_part_content_mismatch" in codes
+    assert "guide_rendered_sha_mismatch" in {issue.code for issue in issues}
 
 
-def test_guide_hides_os_tabs_outside_the_active_scenario() -> None:
+def test_guide_routes_have_responsive_non_javascript_layout() -> None:
     styles = (_offline_site_root() / "assets/css/pages.css").read_text(encoding="utf-8")
 
     assert re.search(
-        r"\.js\s+\.guide-path-tabs\s+\[hidden\]\s*\{[^}]*display:\s*none",
+        r"\.guide-route-grid\s*\{[^}]*grid-template-columns:\s*1fr",
         styles,
         flags=re.DOTALL,
     )
@@ -2417,7 +2340,7 @@ def test_every_external_link_exposes_the_offline_boundary() -> None:
             if link.attributes.get("href", "").startswith(("http://", "https://"))
         )
 
-    assert len(external_links) == 28
+    assert len(external_links) == 22
     for link in external_links:
         assert link.attributes.get("href") in ALLOWED_EXTERNAL_URLS
         assert link.attributes.get("target") == "_blank"
@@ -2497,23 +2420,23 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
         payload["inputs"]["manifestSha256"] == sha256(manifest.read_bytes()).hexdigest()
     )
     assert payload["summary"] == {
-        "stateCount": 135,
+        "stateCount": 80,
         "stateFailures": 0,
-        "stateGeometryCheckCount": 135,
+        "stateGeometryCheckCount": 80,
         "viewportClippingFailures": 0,
         "ancestorClippingFailures": 0,
         "controlOverlapFailures": 0,
         "mobileMenuCount": 1,
         "mobileMenuFailures": 0,
-        "historyCount": 4,
+        "historyCount": 3,
         "historyFailures": 0,
-        "tabKeyboardCount": 8,
+        "tabKeyboardCount": 6,
         "tabKeyboardFailures": 0,
         "skipLinkCount": 5,
         "skipLinkFailures": 0,
-        "guideScenarioCount": 8,
+        "guideScenarioCount": 24,
         "guideScenarioFailures": 0,
-        "copyCount": 240,
+        "copyCount": 390,
         "copyFailures": 0,
         "noJsGroupCount": 12,
         "noJsFailures": 0,
@@ -2522,10 +2445,10 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
         "runtimeFailures": 0,
     }
     assert len(payload["mobileMenuResults"]) == 1
-    assert len(payload["historyResults"]) == 4
-    assert len(payload["tabKeyboardResults"]) == 8
+    assert len(payload["historyResults"]) == 3
+    assert len(payload["tabKeyboardResults"]) == 6
     assert len(payload["skipLinkResults"]) == 5
-    assert len(payload["guideScenarioResults"]) == 8
+    assert len(payload["guideScenarioResults"]) == 24
     assert all(
         result["interactiveAudit"]["definition"]
         == "visible key controls within a shared interaction region; text-only lines excluded"
