@@ -1,0 +1,3116 @@
+"""Trusted compiler and exclusive publisher for the v2 benefit evaluator bundle."""
+
+from __future__ import annotations
+
+import ctypes
+import errno
+import json
+import os
+import secrets
+import stat
+import subprocess
+import sys
+import tempfile
+from collections.abc import Mapping
+from dataclasses import dataclass
+from datetime import datetime
+from hashlib import sha256
+from pathlib import Path
+from types import MappingProxyType
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - 正式物化器仅在 macOS 上执行。
+    fcntl = None  # type: ignore[assignment]
+
+from ai_sdlc.benefit_benchmark_fixtures import (
+    FIXTURE_IDS,
+    EvaluatorNoGoError,
+    FrozenIntentApprovalService,
+    ProviderIsolationProfile,
+    build_provider_isolation_profile,
+    derive_repo_git_surfaces,
+    evaluate_fixture,
+    evaluator_python_runtime_identity,
+    evaluator_runtime_capsule_v2_manifest,
+    evaluator_runtime_capsule_v2_sha256,
+    evaluator_runtime_identity_sha256,
+    load_fixture_manifest,
+    prepare_fixture,
+    probe_provider_isolation,
+    run_provider_isolated,
+    scan_candidate_for_sealed_leak,
+    validate_fixture_manifest,
+    validate_frontend_browser_program,
+)
+
+FINAL_LOCK_ID = "v2-benefits-20260819-r3"
+FINAL_TARGET = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r3")
+R2_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r2")
+EXPECTED_R2_INODE = 403098441
+EXPECTED_R2_TREE_SHA256 = (
+    "b5b2b362952d00ab264f3fcef31312bdcd62c3775c047789a6a72f390be8615b"
+)
+INVALID_R1_ROOT = Path(
+    "/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819-r1"
+)
+EXPECTED_INVALID_R1_INODE = 402612600
+EXPECTED_INVALID_R1_TREE_SHA256 = (
+    "9701e5fa4ebc55aeb2911d8eee8c97af9b618a9bfeac48ac8d9bfcfa8144dc30"
+)
+LEGACY_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-evaluator/v2-benefits-20260819")
+TRUST_ANCHOR = Path("/private/tmp")
+TRUSTED_SOURCE_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-source")
+PRIOR_TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source"
+R2_TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source-r2"
+EXPECTED_R2_SOURCE_INODE = 403084506
+EXPECTED_R2_SOURCE_TREE_SHA256 = (
+    "56387824d09679eaf2bca31e7afa62512cc3678dcb14d4add25eb4494afd9596"
+)
+TRUSTED_SOURCE_ROOT = TRUSTED_SOURCE_BASE / "sealed-source-r3"
+R2_DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit")
+EXPECTED_R2_DISPOSITION_INODE = 403084461
+EXPECTED_R2_DISPOSITION_TREE_SHA256 = (
+    "527973568de93b07c65c2ab08bcbca8709c98424eb1b033e546f35cde46544ae"
+)
+DISPOSITION_ROOT = Path("/private/tmp/ai-sdlc-v2-benefit-disposition-audit-r3")
+FINAL_CANARY_BASE = Path("/private/tmp/ai-sdlc-v2-benefit-isolation-canary")
+EXPECTED_LEGACY_INODE = 400173643
+EXPECTED_LEGACY_TREE_SHA256 = (
+    "ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2"
+)
+EXPECTED_R2_PROTOCOL_SHA256 = (
+    "4f402736450a893b339b3f99faa3c71c1b8d3f5517d0bebb6bdaf03042179572"
+)
+EXPECTED_R2_SEALED_COMMITMENTS_SHA256 = (
+    "e364aa7a2a72f198ad7e0e590a8575b8e8b37b3854d59ed74f58bc78519f4ec9"
+)
+EXPECTED_R2_FIXTURE_TREE_SHA256 = (
+    "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a"
+)
+EXPECTED_R2_EVIDENCE_CONTRACT_SHA256 = (
+    "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c"
+)
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
+_BENCHMARK_RELATIVE = Path("benchmarks/ai-sdlc-v2-benefits")
+_PENDING_FIELDS = (
+    "fixture_tree_sha256",
+    "fixture_commitment",
+    "evidence_contract_sha256",
+    "evidence_contract_commitment",
+)
+_PROVIDER_STATE_RELATIVE = (
+    Path("results"),
+    Path("runs"),
+    Path("raw-results"),
+    Path("provider-attempt-ledger.json"),
+    Path("results/provider-attempt-ledger.json"),
+)
+_DIGEST_LENGTH = 64
+_SOURCE_KEYS = {"schema", "lock_id", "intent_map", "payloads"}
+_INTENT_KEYS = {"schema", "questions", "approvals"}
+_QUESTION_KEYS = {"answer", "delay_ms"}
+_SECURITY_SCENARIO_REQUIRED = {
+    "actor_id",
+    "actor_tenant",
+    "roles",
+    "request_id",
+    "request_tenant",
+    "requester_id",
+    "expires_at",
+    "now",
+}
+_SECURITY_SCENARIO_OPTIONAL = {"status", "action", "audit_mode"}
+_SECURITY_EXPECTED_KEYS = {
+    "allowed",
+    "reason",
+    "status",
+    "status_unchanged",
+    "audit_count",
+    "audit_events",
+    "error",
+}
+_SECURITY_ROOT_CAUSES = {
+    "tenant-isolation",
+    "separation-of-duties",
+    "request-lifecycle",
+    "role-allowlist",
+    "action-allowlist",
+    "atomic-audit",
+}
+_FRONTEND_EXPECTED_KEYS = {
+    "executed_with_real_browser",
+    "scenarios",
+    "console_errors",
+    "basic_accessibility",
+    "behavior_checks",
+}
+_OUTPUT_ORDER = (
+    "intent-map.json",
+    "requirement-contract-ambiguity.sealed.json",
+    "frontend-recovery-delivery.sealed.json",
+    "multi-tenant-security-review.sealed.json",
+    "sealed-manifest.json",
+    "candidate-commitments.json",
+    "materialization-receipt.json",
+)
+_ATTESTATION_NAME = "isolation-attestation.json"
+CANDIDATE_COMMITMENT_KEYS = {
+    "schema",
+    "lock_id",
+    "source_head",
+    "source_tree_sha",
+    "materializer_sha256",
+    "source_bundle_sha256",
+    "fixture_manifest_sha256",
+    "fixture_tree_sha256",
+    "evidence_contract_sha256",
+    "sealed_manifest_sha256",
+    "intent_map_sha256",
+    "fixture_payloads",
+    "source_root_tree_sha256",
+    "evaluator_python_runtime",
+    "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule",
+    "evaluator_runtime_capsule_sha256",
+}
+RECEIPT_KEYS = {
+    "schema",
+    "publication_state",
+    "target_lock_id",
+    "source_head",
+    "source_tree_sha",
+    "materializer_sha256",
+    "source_bundle_sha256",
+    "fixture_manifest_sha256",
+    "fixture_tree_sha256",
+    "evidence_contract_sha256",
+    "sealed_manifest_sha256",
+    "intent_map_sha256",
+    "fixture_payloads",
+    "candidate_commitments_sha256",
+    "isolation_probe_state",
+    "source_root_tree_sha256",
+    "evaluator_python_runtime_sha256",
+    "evaluator_runtime_capsule_sha256",
+}
+
+
+class MaterializationError(RuntimeError):
+    """A sanitized, stable NO-GO code safe to expose at the CLI boundary."""
+
+    def __init__(self, code: str) -> None:
+        self.code = code
+        super().__init__(code)
+
+
+@dataclass(frozen=True)
+class TreeFingerprint:
+    inode: int
+    sha256: str
+
+
+@dataclass(frozen=True)
+class ImmutableRoot:
+    path: Path
+    inode: int
+    tree_sha256: str
+    label: str
+
+
+@dataclass(frozen=True)
+class MaterializerPolicy:
+    repo_root: Path
+    target: Path
+    trust_anchor: Path
+    legacy_root: Path
+    expected_legacy_inode: int
+    expected_legacy_tree_sha256: str
+    forbidden_roots: tuple[Path, ...]
+    source_base: Path
+    source_root: Path
+    canary_run_root: Path
+    raw_results_root: Path
+    other_run_roots: tuple[Path, ...]
+    prior_source_roots: tuple[Path, ...] = ()
+    immutable_roots: tuple[ImmutableRoot, ...] = ()
+    disposition_root: Path = DISPOSITION_ROOT
+
+
+@dataclass(frozen=True)
+class RepoBindings:
+    source_head: str
+    source_tree_sha: str
+    materializer_sha256: str
+    fixture_manifest_sha256: str
+    fixture_tree_sha256: str
+    evidence_contract_sha256: str
+
+
+@dataclass(frozen=True)
+class SourceRead:
+    canonical_bytes: bytes
+    device: int
+    inode: int
+    source_path: Path | None
+
+
+@dataclass(frozen=True)
+class CompiledMaterialization:
+    files: Mapping[str, bytes]
+    bindings: RepoBindings
+    source_bundle_sha256: str
+
+
+@dataclass(frozen=True)
+class MaterializationResult:
+    lock_id: str
+    target_inode: int
+    file_sha256: Mapping[str, str]
+
+
+@dataclass(frozen=True)
+class _RuntimeWriteCanary:
+    root: Path
+    root_identity: tuple[int, int, int, int]
+    files: Mapping[str, tuple[int, int, bytes, int]]
+
+
+@dataclass(frozen=True)
+class _RuntimeCapsuleProbe:
+    runtime_read: bool
+    runtime_exec: bool
+    runtime_append_denied: bool
+    runtime_create_denied: bool
+    runtime_chmod_denied: bool
+    runtime_rename_denied: bool
+    transcript: tuple[tuple[str, int, str, str], ...]
+    transcript_sha256: str
+
+
+@dataclass(frozen=True)
+class FailureInjector:
+    fail_at: str | None = None
+
+    def hit(self, point: str) -> None:
+        if self.fail_at == point:
+            raise MaterializationError("injected-failure")
+
+
+def _canonical_json_bytes(value: object) -> bytes:
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def _strict_json_loads(value: bytes) -> object:
+    def reject_constant(_value: str) -> object:
+        raise ValueError("non-finite JSON number")
+
+    return json.loads(value, parse_constant=reject_constant)
+
+
+def _digest_bytes(value: bytes) -> str:
+    return sha256(value).hexdigest()
+
+
+def _digest_file(path: Path) -> str:
+    return _digest_bytes(path.read_bytes())
+
+
+def materializer_sha256() -> str:
+    """Bind the exact compiler/publisher implementation bytes."""
+    return _digest_file(Path(__file__).resolve(strict=True))
+
+
+def _closed(value: object, keys: set[str], code: str) -> Mapping[str, object]:
+    if not isinstance(value, Mapping) or set(value) != keys:
+        raise MaterializationError(code)
+    return value
+
+
+def _valid_digest(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == _DIGEST_LENGTH
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def _read_all(descriptor: int, *, positional: bool) -> bytes:
+    chunks: list[bytes] = []
+    offset = 0
+    while True:
+        try:
+            chunk = (
+                os.pread(descriptor, 1024 * 1024, offset)
+                if positional
+                else os.read(descriptor, 1024 * 1024)
+            )
+        except OSError as error:
+            raise MaterializationError("source-read") from error
+        if not chunk:
+            return b"".join(chunks)
+        chunks.append(chunk)
+        offset += len(chunk)
+
+
+def _validate_source_stat(before: os.stat_result, after: os.stat_result) -> None:
+    if (
+        not stat.S_ISREG(before.st_mode)
+        or before.st_uid != os.geteuid()
+        or stat.S_IMODE(before.st_mode) != 0o600
+        or before.st_nlink != 1
+    ):
+        raise MaterializationError("source-security")
+    stable = (
+        before.st_dev,
+        before.st_ino,
+        before.st_mode,
+        before.st_uid,
+        before.st_nlink,
+        before.st_size,
+        before.st_mtime_ns,
+    ) == (
+        after.st_dev,
+        after.st_ino,
+        after.st_mode,
+        after.st_uid,
+        after.st_nlink,
+        after.st_size,
+        after.st_mtime_ns,
+    )
+    if not stable:
+        raise MaterializationError("source-raced")
+
+
+def _descriptor_path(descriptor: int) -> Path:
+    try:
+        if sys.platform == "darwin":
+            if fcntl is None:
+                raise OSError("descriptor path lookup is unavailable")
+            raw = fcntl.fcntl(descriptor, 50, b"\0" * 1024)
+            value = os.fsdecode(raw.split(b"\0", 1)[0])
+        else:
+            value = os.readlink(f"/proc/self/fd/{descriptor}")
+        if not value:
+            raise OSError("descriptor path is empty")
+        return Path(value).resolve(strict=True)
+    except (OSError, ValueError) as error:
+        raise MaterializationError("source-path") from error
+
+
+def _read_source_record(
+    *,
+    source_fd: int,
+    expected_sha256: str,
+) -> SourceRead:
+    if not _valid_digest(expected_sha256):
+        raise MaterializationError("source-digest")
+    opened_path: Path | None = None
+    try:
+        try:
+            descriptor = os.dup(int(source_fd))
+        except (OSError, TypeError, ValueError) as error:
+            raise MaterializationError("source-open") from error
+        try:
+            opened_path = _descriptor_path(descriptor)
+            before = os.fstat(descriptor)
+            data = _read_all(descriptor, positional=True)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("source-open") from error
+    _validate_source_stat(before, after)
+    if len(data) != before.st_size:
+        raise MaterializationError("source-raced")
+    if _digest_bytes(data) != expected_sha256:
+        raise MaterializationError("source-digest")
+    try:
+        parsed = _strict_json_loads(data)
+    except (UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+        raise MaterializationError("source-canonical") from error
+    if _canonical_json_bytes(parsed) != data:
+        raise MaterializationError("source-canonical")
+    return SourceRead(data, before.st_dev, before.st_ino, opened_path)
+
+
+def read_source_bundle(
+    *,
+    source_fd: int,
+    expected_sha256: str,
+) -> bytes:
+    """Read and freeze one canonical source bundle without echoing its identity."""
+    return _read_source_record(
+        source_fd=source_fd,
+        expected_sha256=expected_sha256,
+    ).canonical_bytes
+
+
+def fingerprint_tree(root: Path) -> TreeFingerprint:
+    """Hash root identity plus sorted child identity and content records."""
+    try:
+        root_stat = root.lstat()
+        if not stat.S_ISDIR(root_stat.st_mode) or stat.S_ISLNK(root_stat.st_mode):
+            raise MaterializationError("legacy-root")
+        entries: list[dict[str, object]] = [
+            {
+                "path": ".",
+                "type": "directory",
+                "device": root_stat.st_dev,
+                "inode": root_stat.st_ino,
+                "uid": root_stat.st_uid,
+                "gid": root_stat.st_gid,
+                "mode": stat.S_IMODE(root_stat.st_mode),
+                "nlink": root_stat.st_nlink,
+                "size": root_stat.st_size,
+            }
+        ]
+        for path in sorted(
+            root.rglob("*"), key=lambda item: item.relative_to(root).as_posix()
+        ):
+            relative = path.relative_to(root).as_posix()
+            item_stat = path.lstat()
+            record: dict[str, object] = {
+                "path": relative,
+                "device": item_stat.st_dev,
+                "inode": item_stat.st_ino,
+                "uid": item_stat.st_uid,
+                "gid": item_stat.st_gid,
+                "mode": stat.S_IMODE(item_stat.st_mode),
+                "nlink": item_stat.st_nlink,
+                "size": item_stat.st_size,
+            }
+            if stat.S_ISREG(item_stat.st_mode):
+                record.update({"type": "file", "sha256": _digest_file(path)})
+            elif stat.S_ISDIR(item_stat.st_mode):
+                record.update({"type": "directory"})
+            elif stat.S_ISLNK(item_stat.st_mode):
+                record.update({"type": "symlink", "target": os.readlink(path)})
+            else:
+                record.update({"type": "other"})
+            entries.append(record)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("legacy-root") from error
+    return TreeFingerprint(
+        root_stat.st_ino, _digest_bytes(_canonical_json_bytes(entries))
+    )
+
+
+def _capture_immutable_roots(
+    policy: MaterializerPolicy,
+) -> tuple[TreeFingerprint, ...]:
+    observed: list[TreeFingerprint] = []
+    for binding in policy.immutable_roots:
+        current = fingerprint_tree(binding.path)
+        if (
+            current.inode != binding.inode
+            or current.sha256 != binding.tree_sha256
+            or not binding.label
+        ):
+            raise MaterializationError("immutable-root")
+        observed.append(current)
+    return tuple(observed)
+
+
+def _assert_immutable_roots(
+    policy: MaterializerPolicy, expected: tuple[TreeFingerprint, ...]
+) -> None:
+    if _capture_immutable_roots(policy) != expected:
+        raise MaterializationError("immutable-root-changed")
+
+
+def build_disposition_record(policy: MaterializerPolicy) -> bytes:
+    """Build, but never publish, the closed r2-to-r3 successor review record."""
+    invalid = next(
+        (item for item in policy.immutable_roots if item.label == "invalid-r1"), None
+    )
+    predecessor = next(
+        (item for item in policy.immutable_roots if item.label == "validated-r2"),
+        None,
+    )
+    prior_disposition = next(
+        (item for item in policy.immutable_roots if item.label == "r2-disposition"),
+        None,
+    )
+    if invalid is None or predecessor is None or prior_disposition is None:
+        raise MaterializationError("disposition-binding")
+    current = {
+        binding.label: fingerprint_tree(binding.path)
+        for binding in (invalid, predecessor, prior_disposition)
+    }
+    for binding in (invalid, predecessor, prior_disposition):
+        if current[binding.label] != TreeFingerprint(
+            binding.inode, binding.tree_sha256
+        ):
+            raise MaterializationError("disposition-binding")
+        if _paths_overlap(policy.disposition_root, binding.path):
+            raise MaterializationError("disposition-overlap")
+    if _paths_overlap(policy.disposition_root, policy.target):
+        raise MaterializationError("disposition-overlap")
+    return _canonical_json_bytes(
+        {
+            "schema": "ai-sdlc-v2-benefit-disposition-plan/v2",
+            "state": "requires-independent-review",
+            "invalid_lock_id": invalid.path.name,
+            "invalid_root_tree_sha256": current[invalid.label].sha256,
+            "superseded_lock_id": predecessor.path.name,
+            "superseded_root_tree_sha256": current[predecessor.label].sha256,
+            "prior_disposition_tree_sha256": current[prior_disposition.label].sha256,
+            "replacement_lock_id": policy.target.name,
+            "action": "preserve-in-place",
+        }
+    )
+
+
+def default_policy() -> MaterializerPolicy:
+    benchmark = _REPO_ROOT / _BENCHMARK_RELATIVE
+    return MaterializerPolicy(
+        repo_root=_REPO_ROOT,
+        target=FINAL_TARGET,
+        trust_anchor=TRUST_ANCHOR,
+        legacy_root=LEGACY_ROOT,
+        expected_legacy_inode=EXPECTED_LEGACY_INODE,
+        expected_legacy_tree_sha256=EXPECTED_LEGACY_TREE_SHA256,
+        forbidden_roots=(
+            _REPO_ROOT,
+            _REPO_ROOT / ".git",
+            R2_ROOT,
+            INVALID_R1_ROOT,
+            LEGACY_ROOT,
+            PRIOR_TRUSTED_SOURCE_ROOT,
+            R2_TRUSTED_SOURCE_ROOT,
+            R2_DISPOSITION_ROOT,
+            benchmark / "results",
+            benchmark / "runs",
+            benchmark / "raw-results",
+            benchmark / ".evaluation-raw-results",
+        ),
+        source_base=TRUSTED_SOURCE_BASE,
+        source_root=TRUSTED_SOURCE_ROOT,
+        canary_run_root=FINAL_CANARY_BASE / "run",
+        raw_results_root=FINAL_CANARY_BASE / "raw-results",
+        other_run_roots=(FINAL_CANARY_BASE / "other-run",),
+        prior_source_roots=(PRIOR_TRUSTED_SOURCE_ROOT, R2_TRUSTED_SOURCE_ROOT),
+        immutable_roots=(
+            ImmutableRoot(
+                INVALID_R1_ROOT,
+                EXPECTED_INVALID_R1_INODE,
+                EXPECTED_INVALID_R1_TREE_SHA256,
+                "invalid-r1",
+            ),
+            ImmutableRoot(
+                R2_ROOT,
+                EXPECTED_R2_INODE,
+                EXPECTED_R2_TREE_SHA256,
+                "validated-r2",
+            ),
+            ImmutableRoot(
+                R2_TRUSTED_SOURCE_ROOT,
+                EXPECTED_R2_SOURCE_INODE,
+                EXPECTED_R2_SOURCE_TREE_SHA256,
+                "r2-source",
+            ),
+            ImmutableRoot(
+                R2_DISPOSITION_ROOT,
+                EXPECTED_R2_DISPOSITION_INODE,
+                EXPECTED_R2_DISPOSITION_TREE_SHA256,
+                "r2-disposition",
+            ),
+        ),
+        disposition_root=DISPOSITION_ROOT,
+    )
+
+
+def _git(repo_root: Path, *arguments: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["git", *arguments],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as error:
+        raise MaterializationError("source-git") from error
+    if completed.returncode != 0:
+        raise MaterializationError("source-git")
+    return completed.stdout.strip()
+
+
+def _assert_exact_r2_predecessor(repo_root: Path) -> None:
+    benchmark = repo_root / _BENCHMARK_RELATIVE
+    protocol_path = benchmark / "protocol.json"
+    authority_path = benchmark / "fixtures" / "sealed-commitments.json"
+    try:
+        protocol_bytes = protocol_path.read_bytes()
+        authority_bytes = authority_path.read_bytes()
+        if (
+            _digest_bytes(protocol_bytes) != EXPECTED_R2_PROTOCOL_SHA256
+            or _digest_bytes(authority_bytes) != EXPECTED_R2_SEALED_COMMITMENTS_SHA256
+        ):
+            raise MaterializationError("protocol-predecessor")
+        protocol = json.loads(protocol_bytes)
+        authority = json.loads(authority_bytes)
+        lock = protocol["execution_lock"]
+        expected_lock = {
+            "fixture_tree_sha256": EXPECTED_R2_FIXTURE_TREE_SHA256,
+            "fixture_commitment": EXPECTED_R2_FIXTURE_TREE_SHA256,
+            "evidence_contract_sha256": EXPECTED_R2_EVIDENCE_CONTRACT_SHA256,
+            "evidence_contract_commitment": EXPECTED_R2_EVIDENCE_CONTRACT_SHA256,
+        }
+        if any(lock[field] != expected for field, expected in expected_lock.items()):
+            raise MaterializationError("protocol-predecessor")
+        if (
+            authority["schema"] != "ai-sdlc-v2-benefit-sealed-commitments/v3"
+            or authority["lock_id"] != "v2-benefits-20260819-r2"
+            or authority["publication_state"] != "materialized-validated"
+            or authority["fixture_tree_sha256"] != EXPECTED_R2_FIXTURE_TREE_SHA256
+            or authority["fixture_commitment"] != EXPECTED_R2_FIXTURE_TREE_SHA256
+            or authority["evidence_contract_template_sha256"]
+            != EXPECTED_R2_EVIDENCE_CONTRACT_SHA256
+            or authority["evidence_contract_commitment"]
+            != EXPECTED_R2_EVIDENCE_CONTRACT_SHA256
+        ):
+            raise MaterializationError("protocol-predecessor")
+    except MaterializationError:
+        raise
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+        raise MaterializationError("protocol-predecessor") from error
+
+
+def _assert_provider_state_absent(repo_root: Path) -> None:
+    benchmark = repo_root / _BENCHMARK_RELATIVE
+    if any((benchmark / relative).exists() for relative in _PROVIDER_STATE_RELATIVE):
+        raise MaterializationError("provider-state")
+
+
+def _capture_repo_bindings(
+    expected_head: str, policy: MaterializerPolicy
+) -> RepoBindings:
+    repo = policy.repo_root.resolve(strict=True)
+    if _git(repo, "rev-parse", "HEAD") != expected_head:
+        raise MaterializationError("source-head")
+    if _git(repo, "status", "--porcelain", "--untracked-files=all"):
+        raise MaterializationError("source-tree")
+    _assert_exact_r2_predecessor(repo)
+    _assert_provider_state_absent(repo)
+    fixture_root = repo / _BENCHMARK_RELATIVE / "fixtures"
+    manifest_path = fixture_root / "manifest.json"
+    evidence_path = fixture_root / "evidence-contract.template.json"
+    try:
+        manifest = load_fixture_manifest(manifest_path)
+        if validate_fixture_manifest(manifest, fixture_root):
+            raise MaterializationError("fixture-manifest")
+        if (
+            manifest.canonical_sha256 != EXPECTED_R2_FIXTURE_TREE_SHA256
+            or _digest_file(evidence_path) != EXPECTED_R2_EVIDENCE_CONTRACT_SHA256
+        ):
+            raise MaterializationError("protocol-predecessor")
+        source_tree_sha = _git(repo, "rev-parse", "HEAD^{tree}")
+        return RepoBindings(
+            source_head=expected_head,
+            source_tree_sha=source_tree_sha,
+            materializer_sha256=materializer_sha256(),
+            fixture_manifest_sha256=_digest_file(manifest_path),
+            fixture_tree_sha256=manifest.canonical_sha256,
+            evidence_contract_sha256=_digest_file(evidence_path),
+        )
+    except MaterializationError:
+        raise
+    except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
+        raise MaterializationError("fixture-manifest") from error
+
+
+def _assert_repo_unchanged(bindings: RepoBindings, policy: MaterializerPolicy) -> None:
+    current = _capture_repo_bindings(bindings.source_head, policy)
+    if current != bindings:
+        raise MaterializationError("source-tree")
+
+
+_CRITERION_KEYS: Mapping[str, set[str]] = MappingProxyType(
+    {
+        "json_literal": {"id", "weight", "severity", "kind", "path", "expected"},
+        "json_enum": {"id", "weight", "severity", "kind", "path", "allowed"},
+        "json_set_contains": {"id", "weight", "severity", "kind", "path", "expected"},
+        "json_relation": {"id", "weight", "severity", "kind", "path", "relation"},
+        "json_no_contradiction": {
+            "id",
+            "weight",
+            "severity",
+            "kind",
+            "path",
+            "forbidden",
+        },
+        "verification_command": {
+            "id",
+            "weight",
+            "severity",
+            "kind",
+            "path",
+            "expected",
+        },
+        "frontend_browser_suite": {"id", "weight", "severity", "kind", "expected"},
+        "security_oracle": {
+            "id",
+            "weight",
+            "severity",
+            "kind",
+            "path",
+            "root_cause",
+            "scenario",
+            "expected",
+        },
+    }
+)
+
+
+def _validate_scalar_sequence(value: object) -> None:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(isinstance(item, (list, dict)) for item in value)
+        or len({_canonical_json_bytes(item) for item in value}) != len(value)
+    ):
+        raise MaterializationError("source-schema")
+
+
+def _require_source_schema(condition: bool) -> None:
+    if not condition:
+        raise MaterializationError("source-schema")
+
+
+def _validate_frontend_expected(
+    value: object, *, scenario_ids: set[str], behavior_ids: set[str]
+) -> None:
+    if (
+        not isinstance(value, Mapping)
+        or not value
+        or not set(value).issubset(_FRONTEND_EXPECTED_KEYS)
+    ):
+        raise MaterializationError("source-schema")
+    for key in {"executed_with_real_browser", "basic_accessibility"} & set(value):
+        if not isinstance(value[key], bool):
+            raise MaterializationError("source-schema")
+    if "console_errors" in value and (
+        not isinstance(value["console_errors"], list)
+        or not all(isinstance(item, str) for item in value["console_errors"])
+    ):
+        raise MaterializationError("source-schema")
+    for key, allowed in (
+        ("scenarios", scenario_ids),
+        ("behavior_checks", behavior_ids),
+    ):
+        if key not in value:
+            continue
+        child = value[key]
+        if (
+            not isinstance(child, Mapping)
+            or not child
+            or not set(child).issubset(allowed)
+            or not all(isinstance(item, bool) for item in child.values())
+        ):
+            raise MaterializationError("source-schema")
+
+
+def _validate_security_oracle(criterion: Mapping[str, object]) -> None:
+    scenario = criterion["scenario"]
+    expected = criterion["expected"]
+    if (
+        not isinstance(scenario, Mapping)
+        or not _SECURITY_SCENARIO_REQUIRED.issubset(scenario)
+        or not set(scenario).issubset(
+            _SECURITY_SCENARIO_REQUIRED | _SECURITY_SCENARIO_OPTIONAL
+        )
+        or not isinstance(scenario["roles"], list)
+        or not scenario["roles"]
+        or not all(isinstance(role, str) and role for role in scenario["roles"])
+    ):
+        raise MaterializationError("source-schema")
+    string_keys = _SECURITY_SCENARIO_REQUIRED - {"roles"}
+    string_keys |= {key for key in _SECURITY_SCENARIO_OPTIONAL if key in scenario}
+    if not all(isinstance(scenario[key], str) and scenario[key] for key in string_keys):
+        raise MaterializationError("source-schema")
+    if "audit_mode" in scenario and scenario["audit_mode"] not in {
+        "list",
+        "none",
+        "failing",
+    }:
+        raise MaterializationError("source-schema")
+    try:
+        expires_at = datetime.fromisoformat(str(scenario["expires_at"]))
+        now = datetime.fromisoformat(str(scenario["now"]))
+    except ValueError as error:
+        raise MaterializationError("source-schema") from error
+    if expires_at.utcoffset() is None or now.utcoffset() is None:
+        raise MaterializationError("source-schema")
+    if (
+        not isinstance(expected, Mapping)
+        or not expected
+        or not set(expected).issubset(_SECURITY_EXPECTED_KEYS)
+    ):
+        raise MaterializationError("source-schema")
+    expected_types: Mapping[str, tuple[type, ...]] = {
+        "allowed": (bool, type(None)),
+        "reason": (str, type(None)),
+        "status": (str,),
+        "status_unchanged": (bool,),
+        "audit_count": (int, type(None)),
+        "audit_events": (list,),
+        "error": (str, type(None)),
+    }
+    if any(not isinstance(expected[key], expected_types[key]) for key in expected):
+        raise MaterializationError("source-schema")
+    initial_status = scenario.get("status", "pending")
+    if (
+        expected.get("allowed") is not False
+        or expected.get("status") != initial_status
+        or expected.get("status_unchanged") is not True
+    ):
+        raise MaterializationError("source-schema")
+    root_cause = criterion["root_cause"]
+    coherent = {
+        "tenant-isolation": scenario["actor_tenant"] != scenario["request_tenant"],
+        "separation-of-duties": scenario["actor_id"] == scenario["requester_id"],
+        "request-lifecycle": initial_status != "pending" or now >= expires_at,
+        "role-allowlist": not set(scenario["roles"]).intersection(
+            {"approver", "admin"}
+        ),
+        "action-allowlist": scenario.get("action", "approve")
+        not in {"approve", "reject"},
+        "atomic-audit": scenario.get("audit_mode", "list") in {"none", "failing"},
+    }
+    if root_cause not in coherent or not coherent[root_cause]:
+        raise MaterializationError("source-schema")
+
+
+def _validate_criterion_value(
+    criterion: Mapping[str, object], *, scenario_ids: set[str], behavior_ids: set[str]
+) -> None:
+    kind = str(criterion["kind"])
+    if kind == "json_enum":
+        _validate_scalar_sequence(criterion["allowed"])
+    elif kind == "json_set_contains":
+        _validate_scalar_sequence(criterion["expected"])
+    elif kind == "json_relation":
+        _require_source_schema(
+            criterion["relation"]
+            in {
+                "committed_fact_survives_notification_failure",
+                "version_guard_precedes_terminal_transition",
+            }
+        )
+    elif kind == "json_no_contradiction":
+        forbidden = criterion["forbidden"]
+        _require_source_schema(
+            isinstance(forbidden, list)
+            and bool(forbidden)
+            and all(isinstance(item, str) and item for item in forbidden)
+        )
+    elif kind == "verification_command":
+        commands = criterion["expected"]
+        if (
+            not isinstance(commands, list)
+            or not commands
+            or not all(
+                isinstance(command, str)
+                and command.startswith(("python -m ", "npm run "))
+                for command in commands
+            )
+        ):
+            raise MaterializationError("source-schema")
+    elif kind == "frontend_browser_suite":
+        _validate_frontend_expected(
+            criterion["expected"],
+            scenario_ids=scenario_ids,
+            behavior_ids=behavior_ids,
+        )
+    elif kind == "security_oracle":
+        _validate_security_oracle(criterion)
+
+
+def _validate_criteria(
+    fixture_id: str,
+    criteria: object,
+    *,
+    scenario_ids: set[str] | None = None,
+    behavior_ids: set[str] | None = None,
+) -> list[Mapping[str, object]]:
+    if not isinstance(criteria, list) or not criteria:
+        raise MaterializationError("source-schema")
+    validated: list[Mapping[str, object]] = []
+    identifiers: set[str] = set()
+    for raw in criteria:
+        if not isinstance(raw, Mapping):
+            raise MaterializationError("source-schema")
+        kind = raw.get("kind")
+        if not isinstance(kind, str) or kind not in _CRITERION_KEYS:
+            raise MaterializationError("source-schema")
+        criterion = _closed(raw, _CRITERION_KEYS[kind], "source-schema")
+        identifier = criterion.get("id")
+        weight = criterion.get("weight")
+        if (
+            not isinstance(identifier, str)
+            or not identifier
+            or identifier in identifiers
+            or isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or weight <= 0
+            or criterion.get("severity") not in {"blocker", "important", "minor"}
+        ):
+            raise MaterializationError("source-schema")
+        path = criterion.get("path")
+        if (
+            (kind.startswith("json_") or kind == "verification_command")
+            and (
+                not isinstance(path, list)
+                or not all(
+                    isinstance(component, str) and component for component in path
+                )
+            )
+            and (path != [] or kind != "json_no_contradiction")
+        ):
+            raise MaterializationError("source-schema")
+        if kind == "security_oracle" and (
+            not isinstance(path, str)
+            or not path
+            or Path(path).is_absolute()
+            or ".." in Path(path).parts
+        ):
+            raise MaterializationError("source-schema")
+        _validate_criterion_value(
+            criterion,
+            scenario_ids=scenario_ids or set(),
+            behavior_ids=behavior_ids or set(),
+        )
+        identifiers.add(identifier)
+        validated.append(criterion)
+    kinds = {str(item["kind"]) for item in validated}
+    if fixture_id == "requirement-contract-ambiguity" and kinds != {
+        "json_literal",
+        "json_enum",
+        "json_set_contains",
+        "json_relation",
+        "json_no_contradiction",
+        "verification_command",
+    }:
+        raise MaterializationError("source-schema")
+    if fixture_id == "frontend-recovery-delivery" and (
+        kinds != {"frontend_browser_suite"}
+        or not {"FRD-AC001", "FRD-AC002", "FRD-AC006"}.issubset(identifiers)
+    ):
+        raise MaterializationError("source-schema")
+    if fixture_id == "frontend-recovery-delivery":
+        by_id = {str(item["id"]): item["expected"] for item in validated}
+        required_behavior = {
+            "FRD-AC001": {"behavior_checks": {"field_rendering": True}},
+            "FRD-AC002": {"behavior_checks": {"filtering": True}},
+            "FRD-AC006": {
+                "executed_with_real_browser": True,
+                "console_errors": [],
+                "basic_accessibility": True,
+            },
+        }
+        if any(
+            by_id.get(identifier) != expected
+            for identifier, expected in required_behavior.items()
+        ):
+            raise MaterializationError("source-schema")
+    if fixture_id == "multi-tenant-security-review" and kinds != {"security_oracle"}:
+        raise MaterializationError("source-schema")
+    return validated
+
+
+def _public_intent_taxonomy(
+    policy: MaterializerPolicy,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    fixture_root = policy.repo_root / _BENCHMARK_RELATIVE / "fixtures"
+    try:
+        requirement = json.loads(
+            (
+                fixture_root
+                / "requirement-contract-ambiguity/public/benchmark-task/input-contract.json"
+            ).read_bytes()
+        )
+        questions = requirement["semantics"]["question_taxonomy"]
+        approvals = []
+        for fixture_id in (
+            "requirement-contract-ambiguity",
+            "frontend-recovery-delivery",
+        ):
+            contract = json.loads(
+                (
+                    fixture_root
+                    / fixture_id
+                    / "public/benchmark-task/service-contract.json"
+                ).read_bytes()
+            )
+            approvals.append(contract["approval_type"])
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+        raise MaterializationError("source-schema") from error
+    if (
+        not isinstance(questions, list)
+        or len(questions) != 4
+        or len(set(questions)) != 4
+        or not all(isinstance(item, str) and item for item in questions)
+        or len(set(approvals)) != 2
+        or not all(isinstance(item, str) and item for item in approvals)
+    ):
+        raise MaterializationError("source-schema")
+    return tuple(questions), tuple(approvals)
+
+
+def _validate_source_object_unchecked(
+    source_bytes: bytes, *, policy: MaterializerPolicy
+) -> Mapping[str, object]:
+    try:
+        raw = _closed(_strict_json_loads(source_bytes), _SOURCE_KEYS, "source-schema")
+    except MaterializationError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise MaterializationError("source-schema") from error
+    if (
+        raw["schema"] != "ai-sdlc-v2-benefit-sealed-source/v2"
+        or raw["lock_id"] != policy.target.name
+    ):
+        raise MaterializationError("source-schema")
+    intent = _closed(raw["intent_map"], _INTENT_KEYS, "source-schema")
+    if intent["schema"] != "ai-sdlc-v2-benefit-intent-map/v2":
+        raise MaterializationError("source-schema")
+    questions = intent["questions"]
+    approvals = intent["approvals"]
+    if not isinstance(questions, Mapping) or not isinstance(approvals, list):
+        raise MaterializationError("source-schema")
+    for question_id, item in questions.items():
+        question = _closed(item, _QUESTION_KEYS, "source-schema")
+        if (
+            not isinstance(question_id, str)
+            or not question_id
+            or isinstance(question["delay_ms"], bool)
+            or not isinstance(question["delay_ms"], int)
+            or question["delay_ms"] < 0
+        ):
+            raise MaterializationError("source-schema")
+    if len(approvals) != len(set(approvals)) or not all(
+        isinstance(item, str) and item for item in approvals
+    ):
+        raise MaterializationError("source-schema")
+    public_questions, public_approvals = _public_intent_taxonomy(policy)
+    if set(questions) != set(public_questions) or tuple(approvals) != public_approvals:
+        raise MaterializationError("source-schema")
+    payloads = raw["payloads"]
+    if not isinstance(payloads, Mapping) or set(payloads) != set(FIXTURE_IDS):
+        raise MaterializationError("source-schema")
+    for fixture_id in FIXTURE_IDS:
+        expected_keys = {
+            "requirement-contract-ambiguity": {"schema", "fixture_id", "criteria"},
+            "frontend-recovery-delivery": {
+                "schema",
+                "fixture_id",
+                "held_out_variant_classes",
+                "browser_program",
+                "criteria",
+            },
+            "multi-tenant-security-review": {
+                "schema",
+                "fixture_id",
+                "held_out_variant_classes",
+                "root_causes",
+                "criteria",
+            },
+        }[fixture_id]
+        payload = _closed(payloads[fixture_id], expected_keys, "source-schema")
+        if (
+            payload["schema"] != "ai-sdlc-v2-benefit-sealed-evaluator/v2"
+            or payload["fixture_id"] != fixture_id
+        ):
+            raise MaterializationError("source-schema")
+        scenario_ids: set[str] = set()
+        behavior_ids: set[str] = set()
+        if fixture_id == "frontend-recovery-delivery":
+            try:
+                scenario_ids = set(
+                    validate_frontend_browser_program(payload["browser_program"])
+                )
+                behavior_ids = {
+                    str(assertion["expose_as"])
+                    for scenario in payload["browser_program"]["scenarios"]
+                    for assertion in scenario["assertions"]
+                    if assertion["expose_as"] is not None
+                }
+            except (KeyError, TypeError, ValueError) as error:
+                raise MaterializationError("source-schema") from error
+        criteria = _validate_criteria(
+            fixture_id,
+            payload["criteria"],
+            scenario_ids=scenario_ids,
+            behavior_ids=behavior_ids,
+        )
+        if fixture_id != "requirement-contract-ambiguity":
+            variants = payload["held_out_variant_classes"]
+            if (
+                not isinstance(variants, list)
+                or len(variants) != 4
+                or len(set(variants)) != 4
+                or not all(isinstance(item, str) and item for item in variants)
+            ):
+                raise MaterializationError("source-schema")
+        if fixture_id == "frontend-recovery-delivery":
+            covered_scenarios = {
+                str(scenario_id)
+                for criterion in criteria
+                for scenario_id in (
+                    criterion["expected"].get("scenarios", {})
+                    if isinstance(criterion["expected"], Mapping)
+                    else {}
+                )
+            }
+            if len(scenario_ids) != 6 or len(covered_scenarios) != 4:
+                raise MaterializationError("source-schema")
+        if fixture_id == "multi-tenant-security-review":
+            roots = payload["root_causes"]
+            criterion_roots = [item["root_cause"] for item in criteria]
+            if (
+                not isinstance(roots, list)
+                or len(roots) != 6
+                or len(set(roots)) != 6
+                or roots != criterion_roots
+                or set(roots) != _SECURITY_ROOT_CAUSES
+                or not all(isinstance(item, str) and item for item in roots)
+            ):
+                raise MaterializationError("source-schema")
+    return raw
+
+
+def _validate_source_object(
+    source_bytes: bytes, *, policy: MaterializerPolicy
+) -> Mapping[str, object]:
+    try:
+        return _validate_source_object_unchecked(source_bytes, policy=policy)
+    except MaterializationError:
+        raise
+    except (
+        KeyError,
+        TypeError,
+        ValueError,
+        UnicodeDecodeError,
+        json.JSONDecodeError,
+    ) as error:
+        raise MaterializationError("source-schema") from error
+
+
+def _assert_trusted_source(
+    source: SourceRead, policy: MaterializerPolicy
+) -> TreeFingerprint:
+    if source.source_path is None:
+        raise MaterializationError("source-path")
+    try:
+        base = policy.source_base.resolve(strict=True)
+        root = policy.source_root.resolve(strict=True)
+        source_path = source.source_path.resolve(strict=True)
+        base_stat = policy.source_base.lstat()
+        root_stat = policy.source_root.lstat()
+        leaf_stat = source_path.lstat()
+        if (
+            stat.S_ISLNK(base_stat.st_mode)
+            or stat.S_ISLNK(root_stat.st_mode)
+            or not stat.S_ISDIR(base_stat.st_mode)
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or base_stat.st_uid != os.geteuid()
+            or root_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(base_stat.st_mode) != 0o700
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+            or base_stat.st_dev != root_stat.st_dev
+            or root.parent != base
+            or source_path.parent != root
+            or source.device != root_stat.st_dev
+            or (leaf_stat.st_dev, leaf_stat.st_ino) != (source.device, source.inode)
+            or not stat.S_ISREG(leaf_stat.st_mode)
+        ):
+            raise MaterializationError("source-security")
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("source-security") from error
+    roots = (
+        policy.repo_root,
+        policy.target,
+        policy.target.parent,
+        *policy.forbidden_roots,
+    )
+    for root in roots:
+        resolved = root.resolve(strict=False)
+        try:
+            source_path.relative_to(resolved)
+            raise MaterializationError("source-overlap")
+        except ValueError:
+            pass
+    fingerprint = fingerprint_tree(policy.source_root)
+    try:
+        rebound_root = policy.source_root.lstat()
+        rebound_leaf = source_path.lstat()
+    except OSError as error:
+        raise MaterializationError("source-raced") from error
+    if (
+        fingerprint.inode != root_stat.st_ino
+        or (rebound_root.st_dev, rebound_root.st_ino)
+        != (root_stat.st_dev, root_stat.st_ino)
+        or (rebound_leaf.st_dev, rebound_leaf.st_ino) != (source.device, source.inode)
+    ):
+        raise MaterializationError("source-raced")
+    return fingerprint
+
+
+def compile_source_bundle(
+    source_bytes: bytes,
+    *,
+    expected_source_sha256: str,
+    expected_head: str,
+    policy: MaterializerPolicy,
+) -> CompiledMaterialization:
+    """Compile one external canonical source into closed committed output bytes."""
+    if (
+        not _valid_digest(expected_source_sha256)
+        or _digest_bytes(source_bytes) != expected_source_sha256
+    ):
+        raise MaterializationError("source-digest")
+    source = _validate_source_object(source_bytes, policy=policy)
+    bindings = _capture_repo_bindings(expected_head, policy)
+    source_root_tree_sha256 = fingerprint_tree(policy.source_root).sha256
+    try:
+        runtime_identity = evaluator_python_runtime_identity(
+            forbidden_roots=(
+                policy.repo_root,
+                policy.target,
+                policy.legacy_root,
+                policy.source_root,
+                *policy.prior_source_roots,
+                *(item.path for item in policy.immutable_roots),
+            )
+        )
+        runtime_sha256 = evaluator_runtime_identity_sha256(runtime_identity)
+        runtime_capsule = evaluator_runtime_capsule_v2_manifest(
+            Path(str(runtime_identity["path"])), str(runtime_identity["version"])
+        )
+        runtime_capsule_sha256 = evaluator_runtime_capsule_v2_sha256(runtime_capsule)
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-identity") from error
+    intent_bytes = _canonical_json_bytes(source["intent_map"])
+    payloads = source["payloads"]
+    files: dict[str, bytes] = {"intent-map.json": intent_bytes}
+    entries: list[dict[str, str]] = []
+    payload_commitments: list[dict[str, str]] = []
+    for fixture_id in FIXTURE_IDS:
+        name = f"{fixture_id}.sealed.json"
+        data = _canonical_json_bytes(payloads[fixture_id])
+        digest = _digest_bytes(data)
+        files[name] = data
+        entries.append({"fixture_id": fixture_id, "path": name, "sha256": digest})
+        payload_commitments.append({"fixture_id": fixture_id, "sha256": digest})
+    intent_sha = _digest_bytes(intent_bytes)
+    manifest = {
+        "schema": "ai-sdlc-v2-benefit-sealed-manifest/v5",
+        "lock_id": policy.target.name,
+        "entries": entries,
+        "intent_map": {"path": "intent-map.json", "sha256": intent_sha},
+        "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule_sha256": runtime_capsule_sha256,
+    }
+    manifest_bytes = _canonical_json_bytes(manifest)
+    files["sealed-manifest.json"] = manifest_bytes
+    commitments = {
+        "schema": "ai-sdlc-v2-benefit-candidate-commitments/v4",
+        "lock_id": policy.target.name,
+        "source_head": bindings.source_head,
+        "source_tree_sha": bindings.source_tree_sha,
+        "materializer_sha256": bindings.materializer_sha256,
+        "source_bundle_sha256": expected_source_sha256,
+        "fixture_manifest_sha256": bindings.fixture_manifest_sha256,
+        "fixture_tree_sha256": bindings.fixture_tree_sha256,
+        "evidence_contract_sha256": bindings.evidence_contract_sha256,
+        "sealed_manifest_sha256": _digest_bytes(manifest_bytes),
+        "intent_map_sha256": intent_sha,
+        "fixture_payloads": payload_commitments,
+        "source_root_tree_sha256": source_root_tree_sha256,
+        "evaluator_python_runtime": runtime_identity,
+        "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule": runtime_capsule,
+        "evaluator_runtime_capsule_sha256": runtime_capsule_sha256,
+    }
+    commitment_bytes = _canonical_json_bytes(commitments)
+    files["candidate-commitments.json"] = commitment_bytes
+    receipt = {
+        "schema": "ai-sdlc-v2-benefit-materialization-receipt/v4",
+        "publication_state": "published-pending-isolation",
+        "isolation_probe_state": "pending",
+        "target_lock_id": policy.target.name,
+        "source_head": bindings.source_head,
+        "source_tree_sha": bindings.source_tree_sha,
+        "materializer_sha256": bindings.materializer_sha256,
+        "source_bundle_sha256": expected_source_sha256,
+        "fixture_manifest_sha256": bindings.fixture_manifest_sha256,
+        "fixture_tree_sha256": bindings.fixture_tree_sha256,
+        "evidence_contract_sha256": bindings.evidence_contract_sha256,
+        "sealed_manifest_sha256": _digest_bytes(manifest_bytes),
+        "intent_map_sha256": intent_sha,
+        "fixture_payloads": payload_commitments,
+        "candidate_commitments_sha256": _digest_bytes(commitment_bytes),
+        "source_root_tree_sha256": source_root_tree_sha256,
+        "evaluator_python_runtime_sha256": runtime_sha256,
+        "evaluator_runtime_capsule_sha256": runtime_capsule_sha256,
+    }
+    files["materialization-receipt.json"] = _canonical_json_bytes(receipt)
+    if tuple(files) != _OUTPUT_ORDER:
+        raise MaterializationError("compiler-order")
+    return CompiledMaterialization(
+        MappingProxyType(files), bindings, expected_source_sha256
+    )
+
+
+def _validate_candidate_commitments(
+    root: Path, compiled: CompiledMaterialization
+) -> None:
+    try:
+        if any(
+            (root / name).read_bytes() != compiled.files[name] for name in _OUTPUT_ORDER
+        ):
+            raise MaterializationError("candidate-commitments")
+        raw = _closed(
+            json.loads((root / "candidate-commitments.json").read_bytes()),
+            CANDIDATE_COMMITMENT_KEYS,
+            "candidate-commitments",
+        )
+        receipt = _closed(
+            json.loads((root / "materialization-receipt.json").read_bytes()),
+            RECEIPT_KEYS,
+            "materialization-receipt",
+        )
+        manifest_bytes = (root / "sealed-manifest.json").read_bytes()
+        manifest = json.loads(manifest_bytes)
+        expected_payloads = [
+            {
+                "fixture_id": fixture_id,
+                "sha256": _digest_file(root / f"{fixture_id}.sealed.json"),
+            }
+            for fixture_id in FIXTURE_IDS
+        ]
+        if (
+            raw["schema"] != "ai-sdlc-v2-benefit-candidate-commitments/v4"
+            or manifest["schema"] != "ai-sdlc-v2-benefit-sealed-manifest/v5"
+            or receipt["schema"] != "ai-sdlc-v2-benefit-materialization-receipt/v4"
+            or raw["lock_id"] != manifest["lock_id"]
+            or raw["sealed_manifest_sha256"] != _digest_bytes(manifest_bytes)
+            or raw["intent_map_sha256"] != _digest_file(root / "intent-map.json")
+            or raw["fixture_payloads"] != expected_payloads
+            or receipt["candidate_commitments_sha256"]
+            != _digest_file(root / "candidate-commitments.json")
+            or receipt["fixture_payloads"] != expected_payloads
+            or receipt["source_bundle_sha256"] != compiled.source_bundle_sha256
+            or receipt["publication_state"] != "published-pending-isolation"
+            or receipt["isolation_probe_state"] != "pending"
+            or receipt["source_root_tree_sha256"] != raw["source_root_tree_sha256"]
+            or evaluator_runtime_identity_sha256(raw["evaluator_python_runtime"])
+            != raw["evaluator_python_runtime_sha256"]
+            or raw["evaluator_python_runtime_sha256"]
+            != manifest["evaluator_python_runtime_sha256"]
+            or receipt["evaluator_python_runtime_sha256"]
+            != raw["evaluator_python_runtime_sha256"]
+            or evaluator_runtime_capsule_v2_sha256(raw["evaluator_runtime_capsule"])
+            != raw["evaluator_runtime_capsule_sha256"]
+            or raw["evaluator_runtime_capsule_sha256"]
+            != manifest["evaluator_runtime_capsule_sha256"]
+            or receipt["evaluator_runtime_capsule_sha256"]
+            != raw["evaluator_runtime_capsule_sha256"]
+        ):
+            raise MaterializationError("candidate-commitments")
+    except MaterializationError:
+        raise
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("candidate-commitments") from error
+    except (KeyError, OSError, TypeError, json.JSONDecodeError) as error:
+        raise MaterializationError("candidate-commitments") from error
+
+
+def _write_plain_files(root: Path, files: Mapping[str, bytes]) -> None:
+    root.mkdir(mode=0o700)
+    for name in _OUTPUT_ORDER:
+        path = root / name
+        descriptor = os.open(
+            path,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        try:
+            _write_all(descriptor, files[name])
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+
+
+def _validate_scratch(
+    compiled: CompiledMaterialization,
+    *,
+    scratch_parent: Path | None,
+    fixture_root: Path,
+) -> None:
+    """Run all deterministic validation in a disposable root before publication."""
+    if scratch_parent is not None:
+        scratch_parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(
+        prefix=".ai-sdlc-materializer-validation-", dir=scratch_parent
+    ) as temporary:
+        validation = Path(temporary)
+        protected = validation / "protected"
+        runs = validation / "runs"
+        protected.mkdir(mode=0o700)
+        runs.mkdir(mode=0o700)
+        sealed = protected / "sealed"
+        _write_plain_files(sealed, compiled.files)
+        _validate_candidate_commitments(sealed, compiled)
+        intent = json.loads((sealed / "intent-map.json").read_bytes())
+        events = validation / "intent-events.jsonl"
+        service = FrozenIntentApprovalService.from_sealed_root(sealed, events)
+        for question_id, item in intent["questions"].items():
+            if service.answer("validation-known", question_id) != {
+                "status": "answered",
+                "answer": item["answer"],
+            }:
+                raise MaterializationError("intent-validation")
+        if service.answer("validation-unknown", "__unknown__") != {
+            "status": "unresolved"
+        }:
+            raise MaterializationError("intent-validation")
+        for approval in intent["approvals"]:
+            digest = _digest_bytes(approval.encode("utf-8"))
+            correct_run = f"validation-correct-{approval}"
+            wrong_run = f"validation-wrong-{approval}"
+            zero_run = f"validation-zero-{approval}"
+            expired_run = f"validation-expired-{approval}"
+            service.register_proposal(correct_run, approval, digest)
+            if (
+                service.approval_request(correct_run, approval, digest).get("status")
+                != "approved"
+            ):
+                raise MaterializationError("intent-validation")
+            service.register_proposal(wrong_run, approval, digest)
+            if service.approval_request(wrong_run, approval, "1" * 64) != {
+                "status": "revise"
+            }:
+                raise MaterializationError("intent-validation")
+            service.register_proposal(zero_run, approval, digest)
+            if service.approval_request(zero_run, approval, "0" * 64) != {
+                "status": "revise"
+            }:
+                raise MaterializationError("intent-validation")
+            service.register_proposal(expired_run, approval, digest)
+            service.expire_run(expired_run)
+            if service.approval_request(expired_run, approval, digest) != {
+                "status": "revise"
+            }:
+                raise MaterializationError("intent-validation")
+        if service.approval_request("validation-unknown", "__unknown__", "1" * 64) != {
+            "status": "revise"
+        }:
+            raise MaterializationError("intent-validation")
+        for fixture_id in FIXTURE_IDS:
+            first = prepare_fixture(
+                fixture_id,
+                runs / f"candidate-a-{fixture_id}",
+                fixture_root=fixture_root,
+            )
+            second = prepare_fixture(
+                fixture_id,
+                runs / f"candidate-b-{fixture_id}",
+                fixture_root=fixture_root,
+            )
+            first_result = evaluate_fixture(fixture_id, first.root, sealed)
+            second_result = evaluate_fixture(fixture_id, second.root, sealed)
+            if (
+                first.public_tree_sha256 != second.public_tree_sha256
+                or first.initial_commit != second.initial_commit
+                or first.visible_results != second.visible_results
+                or first_result != second_result
+                or first_result.external_verified_delivery
+                or scan_candidate_for_sealed_leak(
+                    first.root, sealed / "sealed-manifest.json"
+                )
+                or scan_candidate_for_sealed_leak(
+                    second.root, sealed / "sealed-manifest.json"
+                )
+            ):
+                raise MaterializationError("evaluation-validation")
+
+
+def _paths_overlap(left: Path, right: Path) -> bool:
+    left_resolved = left.resolve(strict=False)
+    right_resolved = right.resolve(strict=False)
+    try:
+        left_resolved.relative_to(right_resolved)
+        return True
+    except ValueError:
+        pass
+    try:
+        right_resolved.relative_to(left_resolved)
+        return True
+    except ValueError:
+        return False
+
+
+def _open_trusted_parent(policy: MaterializerPolicy) -> tuple[int, os.stat_result]:
+    target = policy.target
+    parent = target.parent
+    try:
+        anchor = policy.trust_anchor.resolve(strict=True)
+        parent.relative_to(anchor)
+    except (OSError, ValueError) as error:
+        raise MaterializationError("target-ancestor") from error
+    current = anchor
+    device = anchor.lstat().st_dev
+    try:
+        for component in parent.relative_to(anchor).parts:
+            current = current / component
+            item = current.lstat()
+            if (
+                stat.S_ISLNK(item.st_mode)
+                or not stat.S_ISDIR(item.st_mode)
+                or item.st_uid != os.geteuid()
+                or stat.S_IMODE(item.st_mode) != 0o700
+            ):
+                raise MaterializationError("target-ancestor")
+            if item.st_dev != device:
+                raise MaterializationError("target-device")
+        flags = (
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(parent, flags)
+        opened = os.fstat(descriptor)
+        lexical = parent.lstat()
+        if (opened.st_dev, opened.st_ino) != (lexical.st_dev, lexical.st_ino):
+            os.close(descriptor)
+            raise MaterializationError("target-raced")
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("target-ancestor") from error
+    for root in policy.forbidden_roots:
+        if _paths_overlap(target, root):
+            os.close(descriptor)
+            raise MaterializationError("target-overlap")
+    try:
+        os.stat(target.name, dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    except OSError as error:
+        os.close(descriptor)
+        raise MaterializationError("target-state") from error
+    else:
+        os.close(descriptor)
+        raise MaterializationError("target-exists")
+    return descriptor, opened
+
+
+def _assert_parent_binding(
+    parent_fd: int, parent: Path, expected: os.stat_result
+) -> None:
+    try:
+        opened = os.fstat(parent_fd)
+        lexical = parent.lstat()
+    except OSError as error:
+        raise MaterializationError("target-raced") from error
+    identity = (expected.st_dev, expected.st_ino)
+    if (
+        (opened.st_dev, opened.st_ino) != identity
+        or (lexical.st_dev, lexical.st_ino) != identity
+        or not stat.S_ISDIR(opened.st_mode)
+        or opened.st_uid != os.geteuid()
+        or stat.S_IMODE(opened.st_mode) != 0o700
+    ):
+        raise MaterializationError("target-raced")
+
+
+def _write_all(descriptor: int, value: bytes) -> None:
+    view = memoryview(value)
+    offset = 0
+    while offset < len(view):
+        try:
+            written = os.write(descriptor, view[offset:])
+        except OSError as error:
+            raise MaterializationError("write-failed") from error
+        if written <= 0:
+            raise MaterializationError("write-failed")
+        offset += written
+
+
+def _cleanup_new_empty_directory_at(
+    parent_fd: int,
+    name: str,
+    *,
+    expected_identity: tuple[int, int] | None,
+    descriptor: int | None,
+    code: str,
+) -> None:
+    owned_descriptor = descriptor is None
+    try:
+        lexical = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if not stat.S_ISDIR(lexical.st_mode):
+            raise MaterializationError(code)
+        if descriptor is None:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | os.O_DIRECTORY
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=parent_fd,
+            )
+        opened = os.fstat(descriptor)
+        observed_identity = (opened.st_dev, opened.st_ino)
+        if (
+            (lexical.st_dev, lexical.st_ino) != observed_identity
+            or (
+                expected_identity is not None and observed_identity != expected_identity
+            )
+            or not stat.S_ISDIR(opened.st_mode)
+            or list(os.listdir(descriptor))
+        ):
+            raise MaterializationError(code)
+        os.fsync(descriptor)
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != observed_identity:
+            raise MaterializationError(code)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError(code) from error
+    finally:
+        if owned_descriptor and descriptor is not None:
+            os.close(descriptor)
+    try:
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != observed_identity:
+            raise MaterializationError(code)
+        os.rmdir(name, dir_fd=parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError(code) from error
+
+
+def _mkdtemp_at(
+    parent_fd: int,
+    *,
+    prefix: str,
+    expected_device: int,
+    create_code: str = "staging-create",
+    security_code: str = "staging-security",
+    cleanup_code: str = "cleanup-failed",
+) -> tuple[str, os.stat_result, int]:
+    for _attempt in range(64):
+        name = f"{prefix}{secrets.token_hex(16)}"
+        try:
+            os.mkdir(name, 0o700, dir_fd=parent_fd)
+        except FileExistsError:
+            continue
+        except OSError as error:
+            raise MaterializationError(create_code) from error
+        descriptor: int | None = None
+        item: os.stat_result | None = None
+        opened: os.stat_result | None = None
+        first_error: Exception | None = None
+        try:
+            try:
+                item = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            except OSError as error:
+                first_error = error
+            try:
+                descriptor = os.open(
+                    name,
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | os.O_CLOEXEC
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=parent_fd,
+                )
+                opened = os.fstat(descriptor)
+            except OSError as error:
+                if first_error is None:
+                    first_error = error
+            if first_error is not None:
+                raise first_error
+            if item is None or opened is None or descriptor is None:
+                raise MaterializationError(security_code)
+            if (
+                (opened.st_dev, opened.st_ino) != (item.st_dev, item.st_ino)
+                or item.st_dev != expected_device
+                or item.st_uid != os.geteuid()
+                or stat.S_IMODE(item.st_mode) != 0o700
+                or not stat.S_ISDIR(item.st_mode)
+            ):
+                raise MaterializationError(security_code)
+            return name, item, descriptor
+        except Exception as error:
+            try:
+                _cleanup_new_empty_directory_at(
+                    parent_fd,
+                    name,
+                    expected_identity=(item.st_dev, item.st_ino)
+                    if item is not None
+                    else (
+                        (opened.st_dev, opened.st_ino) if opened is not None else None
+                    ),
+                    descriptor=descriptor,
+                    code=cleanup_code,
+                )
+            except MaterializationError as cleanup_error:
+                raise cleanup_error from error
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+            if isinstance(error, MaterializationError):
+                raise
+            raise MaterializationError(security_code) from error
+    raise MaterializationError(create_code)
+
+
+def _remove_directory_contents(directory_fd: int) -> None:
+    try:
+        entries = list(os.scandir(directory_fd))
+    except OSError as error:
+        raise MaterializationError("cleanup-failed") from error
+    for entry in entries:
+        try:
+            item = entry.stat(follow_symlinks=False)
+            if stat.S_ISREG(item.st_mode):
+                os.unlink(entry.name, dir_fd=directory_fd)
+            elif stat.S_ISDIR(item.st_mode):
+                child_fd = os.open(
+                    entry.name,
+                    os.O_RDONLY
+                    | os.O_DIRECTORY
+                    | os.O_CLOEXEC
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=directory_fd,
+                )
+                try:
+                    _remove_directory_contents(child_fd)
+                finally:
+                    os.close(child_fd)
+                current = os.stat(
+                    entry.name, dir_fd=directory_fd, follow_symlinks=False
+                )
+                if (current.st_dev, current.st_ino) != (item.st_dev, item.st_ino):
+                    raise MaterializationError("cleanup-failed")
+                os.rmdir(entry.name, dir_fd=directory_fd)
+            else:
+                raise MaterializationError("cleanup-failed")
+        except MaterializationError:
+            raise
+        except OSError as error:
+            raise MaterializationError("cleanup-failed") from error
+
+
+def _remove_owned_tree_at(parent_fd: int, name: str, identity: tuple[int, int]) -> None:
+    try:
+        item = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (item.st_dev, item.st_ino) != identity or not stat.S_ISDIR(item.st_mode):
+            raise MaterializationError("cleanup-failed")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        try:
+            opened = os.fstat(descriptor)
+            if (opened.st_dev, opened.st_ino) != identity:
+                raise MaterializationError("cleanup-failed")
+            _remove_directory_contents(descriptor)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        current = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != identity:
+            raise MaterializationError("cleanup-failed")
+        os.rmdir(name, dir_fd=parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("cleanup-failed") from error
+
+
+def _load_rename_exclusive():
+    if sys.platform != "darwin":
+        return None
+    try:
+        function = ctypes.CDLL(None, use_errno=True).renameatx_np
+    except AttributeError:
+        return None
+    function.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    function.restype = ctypes.c_int
+
+    def rename(
+        source_fd: int,
+        source_name: str,
+        destination_fd: int,
+        destination_name: str,
+    ) -> None:
+        result = function(
+            source_fd,
+            os.fsencode(source_name),
+            destination_fd,
+            os.fsencode(destination_name),
+            0x00000004,
+        )
+        if result != 0:
+            error_number = ctypes.get_errno()
+            code = "target-exists" if error_number == errno.EEXIST else "rename-failed"
+            raise MaterializationError(code)
+
+    return rename
+
+
+_rename_exclusive = _load_rename_exclusive()
+
+
+def _verify_published(
+    parent_fd: int,
+    target_name: str,
+    expected_identity: tuple[int, int],
+    files: Mapping[str, bytes],
+) -> tuple[int, Mapping[str, str]]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        target_fd = os.open(target_name, flags, dir_fd=parent_fd)
+    except OSError as error:
+        raise MaterializationError("postverify") from error
+    digests: dict[str, str] = {}
+    try:
+        target_stat = os.fstat(target_fd)
+        if (
+            (target_stat.st_dev, target_stat.st_ino) != expected_identity
+            or target_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(target_stat.st_mode) != 0o700
+        ):
+            raise MaterializationError("postverify")
+        for name in _OUTPUT_ORDER:
+            descriptor = os.open(
+                name,
+                os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=target_fd,
+            )
+            try:
+                item = os.fstat(descriptor)
+                data = _read_all(descriptor, positional=False)
+                if (
+                    not stat.S_ISREG(item.st_mode)
+                    or item.st_uid != os.geteuid()
+                    or stat.S_IMODE(item.st_mode) != 0o600
+                    or item.st_nlink != 1
+                    or data != files[name]
+                ):
+                    raise MaterializationError("postverify")
+                digests[name] = _digest_bytes(data)
+            finally:
+                os.close(descriptor)
+    except (OSError, KeyError) as error:
+        raise MaterializationError("postverify") from error
+    finally:
+        os.close(target_fd)
+    return target_stat.st_ino, MappingProxyType(digests)
+
+
+def _assert_private_directory(path: Path, code: str) -> None:
+    try:
+        item = path.lstat()
+    except OSError as error:
+        raise MaterializationError(code) from error
+    if (
+        stat.S_ISLNK(item.st_mode)
+        or not stat.S_ISDIR(item.st_mode)
+        or item.st_uid != os.geteuid()
+        or stat.S_IMODE(item.st_mode) != 0o700
+    ):
+        raise MaterializationError(code)
+
+
+def _open_runtime_canary_parent(
+    parent: Path,
+) -> tuple[int, int, os.stat_result]:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    anchor_fd = -1
+    parent_fd = -1
+    try:
+        anchor_fd = os.open(parent.parent, flags)
+        anchor = os.fstat(anchor_fd)
+        if (
+            not stat.S_ISDIR(anchor.st_mode)
+            or anchor.st_uid != os.geteuid()
+            or stat.S_IMODE(anchor.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        parent_fd = os.open(parent.name, flags, dir_fd=anchor_fd)
+        opened = os.fstat(parent_fd)
+        lexical = os.stat(parent.name, dir_fd=anchor_fd, follow_symlinks=False)
+        if (
+            (opened.st_dev, opened.st_ino) != (lexical.st_dev, lexical.st_ino)
+            or not stat.S_ISDIR(opened.st_mode)
+            or opened.st_uid != os.geteuid()
+            or stat.S_IMODE(opened.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        return anchor_fd, parent_fd, opened
+    except MaterializationError:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
+        raise
+    except OSError as error:
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if anchor_fd >= 0:
+            os.close(anchor_fd)
+        raise MaterializationError("runtime-canary-root") from error
+
+
+def _assert_runtime_canary_creation_binding(
+    parent_anchor_fd: int,
+    parent_fd: int,
+    parent_name: str,
+    parent_identity: os.stat_result,
+    root_name: str,
+    root_fd: int,
+    root_identity: tuple[int, int, int, int],
+) -> None:
+    try:
+        parent_opened = os.fstat(parent_fd)
+        parent_lexical = os.stat(
+            parent_name, dir_fd=parent_anchor_fd, follow_symlinks=False
+        )
+        root_opened = os.fstat(root_fd)
+        root_lexical = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+    except OSError as error:
+        raise MaterializationError("runtime-canary-root") from error
+    expected_parent = (parent_identity.st_dev, parent_identity.st_ino)
+    expected_root = root_identity
+    if (
+        (parent_opened.st_dev, parent_opened.st_ino) != expected_parent
+        or (parent_lexical.st_dev, parent_lexical.st_ino) != expected_parent
+        or not stat.S_ISDIR(parent_opened.st_mode)
+        or parent_opened.st_uid != os.geteuid()
+        or stat.S_IMODE(parent_opened.st_mode) != 0o700
+        or (
+            root_opened.st_dev,
+            root_opened.st_ino,
+            root_opened.st_uid,
+            stat.S_IFMT(root_opened.st_mode),
+        )
+        != expected_root
+        or (
+            root_lexical.st_dev,
+            root_lexical.st_ino,
+            root_lexical.st_uid,
+            stat.S_IFMT(root_lexical.st_mode),
+        )
+        != expected_root
+        or not stat.S_ISDIR(root_opened.st_mode)
+        or stat.S_IMODE(root_opened.st_mode) != 0o700
+        or stat.S_IMODE(root_lexical.st_mode) != 0o700
+    ):
+        raise MaterializationError("runtime-canary-root")
+
+
+def _cleanup_runtime_canary_creation(
+    parent_fd: int,
+    root_name: str,
+    root_fd: int,
+    root_identity: tuple[int, int, int, int],
+) -> None:
+    try:
+        opened = os.fstat(root_fd)
+        if (
+            opened.st_dev,
+            opened.st_ino,
+            opened.st_uid,
+            stat.S_IFMT(opened.st_mode),
+        ) != root_identity:
+            raise MaterializationError("runtime-canary-cleanup")
+        allowed = {"append", "chmod", "rename"}
+        observed = set(os.listdir(root_fd))
+        if not observed <= allowed:
+            raise MaterializationError("runtime-canary-cleanup")
+        for name in observed:
+            child = os.stat(name, dir_fd=root_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(child.st_mode)
+                or child.st_uid != os.geteuid()
+                or child.st_nlink != 1
+            ):
+                raise MaterializationError("runtime-canary-cleanup")
+            os.unlink(name, dir_fd=root_fd)
+        os.fsync(root_fd)
+        lexical = os.stat(root_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            lexical.st_dev,
+            lexical.st_ino,
+            lexical.st_uid,
+            stat.S_IFMT(lexical.st_mode),
+        ) != root_identity:
+            raise MaterializationError("runtime-canary-cleanup")
+        os.rmdir(root_name, dir_fd=parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("runtime-canary-cleanup") from error
+
+
+def _cleanup_incomplete_runtime_canary(
+    root: Path,
+    root_identity: tuple[int, int, int, int],
+    parent_fd: int | None = None,
+) -> None:
+    owned_parent_fd = parent_fd is None
+    if parent_fd is None:
+        parent_fd = os.open(
+            root.parent,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+    descriptor = -1
+    try:
+        item = os.stat(root.name, dir_fd=parent_fd, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(item.st_mode)
+            or (
+                item.st_dev,
+                item.st_ino,
+                item.st_uid,
+                stat.S_IFMT(item.st_mode),
+            )
+            != root_identity
+        ):
+            raise OSError("runtime canary root changed during creation")
+        descriptor = os.open(
+            root.name,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=parent_fd,
+        )
+        opened = os.fstat(descriptor)
+        if (opened.st_dev, opened.st_ino) != root_identity[:2]:
+            raise OSError("runtime canary root changed during cleanup")
+        allowed = {"append", "chmod", "rename"}
+        observed = set(os.listdir(descriptor))
+        if not observed <= allowed:
+            raise OSError("runtime canary creation left an unexpected entry")
+        for name in observed:
+            child = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(child.st_mode)
+                or child.st_uid != os.geteuid()
+                or child.st_nlink != 1
+            ):
+                raise OSError("runtime canary creation entry is unsafe")
+            os.unlink(name, dir_fd=descriptor)
+        os.fsync(descriptor)
+        os.rmdir(root.name, dir_fd=parent_fd)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        if owned_parent_fd:
+            os.close(parent_fd)
+
+
+def _create_runtime_write_canary(policy: MaterializerPolicy) -> _RuntimeWriteCanary:
+    parent = policy.canary_run_root.parent
+    parent_anchor_fd = -1
+    parent_fd = -1
+    root_fd = -1
+    root_name: str | None = None
+    root: Path | None = None
+    root_identity: tuple[int, int, int, int] | None = None
+    try:
+        parent_anchor_fd, parent_fd, parent_opened = _open_runtime_canary_parent(parent)
+        root_name, initial, root_fd = _mkdtemp_at(
+            parent_fd,
+            prefix=".runtime-write-",
+            expected_device=parent_opened.st_dev,
+            create_code="runtime-canary-root",
+            security_code="runtime-canary-root",
+            cleanup_code="runtime-canary-cleanup",
+        )
+        root = parent / root_name
+        root_identity = (
+            initial.st_dev,
+            initial.st_ino,
+            initial.st_uid,
+            stat.S_IFMT(initial.st_mode),
+        )
+        if not stat.S_ISDIR(initial.st_mode) or initial.st_uid != os.geteuid():
+            raise MaterializationError("runtime-canary-root")
+        _assert_runtime_canary_creation_binding(
+            parent_anchor_fd,
+            parent_fd,
+            parent.name,
+            parent_opened,
+            root_name,
+            root_fd,
+            root_identity,
+        )
+        _assert_runtime_canary_creation_binding(
+            parent_anchor_fd,
+            parent_fd,
+            parent.name,
+            parent_opened,
+            root_name,
+            root_fd,
+            root_identity,
+        )
+        os.fchmod(root_fd, 0o700)
+        root_stat = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(root_stat.st_mode)
+            or root_stat.st_uid != os.geteuid()
+            or stat.S_IMODE(root_stat.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        files: dict[str, tuple[int, int, bytes, int]] = {}
+        for name in ("append", "chmod", "rename"):
+            _assert_runtime_canary_creation_binding(
+                parent_anchor_fd,
+                parent_fd,
+                parent.name,
+                parent_opened,
+                root_name,
+                root_fd,
+                root_identity,
+            )
+            payload = f"runtime-{name}-canary\n".encode()
+            descriptor = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=root_fd,
+            )
+            try:
+                _write_all(descriptor, payload)
+                os.fsync(descriptor)
+                item = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(item.st_mode)
+                    or item.st_uid != os.geteuid()
+                    or item.st_nlink != 1
+                    or stat.S_IMODE(item.st_mode) != 0o600
+                ):
+                    raise MaterializationError("runtime-canary-root")
+                files[name] = (
+                    item.st_dev,
+                    item.st_ino,
+                    payload,
+                    stat.S_IMODE(item.st_mode),
+                )
+            finally:
+                os.close(descriptor)
+        os.fsync(root_fd)
+        _assert_runtime_canary_creation_binding(
+            parent_anchor_fd,
+            parent_fd,
+            parent.name,
+            parent_opened,
+            root_name,
+            root_fd,
+            root_identity,
+        )
+        final_root = os.fstat(root_fd)
+        if (
+            not stat.S_ISDIR(final_root.st_mode)
+            or final_root.st_uid != os.geteuid()
+            or stat.S_IMODE(final_root.st_mode) != 0o700
+        ):
+            raise MaterializationError("runtime-canary-root")
+        full_root_identity = (
+            final_root.st_dev,
+            final_root.st_ino,
+            final_root.st_uid,
+            stat.S_IMODE(final_root.st_mode),
+        )
+        return _RuntimeWriteCanary(
+            root=root,
+            root_identity=full_root_identity,
+            files=MappingProxyType(files),
+        )
+    except (MaterializationError, OSError) as error:
+        if root_name is not None and root_identity is not None and root_fd >= 0:
+            try:
+                _cleanup_runtime_canary_creation(
+                    parent_fd, root_name, root_fd, root_identity
+                )
+            except MaterializationError as cleanup_error:
+                raise MaterializationError("runtime-canary-cleanup") from cleanup_error
+        if isinstance(error, MaterializationError):
+            raise
+        raise MaterializationError("runtime-canary-root") from error
+    finally:
+        if root_fd >= 0:
+            os.close(root_fd)
+        if parent_fd >= 0:
+            os.close(parent_fd)
+        if parent_anchor_fd >= 0:
+            os.close(parent_anchor_fd)
+
+
+def _assert_runtime_canary_root(canary: _RuntimeWriteCanary) -> None:
+    try:
+        item = canary.root.lstat()
+    except OSError as error:
+        raise MaterializationError("runtime-canary-raced") from error
+    observed = (
+        item.st_dev,
+        item.st_ino,
+        item.st_uid,
+        stat.S_IMODE(item.st_mode),
+    )
+    if not stat.S_ISDIR(item.st_mode) or observed != canary.root_identity:
+        raise MaterializationError("runtime-canary-raced")
+
+
+def _assert_runtime_profile_binding(
+    runtime_identity: Mapping[str, object],
+    runtime_capsule: Mapping[str, object],
+    runtime_write_canary: _RuntimeWriteCanary | None,
+) -> None:
+    try:
+        launcher = Path(str(runtime_identity["path"]))
+        launcher_stat = launcher.lstat()
+        root = Path(str(runtime_capsule["root"]))
+        root_stat = root.lstat()
+        root_identity = runtime_capsule["root_identity"]
+        if not isinstance(root_identity, dict):
+            raise KeyError("root_identity")
+        launcher_expected = (
+            int(runtime_identity["device"]),
+            int(runtime_identity["inode"]),
+            int(runtime_identity["uid"]),
+            int(runtime_identity["gid"]),
+            int(runtime_identity["mode"]),
+            int(runtime_identity["nlink"]),
+            int(runtime_identity["size"]),
+        )
+        launcher_observed = (
+            launcher_stat.st_dev,
+            launcher_stat.st_ino,
+            launcher_stat.st_uid,
+            launcher_stat.st_gid,
+            stat.S_IMODE(launcher_stat.st_mode),
+            launcher_stat.st_nlink,
+            launcher_stat.st_size,
+        )
+        root_expected = tuple(
+            int(root_identity[key])
+            for key in ("device", "inode", "uid", "gid", "mode", "nlink", "size")
+        )
+        root_observed = (
+            root_stat.st_dev,
+            root_stat.st_ino,
+            root_stat.st_uid,
+            root_stat.st_gid,
+            stat.S_IMODE(root_stat.st_mode),
+            root_stat.st_nlink,
+            root_stat.st_size,
+        )
+        if (
+            not stat.S_ISREG(launcher_stat.st_mode)
+            or stat.S_ISLNK(launcher_stat.st_mode)
+            or not stat.S_ISDIR(root_stat.st_mode)
+            or stat.S_ISLNK(root_stat.st_mode)
+            or launcher_observed != launcher_expected
+            or root_observed != root_expected
+        ):
+            raise MaterializationError("runtime-capsule-raced")
+        if runtime_write_canary is not None:
+            _assert_runtime_canary_root(runtime_write_canary)
+    except MaterializationError:
+        raise
+    except (KeyError, OSError, TypeError, ValueError) as error:
+        raise MaterializationError("runtime-capsule-raced") from error
+
+
+def _runtime_canary_file_unchanged(canary: _RuntimeWriteCanary, name: str) -> bool:
+    expected_device, expected_inode, expected_bytes, expected_mode = canary.files[name]
+    try:
+        item = (canary.root / name).lstat()
+        return (
+            stat.S_ISREG(item.st_mode)
+            and item.st_uid == os.geteuid()
+            and item.st_nlink == 1
+            and (item.st_dev, item.st_ino) == (expected_device, expected_inode)
+            and stat.S_IMODE(item.st_mode) == expected_mode
+            and (canary.root / name).read_bytes() == expected_bytes
+        )
+    except OSError:
+        return False
+
+
+def _run_final_profile_launch_guard(
+    runtime_identity: Mapping[str, object],
+    runtime_capsule: Mapping[str, object],
+    runtime_write_canary: _RuntimeWriteCanary | None,
+) -> None:
+    try:
+        _assert_runtime_profile_binding(
+            runtime_identity, runtime_capsule, runtime_write_canary
+        )
+    except MaterializationError as error:
+        raise ValueError("runtime profile identity changed") from error
+
+
+def _cleanup_runtime_write_canary(canary: _RuntimeWriteCanary) -> None:
+    _assert_runtime_canary_root(canary)
+    directory_fd = -1
+    try:
+        directory_fd = os.open(
+            canary.root,
+            os.O_RDONLY | os.O_DIRECTORY | getattr(os, "O_NOFOLLOW", 0),
+        )
+        opened = os.fstat(directory_fd)
+        if (opened.st_dev, opened.st_ino) != canary.root_identity[:2]:
+            raise OSError("runtime canary root changed")
+        allowed = {*canary.files, "created", "renamed"}
+        observed = set(os.listdir(directory_fd))
+        if not observed <= allowed:
+            raise OSError("runtime canary contains an unexpected entry")
+        for name in observed:
+            item = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            if (
+                not stat.S_ISREG(item.st_mode)
+                or item.st_uid != os.geteuid()
+                or item.st_nlink != 1
+            ):
+                raise OSError("runtime canary entry is unsafe")
+            os.unlink(name, dir_fd=directory_fd)
+        os.fsync(directory_fd)
+    except (MaterializationError, OSError) as error:
+        raise MaterializationError("runtime-canary-cleanup") from error
+    finally:
+        if directory_fd >= 0:
+            os.close(directory_fd)
+    try:
+        canary.root.rmdir()
+    except OSError as error:
+        raise MaterializationError("runtime-canary-cleanup") from error
+
+
+def _probe_runtime_capsule_access(
+    profile: ProviderIsolationProfile,
+    runtime_identity: Mapping[str, object],
+    runtime_capsule: Mapping[str, object],
+    canary: _RuntimeWriteCanary,
+) -> _RuntimeCapsuleProbe:
+    _assert_runtime_canary_root(canary)
+    launcher = Path(str(runtime_identity["path"]))
+    capsule_root = Path(str(runtime_capsule["root"]))
+    entries = runtime_capsule["entries"]
+    if not isinstance(entries, list):
+        raise MaterializationError("runtime-capsule-probe")
+    readable_entry = next(
+        (
+            entry
+            for entry in entries
+            if isinstance(entry, dict)
+            and entry.get("type") == "file"
+            and str(entry.get("path", "")).endswith(".py")
+        ),
+        None,
+    )
+    if readable_entry is None:
+        raise MaterializationError("runtime-capsule-probe")
+    readable = capsule_root / str(readable_entry["path"])
+
+    def readable_is_bound() -> bool:
+        try:
+            item = readable.lstat()
+            return (
+                stat.S_ISREG(item.st_mode)
+                and not stat.S_ISLNK(item.st_mode)
+                and item.st_dev == int(readable_entry["device"])
+                and item.st_ino == int(readable_entry["inode"])
+                and item.st_uid == int(readable_entry["uid"])
+                and item.st_gid == int(readable_entry["gid"])
+                and stat.S_IMODE(item.st_mode) == int(readable_entry["mode"])
+                and item.st_nlink == int(readable_entry["nlink"])
+                and item.st_size == int(readable_entry["size"])
+                and _digest_file(readable) == str(readable_entry["sha256"])
+            )
+        except (KeyError, OSError, TypeError, ValueError):
+            return False
+
+    if not readable_is_bound():
+        raise MaterializationError("runtime-capsule-raced")
+    operations = (
+        (
+            "runtime_read",
+            (
+                str(launcher),
+                "-I",
+                "-B",
+                "-c",
+                "from pathlib import Path; import sys; print(len(Path(sys.argv[1]).read_bytes()))",
+                str(readable),
+            ),
+        ),
+        (
+            "runtime_exec",
+            (str(launcher), "-I", "-B", "-c", "print('runtime-exec-ok')"),
+        ),
+        (
+            "runtime_append_denied",
+            (
+                "/bin/sh",
+                "-c",
+                'printf x >> "$1"',
+                "runtime-append",
+                str(canary.root / "append"),
+            ),
+        ),
+        (
+            "runtime_create_denied",
+            ("/usr/bin/touch", str(canary.root / "created")),
+        ),
+        (
+            "runtime_chmod_denied",
+            ("/bin/chmod", "700", str(canary.root / "chmod")),
+        ),
+        (
+            "runtime_rename_denied",
+            (
+                "/bin/mv",
+                str(canary.root / "rename"),
+                str(canary.root / "renamed"),
+            ),
+        ),
+    )
+    transcript: list[tuple[str, int, str, str]] = []
+    outcomes: dict[str, bool] = {}
+    for name, argv in operations:
+        _assert_runtime_canary_root(canary)
+        try:
+            completed = run_provider_isolated(profile, argv)
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
+            raise MaterializationError("runtime-capsule-probe") from error
+        transcript.append(
+            (
+                name,
+                completed.returncode,
+                _digest_bytes(completed.stdout.encode()),
+                _digest_bytes(completed.stderr.encode()),
+            )
+        )
+        if name == "runtime_read":
+            outcomes[name] = (
+                completed.returncode == 0
+                and completed.stdout.strip().isdigit()
+                and readable_is_bound()
+            )
+        elif name == "runtime_exec":
+            outcomes[name] = (
+                completed.returncode == 0
+                and completed.stdout.strip() == "runtime-exec-ok"
+            )
+        else:
+            denied = (
+                completed.returncode != 0
+                and "Operation not permitted" in completed.stderr
+                and "sandbox_apply:" not in completed.stderr
+            )
+            if name == "runtime_append_denied":
+                unchanged = _runtime_canary_file_unchanged(canary, "append")
+            elif name == "runtime_create_denied":
+                unchanged = not (canary.root / "created").exists()
+            elif name == "runtime_chmod_denied":
+                unchanged = _runtime_canary_file_unchanged(canary, "chmod")
+            else:
+                unchanged = (
+                    _runtime_canary_file_unchanged(canary, "rename")
+                    and not (canary.root / "renamed").exists()
+                )
+            outcomes[name] = denied and unchanged
+    transcript_value = tuple(transcript)
+    transcript_sha256 = _digest_bytes(
+        _canonical_json_bytes([list(item) for item in transcript_value])
+    )
+    return _RuntimeCapsuleProbe(
+        **outcomes,
+        transcript=transcript_value,
+        transcript_sha256=transcript_sha256,
+    )
+
+
+def _build_final_isolation_profile(
+    policy: MaterializerPolicy,
+    runtime_write_canary: _RuntimeWriteCanary | None = None,
+) -> ProviderIsolationProfile:
+    git_surfaces = derive_repo_git_surfaces(policy.repo_root)
+    runtime_identity = evaluator_python_runtime_identity(
+        forbidden_roots=(policy.repo_root, policy.target)
+    )
+    runtime_capsule = evaluator_runtime_capsule_v2_manifest(
+        Path(str(runtime_identity["path"])), str(runtime_identity["version"])
+    )
+    protected_roots = (
+        *git_surfaces,
+        policy.source_root,
+        *policy.prior_source_roots,
+        policy.legacy_root,
+        *(item.path for item in policy.immutable_roots),
+    )
+    return build_provider_isolation_profile(
+        run_root=policy.canary_run_root,
+        sealed_root=policy.target,
+        control_root=policy.repo_root,
+        raw_results_root=policy.raw_results_root,
+        protected_roots=protected_roots,
+        write_protected_roots=(
+            Path(str(runtime_capsule["root"])),
+            *((runtime_write_canary.root,) if runtime_write_canary else ()),
+        ),
+        other_run_roots=policy.other_run_roots,
+        argv=("/usr/bin/true",),
+        environment={"PATH": os.environ.get("PATH", "")},
+        launch_guard=lambda: _run_final_profile_launch_guard(
+            runtime_identity, runtime_capsule, runtime_write_canary
+        ),
+    )
+
+
+def _run_final_isolation_canary_with_runtime_write_canary(
+    policy: MaterializerPolicy,
+    runtime_write_canary: _RuntimeWriteCanary,
+    *,
+    pending_receipt_sha256: str,
+    evaluator_python_runtime_sha256: str | None = None,
+    expected_runtime_capsule_sha256: str | None = None,
+) -> Mapping[str, object]:
+    for root in (
+        policy.canary_run_root,
+        policy.raw_results_root,
+        *policy.other_run_roots,
+    ):
+        _assert_private_directory(root, "isolation-root")
+    try:
+        profile = _build_final_isolation_profile(policy, runtime_write_canary)
+    except (OSError, ValueError, EvaluatorNoGoError) as error:
+        raise MaterializationError("isolation-profile") from error
+    if not profile.executable or profile.issues:
+        raise MaterializationError("isolation-profile")
+    try:
+        current_runtime = evaluator_python_runtime_identity(
+            forbidden_roots=(
+                policy.repo_root,
+                policy.target,
+                policy.source_root,
+                *policy.prior_source_roots,
+                *(item.path for item in policy.immutable_roots),
+            )
+        )
+        current_runtime_sha256 = evaluator_runtime_identity_sha256(current_runtime)
+        current_capsule = evaluator_runtime_capsule_v2_manifest(
+            Path(str(current_runtime["path"])), str(current_runtime["version"])
+        )
+        current_capsule_sha256 = evaluator_runtime_capsule_v2_sha256(current_capsule)
+        if evaluator_python_runtime_sha256 is None:
+            evaluator_python_runtime_sha256 = current_runtime_sha256
+        if current_runtime_sha256 != evaluator_python_runtime_sha256:
+            raise MaterializationError("runtime-identity")
+        if expected_runtime_capsule_sha256 is None:
+            expected_runtime_capsule_sha256 = current_capsule_sha256
+        if current_capsule_sha256 != expected_runtime_capsule_sha256:
+            raise MaterializationError("runtime-capsule-drift")
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-identity") from error
+    try:
+        probe = probe_provider_isolation(profile)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise MaterializationError("isolation-canary") from error
+    required = (
+        probe.direct,
+        probe.parent,
+        probe.symlink,
+        probe.hardlink,
+        probe.environment,
+        probe.other_run,
+        probe.add_dir,
+        all(value for _label, value in probe.protected_root_results),
+    )
+    if not all(required):
+        raise MaterializationError("isolation-canary")
+    runtime_probe = _probe_runtime_capsule_access(
+        profile,
+        current_runtime,
+        current_capsule,
+        runtime_write_canary,
+    )
+    runtime_checks = {
+        "runtime_read": runtime_probe.runtime_read,
+        "runtime_exec": runtime_probe.runtime_exec,
+        "runtime_append_denied": runtime_probe.runtime_append_denied,
+        "runtime_create_denied": runtime_probe.runtime_create_denied,
+        "runtime_chmod_denied": runtime_probe.runtime_chmod_denied,
+        "runtime_rename_denied": runtime_probe.runtime_rename_denied,
+    }
+    expected_transcript_names = tuple(runtime_checks)
+    if (
+        tuple(item[0] for item in runtime_probe.transcript) != expected_transcript_names
+        or runtime_probe.transcript_sha256
+        != _digest_bytes(
+            _canonical_json_bytes([list(item) for item in runtime_probe.transcript])
+        )
+        or not all(value is True for value in runtime_checks.values())
+    ):
+        raise MaterializationError("runtime-capsule-probe")
+    profile_sha256 = _digest_bytes(
+        _canonical_json_bytes(
+            {
+                "sandbox_text": profile.sandbox_text,
+                "argv": list(profile.argv),
+                "protected_root_count": len(profile.protected_roots),
+                "write_protected_root_count": len(profile.write_protected_roots),
+                "other_run_root_count": len(profile.other_run_roots),
+                "runtime_probe_transcript_sha256": runtime_probe.transcript_sha256,
+            }
+        )
+    )
+    return {
+        "schema": "ai-sdlc-v2-benefit-isolation-attestation/v2",
+        "state": "validated",
+        "pending_receipt_sha256": pending_receipt_sha256,
+        "evaluator_python_runtime_sha256": evaluator_python_runtime_sha256,
+        "evaluator_runtime_capsule_sha256": expected_runtime_capsule_sha256,
+        "profile_sha256": profile_sha256,
+        "checks": {
+            "direct": probe.direct,
+            "parent": probe.parent,
+            "symlink": probe.symlink,
+            "hardlink": probe.hardlink,
+            "environment": probe.environment,
+            "other_run": probe.other_run,
+            "add_dir": probe.add_dir,
+            "protected_roots": len(probe.protected_root_results),
+            "write_protected_roots": len(profile.write_protected_roots),
+            **runtime_checks,
+            "runtime_probe_transcript_sha256": runtime_probe.transcript_sha256,
+        },
+    }
+
+
+def _run_final_isolation_canary(
+    policy: MaterializerPolicy,
+    *,
+    pending_receipt_sha256: str,
+    evaluator_python_runtime_sha256: str | None = None,
+    expected_runtime_capsule_sha256: str | None = None,
+) -> bytes:
+    forbidden_runtime_roots = (
+        policy.repo_root,
+        policy.target,
+        policy.source_root,
+        *policy.prior_source_roots,
+        *(item.path for item in policy.immutable_roots),
+    )
+    try:
+        pre_runtime = evaluator_python_runtime_identity(
+            forbidden_roots=forbidden_runtime_roots
+        )
+        pre_runtime_sha256 = evaluator_runtime_identity_sha256(pre_runtime)
+        pre_capsule = evaluator_runtime_capsule_v2_manifest(
+            Path(str(pre_runtime["path"])), str(pre_runtime["version"])
+        )
+        pre_capsule_sha256 = evaluator_runtime_capsule_v2_sha256(pre_capsule)
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-identity") from error
+    if (
+        evaluator_python_runtime_sha256 is not None
+        and evaluator_python_runtime_sha256 != pre_runtime_sha256
+    ):
+        raise MaterializationError("runtime-identity")
+    if (
+        expected_runtime_capsule_sha256 is not None
+        and expected_runtime_capsule_sha256 != pre_capsule_sha256
+    ):
+        raise MaterializationError("runtime-capsule-drift")
+    runtime_write_canary = _create_runtime_write_canary(policy)
+    try:
+        payload = _run_final_isolation_canary_with_runtime_write_canary(
+            policy,
+            runtime_write_canary,
+            pending_receipt_sha256=pending_receipt_sha256,
+            evaluator_python_runtime_sha256=pre_runtime_sha256,
+            expected_runtime_capsule_sha256=pre_capsule_sha256,
+        )
+    finally:
+        _cleanup_runtime_write_canary(runtime_write_canary)
+    try:
+        post_runtime = evaluator_python_runtime_identity(
+            runtime_path=Path(str(pre_runtime["path"])),
+            forbidden_roots=forbidden_runtime_roots,
+            expected_sha256=str(pre_runtime["sha256"]),
+        )
+        post_capsule = evaluator_runtime_capsule_v2_manifest(
+            Path(str(post_runtime["path"])),
+            str(post_runtime["version"]),
+            expected_sha256=pre_capsule_sha256,
+        )
+        if post_runtime != pre_runtime or post_capsule != pre_capsule:
+            raise MaterializationError("runtime-capsule-drift")
+    except MaterializationError:
+        raise
+    except EvaluatorNoGoError as error:
+        raise MaterializationError("runtime-capsule-drift") from error
+    return _canonical_json_bytes(payload)
+
+
+def _write_final_attestation(
+    parent_fd: int,
+    target_name: str,
+    expected_identity: tuple[int, int],
+    data: bytes,
+    failure_injector: FailureInjector,
+) -> str:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        target_fd = os.open(target_name, flags, dir_fd=parent_fd)
+        try:
+            item = os.fstat(target_fd)
+            if (item.st_dev, item.st_ino) != expected_identity:
+                raise MaterializationError("postverify")
+            failure_injector.hit("write-attestation")
+            descriptor = os.open(
+                _ATTESTATION_NAME,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=target_fd,
+            )
+            try:
+                _write_all(descriptor, data)
+                written = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(written.st_mode)
+                    or written.st_uid != os.geteuid()
+                    or stat.S_IMODE(written.st_mode) != 0o600
+                    or written.st_nlink != 1
+                ):
+                    raise MaterializationError("postverify")
+                failure_injector.hit("fsync-attestation")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+            failure_injector.hit("fsync-final-dir")
+            os.fsync(target_fd)
+            descriptor = os.open(
+                _ATTESTATION_NAME,
+                os.O_RDONLY | os.O_CLOEXEC | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=target_fd,
+            )
+            try:
+                observed = _read_all(descriptor, positional=False)
+                verified = os.fstat(descriptor)
+                if observed != data or verified.st_nlink != 1:
+                    raise MaterializationError("postverify")
+            finally:
+                os.close(descriptor)
+        finally:
+            os.close(target_fd)
+        os.fsync(parent_fd)
+    except MaterializationError:
+        raise
+    except OSError as error:
+        raise MaterializationError("postverify") from error
+    return _digest_bytes(data)
+
+
+def _quarantine_published(
+    *,
+    parent_fd: int,
+    target_name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    if _rename_exclusive is None:
+        raise MaterializationError("cleanup-failed")
+    quarantine_name: str | None = None
+    quarantine_identity: tuple[int, int] | None = None
+    quarantine_fd: int | None = None
+    moved = False
+    try:
+        item = os.stat(target_name, dir_fd=parent_fd, follow_symlinks=False)
+        if (item.st_dev, item.st_ino) != expected_identity:
+            raise MaterializationError("cleanup-failed")
+        quarantine_name, quarantine_stat, quarantine_fd = _mkdtemp_at(
+            parent_fd,
+            prefix=f".{target_name}.quarantine-",
+            expected_device=item.st_dev,
+        )
+        quarantine_identity = (quarantine_stat.st_dev, quarantine_stat.st_ino)
+        _rename_exclusive(parent_fd, target_name, quarantine_fd, "published")
+        moved = True
+        os.fsync(parent_fd)
+        os.fsync(quarantine_fd)
+        _remove_owned_tree_at(quarantine_fd, "published", expected_identity)
+        os.fsync(quarantine_fd)
+        os.close(quarantine_fd)
+        quarantine_fd = None
+        _remove_owned_tree_at(parent_fd, quarantine_name, quarantine_identity)
+        quarantine_name = None
+        os.fsync(parent_fd)
+    except Exception as error:
+        cleanup_ok = True
+        try:
+            if quarantine_fd is not None:
+                if moved:
+                    _remove_owned_tree_at(quarantine_fd, "published", expected_identity)
+                os.close(quarantine_fd)
+                quarantine_fd = None
+            if quarantine_name is not None and quarantine_identity is not None:
+                _remove_owned_tree_at(parent_fd, quarantine_name, quarantine_identity)
+                quarantine_name = None
+            os.fsync(parent_fd)
+        except Exception:
+            cleanup_ok = False
+        if not cleanup_ok or not isinstance(error, MaterializationError):
+            raise MaterializationError("cleanup-failed") from None
+        raise MaterializationError("cleanup-failed") from None
+
+
+def _publish_compiled(
+    compiled: CompiledMaterialization,
+    *,
+    policy: MaterializerPolicy,
+    parent_fd: int,
+    parent_stat: os.stat_result,
+    failure_injector: FailureInjector,
+) -> MaterializationResult:
+    if _rename_exclusive is None:
+        raise MaterializationError("rename-unavailable")
+    _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
+    staging_name, staging_stat, staging_fd = _mkdtemp_at(
+        parent_fd,
+        prefix=f".{policy.target.name}.staging-",
+        expected_device=parent_stat.st_dev,
+    )
+    staging_identity = (staging_stat.st_dev, staging_stat.st_ino)
+    published = False
+    try:
+        for name in _OUTPUT_ORDER:
+            failure_injector.hit(f"write:{name}")
+            descriptor = os.open(
+                name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | os.O_CLOEXEC
+                | getattr(os, "O_NOFOLLOW", 0),
+                0o600,
+                dir_fd=staging_fd,
+            )
+            try:
+                _write_all(descriptor, compiled.files[name])
+                item = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(item.st_mode)
+                    or item.st_uid != os.geteuid()
+                    or stat.S_IMODE(item.st_mode) != 0o600
+                    or item.st_nlink != 1
+                ):
+                    raise MaterializationError("staging-security")
+                failure_injector.hit(f"fsync-file:{name}")
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        failure_injector.hit("fsync-staging-dir")
+        os.fsync(staging_fd)
+        _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
+        failure_injector.hit("rename")
+        _rename_exclusive(parent_fd, staging_name, parent_fd, policy.target.name)
+        published = True
+        failure_injector.hit("fsync-parent")
+        os.fsync(parent_fd)
+        _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
+        failure_injector.hit("postverify")
+        target_inode, digests = _verify_published(
+            parent_fd, policy.target.name, staging_identity, compiled.files
+        )
+        failure_injector.hit("isolation-canary")
+        attestation = _run_final_isolation_canary(
+            policy,
+            pending_receipt_sha256=digests["materialization-receipt.json"],
+            evaluator_python_runtime_sha256=json.loads(
+                compiled.files["candidate-commitments.json"]
+            )["evaluator_python_runtime_sha256"],
+            expected_runtime_capsule_sha256=json.loads(
+                compiled.files["candidate-commitments.json"]
+            )["evaluator_runtime_capsule_sha256"],
+        )
+        attestation_sha256 = _write_final_attestation(
+            parent_fd,
+            policy.target.name,
+            staging_identity,
+            attestation,
+            failure_injector,
+        )
+        final_digests = dict(digests)
+        final_digests[_ATTESTATION_NAME] = attestation_sha256
+        _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
+        return MaterializationResult(
+            policy.target.name,
+            target_inode,
+            MappingProxyType(final_digests),
+        )
+    except Exception as error:
+        if published:
+            try:
+                _quarantine_published(
+                    parent_fd=parent_fd,
+                    target_name=policy.target.name,
+                    expected_identity=staging_identity,
+                )
+            except Exception as cleanup_error:
+                raise MaterializationError("cleanup-failed") from cleanup_error
+        else:
+            try:
+                _remove_owned_tree_at(parent_fd, staging_name, staging_identity)
+                os.fsync(parent_fd)
+            except Exception as cleanup_error:
+                raise MaterializationError("cleanup-failed") from cleanup_error
+        if isinstance(error, MaterializationError):
+            raise
+        raise MaterializationError("publish-failed") from error
+    finally:
+        os.close(staging_fd)
+
+
+def materialize_with_policy(
+    *,
+    source_fd: int,
+    expected_source_sha256: str,
+    expected_head: str,
+    expected_predecessor_r2_tree_sha256: str,
+    policy: MaterializerPolicy,
+    failure_injector: FailureInjector | None = None,
+) -> MaterializationResult:
+    """Validate, compile and exclusively publish one sealed evaluator bundle."""
+    injector = failure_injector or FailureInjector()
+    start_bindings = _capture_repo_bindings(expected_head, policy)
+    legacy_before = fingerprint_tree(policy.legacy_root)
+    immutable_before = _capture_immutable_roots(policy)
+    if legacy_before.inode != policy.expected_legacy_inode:
+        raise MaterializationError("legacy-inode")
+    if (
+        not _valid_digest(policy.expected_legacy_tree_sha256)
+        or legacy_before.sha256 != policy.expected_legacy_tree_sha256
+    ):
+        raise MaterializationError("legacy-tree")
+    predecessor = next(
+        (item for item in policy.immutable_roots if item.label == "validated-r2"),
+        None,
+    )
+    if (
+        predecessor is None
+        or not _valid_digest(expected_predecessor_r2_tree_sha256)
+        or predecessor.tree_sha256 != expected_predecessor_r2_tree_sha256
+    ):
+        raise MaterializationError("predecessor-r2-tree")
+    source = _read_source_record(
+        source_fd=source_fd,
+        expected_sha256=expected_source_sha256,
+    )
+    source_root_before = _assert_trusted_source(source, policy)
+    parent_fd, parent_stat = _open_trusted_parent(policy)
+    try:
+        compiled = compile_source_bundle(
+            source.canonical_bytes,
+            expected_source_sha256=expected_source_sha256,
+            expected_head=expected_head,
+            policy=policy,
+        )
+        if compiled.bindings != start_bindings:
+            raise MaterializationError("source-tree")
+        fixture_root = policy.repo_root / _BENCHMARK_RELATIVE / "fixtures"
+        _validate_scratch(
+            compiled,
+            scratch_parent=None,
+            fixture_root=fixture_root,
+        )
+        _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
+        _assert_repo_unchanged(compiled.bindings, policy)
+        if fingerprint_tree(policy.legacy_root) != legacy_before:
+            raise MaterializationError("legacy-changed")
+        _assert_immutable_roots(policy, immutable_before)
+        if fingerprint_tree(policy.source_root) != source_root_before:
+            raise MaterializationError("source-raced")
+        result = _publish_compiled(
+            compiled,
+            policy=policy,
+            parent_fd=parent_fd,
+            parent_stat=parent_stat,
+            failure_injector=injector,
+        )
+        try:
+            _assert_parent_binding(parent_fd, policy.target.parent, parent_stat)
+            _assert_repo_unchanged(compiled.bindings, policy)
+            if fingerprint_tree(policy.legacy_root) != legacy_before:
+                raise MaterializationError("legacy-changed")
+            _assert_immutable_roots(policy, immutable_before)
+            if fingerprint_tree(policy.source_root) != source_root_before:
+                raise MaterializationError("source-raced")
+        except MaterializationError as error:
+            try:
+                _quarantine_published(
+                    parent_fd=parent_fd,
+                    target_name=policy.target.name,
+                    expected_identity=(parent_stat.st_dev, result.target_inode),
+                )
+            except Exception as cleanup_error:
+                raise MaterializationError("cleanup-failed") from cleanup_error
+            raise error
+        return result
+    finally:
+        os.close(parent_fd)
+
+
+def materialize_sealed_bundle(
+    *,
+    source_fd: int,
+    expected_source_sha256: str,
+    expected_head: str,
+    lock_id: str,
+    expected_predecessor_r2_tree_sha256: str,
+) -> MaterializationResult:
+    """Production entry point with a literal, non-overridable final target."""
+    if lock_id != FINAL_LOCK_ID or FINAL_TARGET.name != FINAL_LOCK_ID:
+        raise MaterializationError("target-lock")
+    return materialize_with_policy(
+        source_fd=source_fd,
+        expected_source_sha256=expected_source_sha256,
+        expected_head=expected_head,
+        expected_predecessor_r2_tree_sha256=expected_predecessor_r2_tree_sha256,
+        policy=default_policy(),
+    )

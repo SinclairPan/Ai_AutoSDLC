@@ -1,0 +1,1 @@
+{"immutable_roots":["AGENTS.md",".ai-sdlc/benchmark",".ai-sdlc/local",".ai-sdlc/memory",".ai-sdlc/profiles",".ai-sdlc/project",".ai-sdlc/state/checkpoint.yml",".ai-sdlc/state/checkpoint.yml.bak"],"schema":"ai-sdlc-v2-benefit-method-surfaces/v1","writable_leaves":[".ai-sdlc/state/loop/**",".ai-sdlc/work-items/*/loop/**",".ai-sdlc/work-items/*/outputs/**"]}

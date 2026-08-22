@@ -1,0 +1,34 @@
+{
+  "schema": "ai-sdlc-v2-benefit-input-contract/v1",
+  "fixture_id": "multi-tenant-security-review",
+  "target_stage": "implementation",
+  "canonical_pre_state": ["requirement", "design-contract"],
+  "semantics": {
+    "business_goal": "修复多租户发布审批组件，使权限、状态和审计边界满足冻结合同。",
+    "requirement": {
+      "state": "frozen",
+      "rules": [
+        "审批人只能处理自己租户内的请求，任何角色都不得绕过租户隔离",
+        "请求发起人不得审批自己的请求",
+        "已过期、非 pending 或未知动作必须拒绝",
+        "允许决定必须产生包含 actor、decision、reason、timestamp 的审计事件",
+        "未知角色默认拒绝，approve 仅允许 approver 或 admin"
+      ]
+    },
+    "design_contract": {
+      "state": "closed",
+      "invariants": [
+        "deny_by_default",
+        "tenant_before_privilege",
+        "separation_of_duties",
+        "validate_before_mutation",
+        "mandatory_audit"
+      ]
+    },
+    "deliverable": {
+      "source": "access_control.py",
+      "visible_command": "python -m unittest -q test_access_control.py",
+      "boundary": "visible tests cover only two happy-path cases"
+    }
+  }
+}

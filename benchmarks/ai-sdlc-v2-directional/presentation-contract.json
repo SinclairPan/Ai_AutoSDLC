@@ -1,0 +1,17 @@
+{
+  "schema": "ai-sdlc-v2-directional-presentation/v1",
+  "homepage_tracks": ["P", "S", "A11"],
+  "research_controls": ["A00", "A10"],
+  "show_raw_paired_values": true,
+  "show_losses": true,
+  "quality_cost_frontier": true,
+  "winner_cherry_pick": false,
+  "required_labels": [
+    "directional engineering observation",
+    "n=3 per arm",
+    "single run per task",
+    "not statistically significant",
+    "not production SLA",
+    "no generalization"
+  ]
+}

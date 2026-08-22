@@ -2,12 +2,176 @@
 
 from __future__ import annotations
 
+import json
+import subprocess
+from hashlib import sha256
+from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
 from rich.table import Table
 
 import ai_sdlc.cli.commands as commands_module
 from ai_sdlc.models.state import Checkpoint, CompletedStage, FeatureInfo
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+
+
+@pytest.mark.parametrize(
+    ("command", "specific"),
+    [
+        ("start-run", ["--run-id", "P:requirement-contract-ambiguity"]),
+        (
+            "transition-phase",
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--next-phase",
+                "framework_init",
+            ],
+        ),
+        (
+            "reserve-attempt",
+            ["--run-id", "P:requirement-contract-ambiguity", "--kind", "writer"],
+        ),
+        ("complete-attempt", ["--attempt-id", "attempt-001", "--status", "failed"]),
+        (
+            "start-service-transaction",
+            [
+                "--attempt-id",
+                "attempt-001",
+                "--event-type",
+                "intent_service_event",
+                "--transaction-id",
+                "tx-001",
+            ],
+        ),
+        (
+            "complete-service-transaction",
+            [
+                "--attempt-id",
+                "attempt-001",
+                "--event-type",
+                "intent_service_event",
+                "--transaction-id",
+                "tx-001",
+                "--evidence",
+                "service-evidence.json",
+            ],
+        ),
+        (
+            "seal-run-evidence",
+            [
+                "--run-id",
+                "P:requirement-contract-ambiguity",
+                "--workspace-root",
+                "workspace",
+            ],
+        ),
+    ],
+)
+def test_benefit_benchmark_cli_rejects_v1_before_every_write(
+    tmp_path: Path, command: str, specific: list[str]
+) -> None:
+    source_protocol = REPO_ROOT / "benchmarks" / "ai-sdlc-v2-benefits" / "protocol.json"
+    raw = json.loads(source_protocol.read_text(encoding="utf-8"))
+    raw["execution_lock"]["fixture_tree_sha256"] = "f" * 64
+    raw["execution_lock"]["fixture_commitment"] = "f" * 64
+    contract = {
+        "schema": "ai-sdlc-v2-benefit-evidence-contract/v1",
+        "runs": [
+            {
+                "run_id": row["run_id"],
+                "artifact_slots": [
+                    {
+                        "path": "benchmark-task/result.txt",
+                        "category": "delivery",
+                        "required": True,
+                        "applicable": True,
+                    }
+                ],
+                "changed_files_scope": {
+                    "baseline_root": "baseline",
+                    "candidate_root": "benchmark-task",
+                    "include_paths": ["result.txt"],
+                },
+                "allowed_automated_event_types": [],
+            }
+            for row in raw["run_matrix"]
+        ],
+    }
+    contract_path = tmp_path / "evidence-contract.json"
+    contract_path.write_text(json.dumps(contract), encoding="utf-8")
+    contract_digest = sha256(contract_path.read_bytes()).hexdigest()
+    raw["execution_lock"]["evidence_contract_sha256"] = contract_digest
+    raw["execution_lock"]["evidence_contract_commitment"] = contract_digest
+    protocol = tmp_path / "protocol.json"
+    protocol.write_text(json.dumps(raw), encoding="utf-8")
+    authorization = tmp_path / "synthetic-execution-authorization.json"
+    authorization.write_text(
+        json.dumps(
+            {
+                "schema": "ai-sdlc-v2-benefit-execution-authorization/v1",
+                "protocol_sha256": sha256(protocol.read_bytes()).hexdigest(),
+                "execution_identity": raw["execution_lock"],
+                "attempt_budget": raw["attempt_budget"],
+                "valid_from": "2020-01-01T00:00:00Z",
+                "expires_at": "2999-01-01T00:00:00Z",
+                "scope": {
+                    "mode": "single-frozen-matrix",
+                    "run_ids": [row["run_id"] for row in raw["run_matrix"]],
+                    "operations": [
+                        "start_run",
+                        "transition_run_phase",
+                        "reserve_provider_attempt",
+                        "record_provider_completion",
+                        "start_service_transaction",
+                        "record_service_transaction",
+                        "seal_run_evidence",
+                    ],
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
+        encoding="utf-8",
+    )
+    authorization.chmod(0o600)
+    ledger = tmp_path / "ledger.json"
+    sentinel = b'{"sentinel":"byte-identical"}'
+    ledger.write_bytes(sentinel)
+    (tmp_path / "service-evidence.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "workspace").mkdir()
+    specific = [
+        str(tmp_path / item) if item in {"service-evidence.json", "workspace"} else item
+        for item in specific
+    ]
+    script = REPO_ROOT / "scripts" / "ai_sdlc_v2_benefit_benchmark.py"
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "python",
+            str(script),
+            command,
+            "--ledger",
+            str(ledger),
+            "--protocol",
+            str(protocol),
+            "--contract",
+            str(contract_path),
+            "--authorization",
+            str(authorization),
+            *specific,
+        ],
+        cwd=REPO_ROOT,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 2
+    assert "authorization" in result.stdout.lower()
+    assert ledger.read_bytes() == sentinel
 
 
 def test_add_truth_ledger_rows_deduplicates_release_targets() -> None:
@@ -205,7 +369,9 @@ def test_add_active_work_item_status_rows_deduplicates_active_files(tmp_path) ->
     original_load_runtime_state = commands_module.load_runtime_state
     original_load_working_set = commands_module.load_working_set
     original_load_latest_summary = commands_module.load_latest_summary
-    original_load_latest_reviewer_decision = commands_module.load_latest_reviewer_decision
+    original_load_latest_reviewer_decision = (
+        commands_module.load_latest_reviewer_decision
+    )
     original_load_resume_point = commands_module.load_resume_point
     original_load_execution_path = commands_module.load_execution_path
     original_load_parallel_coordination_artifact = (
@@ -226,8 +392,8 @@ def test_add_active_work_item_status_rows_deduplicates_active_files(tmp_path) ->
         commands_module.load_latest_reviewer_decision = lambda *_args, **_kwargs: None
         commands_module.load_resume_point = lambda *_args, **_kwargs: None
         commands_module.load_execution_path = lambda *_args, **_kwargs: None
-        commands_module.load_parallel_coordination_artifact = (
-            lambda *_args, **_kwargs: None
+        commands_module.load_parallel_coordination_artifact = lambda *_args, **_kwargs: (
+            None
         )
 
         commands_module._add_active_work_item_status_rows(

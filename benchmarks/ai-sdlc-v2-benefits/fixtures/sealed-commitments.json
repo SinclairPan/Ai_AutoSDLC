@@ -1,0 +1,24 @@
+{
+  "schema": "ai-sdlc-v2-benefit-sealed-commitments/v3",
+  "lock_id": "v2-benefits-20260819-r2",
+  "sealed_manifest_sha256": "5c93f75c974bde703bae5e2eb333da5e2cdf5caf7ba0007d05430311729e330c",
+  "fixture_manifest_sha256": "8d20f1703cd3c11abfcfc54953121244465e9d5c1000ae5bc28ca059c52f2e0e",
+  "fixture_tree_sha256": "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a",
+  "fixture_commitment": "3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a",
+  "evidence_contract_template_sha256": "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c",
+  "evidence_contract_commitment": "7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c",
+  "fixture_payloads": [
+    {"fixture_id":"requirement-contract-ambiguity","sha256":"2c77ab6cb200f12994ac8b2172d8cadd288020317939a97782ede22ead1a4a6a"},
+    {"fixture_id":"frontend-recovery-delivery","sha256":"8b96123a2bee330446d42c0cb4d4533e3b651ce4e6c633c5d8279c6e26dcb65b"},
+    {"fixture_id":"multi-tenant-security-review","sha256":"67f541c9ff26d3b892c8cf18eedec03906650acca6688230493bd3b6d209ee2b"}
+  ],
+  "intent_map_sha256": "78134c1a541c3c9e73806fc5b5637b9c74e87642d2440ecb8957a84c14943c4f",
+  "candidate_commitments_sha256": "618c0240ce358622191daa1d370b3224e54631f7ec2f701682decc84d8f39ed4",
+  "materialization_receipt_sha256": "962c0117ff162bf10d72412ef7b8025c1bcbd345d60b3441cbf747d7632246a5",
+  "isolation_attestation_sha256": "42e15551b6a3c01f22558a1f55d8c099ee7bd5b37a82beba217eb9dc9dd9abb1",
+  "evaluator_python_runtime_sha256": "4e52fbf6ccc48a2c2abf01961f2000570fa953d161464be36f24ae521d7487a2",
+  "evaluator_runtime_capsule_sha256": "ed26993aef508d2361d9c772b91fa2a9a691262e363d6328168b957eef07caf5",
+  "source_bundle_sha256": "31029fc23272d706454d9069cc05939562fbe40366d117a8c7511dd9f345261c",
+  "source_root_tree_sha256": "56387824d09679eaf2bca31e7afa62512cc3678dcb14d4add25eb4494afd9596",
+  "publication_state": "materialized-validated"
+}

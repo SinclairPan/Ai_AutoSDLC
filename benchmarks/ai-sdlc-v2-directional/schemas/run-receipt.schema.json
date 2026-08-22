@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "ai-sdlc-v2-directional-run-receipt/v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "writer", "run_id", "status", "metric", "matrix_action", "winner"],
+  "properties": {
+    "schema": {"const": "ai-sdlc-v2-directional-run-receipt/v1"},
+    "writer": {"const": "directional-runner"},
+    "run_id": {"type": "string", "pattern": "^run-[a-f0-9]{24}$"},
+    "status": {"enum": ["fake-complete", "cell-terminal-failure", "matrix-abort-incomplete", "matrix-incomplete"]},
+    "metric": {"anyOf": [{"$ref": "metric.schema.json"}, {"type": "null"}]},
+    "matrix_action": {"enum": ["continue", "abort-incomplete"]},
+    "winner": {"type": "null"}
+  }
+}

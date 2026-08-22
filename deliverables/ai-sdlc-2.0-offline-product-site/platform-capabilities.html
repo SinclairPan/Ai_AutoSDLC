@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Platform Capabilities | AI-SDLC 2.0</title>
+    <link rel="stylesheet" href="assets/css/tokens.css">
+    <link rel="stylesheet" href="assets/css/site.css">
+    <link rel="stylesheet" href="assets/css/pages.css">
+    <script src="assets/js/site.js" defer></script>
+  </head>
+  <body data-page="platform">
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="index.html">AI-SDLC 2.0</a>
+        <button
+          type="button"
+          data-nav-toggle
+          aria-expanded="false"
+          aria-controls="site-nav"
+        >
+          菜单
+        </button>
+        <nav id="site-nav" class="site-nav" data-nav-menu aria-label="主导航">
+          <a href="index.html">AI-SDLC 2.0</a>
+          <a href="loop-engineering.html">Loop Engineering</a>
+          <a href="dynamic-expert-review.html">Dynamic Expert Review</a>
+          <a href="platform-capabilities.html" aria-current="page">Platform Capabilities</a>
+          <a href="downloads-docs.html">Downloads &amp; Docs</a>
+        </nav>
+        <a target="_blank" rel="noopener noreferrer" class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">
+          GitHub <span class="network-label">需要联网</span>
+        </a>
+      </div>
+    </header>
+    <main id="main" class="site-shell page-main platform-main">
+      <section class="page-intro platform-hero" aria-labelledby="page-title">
+        <p class="page-eyebrow">Platform Capabilities</p>
+        <h1 id="page-title">把零散 Skills，变成留在项目里的工程系统</h1>
+        <p class="platform-hero-summary">
+          AI-SDLC 不与 Coding Agent 争夺生成能力。它把团队需要长期保留的规则、状态、前端约束、验证证据和恢复路径放到项目侧。
+        </p>
+      </section>
+
+      <section
+        class="benefit-benchmark benefit-benchmark-overall"
+        data-benefit-dataset="overall"
+        aria-labelledby="overall-benefit-title"
+      >
+        <div class="benefit-heading">
+          <div>
+            <p class="page-eyebrow">Current three-mode benchmark</p>
+            <h2 id="overall-benefit-title">同一最新模型，比较三种工程化开发方式</h2>
+          </div>
+          <p class="benefit-model">gpt-5.6-sol / high · Superpowers 6.3.0</p>
+        </div>
+        <p class="benefit-summary">
+          AI-SDLC 组使用当前五阶段 Loop、五阶段动态专家、前端治理、浏览器证据、handoff 与恢复门禁；
+          Superpowers 组采用单 Agent repo-skill 口径。
+        </p>
+        <div class="overall-headlines" aria-label="三模式五项主指标">
+          <article data-overall-headline="first-pass-acceptance">
+            <p>验收一次通过率</p><strong>52 / 69 / 90%</strong><span>裸 LLM / Superpowers / AI-SDLC</span>
+          </article>
+          <article data-overall-headline="requirement-drift">
+            <p>需求实现偏移率</p><strong>23 / 14 / 4%</strong><span>越低越好</span>
+          </article>
+          <article data-overall-headline="frontend-compliance">
+            <p>前端规范一次符合率</p><strong>43 / 63 / 94%</strong><span>AI-SDLC +51 pts</span>
+          </article>
+          <article data-overall-headline="human-takeover">
+            <p>人工接管率</p><strong>29 / 18 / 7%</strong><span>越低越好</span>
+          </article>
+          <article data-overall-headline="delivery-cost">
+            <p>总交付成本指数</p><strong>100 / 82 / 61</strong><span>越低越好</span>
+          </article>
+        </div>
+        <div class="overall-table-wrap">
+          <table class="overall-metric-table">
+            <thead><tr><th scope="col">评价指标</th><th scope="col">裸 LLM</th><th scope="col">LLM + Superpowers</th><th scope="col">LLM + AI-SDLC</th></tr></thead>
+            <tbody>
+              <tr data-overall-metric-row="requirement_understanding_accuracy" data-native-value="76" data-superpowers-value="84" data-ai-sdlc-value="95"><th scope="row">需求理解准确率</th><td>76%</td><td>84%</td><td>95%</td></tr>
+              <tr data-overall-metric-row="requirement_design_completeness" data-native-value="64" data-superpowers-value="80" data-ai-sdlc-value="95"><th scope="row">需求设计完整度</th><td>64%</td><td>80%</td><td>95%</td></tr>
+              <tr data-overall-metric-row="development_design_coverage" data-native-value="60" data-superpowers-value="78" data-ai-sdlc-value="94"><th scope="row">开发设计覆盖率</th><td>60%</td><td>78%</td><td>94%</td></tr>
+              <tr data-overall-metric-row="coding_first_build_pass_rate" data-native-value="61" data-superpowers-value="72" data-ai-sdlc-value="86"><th scope="row">Coding 首轮构建通过率</th><td>61%</td><td>72%</td><td>86%</td></tr>
+              <tr data-overall-metric-row="unit_test_completion_rate" data-native-value="49" data-superpowers-value="69" data-ai-sdlc-value="91"><th scope="row">单元测试补齐率</th><td>49%</td><td>69%</td><td>91%</td></tr>
+              <tr data-overall-metric-row="frontend_first_pass_compliance" data-native-value="43" data-superpowers-value="63" data-ai-sdlc-value="94"><th scope="row">前端规范一次符合率</th><td>43%</td><td>63%</td><td>94%</td></tr>
+              <tr data-overall-metric-row="frontend_visual_acceptance" data-native-value="40" data-superpowers-value="60" data-ai-sdlc-value="91"><th scope="row">前端视觉验收一次通过率</th><td>40%</td><td>60%</td><td>91%</td></tr>
+              <tr data-overall-metric-row="requirement_drift_rate" data-native-value="23" data-superpowers-value="14" data-ai-sdlc-value="4"><th scope="row">需求实现偏移率 ↓</th><td>23%</td><td>14%</td><td>4%</td></tr>
+              <tr data-overall-metric-row="rework_rate" data-native-value="35" data-superpowers-value="23" data-ai-sdlc-value="9"><th scope="row">返工率 ↓</th><td>35%</td><td>23%</td><td>9%</td></tr>
+              <tr data-overall-metric-row="interruption_recovery_failure_rate" data-native-value="25" data-superpowers-value="15" data-ai-sdlc-value="3"><th scope="row">中断恢复失败率 ↓</th><td>25%</td><td>15%</td><td>3%</td></tr>
+              <tr data-overall-metric-row="human_takeover_rate" data-native-value="29" data-superpowers-value="18" data-ai-sdlc-value="7"><th scope="row">人工接管率 ↓</th><td>29%</td><td>18%</td><td>7%</td></tr>
+              <tr data-overall-metric-row="first_pass_acceptance_rate" data-native-value="52" data-superpowers-value="69" data-ai-sdlc-value="90"><th scope="row">验收一次通过率</th><td>52%</td><td>69%</td><td>90%</td></tr>
+              <tr data-overall-metric-row="audit_evidence_completeness" data-native-value="31" data-superpowers-value="59" data-ai-sdlc-value="97"><th scope="row">证据可审计完整度</th><td>31%</td><td>59%</td><td>97%</td></tr>
+              <tr data-overall-metric-row="delivery_cost_index" data-native-value="100" data-superpowers-value="82" data-ai-sdlc-value="61"><th scope="row">总交付成本指数 ↓</th><td>100</td><td>82</td><td>61</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="benefit-disclosure">
+          <strong>证据锚定合成基准：</strong>沿用历史十四项评价体系，但所有当前数值均重新生成；
+          场景为 advantage-aligned engineering scenarios，不是随机总体、统计显著实验或客户生产统计。
+          <a href="assets/data/overall-comparison-data.json">查看完整数据</a>
+        </p>
+      </section>
+
+      <section
+        class="platform-workspace"
+        data-tabs="platform-capabilities"
+        aria-labelledby="platform-workspace-title"
+      >
+        <div class="platform-workspace-heading">
+          <div>
+            <p class="page-eyebrow">Capability explorer</p>
+            <h2 id="platform-workspace-title">从 AI-Coding 断点，检查项目侧控制机制</h2>
+          </div>
+          <p>
+            每个视角都从一个现实问题出发，只展开对应机制、可检查结果、角色可判断动作和不能外推的边界。
+          </p>
+        </div>
+
+        <div class="platform-explorer">
+          <div class="platform-tablist" role="tablist" aria-label="平台能力">
+            <button
+              id="tool-governance"
+              type="button"
+              role="tab"
+              data-tab="tool-governance"
+              aria-controls="tool-governance-panel"
+              aria-selected="true"
+            >
+              跨 AI 工具治理
+            </button>
+            <button
+              id="continuity"
+              type="button"
+              role="tab"
+              data-tab="continuity"
+              aria-controls="continuity-panel"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              断点续作
+            </button>
+            <button
+              id="frontend-delivery"
+              type="button"
+              role="tab"
+              data-tab="frontend-delivery"
+              aria-controls="frontend-delivery-panel"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              前端工程与验收
+            </button>
+            <button
+              id="engineering-controls"
+              type="button"
+              role="tab"
+              data-tab="engineering-controls"
+              aria-controls="engineering-controls-panel"
+              aria-selected="false"
+              tabindex="-1"
+            >
+              工程控制边界
+            </button>
+          </div>
+
+          <div class="platform-panels">
+            <section
+              id="tool-governance-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="tool-governance"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">01</p>
+                <div>
+                  <p class="platform-panel-label">跨 AI 工具治理</p>
+                  <h3>执行入口可以替换，项目事实不跟聊天窗口走</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                换 Agent 后，项目规则是否要重新解释，既有状态与工件是否只能留在上一个聊天窗口？
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Canonical adapter map</p>
+                <div class="adapter-matrix" role="table" aria-label="AI 工具与项目侧规则入口">
+                  <div role="row" data-adapter="codex">
+                    <span role="cell" data-adapter-tool>Codex</span>
+                    <code role="cell" data-adapter-path>AGENTS.md</code>
+                  </div>
+                  <div role="row" data-adapter="claude-code">
+                    <span role="cell" data-adapter-tool>Claude Code</span>
+                    <code role="cell" data-adapter-path>.claude/CLAUDE.md</code>
+                  </div>
+                  <div role="row" data-adapter="cursor">
+                    <span role="cell" data-adapter-tool>Cursor</span>
+                    <code role="cell" data-adapter-path>.cursor/rules/ai-sdlc.mdc</code>
+                  </div>
+                  <div role="row" data-adapter="copilot">
+                    <span role="cell" data-adapter-tool>VS Code / Copilot</span>
+                    <code role="cell" data-adapter-path>.github/copilot-instructions.md</code>
+                  </div>
+                </div>
+                <p class="platform-mechanism-note">
+                  Adapter 对齐各工具的 canonical 入口；统一治理概念和项目工件继续留在仓库中。
+                </p>
+              </div>
+              <div class="platform-results" data-capability-results>
+                <h4>可检查结果</h4>
+                <ul>
+                  <li><strong>canonical adapter files</strong><span>每个专用入口都有明确的项目侧规则载体。</span></li>
+                  <li><strong>WorkItem / Loop state</strong><span>工作身份、开放状态与 Close 结果由仓库工件承载。</span></li>
+                  <li><strong>evidence artifacts</strong><span>验证和复核 evidence 不依赖某一个 Agent 的对话摘要。</span></li>
+                </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>先读 canonical 规则、WorkItem 与 Loop 事实，再决定续作范围。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>切换执行工具时仍按同一项目约束修改当前候选。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>按项目身份定位当前 evidence，不用聊天摘要替代验证。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>只接受由项目工件支持的 closed 状态，不接受工具自报完成。</dd></div>
+                </dl>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                这是规则入口与项目事实治理，不是实时多 Agent 编排；不同工具不会因此共享隐式会话，也不保证拥有相同能力。
+              </p>
+            </section>
+
+            <section
+              id="continuity-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="continuity"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">02</p>
+                <div>
+                  <p class="platform-panel-label">断点续作</p>
+                  <h3>从当前分支和工件重建下一步</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                长任务中断、会话压缩或换人后，团队如何确认当前分支、开放门禁与下一步仍然一致？
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Project fact recovery</p>
+                <ol class="continuity-flow">
+                  <li><code data-continuity-step="checkpoint">checkpoint</code><span>记录阶段、分支、开放门禁与下一步。</span></li>
+                  <li><code data-continuity-step="status">status</code><span>读取当前本地事实。</span></li>
+                  <li><code data-continuity-step="handoff">handoff</code><span>生成跨会话、跨人员可读摘要。</span></li>
+                  <li><code data-continuity-step="recover">recover</code><span>比较 checkpoint、分支和项目工件。</span></li>
+                  <li><code data-continuity-step="reconcile">reconcile</code><span>只在明确要求且条件安全时重建状态。</span></li>
+                </ol>
+              </div>
+              <div class="platform-results" data-capability-results>
+                <h4>可检查结果</h4>
+                <ul>
+                  <li><strong>checkpoint</strong><span>阶段、分支、门禁与下一步的项目记录。</span></li>
+                  <li><strong>human-readable handoff</strong><span>简洁交接摘要，重要事实仍回到工件复核。</span></li>
+                  <li><strong>status / recover output</strong><span>指出一致项、漂移项与可执行恢复路径。</span></li>
+                  <li><strong>explicit reconcile</strong><span>过期状态不会静默覆盖更新后的项目事实。</span></li>
+                </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>对照 checkpoint、分支、开放门禁与下一步完成接手。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>按 recover 路径续作；发现漂移时停止并显式 reconcile。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>恢复后只复核受影响的当前证据，不沿用过期结论。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>恢复链仍未关闭时阻止把中断任务误报为完成。</dd></div>
+                </dl>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                恢复的是项目事实，不是模型内部思维、进程栈或事务回滚；工件较新或分支不一致时，当前 run 会先停止。
+              </p>
+            </section>
+
+            <section
+              id="frontend-delivery-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="frontend-delivery"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">03</p>
+                <div>
+                  <p class="platform-panel-label">前端工程与验收</p>
+                  <h3>把方案确认、主题约束与浏览器结果连成一条证据链</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                组件、主题、页面实现和浏览器验收分散时，如何证明“能编译”的页面也是当前候选上真实可用的页面？
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Governed frontend path</p>
+                <div class="frontend-flow" aria-label="前端治理链">
+                  <span>frontend requirement</span>
+                  <span>solution confirmation · 人工确认</span>
+                  <span>Provider / Style Pack / Theme contract</span>
+                </div>
+                <div class="frontend-routes" aria-label="前端方案路径">
+                  <div data-frontend-route="default">
+                    <strong data-route-title>默认推荐</strong>
+                    <code data-route-stack>vue3 / public-primevue / modern-saas</code>
+                    <span>PrimeVue + @primeuix/themes + primeicons</span>
+                    <p data-route-boundary>新前端需求的首个推荐；仍需用户显式确认。</p>
+                  </div>
+                  <div data-frontend-route="advanced">
+                    <strong data-route-title>高级可选 Style Packs</strong>
+                    <code data-route-stack>vue3 / public-primevue</code>
+                    <span class="frontend-style-packs" aria-label="高级可选样式包">
+                      <span data-style-pack="enterprise-default">enterprise-default</span>
+                      <span data-style-pack="data-console">data-console</span>
+                      <span data-style-pack="high-clarity">high-clarity</span>
+                      <span data-style-pack="macos-glass">macos-glass</span>
+                    </span>
+                    <p data-route-boundary>仍属于 Vue3 / public-primevue 候选，不是 Vue2 compatibility path。</p>
+                  </div>
+                  <div data-frontend-route="vue2-compatibility">
+                    <strong data-route-title>历史 / 企业兼容</strong>
+                    <code data-route-stack>vue2 / enterprise-vue2</code>
+                    <span>Provider profile 定义映射与安装策略</span>
+                    <p data-route-boundary>只有明确历史 Vue2 或私有企业约束时选择；组件、网络与授权由企业环境提供。</p>
+                  </div>
+                  <div data-frontend-route="custom-evidence">
+                    <strong data-route-title>自定义 / 无组件库</strong>
+                    <code data-route-stack>custom / no component library</code>
+                    <span>项目提供可加载入口与兼容工件</span>
+                    <p data-route-boundary>兼容执行与证据路径，不是第三个内置 Provider。</p>
+                  </div>
+                </div>
+                <div
+                  class="frontend-flow frontend-flow-output"
+                  data-browser-evidence-chain
+                  aria-label="浏览器证据链"
+                >
+                  <span data-browser-step="browser-entry">真实 browser entry</span>
+                  <span data-browser-step="browser-gate">Browser Gate</span>
+                  <span data-browser-step="frontend-evidence">Frontend Evidence</span>
+                </div>
+                <div class="frontend-responsibilities" data-frontend-responsibilities>
+                  <p data-frontend-owner="project-e2e">项目 E2E Suite 执行项目自己的测试策略与覆盖。</p>
+                  <p data-frontend-owner="frontend-evidence">Frontend Evidence 消费当前候选的 Browser Gate 工件，检查身份、时效、结构与 Loop 状态。</p>
+                </div>
+              </div>
+              <div class="platform-results" data-capability-results>
+                <h4>可检查结果</h4>
+                <ul>
+                  <li><strong>Vue3 / PrimeVue 主题合同</strong><span><code>definePreset(Aura) + #1770e6 + darkModeSelector=false</code>，覆盖 <code>primary / surface / highlight</code>，并以 <code>theme.ts</code> 为唯一入口。</span></li>
+                  <li><strong>页面目录约束</strong><span>新项目默认 <code>pages/</code>；历史项目可沿用 <code>views/</code>，二者不同时新建。</span></li>
+                  <li><strong>真实浏览器工件</strong><span>Browser Gate 绑定 origin、交互、console / page error、截图与基础可访问性结果。</span></li>
+                  <li><strong>项目测试策略</strong><span>项目自己的 E2E Suite 负责覆盖策略；Playwright 或其他 Runner 可产出兼容证据。</span></li>
+                  <li><strong>自定义或无组件库路径</strong><span>提供可加载 browser entry 和兼容 Browser Gate 工件后，由 Frontend Evidence 消费。</span></li>
+                </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>实现前确认 default、advanced、Vue2 compatibility 或 custom 路径。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>按已确认的 Provider、Style Pack、Theme 与目录合同实现。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>只消费当前候选绑定的 Browser Gate 与项目 E2E 证据。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>Frontend Evidence 未关闭时阻止误报前端验收完成。</dd></div>
+                </dl>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                <code>enterprise-vue2</code> 只提供企业兼容 profile，组件、网络和授权由企业环境提供；基础可访问性检查不构成 WCAG 认证，自定义前端也不承诺无需配置即可运行。
+              </p>
+            </section>
+
+            <section
+              id="engineering-controls-panel"
+              class="platform-panel"
+              role="tabpanel"
+              data-tab-panel
+              aria-labelledby="engineering-controls"
+            >
+              <div class="platform-panel-heading">
+                <p class="platform-panel-index">04</p>
+                <div>
+                  <p class="platform-panel-label">工程控制边界</p>
+                  <h3>必须证明的事情严格，需要判断的事情保留空间</h3>
+                </div>
+              </div>
+              <p class="platform-problem" data-capability-problem>
+                <strong>现实问题</strong>
+                如果所有规则都同样严格，治理会僵化；如果都交给工程判断，身份、证据和安全缺口又可能被改写成完成。
+              </p>
+              <div class="platform-mechanism" data-capability-mechanism>
+                <p class="platform-mechanism-label">Two-level control plane</p>
+                <div class="control-lanes">
+                  <div data-control-lane="strict">
+                    <span>Strict · fail-closed</span>
+                    <ul class="control-items" aria-label="严格控制项">
+                      <li data-control-item="identity">identity</li>
+                      <li data-control-item="evidence">evidence</li>
+                      <li data-control-item="provenance">provenance</li>
+                      <li data-control-item="security">security</li>
+                    </ul>
+                    <p>身份漂移、缺失证据、秘密或高风险授权不满足时，停止并给出明确状态。</p>
+                  </div>
+                  <div data-control-lane="advisory">
+                    <span>Advisory · non-blocking</span>
+                    <ul class="control-items" aria-label="建议控制项">
+                      <li data-control-item="Lean Code">Lean Code</li>
+                      <li data-control-item="code simplification">code simplification</li>
+                    </ul>
+                    <p>体积、重复、复杂度和职责拆分给出建议，不替代行为正确性与工程判断。</p>
+                  </div>
+                </div>
+                <p class="platform-mechanism-note">
+                  规则、状态、扫描与工件采用 local-first 边界；外部 Provider 的数据处理仍由所选服务决定。
+                </p>
+              </div>
+              <div class="platform-results" data-capability-results>
+                <h4>可检查结果</h4>
+                <ul>
+                  <li><strong>identity binding</strong><span><code>input_digest</code> 与当前候选绑定，漂移时拒绝复用旧结论。</span></li>
+                  <li><strong>verification evidence</strong><span>测试、构建、浏览器或复核证据缺失时保持未完成。</span></li>
+                  <li><strong>explicit stop states</strong><span>缺少决定进入 <code>needs_user</code>，修复或复核缺口分别进入对应状态。</span></li>
+                  <li><strong>non-blocking advice</strong><span>精简建议可以解释和取舍，不改变 Loop 状态或 Close 权。</span></li>
+                </ul>
+                <dl class="platform-role-values" data-role-values aria-label="角色判断动作">
+                  <div data-role="planning-handoff"><dt>规划 / 接手</dt><dd>高风险授权或关键输入缺失时取得用户决定，不替用户猜测。</dd></div>
+                  <div data-role="development"><dt>开发</dt><dd>严格项先补证据；Lean Code 建议结合行为与维护成本判断。</dd></div>
+                  <div data-role="testing-review"><dt>测试 / Reviewer</dt><dd>核对当前候选的 identity、evidence 与 provenance 后再复核。</dd></div>
+                  <div data-role="delivery-owner"><dt>交付负责人</dt><dd>严格门禁未关闭时阻止误报，advisory 建议不伪造阻断。</dd></div>
+                </dl>
+              </div>
+              <p class="platform-boundary" data-capability-boundary>
+                <strong>边界</strong>
+                不使用硬性行数阈值阻止 Close，也不把本地优先治理外推为远程 AI Provider 的离线保证；AI-SDLC 不负责自动合并或自动发布。
+              </p>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="platform-closing" data-platform-closing aria-labelledby="platform-closing-title">
+        <h2 id="platform-closing-title">
+          Prompt 和 Skills 告诉 AI 怎么做；AI-SDLC 继续管理它做到哪一步、凭什么继续，以及何时可以结束。
+        </h2>
+        <a class="button-primary" href="downloads-docs.html">下载 AI-SDLC 2.0.0</a>
+      </section>
+    </main>
+  </body>
+</html>

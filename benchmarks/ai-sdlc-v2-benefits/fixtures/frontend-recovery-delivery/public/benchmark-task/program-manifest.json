@@ -1,0 +1,13 @@
+{
+  "schema": "ai-sdlc-v2-benefit-program-manifest/v1",
+  "solution_target": {
+    "frontend_stack": "vue3",
+    "provider_id": "public-primevue",
+    "style_pack_id": "modern-saas"
+  },
+  "component_identity": ["PrimeVue", "@primeuix/themes", "primeicons"],
+  "theme_identity": "definePreset(Aura) + #1770e6 + darkModeSelector=false",
+  "tooling_identity": "Vite + TypeScript + UnoCSS + CSS Variables",
+  "application_identity": "Pinia + Vue Router + Axios + vee-validate + zod + vue-i18n",
+  "quality_identity": "Playwright + ESLint + Prettier + husky + lint-staged + commitlint"
+}

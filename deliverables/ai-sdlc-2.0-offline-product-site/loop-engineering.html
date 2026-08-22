@@ -1,0 +1,468 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Loop Engineering | AI-SDLC 2.0</title>
+    <link rel="stylesheet" href="assets/css/tokens.css">
+    <link rel="stylesheet" href="assets/css/site.css">
+    <link rel="stylesheet" href="assets/css/pages.css">
+    <script src="assets/js/site.js" defer></script>
+  </head>
+  <body data-page="loop">
+    <a class="skip-link" href="#main">跳到主要内容</a>
+    <header class="site-header">
+      <div class="site-shell">
+        <a class="brand" href="index.html">AI-SDLC 2.0</a>
+        <button
+          type="button"
+          data-nav-toggle
+          aria-expanded="false"
+          aria-controls="site-nav"
+        >
+          菜单
+        </button>
+        <nav id="site-nav" class="site-nav" data-nav-menu aria-label="主导航">
+          <a href="index.html">AI-SDLC 2.0</a>
+          <a href="loop-engineering.html" aria-current="page">Loop Engineering</a>
+          <a href="dynamic-expert-review.html">Dynamic Expert Review</a>
+          <a href="platform-capabilities.html">Platform Capabilities</a>
+          <a href="downloads-docs.html">Downloads &amp; Docs</a>
+        </nav>
+        <a target="_blank" rel="noopener noreferrer" class="github-link" href="https://github.com/SinclairPan/Ai_AutoSDLC">
+          GitHub <span class="network-label">需要联网</span>
+        </a>
+      </div>
+    </header>
+    <main id="main" class="site-shell page-main loop-main">
+      <section class="page-intro loop-hero" aria-labelledby="page-title">
+        <p class="page-eyebrow">Loop Engineering</p>
+        <h1 id="page-title">让 AI 开发任务，从明确需求走到可验证完成</h1>
+        <p class="loop-hero-summary">
+          Loop Engineering 不是固定流程图，而是一组有输入、有状态、有证据和退出条件的反馈闭环。
+          缺口回流，失败可恢复，满足条件后才允许 Close 或 Freeze。
+        </p>
+        <a class="button-primary" href="#loop-workspace">查看一个 Loop 如何收敛</a>
+      </section>
+
+      <section
+        class="benefit-benchmark benefit-benchmark-loop"
+        data-benefit-dataset="loop"
+        aria-labelledby="loop-benefit-title"
+      >
+        <div class="benefit-heading">
+          <div>
+            <p class="page-eyebrow">Current benefit benchmark</p>
+            <h2 id="loop-benefit-title">五阶段 Loop，把一次生成推进为可验证交付</h2>
+          </div>
+          <p class="benefit-model">gpt-5.6-sol / high · 50 个优势工程场景</p>
+        </div>
+        <div class="benefit-card-grid" aria-label="裸 LLM 与五阶段 Loop 主指标比较">
+          <article class="benefit-card" data-benefit-card="requirement_understanding" data-native-value="76" data-ai-sdlc-value="94">
+            <p>需求理解</p><strong>76% → 94%</strong><span>+18 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="requirement_design" data-native-value="64" data-ai-sdlc-value="93">
+            <p>需求设计</p><strong>64% → 93%</strong><span>+29 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="development_traceability" data-native-value="55" data-ai-sdlc-value="92">
+            <p>需求开发追踪覆盖</p><strong>55% → 92%</strong><span>+37 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="code_quality" data-native-value="58" data-ai-sdlc-value="87">
+            <p>代码质量</p><strong>58% → 87%</strong><span>+29 pts</span>
+          </article>
+        </div>
+        <div class="benefit-stage-table" role="table" aria-label="五阶段累计缺口消除进度">
+          <div role="row" class="benefit-stage-row benefit-stage-header">
+            <span role="columnheader">阶段</span><span role="columnheader">累计消除</span><span role="columnheader">核心作用</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="requirement">
+            <strong role="cell">Requirement</strong><span role="cell">39%</span><span role="cell">冻结目标、范围、非目标与验收条件</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="design-contract">
+            <strong role="cell">Design Contract</strong><span role="cell">58%</span><span role="cell">补齐接口、状态、风险与任务映射</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="implementation">
+            <strong role="cell">Implementation</strong><span role="cell">74%</span><span role="cell">绑定实现、测试和当前候选证据</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="frontend-evidence">
+            <strong role="cell">Frontend Evidence</strong><span role="cell">85%</span><span role="cell">验证页面、交互、console 与证据身份</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="local-pr-review">
+            <strong role="cell">Local PR Review</strong><span role="cell">92%</span><span role="cell">拦截跨阶段漂移和发布前回归</span>
+          </div>
+        </div>
+        <p class="benefit-disclosure">
+          <strong>证据锚定合成基准：</strong>场景为 advantage-aligned engineering scenarios，
+          用于展示 AI-SDLC 在复杂工程交付中的机制优势，不代表随机总体或客户生产统计。
+          <a href="assets/data/loop-benefit-data.json">查看完整数据</a>
+        </p>
+      </section>
+
+      <section
+        class="loop-lifecycle"
+        data-workitem-lifecycle
+        aria-labelledby="workitem-lifecycle-title"
+      >
+        <div class="loop-section-heading">
+          <p class="page-eyebrow">Governed lifecycle</p>
+          <h2 id="workitem-lifecycle-title">正式 WorkItem 路径</h2>
+        </div>
+        <p>
+          普通对话可以启动澄清，但任意聊天输入不会自动成为完整 WorkItem。只有显式进入这条路径，
+          才会建立受治理的生命周期、身份、状态与关闭证据。
+        </p>
+        <p class="loop-lifecycle-path">
+          Init / Adopt → WorkItem → Requirement → Design Contract → Implementation →
+          Frontend Evidence（按需） → Local PR Review（按需） → Close
+        </p>
+      </section>
+
+      <section class="loop-operating-model" aria-labelledby="loop-protocol-title">
+        <div class="loop-protocol-block">
+          <div class="loop-section-heading">
+            <p class="page-eyebrow">Minimum protocol</p>
+            <h2 id="loop-protocol-title">七步最小协议</h2>
+          </div>
+          <ol class="loop-protocol" data-loop-protocol>
+            <li>接收明确目标与输入，建立 Loop 身份。</li>
+            <li>不依赖聊天记忆，从项目工件重算当前状态。</li>
+            <li>输出缺失信息、停止原因与唯一下一步动作。</li>
+            <li>执行或复核前冻结 <code>input_digest</code> 与只读复核快照。</li>
+            <li>将 <code>Findings</code> 回流原 <code>Writer</code>；Reviewer 不修改候选。</li>
+            <li>定向修复后，只允许基于重新绑定输入进行最多一次复审。</li>
+            <li><code>Freeze</code> / <code>Close</code> 前重建输入；任何绑定输入漂移都拒绝关闭。</li>
+          </ol>
+        </div>
+
+        <div class="loop-state-reference">
+          <div class="loop-section-heading">
+            <p class="page-eyebrow">State reference</p>
+            <h2>状态比总结更可靠</h2>
+          </div>
+          <table data-loop-state-table>
+            <thead>
+              <tr>
+                <th scope="col">状态</th>
+                <th scope="col">系统含义</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row"><code>needs_user</code></th>
+                <td>缺少决定或输入</td>
+              </tr>
+              <tr>
+                <th scope="row"><code>needs_fix</code></th>
+                <td>候选必须修改</td>
+              </tr>
+              <tr>
+                <th scope="row"><code>needs_review</code></th>
+                <td>独立验证待完成或结论不确定</td>
+              </tr>
+              <tr>
+                <th scope="row"><code>closed</code></th>
+                <td>新鲜绑定证据满足 Close 合同</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section
+        class="loop-recovery"
+        data-loop-recovery
+        aria-labelledby="loop-recovery-title"
+      >
+        <div class="loop-section-heading">
+          <p class="page-eyebrow">Recovery contract</p>
+          <h2 id="loop-recovery-title">失败不会被改写成成功</h2>
+        </div>
+        <ol class="loop-recovery-strip" aria-label="Loop 恢复链">
+          <li>发现缺口</li>
+          <li>明确状态</li>
+          <li>用户 / Writer / Reviewer 行动</li>
+          <li>重新计算工件与状态</li>
+          <li>Close 或保持未关闭</li>
+        </ol>
+        <p class="loop-drift-rule">
+          输入发生漂移后，旧证据立即失效；重新绑定前拒绝复用。系统会基于当前工件重算状态，
+          不让过期结论穿过 Freeze 或 Close。
+        </p>
+        <p class="loop-drift-rule">
+          当 <code>checkpoint</code>、<code>branch</code> 或 <code>artifact</code>
+          不一致时，AI-SDLC 会 fail-closed：先停止当前运行，再提示 <code>recover</code> 或显式
+          <code>reconcile</code>。恢复的是项目事实，而不是模型思维过程。
+        </p>
+      </section>
+
+      <section
+        id="loop-workspace"
+        class="loop-workspace"
+        data-tabs="loop-workspace"
+        aria-labelledby="loop-workspace-title"
+      >
+        <div class="loop-section-heading loop-workspace-heading">
+          <div>
+            <p class="page-eyebrow">Loop workspace</p>
+            <h2 id="loop-workspace-title">选择一类 Loop，查看它如何收敛</h2>
+          </div>
+          <p>这是一张机制工作台，不是运行统计或虚构后台。</p>
+        </div>
+
+        <div role="tablist" aria-label="Loop 类型">
+          <button
+            id="tab-requirement"
+            type="button"
+            role="tab"
+            data-tab="requirement"
+            aria-selected="true"
+            aria-controls="requirement-panel"
+          >
+            Requirement
+          </button>
+          <button
+            id="tab-design-contract"
+            type="button"
+            role="tab"
+            data-tab="design-contract"
+            aria-selected="false"
+            aria-controls="design-contract-panel"
+            tabindex="-1"
+          >
+            Design Contract
+          </button>
+          <button
+            id="tab-implementation"
+            type="button"
+            role="tab"
+            data-tab="implementation"
+            aria-selected="false"
+            aria-controls="implementation-panel"
+            tabindex="-1"
+          >
+            Implementation
+          </button>
+          <button
+            id="tab-frontend-evidence"
+            type="button"
+            role="tab"
+            data-tab="frontend-evidence"
+            aria-selected="false"
+            aria-controls="frontend-evidence-panel"
+            tabindex="-1"
+          >
+            Frontend Evidence
+          </button>
+        </div>
+
+        <section
+          id="requirement-panel"
+          class="loop-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="tab-requirement"
+        >
+          <div class="loop-panel-intro">
+            <p class="loop-panel-index">01</p>
+            <div>
+              <h3>Requirement Loop</h3>
+              <p>把模糊想法变成可复核的目标、范围与验收标准；信息不完整时停在 <code>needs_user</code>。</p>
+            </div>
+          </div>
+          <div class="loop-panel-grid">
+            <div data-loop-input>
+              <h4>当前输入</h4>
+              <p>目标、范围、验收标准、角色、风险与待澄清问题。</p>
+            </div>
+            <div data-loop-state>
+              <h4>当前状态</h4>
+              <p><code>needs_user</code> 表示仍需明确决定，不用模型熟悉的答案补空白。</p>
+            </div>
+            <div data-loop-feedback>
+              <h4>反馈动作</h4>
+              <p>输出缺口和唯一下一步，由用户补充范围、约束或授权。</p>
+            </div>
+            <div data-loop-close>
+              <h4>Close / Freeze 条件</h4>
+              <p>当前输入已经复核且未漂移，才允许 Requirement Freeze。</p>
+            </div>
+          </div>
+          <div class="loop-evidence-band" data-loop-evidence>
+            <span>可检查工件</span>
+            <ul>
+              <li>objective</li>
+              <li>acceptance criteria</li>
+              <li>input_digest</li>
+              <li>review_snapshot</li>
+            </ul>
+          </div>
+        </section>
+
+        <section
+          id="design-contract-panel"
+          class="loop-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="tab-design-contract"
+        >
+          <div class="loop-panel-intro">
+            <p class="loop-panel-index">02</p>
+            <div>
+              <h3>Design Contract Loop</h3>
+              <p>检查需求是否映射成可执行任务，重点是接口、边界与验证覆盖，不以文档长度判定完成。</p>
+            </div>
+          </div>
+          <div class="loop-panel-grid">
+            <div data-loop-input>
+              <h4>当前输入</h4>
+              <p>冻结需求、接口与数据边界，以及已确认的技术栈和实现约束。</p>
+            </div>
+            <div data-loop-state>
+              <h4>当前状态</h4>
+              <p><code>needs_fix</code> 表示设计覆盖或任务映射仍有必须修复的缺口。</p>
+            </div>
+            <div data-loop-feedback>
+              <h4>反馈动作</h4>
+              <p>Findings 回到原 Writer，定向补齐设计合同并重新生成覆盖报告。</p>
+            </div>
+            <div data-loop-close>
+              <h4>Close / Freeze 条件</h4>
+              <p>工件彼此一致、覆盖关键边界且复核输入保持不变。</p>
+            </div>
+          </div>
+          <div class="loop-evidence-band" data-loop-evidence>
+            <span>可检查工件</span>
+            <ul>
+              <li>spec.md</li>
+              <li>plan.md</li>
+              <li>tasks.md</li>
+              <li>coverage / report</li>
+            </ul>
+          </div>
+        </section>
+
+        <section
+          id="implementation-panel"
+          class="loop-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="tab-implementation"
+        >
+          <div class="loop-panel-intro">
+            <p class="loop-panel-index">03</p>
+            <div>
+              <h3>Implementation Loop</h3>
+              <p>管理 required tasks、进度与验证；任务做完后进入独立复核，而不是直接自报完成。</p>
+            </div>
+          </div>
+          <div class="loop-panel-grid">
+            <div data-loop-input>
+              <h4>当前输入</h4>
+              <p>当前候选、required tasks、允许修改的范围与验证命令。</p>
+            </div>
+            <div data-loop-state>
+              <h4>当前状态</h4>
+              <p>blocked task 进入 <code>needs_fix</code>；required tasks 完成后进入 <code>needs_review</code>。</p>
+            </div>
+            <div data-loop-feedback>
+              <h4>反馈动作</h4>
+              <p>原 Writer 修复同一候选，重跑受影响的测试、lint、build 与项目验证。</p>
+            </div>
+            <div data-loop-close>
+              <h4>Close / Freeze 条件</h4>
+              <p>required tasks 完成，当前候选证据通过，并完成独立复核。</p>
+            </div>
+          </div>
+          <div class="loop-evidence-band" data-loop-evidence>
+            <span>可检查工件</span>
+            <ul>
+              <li>required tasks</li>
+              <li>verification-evidence.json</li>
+              <li>test / lint / build</li>
+            </ul>
+          </div>
+        </section>
+
+        <section
+          id="frontend-evidence-panel"
+          class="loop-panel"
+          role="tabpanel"
+          data-tab-panel
+          aria-labelledby="tab-frontend-evidence"
+        >
+          <div class="loop-panel-intro">
+            <p class="loop-panel-index">04 · 按需</p>
+            <div>
+              <h3>Frontend Evidence Loop</h3>
+              <p>让真实浏览器结果进入交付状态；显式 skip 只代表本次未执行，不冒充浏览器验收。</p>
+            </div>
+          </div>
+          <div class="loop-panel-grid">
+            <div data-loop-input>
+              <h4>当前输入</h4>
+              <p>可加载 browser entry、目标页面、交互路径与证据身份。</p>
+            </div>
+            <div data-loop-state>
+              <h4>当前状态</h4>
+              <p><code>needs_review</code> 表示浏览器证据仍待独立核验或结论不完整。</p>
+            </div>
+            <div data-loop-feedback>
+              <h4>反馈动作</h4>
+              <p>定位页面或交互问题，由原 Writer 修复后重新运行 Browser Gate。</p>
+            </div>
+            <div data-loop-close>
+              <h4>Close / Freeze 条件</h4>
+              <p>当前页面、交互和错误证据结构完整、身份匹配且没有时效漂移。</p>
+            </div>
+          </div>
+          <div class="loop-evidence-band" data-loop-evidence>
+            <span>可检查工件</span>
+            <ul>
+              <li>browser entry</li>
+              <li>interactions</li>
+              <li>console / page errors</li>
+              <li>screenshots</li>
+            </ul>
+          </div>
+        </section>
+      </section>
+
+      <section
+        id="local-pr-review"
+        class="local-review-rail"
+        aria-labelledby="local-pr-review-title"
+      >
+        <div class="loop-section-heading">
+          <p class="page-eyebrow">Cross-stage rail</p>
+          <h2 id="local-pr-review-title">提交前跨阶段复核（按需）</h2>
+        </div>
+        <p>
+          Local PR Review 是独立本地只读 Reviewer 执行的提交前终审，不是与四类 Loop 同构、永远必跑的第五阶段。
+        </p>
+        <ol class="local-review-steps">
+          <li><strong>Review Pack</strong><span>绑定 Git range、暂存区、工作区或补丁。</span></li>
+          <li><strong>Findings</strong><span>检查跨阶段回归、修复与当前验证证据。</span></li>
+          <li><strong>fix/rerun</strong><span>原 Writer 修复候选并重跑必要验证。</span></li>
+          <li
+            data-pr-review-close-policy="v2.0.0"
+            data-unresolved-blocker="blocked"
+            data-unresolved-required="blocked-or-risk-accepted"
+            data-advisory-waiver="recorded-and-disclosed"
+          >
+            <strong>final report</strong>
+            <span>未解决 BLOCKER 阻断关闭；未解决 REQUIRED 默认阻断，只有显式接受风险时才以 risk_accepted 关闭并生成披露风险的 final report；未解决 ADVISORY 与 waiver 按策略记录并披露。</span>
+          </li>
+        </ol>
+      </section>
+
+      <section class="loop-closing" aria-labelledby="loop-closing-title">
+        <h2 id="loop-closing-title">
+          Loop 的价值不是不停重试，而是在每次反馈后知道该继续、该修复，还是该停下。
+        </h2>
+        <a class="button-secondary" href="dynamic-expert-review.html">
+          继续了解专家如何挑战 Loop 结果
+        </a>
+      </section>
+    </main>
+  </body>
+</html>

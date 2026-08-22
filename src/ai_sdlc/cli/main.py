@@ -9,6 +9,7 @@ from ai_sdlc import __version__
 from ai_sdlc.cli.adapter_cmd import adapter_app
 from ai_sdlc.cli.adopt_cmd import adopt_command
 from ai_sdlc.cli.agentops_cmd import agentops_app
+from ai_sdlc.cli.benefit_evidence_cmd import benefit_evidence_app
 from ai_sdlc.cli.cli_hooks import run_ide_adapter_if_initialized
 from ai_sdlc.cli.commands import (
     index_command,
@@ -59,7 +60,8 @@ _READ_ONLY_SUBCOMMANDS = (
     "program",
     "self-update",
 )
-_UPDATE_NOTICE_BYPASS_SUBCOMMANDS = ("loop", "self-update")
+_ADAPTER_HOOK_BYPASS_SUBCOMMANDS = (*_READ_ONLY_SUBCOMMANDS, "benefit-evidence")
+_UPDATE_NOTICE_BYPASS_SUBCOMMANDS = ("benefit-evidence", "loop", "self-update")
 
 
 def _version_callback(value: bool) -> None:
@@ -96,8 +98,8 @@ def _global_before_command(
         # 子应用按参数校验与 clean-tree preflight 边界管理 adapter 副作用。
         ctx.meta[_WORKITEM_ADAPTER_HOOK_META_KEY] = run_ide_adapter_if_initialized
         return
-    # Read-only and analysis surfaces must not trigger adapter writes.
-    if ctx.invoked_subcommand in _READ_ONLY_SUBCOMMANDS:
+    # 精确仓库前置条件命令不得触发无关的 adapter 写入。
+    if ctx.invoked_subcommand in _ADAPTER_HOOK_BYPASS_SUBCOMMANDS:
         return
     run_ide_adapter_if_initialized(console=_hook_console)
 
@@ -113,6 +115,7 @@ app.command(name="refresh")(refresh_command)
 app.command(name="run")(run_command)
 app.add_typer(adapter_app, name="adapter")
 app.add_typer(agentops_app, name="agentops")
+app.add_typer(benefit_evidence_app, name="benefit-evidence", hidden=True)
 app.add_typer(enterprise_app, name="enterprise")
 app.add_typer(gate_app, name="gate")
 app.add_typer(rules_app, name="rules")

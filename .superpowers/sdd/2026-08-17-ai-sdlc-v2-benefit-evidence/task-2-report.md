@@ -1,0 +1,463 @@
+# Task 2 Fix Round 1：三套公开 Fixture 与密封外部评估门禁
+
+## 冻结边界
+
+- Fix 基线：`51f60fd654ca0159c5705bcfca04ed86bf4b455a`。
+- 范围仅限计划 Task 2；未进入 Task 3 arms、runner、网站、summary 或正式实验。
+- Provider、`codex exec`、正式实验调用均为 `0`。
+- tracked `protocol.json` 未修改，四个 paired commitment 继续保持 `pending-unbound`。
+
+## Fresh RED 与聚合修复
+
+Fix Round 1 先新增七组独立 RED，真实运行结果为 `7 failed`：
+
+1. Requirement 非空占位可得分；
+2. intent map 未独立 materialize；
+3. T2 缺少六个 root-cause 行为 Oracle 与 Finding 混淆矩阵；
+4. Frontend 缺真实 lock/preinstall/browser E2E；
+5. canonical pre-state 未递归 closed；
+6. leak scanner 未覆盖 payload inventory、binary、path name 与 Git objects；
+7. isolation 未显式覆盖 raw results、source Git、其他 protected root 与动态 launch refusal。
+
+第八组“两次 fresh prepare/visible/sealed 完全一致”沿用并加强原有三 fixture 参数化测试：现在每套 fixture 都从两个全新目录独立 prepare，再比较 visible results 和 evaluator result。
+
+统一 GREEN 后又执行两项针对最终实现的 fresh RED：一项模拟 sealed inventory 读取错误，确认 leak scanner 必须返回 fail-closed finding；另一项验证 evaluator 的候选执行也必须经过动态隔离启动器，而不是直接调用一次性 Seatbelt profile。修复前为 `2 failed`，修复后为 `2 passed`。
+
+最终逐条回看冻结 spec 时又加入一项 held-out 边界 RED：public fixture 中不得出现外部浏览器 harness 或四类 held-out marker。修复前为 `1 failed`；将 harness 改由 evaluator 在候选根外运行时 materialize 后为 `1 passed`。
+
+## 关闭后的执行合同
+
+### Requirement
+
+- v2 sealed payload 是 closed object；criteria 也是按 kind closed。
+- 只接受 `json_literal`、`json_enum`、`json_set_contains`、`json_relation`、`json_no_contradiction`、`verification_command` 六类结构化规则。
+- 逐项覆盖冻结 intent、版本 guard、终态、事务/通知关系、显式 blocker 与可复算命令。
+- 错误但非空的合同覆盖率为 0，`external_verified_delivery=false`。
+
+### 独立 intent / approval service
+
+- sealed manifest v2 必须单独 commitment `intent-map.json`；tracked 文件只保存 SHA，不保存路径或答案。
+- `FrozenIntentApprovalService.from_sealed_root` 直接校验 manifest/path/SHA 后加载。
+- question item 与 approval surface closed；答案可为结构化值；未知问题仍为 `unresolved`。
+- proposal digest 仍需 controller 先注册；不匹配、零 digest 或未知 approval type 均返回 `revise`。
+- 事件只记录 automated actor 与 result digest，不计为 human work。
+
+### T2 六根因行为 Oracle
+
+- v2 T2 禁止 `file_contains` / 源码注释参与得分，所有 criteria 必须是隔离子进程中的 `security_oracle`。
+- 六个独立 root cause：tenant isolation、separation of duties、request lifecycle、role allowlist、action allowlist、atomic audit。
+- 覆盖 self-approval、non-pending、expired、unknown role、unknown action、audit failure、authorized audit shape 与拒绝无副作用。
+- evaluator 输出 Finding→root 的 TP/FP/FN、precision、recall、severe miss；没有 Finding 时 precision 保持 N/A，而不是伪造 0。
+
+### 真实 Frontend 工程与浏览器证据
+
+- 公开 fixture 现在含真实 `package.json`、208 KB lockfile、Vite/Vue 配置、ESLint、Prettier、TypeScript 和浏览器 harness。
+- lockfile SHA：`74eb5f6fbf5e3a8fb828125ba8456ebd61cdc647c3513be3b107ec5b6bf05002`。
+- frozen preinstalled dependency tree SHA：`0ad5e7b7fab55b73cbeaef8bf218e5f9fd9f97ac03f587a88e5cb1dc760403a6`。
+- Node 与 Chrome 同时绑定版本和 executable identity SHA。
+- `validate_frontend_runtime` 实测校验 lockfile、dependency tree、Node 和 browser executable。
+- Playwright 启动真实 Chrome，经 loopback HTTP 同源页面运行 normal、failure→recovery、连续失败→恢复、delayed race、rapid double click、malformed response。
+- held-out 浏览器 harness 由外部 evaluator 在运行时 materialize；public candidate root 不含 harness 或四类 held-out marker，Provider 不能修改验收页伪造通过。
+- AC-001 字段呈现、AC-002 筛选、AC-006 console/basic a11y 均来自浏览器行为，不从源码 token 得分。
+- 同一预装依赖树实际执行 `lint`、`format:check`、`build` 均 exit 0。
+- public `program-manifest.json` 只描述共同 solution target，不包含 arm ID、treatment 或 A-arm confirmation state；pending 状态留给 Task 3 runner 的不可见运行合同。
+
+### Closed parity、泄漏与隔离
+
+- 三 fixture 的 semantic surface 逐层 closed；任何额外 `answer`、`risk`、`implementation_hint` 或未声明 AC 字段均拒绝。
+- normalized parity 比较 fixture/stage/pre-state/solution target/完整 semantics，不再只摘取 `semantics` 子树。
+- leak inventory 从 evaluator root 内真实 manifest/payload/intent commitment 生成；扫描 path name、binary、symlink、hardlink、Git index/reflog/all objects。
+- finding 只返回 opaque code 与 opaque location，不回显 sealed phrase、filename 或绝对路径。
+- final isolation profile 显式包含 sealed root/parent、control、raw results、source Git、other run 和额外 protected roots。
+- run/protected 嵌套、任意 outward symlink、任意 regular `st_nlink>1`、扫描错误、`--add-dir` 与 `--add-dir=...` 均 fail closed。
+- `run_provider_isolated` 在每次子进程启动前重新扫描；direct/root reads 由 Seatbelt 实际拒绝，hardlink/env/add-dir 由同一 launch wrapper 以 exit 126 实际拒绝，不再用“参数不存在”代替证明。
+
+## Tracked commitments
+
+- public fixture + evidence-contract pair：`96c67f8be165b52b7471fa9955c36ecc62efe29361d8b4c0d2ba56cfa58d02e1`。
+- evidence-contract template pair：`7b32d614533e4c51438415bbcbb9cc885177d0752b814d95c344c8925382060c`。
+- independent intent-map commitment：`7b2eb34f26aba327a29f518ecd43902a921a34980c060eef6cfd60e746d31815`。
+- evidence template 为 15 个 run 增加 requirement structured result、frontend browser/quality、security root-oracle/Finding metrics 槽位，仍通过 Task 1 closed consumer。
+- protocol 仍为 pending；以上 tracked 值不得在 Task 2 三专家终审前绑定。
+
+## 验证
+
+嵌套 sandbox 内：
+
+```text
+fixture focused: 27 passed, 4 skipped
+related benchmark/site regression: 494 passed, 4 skipped
+Ruff: All checks passed
+git diff --check: clean
+```
+
+四个 skip 均属于需要 macOS Seatbelt 或 loopback browser 的 exact system-outside 检查。同一 fixture test file 已在 sandbox 外全量实跑：`31 passed in 18.99s`，无 skip；其中包括六根因 Oracle、v2 browser evaluator、真实 Playwright+Chrome、held-out harness 隔离、逐 protected-root Seatbelt、动态 hardlink/env/add-dir launch refusal，以及候选 evaluator 复用动态隔离启动器。
+
+Frontend 同一预装依赖树：
+
+```text
+lint exit=0
+format:check exit=0
+build exit=0; Vite 7.3.6; 201 modules transformed
+```
+
+这些是 fixture/evaluator 健康证据，不是 15-run 实验结果，不得用于网站效益结论。
+
+## 当前唯一 blocker
+
+安全审查拒绝覆盖旧 protected evaluator root，也拒绝在新的 sibling protected root 写入评分 plaintext，错误明确要求不得绕过。故 tracked v2 evaluator/runtime/tests 已完成，但新的 protected materialization 尚未落盘，旧 v1 sealed manifest/payload commitment 不能冒充 Fix Round 1 结果。
+
+解除方式必须是：用户明确授权或受信任 materializer 向一个全新、空、候选不可读的 protected root 写入 `intent-map.json`、三个 v2 payload 与 sealed manifest；随后运行 `validate_sealed_commitments == []`、两次 fresh evaluator 完全一致、opaque leak scan 和 exact system-outside isolation canary。完成前 Task 2 不得宣称 execution-ready，protocol 必须保持 pending。
+
+## Fix Round 2：受信任物化器
+
+### 冻结范围
+
+- Fix 基线：`196025b694ff49dd685c9d0a87ca0ccd834b459f`。
+- Provider、`codex exec`、正式实验调用继续为 `0`；没有启动 Task 3 arms。
+- 最终 r1 evaluator root 尚未物化；旧 root 未修改；tracked protocol 四项仍为 `pending-unbound`，tracked commitments 未替换。
+- tracked 代码只保存 closed schema、编译器、发布器和测试用合成 source；正式 sealed-source、真实答案、held-out plaintext 仍必须从仓外受保护文件或 FD 输入。
+
+### Fresh RED 与关闭结果
+
+Fix Round 2 依次运行了以下真实 RED，而不是仅以代码审阅代替失败证明：
+
+1. 新模块尚不存在时，focused test collection 以 `ModuleNotFoundError` 失败；
+2. 首版编译器运行至 `4 passed, 15 failed`，暴露 canonical key 排序、criterion path 类型和发布链未闭合；
+3. 初次 focused GREEN 前为 `30 passed, 2 failed`，暴露 CLI 窄终端帮助截断和 sealed parent/candidate root 重叠；
+4. 递归 evaluator 字段、repo-before-source、意外异常脱敏新增反例为 `5 failed`，逐项关闭；
+5. pinned-parent staging 与父目录替换竞态新增反例为 `2 failed`，逐项关闭；
+6. FD 指向 tracked repo source 的别名反例为 `1 failed`，通过 descriptor canonical path 识别并关闭；
+7. 六根因 Oracle 的根因错配、拒绝后状态错配和非法时间新增反例为 `3 failed`，通过 root-specific 行为前置条件、状态无副作用和 timezone-aware 时间校验关闭。
+
+最终 focused 结果为 `43 passed, 1 skipped`；唯一 skip 是嵌套 sandbox 不能再次应用 macOS Seatbelt，随后已在 system-outside 验证中实跑通过。
+
+### 受信任输入与 closed compiler
+
+- CLI 只接受互斥的受保护 path/FD、调用时冻结的 source SHA256、exact HEAD、固定 lock id 和旧 root tree SHA256；最终 target 是代码内不可覆写 literal。
+- source leaf 必须 `O_NOFOLLOW` 打开，并在读取前后同时满足 regular、owner=euid、mode `0600`、`nlink=1`、inode/size/mtime 稳定；FD 也必须能解析到 canonical path，不能借 FD 绕过 repo/protected overlap 检查。
+- source 必须是无尾随换行的 canonical JSON；拒绝 NaN/Infinity、未知 top-level、payload、criterion 和递归 scenario/expected 字段。
+- 编译器生成独立 `intent-map.json`、三个 v2 sealed payload、closed manifest、candidate commitments 和 materialization receipt。receipt 绑定 source HEAD/tree、materializer bytes、fixture manifest/tree、evidence contract、source bundle、target lock、manifest、intent 和三个 payload SHA。
+- CLI 对预期与非预期错误都只输出稳定 NO-GO code，不回显 source path、plaintext 或内部异常。
+
+### 起止门禁与原子发布
+
+- 读取 sealed source 前先断言 exact HEAD、完整 tree clean、protocol 四项 pending、Provider ledger/results 不存在；编译后、发布前和发布后重复断言同一绑定。
+- 旧 root 使用本物化器定义的 canonical tree 算法复算：按 relative path 排序，绑定 type/mode/size，以及 regular content SHA 或 symlink target；同时冻结 inode。当前只读 fingerprint 为 inode `400173643`、tree SHA256 `2fb91cccb95b3bee4168041d75bda1ba567eb2f701bff94cf1107fa793283370`。该值不替代调用时 fresh fingerprint。
+- target ancestor 逐级 `lstat`，拒绝 symlink、非 euid owner、group/world writable 和跨 device；parent 以 dirfd 固定并在关键边界重验 lexical inode。
+- staging 和 quarantine 都以 pinned parent dirfd、随机 nonce 和 `mkdirat` 等价安全语义创建为 `0700`；文件以 `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` 创建为 `0600`，short write 循环写完，逐文件与目录 `fsync`。
+- 发布只使用 macOS `renameatx_np(..., RENAME_EXCL)`；API 不可用即 fail closed，不回退到普通 replace。
+- final root 通过 dirfd reopen，逐文件复核 owner/mode/nlink/content digest；失败前只删除本次 nonce staging，失败后仅在 target inode 仍匹配时移入 nonce quarantine 并清理。清理不完整返回 `cleanup-failed`，不得继续。
+
+### 发布前独立验证
+
+- validation scratch 使用独立 `protected/` 与 `runs/` 根，不与 target staging 共用；写入后的七个文件逐字节匹配 compiler output。
+- intent service 实测 known/unknown question，以及 correct/wrong/zero/expired approval；所有事件 actor 都是 automated service。
+- 三个 fixture 各自从两套 fresh copy prepare；public tree、initial commit、visible results 和 sealed evaluation 完全一致；baseline 均保持 non-delivery。
+- 真实 payload-derived opaque inventory 对两套 candidate 分别执行 path/text/binary/link/Git object leakage scan。
+
+### 验证证据
+
+嵌套 sandbox：
+
+```text
+materializer focused: 43 passed, 1 skipped
+related benchmark/fixture/materializer/site: 537 passed, 5 skipped
+Ruff: All checks passed
+git diff --check: clean
+```
+
+system-outside 使用冻结 dependency tree、Playwright module 和真实 Chrome 运行 fixture + materializer 全套：
+
+```text
+75 passed in 42.66s
+```
+
+该批次为 `0 failed / 0 skipped`，覆盖 exact Seatbelt、真实 browser、两次 fresh scratch evaluator 和发布安全反例。它仍只是 evaluator/materializer 健康证据，不是 15-run 效益实验结果。
+
+同一冻结 dependency tree 的 Node 回归再次实跑：
+
+```text
+npm run lint: exit 0
+npm run format:check: exit 0
+npm run build: exit 0; Vite 7.3.6; 201 modules transformed
+```
+
+### 当前门禁
+
+Fix Round 2 的 tracked materializer 已具备复审候选条件，但当前仍不是 execution-ready：必须先完成独立复审并冻结本次 materializer commit。通过后由受信任控制方创建仓外 mode `0600` canonical sealed-source，fresh 读取 old-root fingerprint 与 source SHA，在 clean exact HEAD 上调用 hidden materialize CLI。物化成功后仍需单独验证新 root receipt/commitments；只有之后的父任务才可以决定是否绑定 tracked protocol。
+
+## Fix Round 3：密封浏览器程序与发布后最终隔离证明
+
+### 冻结范围与 RED
+
+- Fix 基线：`7f3ac42d432b34bb0a3ab565e91ba0b78f8c52e4`。
+- Provider、`codex exec`、正式实验继续为 `0`；未启动 Task 3 arms，未物化最终 r1，未绑定 tracked protocol，旧 root 未修改。
+- 首批 fresh FixR3 定向测试结果为 `4 failed / 4 passed`：真实暴露 production browser harness 明文、可信 source literal/FD 边界、pending receipt 和 root metadata fingerprint 缺口；intent 缺失/额外反例已由已有 closed schema 提前拒绝。
+- 其后补齐 source direct-child/mode、target exact mode、child identity/content/rename/owner drift、exact final profile、canary failure rollback、各 attestation write/fsync failure point和 CLI opaque success 反例，统一进入回归门禁。
+
+### 密封 browser program
+
+- tracked production source 已删除真实 held-out scenario 输入、顺序、通过 Oracle、旧固定浏览器 harness 和旧 frontend node adapter；production `src/ai_sdlc/**/*.py` 不再含六类真实场景标记或真实样例数据。
+- tracked evaluator 只保留 closed data-only DSL 校验器与通用解释器。scenario loader outcome、confirmer、action 和 assertion 均是 closed object；未知 operation/kind、重复 id、空 handle 或开放字段全部拒绝。
+- 正式 scenario definitions、inputs、Oracle 和顺序必须来自仓外 canonical sealed-source 的 `browser_program`；materializer 将其原样编译进 frontend sealed payload，evaluator 只从该 payload 执行。
+- 通用解释器在真实 Chrome 中按 sealed action 顺序执行 load/retry/deferred resolve/await/render/checkpoint/confirm/release，并从 JSON state、DOM、console 和 basic a11y 行为计算 assertion；production source 不知道正式 scenario 名称或 pass 条件。
+
+### 可信 source 与公开 intent taxonomy
+
+- production source base 固定为 `/private/tmp/ai-sdlc-v2-benefit-source`，source root 固定为其直属 `sealed-source/`；base/root 必须为 euid owner、非 symlink、同 device、exact `0700`。
+- CLI 只接受已打开的 `--sealed-source-fd`；source 必须是 source root 直属 regular `0600`、`nlink=1` 文件。任意 repo、candidate、run 或其他路径中的同内容文件都返回稳定 `source-security`。
+- source root 使用与旧 root 相同的新 canonical identity tree fingerprint，在编译、发布前和发布后重复比对；receipt/candidate commitments 绑定 source-root tree SHA，final Provider profile自动把 source root加入 deny-read surface。
+- requirement public service contract 增加 `approval_type=design-contract`；materializer 从 public requirement input 解析四个 question ID，并从 requirement/frontend service contracts 解析 `design-contract`、`frontend-solution`。source intent 空/额外/缺失/无关均拒绝。
+- scratch 对每个 approval 分别注册并实测 correct、wrong、zero、expired proposal，另实测 unknown approval；question 实测 known/unknown。事件仍只允许 automated service actor。
+
+### Identity tree 与原子两阶段成功
+
+- tree fingerprint 现绑定 root 和每个 child 的 type/device/inode/uid/gid/mode/nlink/size；regular file 再绑定 content SHA，symlink 绑定 target。root/child chmod、模拟 chown、rename、write 均产生不同摘要。
+- target protected parent 现在必须 exact `0700`，不再只拒绝 group/world write；pinned dirfd、same-device、exclusive rename、inode-bound quarantine 和逐 write/fsync failure injection 继续保留。
+- compiler 生成的 `materialization-receipt.json` 只能声明 `published-pending-isolation` / `pending`，不得预称 validated。
+- exclusive publish 与逐文件 postverify 完成后，materializer 才以**已发布的 exact final path**构建最终 Provider profile，显式覆盖 final root/parent、control repo、`.git`、trusted source root、raw results 和 other-run。
+- 同一最终 launch profile真实执行 direct/parent/control/`.git`/results/other-run/env/symlink/hardlink/`--add-dir` 拒绝。任一失败按已发布 inode 移入 `0700` quarantine 并清理，整体返回 NO-GO。
+- canary 全通过后，以 final root dirfd 和 `openat(O_CREAT|O_EXCL|O_NOFOLLOW)` 写入独立 closed `isolation-attestation.json`，逐文件/目录/parent fsync 后复读验证。CLI 成功只输出 `status/count/receipt_sha256`，不输出 path、inode 或 lock id；该 receipt SHA 指向最终 attestation，而 pending receipt 保留可审计的两阶段边界。
+
+### FixR3 证据
+
+当前 tracked public fixture pair 为：
+
+```text
+fixture tree / manifest: 3a5a2a09809c5c899324b8664bd9976c44ea818730cf5a6c2925989e92b4ff8a
+manifest validation issues: []
+protocol paired fields: pending-unbound (4/4)
+final r1 root: absent
+old root inode: 400173643
+old root identity-tree SHA256: ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2
+```
+
+嵌套 sandbox 最新门禁：
+
+```text
+fixture + materializer focused: 94 passed, 6 skipped
+related benefit/fixture/materializer/site: 561 passed, 6 skipped
+Ruff check: All checks passed
+Ruff format: 5 files already formatted
+git diff --check: clean
+```
+
+system-outside 使用同一冻结 Playwright module、真实 Chrome 和 macOS Seatbelt，完整 fixture/materializer 统一批次实跑 `100 passed / 0 skipped in 124.97s`；其中包括 post-publication exact-final-path materializer canary，未以静态 profile 文本或“文件不存在”代替真实拒绝。为保证两次 fresh baseline/evaluation 的可重复性，可见命令输出只对 Python unittest 自带的非确定性耗时字段做规范化，不改变退出码、测试计数、失败内容或业务结果。
+
+同一预装依赖树的 frontend 回归：
+
+```text
+npm run lint: exit 0
+npm run format:check: exit 0
+npm run build: exit 0; Vite 7.3.6; 201 modules transformed
+```
+
+以上仍然只是 evaluator/materializer 健康证明，不是 Provider arms 的效益结果。FixR3 commit 通过独立复审、由父任务准备新的仓外正式 source 并实际物化 r1 之前，execution protocol 必须继续保持 pending。
+
+## Fix Round 4：linked worktree gitfile 隔离根
+
+### 失败证据与边界
+
+- Fix 基线：`a6ec5d36d3e67a58379def40b6ae5838b4e3d26d`，起点 clean。
+- 受信任控制方曾按已审合同发起一次正式 materialize；发布后的 isolation canary fail closed，目标 root 已按 inode-bound rollback 清除。未启动 Provider、`codex exec` 或 experiment arm，未再次 materialize，未修改 sealed source、旧 root 或 tracked protocol。
+- 父任务使用同一最终 profile 复现到精确根因：linked worktree 的 `repo/.git` 是 regular gitfile。旧 probe 对它执行目录递归后尝试在 file 下创建 canary，触发 `NotADirectoryError`。
+- fresh FixR4 测试在实现前统一为 `5 failed`：真实覆盖 gitfile canary、regular-file Seatbelt rule、symlink/FIFO fail closed、目录扫描错误与临时 canary 清理。
+- 实现复核又加入 canary 已创建但首次 `fsync` 失败的 cleanup injection，修复前为 `1 failed`；现在用 pinned dirfd 删除半成品并把 cleanup/fsync 失败继续视为 NO-GO。
+
+### 最小修复
+
+- profile 构建时对额外 protected root 使用 `lstat` 分类：regular file 使用 Seatbelt `literal` deny；directory 使用 `subpath` deny；symlink、FIFO、其他类型或读取错误生成 fail-closed issue，profile 不可执行。
+- probe 遇到 regular file 时直接以该文件作为 canary，不再拼接子路径；只有经 `lstat` 与 pinned dirfd/fstat 双重确认的 directory 才允许查找或以 `O_EXCL | O_NOFOLLOW` 创建 mode `0600` 临时 canary。
+- directory 扫描、写入、类型或 identity 异常统一 fail closed；临时 protected canary、run 内 symlink/hardlink 均在统一 finally 清理，清理失败同样返回失败。
+- ordinary `.git` directory、source directory、raw-results/other-run 空目录和 linked-worktree `.git` gitfile 都进入同一 probe 回归。
+
+### FixR4 门禁
+
+```text
+fresh RED: 5 failed
+cleanup injection RED: 1 failed
+FixR4 nested focused: 4 passed, 1 skipped
+fixture + materializer focused: 99 passed, 7 skipped
+related benefit/fixture/materializer/site: 566 passed, 7 skipped
+system-outside gitfile专项: 1 passed
+system-outside Chrome + Seatbelt + final-path统一批次: 106 passed, 0 skipped in 124.53s
+Ruff check: All checks passed
+Ruff format: 2 files already formatted
+git diff --check: clean
+```
+
+最终 r1 继续 absent；旧 root inode `400173643`、identity-tree SHA256 `ee98e4d0b9f15e9937d252ff8a4cc3f9f1154eb3c7a567a6c4a258fa8e7910c2` 未变；protocol 四项仍为 `pending-unbound`。以上只证明 materializer/isolation 修复，不构成正式效益结果，也不授权自动重试 materialize。
+
+## Fix Round 5：生产 Git 元数据完整隔离面
+
+### Critical 与 RED
+
+- Fix 基线：`bfeab5cd1681465b785846b15fb1c03703e208cb`，起点 clean。
+- 独立复审确认 FixR4 只保护 linked worktree 内的 `.git` gitfile；生产 materializer/evaluator 未自动保护 gitfile 指向的 per-worktree gitdir 与 common Git directory。FixR4 测试中的 `actual_git` 是手工合成参数，不能证明生产调用安全，结论为 FAIL/NO-GO。
+- fresh production-integration 批次为 `9 failed`：真实 linked worktree 三类 surface 派生、symlink/FIFO/malformed/command error/owner/overlap 边界、evaluator 自动接线、default-policy materializer 自动接线及两条 system-outside exact-read 证明均先失败。
+
+### Trusted derive 与生产接线
+
+- 新的 trusted derive 固定使用 `/usr/bin/git rev-parse --path-format=absolute` 获取 `--absolute-git-dir` 与 `--git-common-dir`，并使用最小环境清除外部 `GIT_DIR` / `GIT_COMMON_DIR` 等进程环境影响。
+- repo root、`.git` entry、gitdir 和 common dir 均执行 canonical、euid owner、`lstat` type、无 symlink component 与读取前后 identity 校验。gitfile 使用 `O_NOFOLLOW`、`nlink=1`、size bound 和前后全文一致校验；malformed、多行、NUL、FIFO、symlink、读取/命令错误全部 fail closed。
+- directory `.git` 必须与 absolute gitdir/common dir 同一；linked-worktree gitfile 必须精确指向 absolute gitdir，gitdir 必须位于 common dir 的 `worktrees/<id>/...` 边界内，且 gitdir/common 不得与 worktree 内容树重叠。
+- 生产 evaluator 的 candidate isolation profile 现在自动加入 gitfile、per-worktree gitdir、common Git dir；materializer final profile 使用同一 derive，再加入 trusted source root。测试不再手工注入 `actual_git` 伪装生产覆盖。
+- `run_provider_isolated` 的每次刷新继续复核 protected root canonical/type/owner；regular gitfile 使用 `literal` deny，两个 Git directory 使用 `subpath` deny。最终 canary 与 system-outside 测试对三个 known exact surface 分别执行真实读取并全部被 Seatbelt 拒绝。
+
+### FixR5 门禁
+
+```text
+fresh production-integration RED: 9 failed
+FixR5 nested focused: 9 passed, 2 skipped
+fixture + materializer focused: 108 passed, 9 skipped
+related benefit/fixture/materializer/site: 575 passed, 9 skipped
+system-outside production exact Git surfaces: 2 passed
+system-outside Chrome + Seatbelt + final-path统一批次: 117 passed, 0 skipped in 126.67s
+Ruff check: All checks passed
+Ruff format: 4 files already formatted
+git diff --check: clean
+```
+
+本轮没有重试正式 materialize，没有修改 external source、old root、tracked protocol 或交易/发布合同，也没有启动 Provider、`codex exec` 或 experiment arm。上一轮失败留下的 raw-results stale canary 保持原样，留待父任务在任何正式重试决策前按已确认的精确路径处理。
+
+## Fix Round 6：仓外冻结评估运行时与 r2 单调替换合同
+
+### Critical、RED 与运行时选择
+
+- Fix 基线：`c639703162ea18544da0974c738ed713ce42ed14`，起点 clean。
+- actual r1 复核发现 security evaluator 使用控制仓 `.venv` 内的 `sys.executable`；最终 Seatbelt 同时拒绝 control root，导致子进程 `execvp` 失败。旧实现又把 nonzero、invalid JSON 和 `adapter_error` 折叠成普通 criterion false，使六个行为 Oracle 系统性失效，而两套 fresh 结果仍可相等，属于 Critical 假绿。
+- fresh FixR6 focused 为 `11 failed`；另对 frontend timeout 增补单独 RED，修复前为 `1 failed`。所有失败均在实现前真实运行。
+- 首选 `/usr/bin/python3` 的真实 system-outside 回归暴露 Python 3.9 不支持公开 fixture 使用的 `datetime.UTC`，退出码为 1；因此未把“不在仓内”误当作“兼容可执行”。最终选择当前控制器的 canonical base executable，仅当其位于 control root 外、全链路无 symlink、祖先与 leaf owner/mode/type 合法时接受，并在材料化时冻结完整身份。
+
+### Closed runtime binding 与 evaluator NO-GO
+
+- runtime identity 是 closed v1 object，绑定 canonical path、binary SHA256、Python version、implementation、cache tag，以及 device/inode/uid/gid/mode/nlink/size；任何 symlink、owner/type/mode、祖先、hash、version 或 stat 漂移均 NO-GO。
+- sealed manifest v3、candidate commitments v2、materialization receipt v2 与 isolation attestation 同时绑定 runtime identity digest；candidate commitments 另保存完整 closed identity。评估时从 commitments 读取已冻结 path/hash，再复算当前身份，不能由 PATH 或其他环境变量替换。
+- materializer validation scratch 与后续 actual-root replay 都经同一 `evaluate_fixture` 路径加载同一冻结 runtime。当前 invalid r1 不含该绑定，使用新 evaluator 读取时明确 `runtime-binding` NO-GO，不能继续输出分数。
+- security adapter 的 timeout、launch error、Seatbelt error、任何 nonzero（包括 71）、invalid JSON、非 mapping 或 `adapter_error` 均抛出 `EvaluatorNoGoError`，整套评估中止；不再转换成 criterion false。frontend browser timeout 仍按冻结规则 fail closed 为 false，不升级为 security infrastructure error，也不修改 rubric。
+
+### r2 单调发布与不可变 r1
+
+- production target/lock 单调升级为 exact literal `v2-benefits-20260819-r2`；没有 `latest`、glob 或 fallback，入口显式拒绝 r1 lock。新的 source root 同步版本化为 `sealed-source-r2`。
+- invalid-unbound r1 原地保留，production policy 冻结其 inode 与 identity-tree digest；materialize 起点、发布前和发布后均复算，不一致则在 r2 发布前 NO-GO，或仅按 r2 inode-bound rollback 清理本轮 r2。r1 不会被搬移、删除、覆盖或复用。
+- r2 最终 isolation profile 同时覆盖 exact r2 sealed root、r1、旧 evaluator root、r1/r2 两代 source root、repo、gitfile、per-worktree gitdir、common Git dir、raw results 与 other run roots。
+- 新增 closed disposition-plan API，只生成 `requires-independent-review` / `preserve-in-place` 的 opaque record；目标是独立 protected audit root。当前仅测试 API，不创建 audit root、不写 r1、不执行 disposition。
+
+### FixR6 门禁
+
+```text
+fresh RED: 11 failed + frontend timeout 1 failed
+FixR6 focused: 12 passed, 1 nested-sandbox skip
+fixture + materializer related: 120 passed, 10 skipped
+benefit + fixture + materializer related: 483 passed, 10 skipped
+system-outside six security oracles × two fresh: 1 passed in 1.58s
+system-outside complete scratch: 1 passed in 246.39s
+system-outside exact final Git surfaces: 1 passed
+Ruff check: All checks passed
+Ruff format: 4 files already formatted
+git diff --check: clean
+```
+
+完整 scratch 的耗时包含冻结的两次 frontend baseline timeout；两者均按预期 fail closed。独立 security 专项证明六个 Oracle 在两套 fresh candidate 上都由同一仓外冻结 runtime 真实执行，结果 byte-stable 且 baseline non-delivery，不含 `adapter_error`。
+
+最终只读门禁：invalid r1 inode `402612600`、identity-tree SHA256 `9701e5fa4ebc55aeb2911d8eee8c97af9b618a9bfeac48ac8d9bfcfa8144dc30` 未变；r2 target absent；tracked protocol 四项均为 `pending-unbound`；Provider、`codex exec`、experiment arm 调用为 `0`。本轮未重试 materialize，未删除或替换 r1，未修改 external source、旧 root 或 stale raw-results canary。
+
+## Fix Round 7：冻结 Python 运行时依赖胶囊并阻断候选写入
+
+### Critical 与 fresh RED
+
+- Fix 基线：`4851ba2ee605295ec38e3f15d0f7ed6a25c2f77b`，起点 clean。
+- FixR6 只冻结了 49,968-byte launcher；macOS `@rpath/libpython3.14.dylib`、完整 stdlib、`lib-dynload` 与 import machinery 未纳入承诺。旧 Seatbelt profile 也未禁止候选修改这些仓外、用户可写的依赖，因此存在“launcher 身份不变、解释器语义已变”的 Critical 空隙。
+- 六项 FixR7 focused 测试先在旧实现上真实 RED：依赖闭包与 closed metadata 缺失、libpython/stdlib 漂移不可见、adapter 无 post-launch 复验、runtime mirror 可写、最终 profile 无 runtime write-only deny，以及材料化产物未绑定 capsule。
+
+### Closed capsule、双向复验与 write-only isolation
+
+- 从冻结 launcher 与 Python major/minor 派生 canonical runtime prefix、`libpython`、stdlib、`lib-dynload`，并对完整 stdlib tree 建立排序、无重复、closed canonical manifest。每项绑定 relative path、type、device、inode、uid、gid、mode、nlink、size、ctime_ns、mtime_ns，regular file 另绑定 SHA256；读取前后的 `lstat` / `fstat` 不一致立即 NO-GO。
+- sealed manifest v4、candidate commitments v3、materialization receipt v3 与 isolation attestation 贯穿绑定 capsule digest；candidate commitments 保存完整 closed capsule，评估端同时复核 manifest、commitments 与当前实际依赖树。
+- 每次 security adapter launch 前加载并复算 capsule，launch 后再次从 sealed commitments 独立加载、复算并比较。任何 launcher、libpython、stdlib、dynload 或 metadata 漂移均抛出 `EvaluatorNoGoError`，整轮 NO-GO；FixR6 的 adapter nonzero/71/timeout/parse error 硬阻断保持不变。
+- candidate、通用 provider 与 final materializer profile 对 runtime capsule root 添加 `file-write*` deny，同时保留 read/exec；`run_provider_isolated` 刷新 profile 时继续携带该 write-only surface。普通 protected roots 的 read/write deny、Git surfaces、r1/r2/disposition/source 合同均未削弱。
+- system-outside 临时 runtime mirror 使用同一生产 profile 验证：依赖读取成功，而 append、内部 rename、root/bin create、file/root chmod、root rename 全部被 macOS Seatbelt 拒绝；前后 capsule manifest byte-equivalent。另有读中 path replacement 回归，证明被打开 inode 或路径 metadata 漂移不能静默通过。
+
+### FixR7 门禁
+
+```text
+fresh RED: 6 failed
+FixR7 focused: 5 passed, 1 nested-sandbox skip
+fixture + materializer related: 125 passed, 11 skipped
+benefit + fixture + materializer related: 488 passed, 11 skipped
+system-outside runtime mirror + six security oracles × two fresh + exact Git surfaces: 3 passed in 6.29s
+system-outside strengthened runtime mirror: 1 passed in 0.32s
+system-outside complete Chrome + Seatbelt scratch: 1 passed in 250.34s
+Ruff check: All checks passed
+Ruff format: 4 files already formatted
+git diff --check: clean
+```
+
+完整 scratch 继续包含两次冻结 frontend baseline timeout，均按原合同 fail closed；六个 security Oracle 均经同一 capsule-bound 仓外 runtime 真实执行，无 `adapter_error`。本轮仍未准备或物化 r2，未触碰 invalid r1、任何 source、旧 root、stale canary 或 protocol；Provider、`codex exec`、experiment arm 调用保持 `0`。
+
+## Task 2 tracked binding：actual r2 唯一公开承诺
+
+### v3 authority 与协议边界
+
+- Binding 基线：`a646c0bc3277f617a3a0216ec3395579a788c52a`；actual r2 已完成三方独立复审并获 PASS 后才执行 tracked binding。
+- `sealed-commitments.json` 升级为 closed v3，仅保存 opaque SHA256 与状态：exact r2 lock、sealed manifest、三个 payload、intent map、public fixture manifest/tree pair、evidence-contract pair、candidate commitments、materialization receipt、isolation attestation、runtime identity/capsule、source bundle/root tree，以及派生状态 `materialized-validated`。公开文件不含 sealed plaintext、答案或绝对路径。
+- consumer 逐项重算 public fixture/evidence、actual r2 manifest/payload/intent、candidate/receipt/attestation、external source identity tree、runtime identity 与完整 capsule；同时校验 manifest/candidate/receipt/attestation 的 runtime、payload、source 与 receipt 链四向一致。缺字段、额外字段、schema v2、r1 lock、未验证状态或任何 authority surface 漂移均只返回 opaque `authority-invalid`，不创建 intent/approval event 文件。
+- protocol 只把四个 `pending-unbound` 字段绑定为 fixture pair `3a5a2a…4ff8a` 与 evidence pair `7b32d6…060c`；其余 execution lock、run matrix、预算与顶层结构 byte-semantically unchanged。
+- 新增只读 `benefit-evidence verify-sealed-commitments`。成功只报告 `authority=task2-commitment` 与 `status=bound`。binding 提交当时离线 validate 曾把 Task 2 commitment bound 误标为 `execution_ready=true`；后续 FixR1 已将该标签缺口升级为独立授权硬门禁，当前默认输出为 `execution_ready=false`、`provider_authorized=false`、`experiment_authorized=false`。
+
+### TDD 与门禁
+
+```text
+fresh binding RED: 12 failed
+binding focused: 13 passed
+fixture + materializer related: 136 passed, 11 skipped
+benefit + fixture + materializer + CLI related: 510 passed, 11 skipped
+actual r2 authority CLI: bound; Provider/experiment authorization false
+protocol offline validate: structurally valid; Task2 bound; Provider/experiment authorization false
+Ruff check: All checks passed
+git diff --check: clean
+```
+
+首次把 production protocol 绑定后，42 个旧 materializer 测试按生产 fail-closed 合同统一停在 `protocol-state`；这不是实现回归，而是测试 fixture 此前直接复制 production pending 状态。测试 helper 已改为显式构造 pre-binding pending protocol，materializer 的生产门禁没有放宽，随后统一回归全绿。
+
+binding 前后 external identity 完全一致：actual r2 inode `403098441` / tree `b5b2b362…8615b`，invalid r1 inode `402612600` / tree `9701e5fa…dc30`，r2 source inode `403084506` / tree `56387824…9596`，disposition inode `403084461` / tree `52797356…44ae`，runtime identity `4e52fbf6…87a2`，runtime capsule `ed26993a…caf5`。actual 八个 authority 文件分别重算并与 tracked v3 完全一致；Provider、`codex exec`、experiment arm 调用仍为 `0`，没有启动 Task 3/4 或实验。
+
+## Task 2 binding FixR1：独立执行授权与发布元数据闭包
+
+### 两项 Critical 与 fresh RED
+
+- Fix 基线：`9b2b86df00a6c9a4d2f0091c019179babe0165a0`，起点 clean。
+- C1 证明 binding 输出中的三项 authorization flag 只是标签：bound protocol 可直接进入 `start_run → provider → reserve`，没有独立授权输入。fresh C1 批次为 `15 failed`，覆盖默认 ready 假阳性、七个 mutation API、过期与 protocol/budget/identity/scope 漂移。
+- C2 证明 actual sealed consumer 只校验内容 digest，没有先闭合发布目录元数据。fresh C2 批次为 `8 failed`，覆盖 root `0755`、member `0644`、extra 第九项、hardlink、symlink、scan error、root replacement race 和 file replacement race。
+- 两批 RED 均在生产修复前真实执行；统一 GREEN 后分别为 C1 `35 passed`、C2 `9 passed`。
+
+### 独立 closed execution authorization
+
+- 新增 `ai-sdlc-v2-benefit-execution-authorization/v1` closed contract；正式仓库不生成、不跟踪 authorization 实例，测试只在 `tmp_path` 创建 synthetic authorization。
+- 合同逐项绑定 canonical protocol SHA256、完整 execution lock、完整 `33/19/4/3/7` attempt budget、UTC `valid_from/expires_at` 窗口、exact 15 run IDs 和 exact 七项 mutation scope。未知、缺失、非 canonical binding、过期或尚未生效均 fail closed。
+- authorization leaf 必须 canonical regular、owner=euid、exact `0600`、`nlink=1`，通过 `O_NOFOLLOW` 打开；读取前后同时比较 path/opened inode、dev、uid/gid、mode、nlink、size、ctime/mtime。symlink、hardlink、mode 漂移与 replacement race 均不能授权。
+- `start_run`、`transition_run_phase`、`reserve_provider_attempt`、`record_provider_completion`、`start_service_transaction`、`record_service_transaction`、`seal_run_evidence` 在读取 evidence contract、ledger 或写入第一个字节前统一调用同一 authorization gate。无、错、过期或漂移 authorization 均保持 ledger/state byte-identical。
+- 对应七个离线 CLI mutation command 全部要求显式 `--authorization`，且只把该外部路径传入同一 core gate，不在 CLI 复制或弱化授权逻辑。
+- `validate` 不再从 Task 2 commitment 推导任何执行许可。默认 actual protocol 输出为 `task2_commitment_bound=true`，但 `execution_ready=false`、`provider_authorized=false`、`experiment_authorized=false`；只有显式 supplied、当前有效且完整绑定的独立 authorization 才可能把三项变为 true。
+
+### actual r2 发布元数据闭包
+
+- `validate_sealed_commitments` 在解析任何 sealed JSON 前先要求 canonical、euid-owned、exact `0700` r2 root 和 exact 八个文件名；不存在“允许额外调试文件”的开放面。
+- root 以 `O_DIRECTORY|O_NOFOLLOW` pinned dirfd 打开。八个 member 逐一用相对 `openat` 语义和 `O_NOFOLLOW` 打开，必须 regular、euid-owned、exact `0600`、`nlink=1`。
+- 每个文件在读取前、读取后与整个 authority closure 完成后三次比较 path/opened identity；root 同时比较 pinned fd 与 lexical path identity。任何 extra、symlink、hardlink、chmod、scan error、file/root replacement race 均返回单一 opaque `fixture.sealed-commitment / authority-invalid`。
+- manifest、三个 payload、intent map、candidate commitments、receipt 与 attestation 全部只从 pinned snapshot bytes 解析；不再在 digest 校验后通过普通路径重新读取，且不会创建 intent/approval event。
+
+### FixR1 门禁
+
+```text
+fresh RED: C1 15 failed; C2 8 failed
+focused GREEN: C1 35 passed; C2 9 passed
+benefit + fixture + materializer + CLI related: 544 passed, 11 skipped
+Ruff check: All checks passed
+git diff --check: clean
+actual r2 authority CLI: bound; Provider/experiment authorization false
+actual protocol default validate: Task2 bound; execution/provider/experiment false
+```
+
+post-fix external identity 与 binding 前一致：actual r2 inode `403098441` / tree `b5b2b362…8615b`，r2 source inode `403084506` / tree `56387824…9596`，disposition inode `403084461` / tree `52797356…44ae`，runtime identity `4e52fbf6…87a2`，runtime capsule `ed26993a…caf5`。本轮只读验证 actual authority，没有修改 r2、r1、source、disposition 或 tracked protocol commitment；Provider、`codex exec`、experiment arm 调用保持 `0`，没有进入 Task 3/4。

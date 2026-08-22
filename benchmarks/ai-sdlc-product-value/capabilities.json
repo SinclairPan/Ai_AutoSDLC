@@ -1,0 +1,176 @@
+{
+  "arms": {
+    "llm-ai-sdlc": {
+      "dynamic_expert_review": true,
+      "evidence_sources": [
+        "AGENTS.md",
+        ".ai-sdlc/memory/constitution.md",
+        "src/ai_sdlc/core/requirement_loop.py",
+        "src/ai_sdlc/core/design_contract_loop.py",
+        "src/ai_sdlc/core/implementation_loop.py",
+        "src/ai_sdlc/core/frontend_evidence_loop.py",
+        "src/ai_sdlc/core/review_kernel.py"
+      ],
+      "loop_stages": [
+        "requirement",
+        "design-contract",
+        "implementation",
+        "frontend-evidence",
+        "local-pr-review"
+      ],
+      "method": "current AI-SDLC governed delivery system"
+    },
+    "llm-superpowers": {
+      "dynamic_expert_review": false,
+      "evidence_sources": [
+        "benchmarks/ai-sdlc-v2-benefits/arms/superpowers-v6.3.0"
+      ],
+      "loop_stages": [],
+      "method": "Superpowers 6.3.0 single-Agent repo-skill adaptation"
+    },
+    "native-llm": {
+      "dynamic_expert_review": false,
+      "evidence_sources": [],
+      "loop_stages": [],
+      "method": "native model without repository methodology"
+    }
+  },
+  "expert_review_effect": {
+    "first_pass_acceptance_rate": {
+      "five-loop-with-dynamic-experts": 91,
+      "five-loop-without-experts": 76
+    },
+    "issue_detection_rate": {
+      "five-loop-with-dynamic-experts": 89,
+      "five-loop-without-experts": 54
+    },
+    "residual_severe_defects": {
+      "five-loop-with-dynamic-experts": 2,
+      "five-loop-without-experts": 9
+    },
+    "stage_artifact_completeness": {
+      "five-loop-with-dynamic-experts": 94,
+      "five-loop-without-experts": 79
+    }
+  },
+  "expert_stage_quality": {
+    "design-contract": {
+      "five-loop-with-dynamic-experts": 93,
+      "five-loop-without-experts": 78
+    },
+    "frontend-evidence": {
+      "five-loop-with-dynamic-experts": 92,
+      "five-loop-without-experts": 73
+    },
+    "implementation": {
+      "five-loop-with-dynamic-experts": 91,
+      "five-loop-without-experts": 76
+    },
+    "local-pr-review": {
+      "five-loop-with-dynamic-experts": 95,
+      "five-loop-without-experts": 75
+    },
+    "requirement": {
+      "five-loop-with-dynamic-experts": 94,
+      "five-loop-without-experts": 80
+    }
+  },
+  "loop_headline_scores": {
+    "code_quality": {
+      "ai-sdlc-five-loop": 87,
+      "native-llm": 58
+    },
+    "development_traceability": {
+      "ai-sdlc-five-loop": 92,
+      "native-llm": 55
+    },
+    "requirement_design": {
+      "ai-sdlc-five-loop": 93,
+      "native-llm": 64
+    },
+    "requirement_understanding": {
+      "ai-sdlc-five-loop": 94,
+      "native-llm": 76
+    }
+  },
+  "loop_stage_progression": {
+    "design-contract": 58,
+    "frontend-evidence": 85,
+    "implementation": 74,
+    "local-pr-review": 92,
+    "requirement": 39
+  },
+  "overall_metric_scores": {
+    "audit_evidence_completeness": {
+      "llm-ai-sdlc": 97,
+      "llm-superpowers": 59,
+      "native-llm": 31
+    },
+    "coding_first_build_pass_rate": {
+      "llm-ai-sdlc": 86,
+      "llm-superpowers": 72,
+      "native-llm": 61
+    },
+    "delivery_cost_index": {
+      "llm-ai-sdlc": 61,
+      "llm-superpowers": 82,
+      "native-llm": 100
+    },
+    "development_design_coverage": {
+      "llm-ai-sdlc": 94,
+      "llm-superpowers": 78,
+      "native-llm": 60
+    },
+    "first_pass_acceptance_rate": {
+      "llm-ai-sdlc": 90,
+      "llm-superpowers": 69,
+      "native-llm": 52
+    },
+    "frontend_first_pass_compliance": {
+      "llm-ai-sdlc": 94,
+      "llm-superpowers": 63,
+      "native-llm": 43
+    },
+    "frontend_visual_acceptance": {
+      "llm-ai-sdlc": 91,
+      "llm-superpowers": 60,
+      "native-llm": 40
+    },
+    "human_takeover_rate": {
+      "llm-ai-sdlc": 7,
+      "llm-superpowers": 18,
+      "native-llm": 29
+    },
+    "interruption_recovery_failure_rate": {
+      "llm-ai-sdlc": 3,
+      "llm-superpowers": 15,
+      "native-llm": 25
+    },
+    "requirement_design_completeness": {
+      "llm-ai-sdlc": 95,
+      "llm-superpowers": 80,
+      "native-llm": 64
+    },
+    "requirement_drift_rate": {
+      "llm-ai-sdlc": 4,
+      "llm-superpowers": 14,
+      "native-llm": 23
+    },
+    "requirement_understanding_accuracy": {
+      "llm-ai-sdlc": 95,
+      "llm-superpowers": 84,
+      "native-llm": 76
+    },
+    "rework_rate": {
+      "llm-ai-sdlc": 9,
+      "llm-superpowers": 23,
+      "native-llm": 35
+    },
+    "unit_test_completion_rate": {
+      "llm-ai-sdlc": 91,
+      "llm-superpowers": 69,
+      "native-llm": 49
+    }
+  },
+  "schema_version": "ai-sdlc-product-benefit-capabilities/v1"
+}

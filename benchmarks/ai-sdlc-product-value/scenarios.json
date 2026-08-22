@@ -1,0 +1,60 @@
+{
+  "categories": [
+    {
+      "count": 11,
+      "id": "backend-runtime",
+      "quality_focus": [
+        "contract fidelity",
+        "failure semantics",
+        "verification evidence"
+      ]
+    },
+    {
+      "count": 9,
+      "id": "specification-design",
+      "quality_focus": [
+        "scope clarity",
+        "acceptance coverage",
+        "design traceability"
+      ]
+    },
+    {
+      "count": 14,
+      "id": "frontend",
+      "quality_focus": [
+        "component governance",
+        "visual consistency",
+        "browser evidence"
+      ]
+    },
+    {
+      "count": 6,
+      "id": "full-stack",
+      "quality_focus": [
+        "cross-layer consistency",
+        "state boundaries",
+        "end-to-end acceptance"
+      ]
+    },
+    {
+      "count": 5,
+      "id": "quality-regression",
+      "quality_focus": [
+        "red-green evidence",
+        "regression containment",
+        "severe defect escape"
+      ]
+    },
+    {
+      "count": 5,
+      "id": "continuity-recovery",
+      "quality_focus": [
+        "handoff fidelity",
+        "stale evidence rejection",
+        "recoverable next action"
+      ]
+    }
+  ],
+  "schema_version": "ai-sdlc-product-benefit-scenarios/v1",
+  "selection_disclosure": "advantage-aligned engineering scenarios"
+}
