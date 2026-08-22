@@ -3,22 +3,22 @@
     "llm-ai-sdlc": {
       "dynamic_expert_review": true,
       "evidence_sources": [
-        "AGENTS.md",
-        ".ai-sdlc/memory/constitution.md",
+        "README.md",
+        "docs/product-contract.md",
         "src/ai_sdlc/core/requirement_loop.py",
         "src/ai_sdlc/core/design_contract_loop.py",
         "src/ai_sdlc/core/implementation_loop.py",
         "src/ai_sdlc/core/frontend_evidence_loop.py",
-        "src/ai_sdlc/core/review_kernel.py"
+        "src/ai_sdlc/core/loop_review_service.py"
       ],
-      "loop_stages": [
+      "loop_types": [
         "requirement",
         "design-contract",
         "implementation",
         "frontend-evidence",
         "local-pr-review"
       ],
-      "method": "current AI-SDLC governed delivery system"
+      "method": "AI-SDLC v3.0.1 governed delivery system"
     },
     "llm-superpowers": {
       "dynamic_expert_review": false,

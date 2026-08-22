@@ -11,6 +11,22 @@ from pathlib import Path
 
 _SHA1_RE = re.compile(r"^[0-9a-f]{40}$")
 _GENERATED_AT_UTC = "2026-08-21T00:00:00Z"
+_EXPECTED_RELEASE_BASELINE: dict[str, object] = {
+    "schema_version": "ai-sdlc-product-release-baseline/v1",
+    "version": "3.0.1",
+    "tag": "v3.0.1",
+    "tag_object": "408086505718fbd26824373bb72ed98c27c3b652",
+    "commit": "9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4",
+    "tree": "fd5c2dac0a216f0eb17855d03cc7900d872d3c61",
+    "runtime_equivalent_to": "v3.0.0",
+    "evidence_blobs": {
+        "README.md": "87b0b7c1f60b0f28a53fda8f3426ad2f8270ed0b",
+        "USER_GUIDE.zh-CN.md": "52b1fbb8399ef55674cb54953e9c5411d2b83b61",
+        "docs/product-contract.md": "2cc25f28b5903a2223bec93c5b7a192f05caca30",
+        "rules/pipeline.md": "27543fe347d802b81b724f8957a2c61f9f110b37",
+        "rules/quality-gate.md": "501f3466a9285dc1c0f474946a10103dd9bc6edc",
+    },
+}
 
 _OVERALL_METRICS: dict[str, dict[str, str]] = {
     "requirement_understanding_accuracy": {
@@ -147,6 +163,7 @@ class BenchmarkInputs:
     contract: dict[str, object]
     scenarios: dict[str, object]
     capabilities: dict[str, object]
+    release_baseline: dict[str, object]
 
 
 def _read_object(path: Path) -> dict[str, object]:
@@ -163,6 +180,10 @@ def load_benchmark_inputs(root: Path) -> BenchmarkInputs:
     contract = _read_object(root / "benchmark-contract.json")
     scenarios = _read_object(root / "scenarios.json")
     capabilities = _read_object(root / "capabilities.json")
+    release_baseline = _read_object(root / "release-baseline.json")
+
+    if release_baseline != _EXPECTED_RELEASE_BASELINE:
+        raise BenefitDataError("benchmark-input-invalid")
 
     if set(contract) != {
         "schema_version",
@@ -195,7 +216,7 @@ def load_benchmark_inputs(root: Path) -> BenchmarkInputs:
         "llm-ai-sdlc",
     }:
         raise BenefitDataError("benchmark-input-invalid")
-    return BenchmarkInputs(contract, scenarios, capabilities)
+    return BenchmarkInputs(contract, scenarios, capabilities, release_baseline)
 
 
 def canonical_json_bytes(payload: Mapping[str, object]) -> bytes:
@@ -225,11 +246,14 @@ def _base_dataset(
 ) -> dict[str, object]:
     if not _SHA1_RE.fullmatch(source_commit):
         raise BenefitDataError("source-commit-invalid")
+    if source_commit != inputs.release_baseline["commit"]:
+        raise BenefitDataError("source-commit-invalid")
     return {
         "schema_version": schema_version,
         "benchmark_type": inputs.contract["benchmark_type"],
         "generated_at_utc": _GENERATED_AT_UTC,
         "source_commit": source_commit,
+        "product_release": copy.deepcopy(inputs.release_baseline),
         "model_id": inputs.contract["model_id"],
         "reasoning_effort": inputs.contract["reasoning_effort"],
         "selection_disclosure": inputs.contract["selection_disclosure"],
@@ -267,13 +291,13 @@ def build_datasets(
 
     loop = _base_dataset(
         inputs,
-        schema_version="ai-sdlc-loop-benefit/v1",
+        schema_version="ai-sdlc-loop-benefit/v2",
         source_commit=source_commit,
         arms={
             "native-llm": {"method": "native model direct development"},
             "ai-sdlc-five-loop": {
-                "method": "current AI-SDLC five-stage Loop Engineering",
-                "stages": list(arms["llm-ai-sdlc"]["loop_stages"]),
+                "method": "AI-SDLC v3.0.1 five-type Loop Engineering",
+                "loop_types": list(arms["llm-ai-sdlc"]["loop_types"]),
             },
         },
         metric_definitions=_LOOP_METRICS,
@@ -284,14 +308,14 @@ def build_datasets(
     )
     expert = _base_dataset(
         inputs,
-        schema_version="ai-sdlc-expert-review-benefit/v1",
+        schema_version="ai-sdlc-expert-review-benefit/v2",
         source_commit=source_commit,
         arms={
             "five-loop-without-experts": {
-                "method": "same five-stage AI-SDLC flow without independent experts"
+                "method": "same five-type AI-SDLC flow without independent experts"
             },
             "five-loop-with-dynamic-experts": {
-                "method": "same five-stage AI-SDLC flow with risk-routed read-only experts"
+                "method": "same five-type AI-SDLC flow with risk-routed read-only experts"
             },
         },
         metric_definitions=_EXPERT_METRICS,
@@ -299,7 +323,7 @@ def build_datasets(
     )
     overall = _base_dataset(
         inputs,
-        schema_version="ai-sdlc-overall-comparison/v1",
+        schema_version="ai-sdlc-overall-comparison/v2",
         source_commit=source_commit,
         arms=arms,
         metric_definitions=_OVERALL_METRICS,

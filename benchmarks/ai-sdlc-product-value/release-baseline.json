@@ -1,0 +1,16 @@
+{
+  "schema_version": "ai-sdlc-product-release-baseline/v1",
+  "version": "3.0.1",
+  "tag": "v3.0.1",
+  "tag_object": "408086505718fbd26824373bb72ed98c27c3b652",
+  "commit": "9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4",
+  "tree": "fd5c2dac0a216f0eb17855d03cc7900d872d3c61",
+  "runtime_equivalent_to": "v3.0.0",
+  "evidence_blobs": {
+    "README.md": "87b0b7c1f60b0f28a53fda8f3426ad2f8270ed0b",
+    "USER_GUIDE.zh-CN.md": "52b1fbb8399ef55674cb54953e9c5411d2b83b61",
+    "docs/product-contract.md": "2cc25f28b5903a2223bec93c5b7a192f05caca30",
+    "rules/pipeline.md": "27543fe347d802b81b724f8957a2c61f9f110b37",
+    "rules/quality-gate.md": "501f3466a9285dc1c0f474946a10103dd9bc6edc"
+  }
+}
