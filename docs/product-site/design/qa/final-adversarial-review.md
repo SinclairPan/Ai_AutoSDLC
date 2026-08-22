@@ -49,4 +49,4 @@ Reviewed implementation commit: `343f087d43dd803e1ea2154d29fade92338a6da3`
 - Expert：`0959de97d6b07aebb0a0b0300cb4097eca7ff8b63acf2821e5b605f131c0630f`
 - Platform：`d4cf65d91052a757b658bcbacf1c014a2d3afb4ed537b93baf47ce4530d92f5f`
 
-当前结论：实现与自动证据 `PASS`；旧 v2 reviewer attestation 不得沿用，必须针对包含本回执的新 exact commit 重新出具。
+当前结论：实现与自动证据 `PASS`。三位独立 reviewer 已针对 exact commit `75d6b216bd2c4806ecfbe5094029a70e271e4460` 重新出具 requirements/copy、interaction/accessibility、visual/offline-delivery 三份 attestation；聚合校验为 `REVIEWER_ATTESTATIONS_VALID`，Critical 0、Important 0。旧 v2 attestation 未沿用。

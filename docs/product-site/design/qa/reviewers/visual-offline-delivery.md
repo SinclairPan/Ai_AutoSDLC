@@ -1,49 +1,51 @@
-# Visual and Offline Delivery Review
+# Independent visual and offline delivery reviewer attestation
 
 Reviewer role: `visual-offline-delivery`
-Reviewer ID: `reviewer-visual-delivery-9154a47`
-Reviewer task: `/root/site_task10_evidence/reviewer_visual_delivery`
-Reviewed product baseline: `9154a47a36026133e4a587043aeb32d1a21efb0e`
-Reviewed at UTC: `2026-08-17T21:01:52Z`
+Reviewer ID: `reviewer-visual-delivery-75d6b21`
+Reviewer task: `/root/auth_bridge_review`
+Reviewed product baseline: `75d6b216bd2c4806ecfbe5094029a70e271e4460`
+Reviewed at UTC: `2026-08-22T04:45:30Z`
 Verdict: `PASS`
 Finding count: `0`
-Canonical content SHA256: `e2438422335345bc78e5726102c3fd048c212b234f72704e466e8e4d53fb618b`
+Canonical content SHA256: `c9c525458221e420f71ff59ca35ff1a528af915da246c75f2e4e59ce88ece956`
 Canonical hash rule: `SHA-256 of UTF-8 file bytes after replacing the Canonical content SHA256 value with 64 ASCII zeroes.`
 
 ## Input hashes
 
-`docs/product-site/design/qa/package-manifest.sha256`: `3910199d193bc3965092936784a1576f353b9939c83db92598dc947780dd122d`
-`docs/product-site/design/qa/browser-acceptance-receipt.json`: `c1ea3eca93f6356484ffc452c85ac603aec4c51fa9c3b9113968f60dbb9c4b88`
-`scripts/run_offline_product_site_browser_acceptance.mjs`: `f56950501ce5308d8f33ccf3b1188768ef15e3651f919c278b4a5eae3bfb6bcf`
-`docs/product-site/content/offline-product-site-copy-v1.md`: `2ee0d75cb38e742b98ac956a588f37f276fefbe095284cf1ac7838a4ce688ffa`
-`docs/product-site/content/USER_GUIDE.zh-CN.md`: `8466b8535cea8f0a17e15181060b954ad84a815be96c7e2b269f84cfce054d67`
-`docs/product-site/design/offline-product-site-visual-design-spec-v1.md`: `08f0ff785f2a4229f56477c6cab4e2d32ea5d43627f47e18eb2f16bee930d31c`
+`docs/product-site/design/qa/package-manifest.sha256`: `c08a89e3ab9b899c58559082261e95d6452d0ac5743db3e6f2cfd6374153483a`
+`docs/product-site/design/qa/browser-acceptance-receipt.json`: `f4c4040c736d18f1e738a532e9723a40367ae58d8c1d89ac16e697c4773919f5`
+`scripts/run_offline_product_site_browser_acceptance.mjs`: `597a852fe8b70d3d2893ddad56e2ac5578bd9b3e50fe23034daa3a374d1128d8`
+`docs/product-site/content/offline-product-site-copy-v1.md`: `267b39711705a3b11e2e7a6ebc4894e77ed094988573c7abf94c31de1dca8a9f`
+`docs/product-site/content/USER_GUIDE.zh-CN.md`: `b1bd464882e7a0ad1b163091d39d4650f16bef9630d44d968c73aa09251cbe7d`
+`docs/product-site/design/offline-product-site-visual-design-spec-v1.md`: `e564ee8bc5eb16fb2d87af4b50ef000343eb3e7d95773f61dddb90bf4d1dc7ab`
 `docs/product-site/design/homepage-direction-v2-approved.png`: `0526f97df004537c3d3c758fe22127ebabe524965ba9143fe5a5523d72fb206d`
-`docs/product-site/design/qa/home-1440x900.png`: `367ce22dc32c130dd060fa54148face9cac90b85d881dd7646c19a7b58b16ee4`
-`docs/product-site/design/qa/home-1366x768.png`: `368ad3dfa48b033335a839154d1bda72c86f8b4c424cd0f5b7bcab3f9ba9cc90`
-`docs/product-site/design/qa/home-1280x800.png`: `d433e372b6de4008002dc7668c830a619e625756bd1d2de89d78e6db7586408b`
-`docs/product-site/design/qa/home-1024x768.png`: `4f8a222c154a6de713db606b32d7e9c6b9043b1db70544b55f1f3813ce3f3ab0`
-`docs/product-site/design/qa/home-390x844.png`: `88f5e5e7cc29eddd55bf370d44cbb2fb8f4f7174c23303659c3a578e55975c86`
-`docs/product-site/design/qa/loop-1366x768.png`: `95dafb8bd7913c94b3730251d1fe59009f7c5aa8ca0a6f4f1caa8419aa946d27`
-`docs/product-site/design/qa/expert-review-1366x768.png`: `2abf4273f4fb3aa771cdb5dcb76d9b6e4e8f0923cd7026055627cd7399018cb7`
-`docs/product-site/design/qa/platform-1366x768.png`: `be9fe1cbb1e332aed0b6fc5db3f9a8aee4c6e5b8a7b5d41a74265011605080de`
-`docs/product-site/design/qa/downloads-1366x768.png`: `d28f6296bbfc366fa83387944fec9e14bff3034c44c60a6d2a520737e856dbd6`
-`docs/product-site/design/qa/guide-1366x768.png`: `0e4938b90f3c728c4585bd181276d12ee9ff7f1b335396ac391887884fa40125`
-`docs/product-site/design/qa/guide-390x844.png`: `20de5d6b62d4c40a40dfcab7db506f476719ea6f93952afb04f081fef9b45f1e`
+`docs/product-site/design/qa/home-1440x900.png`: `4ae4c25e2285dc74401f2900cc6256e3cf6327c4a7e913cff8f71c22246ee126`
+`docs/product-site/design/qa/home-1366x768.png`: `9e7df46cafbb77df55167fe77df380106aff856d61444c3808da3870aff8820f`
+`docs/product-site/design/qa/home-1280x800.png`: `57ae6362fe0cb4415b7d230d021e2add251edd9080601c6582080cfa886ba250`
+`docs/product-site/design/qa/home-1024x768.png`: `8065dc821a4ef3cf9cb8a145e6bd5adbc78fed57ef4af3ee43ab27cc048c29d8`
+`docs/product-site/design/qa/home-390x844.png`: `071407fa619b22be6d371f4cf8b5db257ae464ebeb65a86b74e871d9b8ab9eec`
+`docs/product-site/design/qa/loop-1366x768.png`: `1f2547a0c88cf285f572f75ad0fc9e4003800e4bbec177bfb85ec901247886c4`
+`docs/product-site/design/qa/expert-review-1366x768.png`: `0959de97d6b07aebb0a0b0300cb4097eca7ff8b63acf2821e5b605f131c0630f`
+`docs/product-site/design/qa/platform-1366x768.png`: `d4cf65d91052a757b658bcbacf1c014a2d3afb4ed537b93baf47ce4530d92f5f`
+`docs/product-site/design/qa/downloads-1366x768.png`: `0ede74ae0210d799ee7643d825d9643ee3184be7c8ab4db251a09ccfcecdd4e9`
+`docs/product-site/design/qa/guide-1366x768.png`: `15886d0cdb36a6a9ab9f3f7ee5daa47c9395a606289b4b9b5fc67192f019715a`
+`docs/product-site/design/qa/guide-390x844.png`: `45180646805c76f3958a653ea8d72f0bd3582e9084c4cf2333e5e8b9731032b7`
 
 ## Scope
 
-Independent read-only review of the exact baseline's five-viewport visual and responsive behavior; the 11 QA screenshot bindings; expert screenshot focus, scroll, clipping, overlap, animation-settling, and byte-determinism evidence; the 13-file offline package boundary; the absence of bundled installers and remote runtime dependencies; the default video empty state; the future local MP4/VTT configuration contract; and the reproducible final delivery boundary.
+Independent review of the exact commit's visual system, first-screen hierarchy, responsive behavior, Downloads and Guide surfaces, representative screenshot bindings, Platform disclosure correction, offline request ownership, 16-entry package manifest, and schema-3 browser receipt. The approved v2-named reference image was used only as a visual-language reference; no previous reviewer conclusion was reused, and current product identity was evaluated from the v3.0.1 implementation and evidence at this exact commit.
 
 ## Independent verification
 
-- Read all reviewed inputs from the exact baseline via an isolated archive, without consulting existing reviewer verdicts.
-- Recomputed all 18 Git-blob input SHA-256 values and matched the 13-entry package manifest to the exact deliverable bytes.
-- Inspected the approved visual reference and all 11 QA screenshots; checked all five homepage viewports plus Loop, Expert, Platform, Downloads, and Guide captures for responsive reflow, legibility, clipping, and overlap.
-- Re-ran the exact baseline static validator and schema-3 receipt verifier. The receipt reproduces 135 state checks with zero viewport clipping, ancestor clipping, control overlap, runtime, accessibility, or configured-video failures.
-- Verified 33 runtime requests resolve to 13 unique `file:` URLs inside the copied site root, with zero remote requests, root escapes, or repository back-references.
-- Verified the expert capture is byte-identical across two captures and records `#review-design`, selected/focused `review-design`, zero page/tablist scroll, settled animation, and no clipped or overlapping controls.
-- Verified the deliverable contains exactly the 13 manifest entries, no installer archives, no MP4/VTT payload by default, a visible honest empty state, and a tested local `video/mp4` plus captions-track configuration path with native controls and fullscreen entry.
+- Confirmed `HEAD` equals the full reviewed commit and recomputed all 18 exact-commit input hashes; excluded the unrelated untracked `selected-homepage-direction.png` from review inputs.
+- Confirmed the source visual specification now defines the Guide as empty/existing project × online/offline × three platforms, totaling 12 self-contained routes, matching the desktop/mobile Guide screenshots and the 24 receipt route activations.
+- Inspected all 11 committed QA screenshots and matched every screenshot byte hash to the receipt, including five homepage widths, the 390 px full-page reflow, Loop, deterministic Expert, Platform, Downloads, and desktop/mobile Guide captures.
+- Confirmed the current v3.0.1 screens preserve the white, cobalt-blue, restrained warm-accent language and consistent typography, spacing, dividers, card treatment, and CTA hierarchy while presenting version identity and benefit evidence without visible clipping or overlap.
+- Verified the 1366 px first screens expose the product claim and the first evidence region on Home, Loop, Expert, and Platform; Downloads exposes the v3.0.1 identity and Guide entry; the 390 px Home and Guide reflow into one readable column with usable controls and no horizontal overflow.
+- Verified the corrected Platform disclosure says the existing synthetic values were rebound to v3.0.1 without rerunning Provider and remain non-production statistics; the changed Platform HTML hash is present in the 16-entry manifest, the manifest is bound into the receipt, and the receipt's input commit is an ancestor with zero drift across all bound paths.
+- Recomputed all 16 package entries successfully, ran the current static validator (`OFFLINE_PRODUCT_SITE_VALID`), and ran the focused v3 release contract tests (`11 passed`).
+- Ran the current receipt verifier: `BROWSER_ACCEPTANCE_RECEIPT_VALID`; its 80 state/geometry checks, 24 Guide route activations, 390 exact copy actions, 12 no-JavaScript groups, configured-video and accessibility checks all record zero failures. All 20 Platform states across five viewports and four tab states have matching client/scroll widths with zero clipping or overlap.
+- Verified request ownership records 33 requests and 13 unique `file:` URLs inside the fresh copied site root, with zero remote requests, root escapes, or repository back-references. External download and GitHub links remain visibly marked `需要联网` and are not runtime dependencies.
 
 ## Findings
 
