@@ -64,6 +64,11 @@ def test_reviewed_copy_spec_and_data_report_use_the_v301_truthful_baseline() -> 
         assert "3db58121e228a7a1c4c6b760c535d6df1ffdbe84" not in text
         assert "v3.0.1" in text
 
+    visual_spec = reviewed_sources[1].read_text(encoding="utf-8")
+    assert "四种安装" not in visual_spec
+    assert "四条完整安装路径" not in visual_spec
+    assert "12 条" in visual_spec
+
     platform = _markup("platform-capabilities.html")
     report = Path(
         "docs/product-site/research/2026-08-21-current-benefit-data-report.md"

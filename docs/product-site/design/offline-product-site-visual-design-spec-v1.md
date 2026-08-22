@@ -25,7 +25,7 @@
 | Dynamic Expert Review | `dynamic-expert-review.html` | 解释 Bounded Dynamic Expert Review Graph 的职责、边界与价值 |
 | Platform Capabilities | `platform-capabilities.html` | 展示支撑两条主线的项目级工程能力 |
 | Downloads & Docs | `downloads-docs.html` | 提供 GitHub、Release、README、用户指南和离线安装包链接 |
-| 中文新用户指南 | `docs/USER_GUIDE.zh-CN.html` | 在文档内部完成四种安装与初始化路径，不进入主导航 |
+| 中文新用户指南 | `docs/USER_GUIDE.zh-CN.html` | 在文档内部提供空项目 / 已有项目 × 在线 / 离线 × 三平台的 12 条自包含路线，不进入主导航 |
 
 主导航固定使用英文：`AI-SDLC`、`Loop Engineering`、`Dynamic Expert Review`、`Platform Capabilities`、`Downloads & Docs`。产品价值、正文、交互提示和状态解释使用中文。
 
@@ -257,11 +257,11 @@ Writer → 冻结输入与 digest → Primary Expert
 第一屏使用两栏：
 
 - 左侧为 v3.0.1 版本身份、GitHub、Release 和 README。
-- 右侧为中文新用户指南主入口，说明指南内包含四条完整安装路径和问题处理。
+- 右侧为中文新用户指南主入口，说明指南内包含 12 条自包含路线和问题处理。
 
 第二层使用紧凑表格提供 Windows AMD64、macOS ARM64、Linux AMD64 的正式离线安装包链接和 SHA256 链接。站点只提供链接，不打包安装资产。
 
-页面不提供 v2 迁移指南，不提供产品契约入口，不在页面内重复四种安装流程。
+页面不提供 v2 迁移指南，不提供产品契约入口，不在页面内重复 12 条安装与初始化路线。
 
 ### 10.3 离线状态
 
