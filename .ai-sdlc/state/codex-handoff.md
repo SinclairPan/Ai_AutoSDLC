@@ -1,29 +1,27 @@
 # Continuity Handoff
 
-- Updated: 2026-08-20T16:33:03+00:00
-- Reason: FixR3 final pre-commit checkpoint
-- Goal: Close Critical FixR3 by capability-gating every production one-shot launch before any filesystem or process action while retaining an exact zero-Provider version canary.
-- State: FixR3 is GREEN: production one-shot launch rejects empty, version, e, exec, review, resume, fork, cloud, completion, arbitrary and wrong-original argv without the private Provider capability before validation/copy/Popen. Only launch_directional_provider_session supplies the capability after closed manifest, ledger and formal command gates. The system canary uses a separate private exact original plus --version entry.
+- Updated: 2026-08-22T03:23:43+00:00
+- Reason: 本地合并三层产品收益数据实现
+- Goal: 将已验证的产品收益数据与页面实现合入 design 分支并保留独立 benchmark WIP
+- State: 已将 codex/ai-sdlc-2-offline-product-site-build 合入 design；合并后 116 项测试、站点校验、浏览器回执和 diff check 全部通过
 - Stage: none
 - Work Item: none
-- Branch: codex/ai-sdlc-2-offline-product-site-build
+- Branch: codex/ai-sdlc-2-offline-product-site-design
 
 ## Changed Files
-- M .ai-sdlc/state/codex-handoff.md
-- M src/ai_sdlc/benefit_directional_demo.py
-- M tests/unit/test_benefit_directional_demo.py
+- ?? docs/product-site/design/selected-homepage-direction.png
 
 ## Key Decisions
-- Do not special-case --version inside the production launcher; keep the zero-Provider version proof on a distinct private entry that rejects every other executable or argument shape.
+- 只合并已提交历史；保留 build 工作树及其未提交 directional benchmark WIP，不推远端、不强制清理
 
 ## Commands / Tests
-- Fresh RED 9 failed/1 passed; expanded missing-cap and canary matrix GREEN 13 passed; final focused unit 71 passed; exact system-outside canary 1 passed; Ruff check/format and git diff check passed.
+- UV_CACHE_DIR=.uv-cache uv run pytest -q tests/unit/test_product_site_benefit_builder.py tests/unit/test_offline_product_site.py => 116 passed；站点 validator PASS；browser receipt verifier PASS
 
 ## Blockers / Risks
-- No implementation blocker. Provider and codex exec remain zero; formal execution remains stopped for budget confirmation.
+- 无产品数据阻断；build 工作树含独立未提交 WIP，故暂不删除 feature 分支或 worktree
 
 ## Local PR Review
 - none
 
 ## Exact Next Steps
-- Create the single scoped FixR3 commit, prove clean worktree, and stop.
+- 继续在 design 分支完成产品站其余内容；需要发布时再 push/PR
