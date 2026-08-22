@@ -60,3 +60,19 @@
 3. 完整表必须保留全部指标；不得只截取领先项并删除持平或负向项。
 4. 页面必须在数据附近显示“证据锚定合成基准”和场景选择披露。
 5. 后续如果更换模型、Superpowers 版本、AI-SDLC 能力清单或场景矩阵，三个数据文件必须整体重建。
+
+## 离线页面验收
+
+- 内容提交：`4f1d0ca82f62f800aef69e033c80a10e75116364`。
+- 移动端布局修复提交：`42269521c960ec69f4de15a157612a048ee65a1f`。
+- 浏览器 receipt SHA-256：`6e6359fd1c443a970a534e2dadeb6a1a11f811dca5703012a51d00b125837c9a`。
+- Loop 截图 SHA-256：`d0ca95b88abc5fa474fb5a9051f2281c5f7dce3a6b4a43f5e0dbf0cee36cffd4`。
+- Dynamic Expert Review 截图 SHA-256：`a4cbf3c7e502a45a78abe26a435c771edd16eb195ca38c0327bf590b543ed1b7`。
+- Platform Capabilities 截图 SHA-256：`3684f4cedfe04a0b3177475802065b36fd3f0e49e9b6f7d96737e0ca3d9d27df`。
+- 浏览器状态：135 / 135 通过。
+- 无 JavaScript 分组：12 / 12 通过。
+- viewport / ancestor clipping：0。
+- 控件重叠：0。
+- accessibility failures：0。
+- console / page / network failures：0。
+- request ownership：33 个请求全部属于外部新鲜站点副本，远程请求 0。
