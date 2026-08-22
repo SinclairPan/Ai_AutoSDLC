@@ -1,8 +1,8 @@
-# AI-SDLC 2.0 离线产品站视觉与交互设计规范 V1
+# AI-SDLC 离线产品站视觉与交互设计规范 V2
 
 状态：对抗评审通过（2026-08-17）。
 
-本规范定义 AI-SDLC 2.0 离线产品站的页面结构、视觉系统、交互方式和小屏适配。它不包含 HTML、CSS 或 JavaScript 实现。
+本规范定义 AI-SDLC v3.0.1 离线产品站的页面结构、视觉系统、交互方式和小屏适配。它不包含 HTML、CSS 或 JavaScript 实现。
 
 ## 1. 产品站任务
 
@@ -20,14 +20,14 @@
 
 | 页面 | 文件建议 | 主要任务 |
 |---|---|---|
-| AI-SDLC 2.0 | `index.html` | 建立产品定位，承载产品实录，分发三条价值主线 |
+| AI-SDLC | `index.html` | 建立产品定位，承载产品实录，分发三条价值主线 |
 | Loop Engineering | `loop-engineering.html` | 解释 Loop 如何持续收敛并获得 Close 条件 |
 | Dynamic Expert Review | `dynamic-expert-review.html` | 解释 Bounded Dynamic Expert Review Graph 的职责、边界与价值 |
 | Platform Capabilities | `platform-capabilities.html` | 展示支撑两条主线的项目级工程能力 |
 | Downloads & Docs | `downloads-docs.html` | 提供 GitHub、Release、README、用户指南和离线安装包链接 |
 | 中文新用户指南 | `docs/USER_GUIDE.zh-CN.html` | 在文档内部完成四种安装与初始化路径，不进入主导航 |
 
-主导航固定使用英文：`AI-SDLC 2.0`、`Loop Engineering`、`Dynamic Expert Review`、`Platform Capabilities`、`Downloads & Docs`。产品价值、正文、交互提示和状态解释使用中文。
+主导航固定使用英文：`AI-SDLC`、`Loop Engineering`、`Dynamic Expert Review`、`Platform Capabilities`、`Downloads & Docs`。产品价值、正文、交互提示和状态解释使用中文。
 
 ## 3. 已锁定的首页基准
 
@@ -106,7 +106,7 @@ SHA256：`0526f97df004537c3d3c758fe22127ebabe524965ba9143fe5a5523d72fb206d`。
 - 不使用自动轮播、持续漂浮、滚动劫持或必须等待的开场动画。
 - `prefers-reduced-motion` 下关闭非必要动效。
 
-## 6. 首页：AI-SDLC 2.0
+## 6. 首页：AI-SDLC
 
 ### 6.1 首屏结构
 
@@ -209,7 +209,7 @@ Writer → 冻结输入与 digest → Primary Expert
 - 默认一名 Primary Expert，明确交叉风险时最多再加一名专家。
 - 最多一次复审；执行失败保持 `needs_review`。
 
-页面不得出现 Veto、Quorum、投票、多轮辩论或“自动发现全部缺陷”等 2.0.0 未提供的语义。
+页面不得出现 Veto、Quorum、投票、多轮辩论或“自动发现全部缺陷”等 v3.0.1 未提供的语义。
 
 ### 8.4 页面收束
 
@@ -242,7 +242,7 @@ Writer → 冻结输入与 digest → Primary Expert
 
 页面底部用一句比较定位收束：`Prompt 和 Skills 告诉 AI 怎么做；AI-SDLC 继续管理它做到哪一步、凭什么继续，以及何时可以结束。`
 
-操作：`下载 AI-SDLC 2.0.0`，进入 Downloads & Docs。
+操作：`下载 AI-SDLC v3.0.1`，进入 Downloads & Docs。
 
 ## 10. Downloads & Docs 页面
 
@@ -256,7 +256,7 @@ Writer → 冻结输入与 digest → Primary Expert
 
 第一屏使用两栏：
 
-- 左侧为 v2.0.0 版本身份、GitHub、Release 和 README。
+- 左侧为 v3.0.1 版本身份、GitHub、Release 和 README。
 - 右侧为中文新用户指南主入口，说明指南内包含四条完整安装路径和问题处理。
 
 第二层使用紧凑表格提供 Windows AMD64、macOS ARM64、Linux AMD64 的正式离线安装包链接和 SHA256 链接。站点只提供链接，不打包安装资产。

@@ -7,19 +7,19 @@
 - Reasoning effort：`high`。
 - 场景选择：`advantage-aligned engineering scenarios`。
 - 场景数：50。
-- 源提交：`5c48a6fb80dad9fecdf89324e37814b99aa27e77`。
-- Provider 会话：0；本次通过冻结能力清单和场景权重确定性复算。
-- 历史 GPT-5.4 数值：未复用；只沿用十四项评价指标与任务分布校准。
+- 产品发布源提交：`9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4`（`v3.0.1`）。
+- Provider 会话：0；本轮未重新运行 Provider，也未重新计算数值。
+- 数值来源：保留 2026-08-21 已冻结的 `gpt-5.6-sol/high` 合成数值，仅将能力证据、产品版本和来源元数据重新绑定到 v3.0.1；更早的 GPT-5.4 数值仍未复用。
 
 ## 数据资产
 
 | 数据集 | SHA-256 |
 | --- | --- |
-| `loop-benefit-data.json` | `0f9f7445047e4c83e92798e21120a37b4543bf0a9e1fa887b3b0f219e2dfefc2` |
-| `expert-review-benefit-data.json` | `2c357168e9b16ad96ec050fd0e52f2efeecdd690ca0977c7aac18722304863f8` |
-| `overall-comparison-data.json` | `24cba373aa9d7939eb1ff82817cad45e8cb2649d5236638451a74e30be933b4a` |
+| `loop-benefit-data.json` | `f919b51d9e098cb74c1c224bb65870d8868b5e37b961a10316bd597e1d1bbb91` |
+| `expert-review-benefit-data.json` | `975f66f278181039c564a5d24d775e1132dbc59b722038958c5a4e9ee47a3abe` |
+| `overall-comparison-data.json` | `50a1d62826667f02ffb7a3dd48ae31899458fb5462ed853608c221007253dcdf` |
 
-## Loop Engineering 主数据
+## Loop Engineering 主数据（既有合成数值）
 
 | 指标 | 裸 LLM | AI-SDLC 五阶段 Loop | 改善 |
 | --- | ---: | ---: | ---: |
@@ -30,7 +30,7 @@
 
 五阶段累计缺陷 / 缺口消除进度为 Requirement 39%、Design Contract 58%、Implementation 74%、Frontend Evidence 85%、Local PR Review 92%。
 
-## Dynamic Expert Review 主数据
+## Dynamic Expert Review 主数据（既有合成数值）
 
 | 指标 | 无专家 | 五阶段动态专家 | 改善 |
 | --- | ---: | ---: | ---: |
@@ -41,7 +41,7 @@
 
 五阶段生成物质量分别从 80 / 78 / 76 / 73 / 75 提升至 94 / 93 / 91 / 92 / 95。
 
-## 整体三模式主数据
+## 整体三模式主数据（既有合成数值）
 
 | 指标 | 裸 LLM | LLM + Superpowers 6.3.0 | LLM + 当前 AI-SDLC |
 | --- | ---: | ---: | ---: |

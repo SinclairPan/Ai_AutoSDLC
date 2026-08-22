@@ -1,18 +1,18 @@
-# AI-SDLC 2.0 离线产品站前台正文 V1
+# AI-SDLC 离线产品站前台正文 V2
 
 本文只包含产品站前台可见正文和必要的内容标签，不包含 HTML、CSS、视觉稿或视频成片。
 
-主导航：`AI-SDLC 2.0`、`Loop Engineering`、`Dynamic Expert Review`、`Platform Capabilities`、`Downloads & Docs`。
+主导航：`AI-SDLC`、`Loop Engineering`、`Dynamic Expert Review`、`Platform Capabilities`、`Downloads & Docs`。
 
 ---
 
-## AI-SDLC 2.0
+## AI-SDLC
 
 ### 让 AI 写代码，不等于让软件完成交付
 
 AI Coding Agent 可以理解需求、修改文件和调用工具，但真实交付还需要回答一组更难的问题：目标是否已经确定？设计是否覆盖边界？测试和浏览器结果是否属于当前代码？审查是否读取了同一个版本？失败后从哪里继续？谁有权宣布完成？
 
-AI-SDLC 2.0 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它不替代 Codex、Claude Code、Cursor 等执行工具，而是在项目侧管理 WorkItem、Loop 状态、证据、失败、恢复与 Close，让可替换的 AI 执行能力进入一套稳定的软件交付过程。
+AI-SDLC 是一个本地优先、可恢复、可验证的 AI 原生软件研发框架。它不替代 Codex、Claude Code、Cursor 等执行工具，而是在项目侧管理 WorkItem、Loop 状态、证据、失败、恢复与 Close，让可替换的 AI 执行能力进入一套稳定的软件交付过程。
 
 主要入口：
 
@@ -69,9 +69,9 @@ checkpoint、status、handoff 与 recover 共同保存当前阶段、开放门�
 
 AI-SDLC 将统一项目规则安装到不同 AI 工具的标准入口；WorkItem、Loop 状态和证据工件保留在项目侧。切换执行工具，不等于重新发明项目治理。
 
-### AI-SDLC 2.0 产品实录
+### AI-SDLC 产品实录
 
-这里预留 AI-SDLC 2.0 正式产品实录播放器。视频完成并通过内容核验后，再依据成片实际覆盖的功能、运行环境和时间码生成介绍，不预先承诺尚未录制的环节。
+这里预留 AI-SDLC 正式产品实录播放器。视频完成并通过内容核验后，再依据成片实际覆盖的功能、运行环境和时间码生成介绍，不预先承诺尚未录制的环节。
 
 视频发布后显示：
 
@@ -184,7 +184,7 @@ Loop 不追求无限自动重试。稳定的恢复路径是：
 
 同一上下文中的自审容易重复原有盲点；固定堆叠多个 Reviewer 会增加成本和无关意见；无限 Agent 讨论则模糊了谁负责修复、何时可以退出。
 
-AI-SDLC 2.0 使用有界动态专家复核合同：根据当前结果的主要风险选择一名 Primary Expert；只有出现明确第二风险面时，才增加一名 Cross-risk Expert。两者都在全新只读上下文中工作，不继承 Writer 的推理历史。
+AI-SDLC 使用有界动态专家复核合同：根据当前结果的主要风险选择一名 Primary Expert；只有出现明确第二风险面时，才增加一名 Cross-risk Expert。两者都在全新只读上下文中工作，不继承 Writer 的推理历史。
 
 ### Bounded Dynamic Expert Review Graph
 
@@ -340,32 +340,33 @@ AI-SDLC 不对所有问题使用同一种强度：
 
 ### 获取正确版本和权威文档
 
-本页集中提供 AI-SDLC 2.0.0 的正式仓库、Release、README、中文新用户指南和安装资产。安装步骤不在本页重复；请打开中文新用户指南，并在手册内部选择适合自己的完整路径。
+本页集中提供 AI-SDLC v3.0.1 的正式仓库、Release、README、中文新用户指南和安装资产。安装步骤不在本页重复；请打开中文新用户指南，并在手册内部选择适合自己的完整路径。
 
 ### 版本身份
 
 | 项目 | 值 |
 |---|---|
-| 正式版本 | `v2.0.0` |
-| Tag commit | `737bda39e05c53450e180a20581b7b7a70db9cf0` |
-| Tag tree | `3db58121e228a7a1c4c6b760c535d6df1ffdbe84` |
+| 正式版本 | `v3.0.1` |
+| Tag object | `408086505718fbd26824373bb72ed98c27c3b652` |
+| Tag commit | `9a59a3edd483b0e6526b67b03fbfcac3ba48d2e4` |
+| Tag tree | `fd5c2dac0a216f0eb17855d03cc7900d872d3c61` |
 | GitHub | [SinclairPan/Ai_AutoSDLC](https://github.com/SinclairPan/Ai_AutoSDLC) |
-| Release | [v2.0.0](https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v2.0.0) |
+| Release | [v3.0.1](https://github.com/SinclairPan/Ai_AutoSDLC/releases/tag/v3.0.1) |
 
 ### 公共文档
 
 #### 中文新用户指南
 
-面向第一次安装和初始化 AI-SDLC 的用户。离线站点优先打开基于 v2.0.0 发布事实编写并绑定摘要的本地只读副本；联网时还可以访问 GitHub 中随 v2.0.0 发布的基础指南。
+面向第一次安装和初始化 AI-SDLC 的用户。离线站点优先打开与 v3.0.1 发布源文件逐字绑定的本地只读副本；联网时还可以访问 GitHub 中随 v3.0.1 发布的同一份指南。
 
 - 本地入口：`docs/USER_GUIDE.zh-CN.html`
-- v2.0.0 发布基线：[USER_GUIDE.zh-CN.md](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/USER_GUIDE.zh-CN.md)
+- v3.0.1 发布基线：[USER_GUIDE.zh-CN.md](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v3.0.1/USER_GUIDE.zh-CN.md)
 
 #### README
 
 了解产品定位、核心能力、标准工作流和主要 CLI：
 
-- [README v2.0.0](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v2.0.0/README.md)
+- [README v3.0.1](https://github.com/SinclairPan/Ai_AutoSDLC/blob/v3.0.1/README.md)
 
 ### 离线安装资产
 
@@ -373,11 +374,11 @@ AI-SDLC 不对所有问题使用同一种强度：
 
 | 平台 | 正式资产 | 下载 |
 |---|---|---|
-| Windows AMD64 | `ai-sdlc-offline-2.0.0-windows-amd64.zip` | [安装包](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip) · [SHA256](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-windows-amd64.zip.sha256) |
-| macOS Apple Silicon | `ai-sdlc-offline-2.0.0-macos-arm64.tar.gz` | [安装包](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz) · [SHA256](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-macos-arm64.tar.gz.sha256) |
-| Linux AMD64 | `ai-sdlc-offline-2.0.0-linux-amd64.tar.gz` | [安装包](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz) · [SHA256](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha256) |
+| Windows AMD64 | `ai-sdlc-offline-3.0.1-windows-amd64.zip` · SHA256 `61a0a8bbe2f2c77b1e60ac2e15fb46a09efcd1180c000853ef04a8cafd6bef85` | [安装包](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-windows-amd64.zip) · [SHA256](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-windows-amd64.zip.sha256) |
+| macOS Apple Silicon | `ai-sdlc-offline-3.0.1-macos-arm64.tar.gz` · SHA256 `5a5a4067389c2ae56e2600560aba6c18899cfe8395f7198892447f76df510260` | [安装包](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-macos-arm64.tar.gz) · [SHA256](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-macos-arm64.tar.gz.sha256) |
+| Linux AMD64 | `ai-sdlc-offline-3.0.1-linux-amd64.tar.gz` · SHA256 `864d0b311f702cde9751ddcc0f9faa82967c8e04d02286adf3e032fba1e055f4` | [安装包](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-linux-amd64.tar.gz) · [SHA256](https://github.com/SinclairPan/Ai_AutoSDLC/releases/download/v3.0.1/ai-sdlc-offline-3.0.1-linux-amd64.tar.gz.sha256) |
 
-Windows ARM、macOS Intel 和 Linux ARM 不属于 v2.0.0 正式离线资产范围。离线站点可以在无网络时阅读产品正文和本地用户指南，但下载安装包仍需要网络或由可信渠道提前取得正式资产。
+Windows ARM、macOS Intel 和 Linux ARM 不属于 v3.0.1 正式离线资产范围。离线站点可以在无网络时阅读产品正文和本地用户指南，但下载安装包仍需要网络或由可信渠道提前取得正式资产。
 
 ### 开始验证
 
@@ -385,4 +386,4 @@ Windows ARM、macOS Intel 和 Linux ARM 不属于 v2.0.0 正式离线资产范�
 2. 打开中文新用户指南。
 3. 在中文新用户指南中按“已有项目 / 全新项目”“离线包 / 在线安装”和操作系统选择唯一完整路径。
 4. 按每一步的命令、预期结果、异常处理和下一步执行。
-5. 回到 AI-SDLC 2.0 首页继续理解 Loop 与专家复核机制。
+5. 回到 AI-SDLC 首页继续理解 Loop 与专家复核机制。

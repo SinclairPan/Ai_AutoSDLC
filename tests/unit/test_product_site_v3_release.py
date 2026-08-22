@@ -51,6 +51,29 @@ def test_all_product_pages_use_the_v301_competition_identity() -> None:
         assert "比赛最终版本" in markup
 
 
+def test_reviewed_copy_spec_and_data_report_use_the_v301_truthful_baseline() -> None:
+    reviewed_sources = (
+        Path("docs/product-site/content/offline-product-site-copy-v1.md"),
+        Path("docs/product-site/design/offline-product-site-visual-design-spec-v1.md"),
+    )
+    for source in reviewed_sources:
+        text = source.read_text(encoding="utf-8")
+        assert "AI-SDLC 2.0" not in text
+        assert "v2.0.0" not in text
+        assert "737bda39e05c53450e180a20581b7b7a70db9cf0" not in text
+        assert "3db58121e228a7a1c4c6b760c535d6df1ffdbe84" not in text
+        assert "v3.0.1" in text
+
+    platform = _markup("platform-capabilities.html")
+    report = Path(
+        "docs/product-site/research/2026-08-21-current-benefit-data-report.md"
+    ).read_text(encoding="utf-8")
+    assert "按 v3.0.1 最新能力重算" not in platform
+    assert "既有合成数值" in platform
+    assert V3_COMMIT in report
+    assert "未重新运行 Provider" in report
+
+
 def test_homepage_exposes_three_linked_product_evidence_tracks() -> None:
     markup = _markup("index.html")
     evidence = _attrs("index.html", "data-evidence-link")
