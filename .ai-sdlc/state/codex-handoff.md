@@ -1,56 +1,30 @@
 # Continuity Handoff
 
-- Updated: 2026-08-22T04:17:06+00:00
-- Reason: 完成产品站实现批次，准备冻结浏览器输入提交
-- Goal: 把 v3.0.1 产品事实、三组优势数据与 12 路线指南融入离线产品站，并生成提交绑定的浏览器证据
-- State: 页面、样式、指南、截图与 design QA 已完成；预提交静态门禁 110 passed，浏览器预验收全绿；待提交输入后生成最终绑定回执
+- Updated: 2026-08-22T04:21:10+00:00
+- Reason: 进入最终独立合议门禁前刷新 handoff
+- Goal: 完成 AI-SDLC v3.0.1 离线产品站数据融入与三专家同 SHA 终审
+- State: 实现 commit 3c9a834e 已完成；最终浏览器回执和 v3 对抗记录已生成并待证据提交；旧 v2 reviewer attestations 待三专家刷新
 - Stage: none
 - Work Item: none
 - Branch: codex/ai-sdlc-2-offline-product-site-design
 
 ## Changed Files
-- M deliverables/ai-sdlc-2.0-offline-product-site/assets/css/pages.css
-- M deliverables/ai-sdlc-2.0-offline-product-site/assets/css/site.css
-- M deliverables/ai-sdlc-2.0-offline-product-site/assets/js/site.js
-- M deliverables/ai-sdlc-2.0-offline-product-site/assets/js/video-config.js
-- M deliverables/ai-sdlc-2.0-offline-product-site/docs/USER_GUIDE.zh-CN.html
-- M deliverables/ai-sdlc-2.0-offline-product-site/downloads-docs.html
-- M deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html
-- M deliverables/ai-sdlc-2.0-offline-product-site/index.html
-- M deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html
-- M deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html
-- M docs/product-site/content/USER_GUIDE.zh-CN.md
-- M docs/product-site/design/qa/downloads-1366x768.png
-- M docs/product-site/design/qa/expert-review-1366x768.png
-- M docs/product-site/design/qa/guide-1366x768.png
-- M docs/product-site/design/qa/guide-390x844.png
-- M docs/product-site/design/qa/home-1024x768.png
-- M docs/product-site/design/qa/home-1280x800.png
-- M docs/product-site/design/qa/home-1366x768.png
-- M docs/product-site/design/qa/home-1440x900.png
-- M docs/product-site/design/qa/home-390x844.png
-- M docs/product-site/design/qa/loop-1366x768.png
-- M docs/product-site/design/qa/package-manifest.sha256
-- M docs/product-site/design/qa/platform-1366x768.png
-- M scripts/run_offline_product_site_browser_acceptance.mjs
-- M scripts/validate_offline_product_site.py
-- M tests/unit/test_offline_product_site.py
-- ?? design-qa.md
+- M docs/product-site/design/qa/browser-acceptance-receipt.json
+- M docs/product-site/design/qa/final-adversarial-review.md
+- M docs/product-site/design/qa/interaction-verification.md
 - ?? docs/product-site/design/selected-homepage-direction.png
-- ?? scripts/render_product_site_v3_guide.py
-- ?? tests/unit/test_product_site_v3_release.py
 
 ## Key Decisions
-- 保留白/钴蓝/暖金视觉体系；首页仅三条证据；详情页三级披露；Loop 使用五类口径；专家最多两名只读；平台展示三项头部与十四项分组；全站 v3.0.1
+- 以 v3.0.1 release truth 为唯一事实源；合成数据采用三级披露；不复用旧 v2 独立 attestation
 
 ## Commands / Tests
-- pytest 110 passed/6 receipt-attestation tests deselected; OFFLINE_PRODUCT_SITE_VALID; Ruff/node/diff check PASS; preliminary browser 80 states + 24 routes + 390 copies all zero failures
+- 116 unit tests passed；browser receipt verifier PASS；browser 80 states/24 routes/390 copies/12 no-JS 全部零失败
 
 ## Blockers / Risks
-- 旧 browser receipt 与 reviewer attestations 仍绑定旧提交，必须在实施提交后重建；用户未跟踪 selected-homepage-direction.png 不得加入
+- 无实现阻断；只剩三位独立 reviewer 在同一 evidence commit 上签署
 
 ## Local PR Review
 - none
 
 ## Exact Next Steps
-- 提交页面+截图输入；用新 exact commit 在非嵌套 Playwright headless shell 重跑验收；刷新 QA/attestations；全量验证并提交回执
+- 提交 browser receipt 与最终 QA 记录，然后三专家分别更新独立 attestation，验证并提交
