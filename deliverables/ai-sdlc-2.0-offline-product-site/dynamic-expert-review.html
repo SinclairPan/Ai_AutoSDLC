@@ -46,6 +46,63 @@
       </section>
 
       <section
+        class="benefit-benchmark benefit-benchmark-expert"
+        data-benefit-dataset="expert-review"
+        aria-labelledby="expert-benefit-title"
+      >
+        <div class="benefit-heading">
+          <div>
+            <p class="page-eyebrow">Expert effect benchmark</p>
+            <h2 id="expert-benefit-title">相同五阶段，动态专家把问题留在 Close 之前</h2>
+          </div>
+          <p class="benefit-model">同一 Writer · 同一冻结输入 · 专家只读</p>
+        </div>
+        <div class="benefit-card-grid" aria-label="无专家与动态专家主指标比较">
+          <article class="benefit-card" data-benefit-card="issue_detection_rate" data-without-expert-value="54" data-with-expert-value="89">
+            <p>阶段问题发现率</p><strong>54% → 89%</strong><span>+35 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="stage_artifact_completeness" data-without-expert-value="79" data-with-expert-value="94">
+            <p>五阶段生成物完整度</p><strong>79% → 94%</strong><span>+15 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="residual_severe_defects" data-without-expert-value="9" data-with-expert-value="2">
+            <p>残余严重缺陷</p><strong>9 → 2</strong><span>-78%</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="first_pass_acceptance_rate" data-without-expert-value="76" data-with-expert-value="91">
+            <p>最终首轮验收率</p><strong>76% → 91%</strong><span>+15 pts</span>
+          </article>
+        </div>
+        <div class="benefit-stage-table" role="table" aria-label="五阶段生成物质量比较">
+          <div role="row" class="benefit-stage-row benefit-stage-header">
+            <span role="columnheader">阶段生成物</span><span role="columnheader">无专家</span><span role="columnheader">动态专家</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-expert-stage-delta data-stage="requirement">
+            <strong role="cell">Requirement</strong><span role="cell">80%</span><span role="cell">94%</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-expert-stage-delta data-stage="design-contract">
+            <strong role="cell">Design Contract</strong><span role="cell">78%</span><span role="cell">93%</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-expert-stage-delta data-stage="implementation">
+            <strong role="cell">Implementation</strong><span role="cell">76%</span><span role="cell">91%</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-expert-stage-delta data-stage="frontend-evidence">
+            <strong role="cell">Frontend Evidence</strong><span role="cell">73%</span><span role="cell">92%</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-expert-stage-delta data-stage="local-pr-review">
+            <strong role="cell">Local PR Review</strong><span role="cell">75%</span><span role="cell">95%</span>
+          </div>
+        </div>
+        <p class="benefit-expert-chain">
+          Primary / Cross-risk Expert 只输出 Findings；原 Writer 修复，输入重新绑定后再复审，
+          未关闭问题不能被多数意见掩盖。
+        </p>
+        <p class="benefit-disclosure">
+          <strong>证据锚定合成基准：</strong>对照组保留相同五阶段与 Close 合同，只关闭独立专家；
+          场景为 advantage-aligned engineering scenarios，不代表客户生产统计。
+          <a href="assets/data/expert-review-benefit-data.json">查看完整数据</a>
+        </p>
+      </section>
+
+      <section
         id="expert-workspace"
         class="expert-workspace"
         data-tabs="expert-risk"

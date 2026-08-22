@@ -35,9 +35,7 @@ class _HomeValueParser(HTMLParser):
         self._current: dict[str, Any] | None = None
         self._stack: list[tuple[str, dict[str, str]]] = []
 
-    def handle_starttag(
-        self, tag: str, attrs: list[tuple[str, str | None]]
-    ) -> None:
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         attributes = {key: value or "" for key, value in attrs}
         self._stack.append((tag, attributes))
         classes = set((attributes.get("class") or "").split())
@@ -50,8 +48,7 @@ class _HomeValueParser(HTMLParser):
 
     def handle_data(self, data: str) -> None:
         if self._current is None or any(
-            attributes.get("aria-hidden") == "true"
-            for _, attributes in self._stack
+            attributes.get("aria-hidden") == "true" for _, attributes in self._stack
         ):
             return
         if any(tag == "h3" for tag, _ in self._stack):
@@ -59,8 +56,7 @@ class _HomeValueParser(HTMLParser):
         elif any(tag == "a" for tag, _ in self._stack):
             self._current["links"][-1]["text_parts"].append(data)
         elif any(
-            tag == "p"
-            and "home-value-label" not in attributes.get("class", "").split()
+            tag == "p" and "home-value-label" not in attributes.get("class", "").split()
             for tag, attributes in self._stack
         ):
             self._current["description"].append(data)
@@ -70,9 +66,7 @@ class _HomeValueParser(HTMLParser):
             closing_tag, attributes = self._stack[index]
             if closing_tag != tag:
                 continue
-            if tag == "article" and "home-value" in attributes.get(
-                "class", ""
-            ).split():
+            if tag == "article" and "home-value" in attributes.get("class", "").split():
                 self._current = None
             del self._stack[index:]
             break
@@ -274,9 +268,7 @@ EXPERT_RISK_CONTRACTS = {
     "review-pr-panel": {
         "data-primary-risk": "跨阶段回归是否穿透需求、设计、实现和当前证据。",
         "data-primary-expert": "cross-stage regression expert",
-        "data-cross-risk": (
-            "Review Pack 同时触及独立风险面时，才加入对应交叉风险。"
-        ),
+        "data-cross-risk": ("Review Pack 同时触及独立风险面时，才加入对应交叉风险。"),
         "data-example-finding": (
             "Review Pack 已改变 API，需求和前端证据仍引用旧响应合同。"
         ),
@@ -484,9 +476,8 @@ def _assert_expert_graph_contract(document: _HtmlNode) -> None:
     assert cross_risk.attributes.get("data-route") == "conditional", (
         "Cross-risk Expert must be conditional"
     )
-    assert (
-        "只有存在明确第二风险面时，才加入一名 Cross-risk Expert。"
-        in _node_text(cross_risk)
+    assert "只有存在明确第二风险面时，才加入一名 Cross-risk Expert。" in _node_text(
+        cross_risk
     ), "Cross-risk Expert condition is incomplete"
 
     findings = _single_node(
@@ -526,7 +517,9 @@ def _assert_expert_graph_contract(document: _HtmlNode) -> None:
 
 def _assert_platform_capability_contract(document: _HtmlNode) -> None:
     tablist = _single_node(document, tag="div", attribute="role", value="tablist")
-    tabs = [child for child in tablist.children if child.attributes.get("role") == "tab"]
+    tabs = [
+        child for child in tablist.children if child.attributes.get("role") == "tab"
+    ]
     assert [tab.attributes.get("id") for tab in tabs] == [
         contract[0] for contract in PLATFORM_PANEL_CONTRACTS
     ]
@@ -606,8 +599,7 @@ def _assert_platform_capability_contract(document: _HtmlNode) -> None:
             )
         )
     expected_routes = [
-        (route_id, *contract)
-        for route_id, contract in PLATFORM_FRONTEND_ROUTES.items()
+        (route_id, *contract) for route_id, contract in PLATFORM_FRONTEND_ROUTES.items()
     ]
     assert actual_routes == expected_routes, f"Frontend route mismatch: {actual_routes}"
 
@@ -901,6 +893,120 @@ def _write(root: Path, relative: str, text: str) -> None:
 def test_top_level_page_shells_exist() -> None:
     root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
     assert [name for name in TOP_LEVEL_PAGES if not (root / name).is_file()] == []
+
+
+def test_loop_page_renders_current_loop_benefit_dataset() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    section = _single_node(document, attribute="data-benefit-dataset", value="loop")
+
+    assert len(_find_nodes(section, attribute="data-benefit-card")) == 4
+    stages = _find_nodes(section, attribute="data-loop-stage-delta")
+    assert [stage.attributes.get("data-stage") for stage in stages] == [
+        "requirement",
+        "design-contract",
+        "implementation",
+        "frontend-evidence",
+        "local-pr-review",
+    ]
+    text = _node_text(section)
+    assert "证据锚定合成基准" in text
+    assert "gpt-5.6-sol / high" in text
+    assert "advantage-aligned engineering scenarios" in text
+
+
+def test_expert_page_compares_same_five_stages_with_and_without_experts() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    section = _single_node(
+        document, attribute="data-benefit-dataset", value="expert-review"
+    )
+
+    assert len(_find_nodes(section, attribute="data-benefit-card")) == 4
+    stages = _find_nodes(section, attribute="data-expert-stage-delta")
+    assert [stage.attributes.get("data-stage") for stage in stages] == [
+        "requirement",
+        "design-contract",
+        "implementation",
+        "frontend-evidence",
+        "local-pr-review",
+    ]
+    text = _node_text(section)
+    assert "原 Writer" in text
+    assert "只读" in text
+    assert "证据锚定合成基准" in text
+
+
+def test_platform_page_uses_refreshed_current_overall_comparison() -> None:
+    markup = Path(
+        "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+    ).read_text(encoding="utf-8")
+    document = _parse_document(markup)
+    section = _single_node(document, attribute="data-benefit-dataset", value="overall")
+
+    text = _node_text(section)
+    assert "gpt-5.6-sol / high" in text
+    assert "Superpowers 6.3.0" in text
+    assert "动态专家" in text
+    assert "GPT-5.4" not in text
+    assert len(_find_nodes(section, attribute="data-overall-headline")) == 5
+    assert len(_find_nodes(section, attribute="data-overall-metric-row")) == 14
+
+
+def test_page_numbers_match_the_canonical_benefit_datasets() -> None:
+    data_root = Path("deliverables/ai-sdlc-2.0-offline-product-site/assets/data")
+    loop_data = json.loads((data_root / "loop-benefit-data.json").read_text())
+    expert_data = json.loads(
+        (data_root / "expert-review-benefit-data.json").read_text()
+    )
+    overall_data = json.loads((data_root / "overall-comparison-data.json").read_text())
+
+    loop_document = _parse_document(
+        Path(
+            "deliverables/ai-sdlc-2.0-offline-product-site/loop-engineering.html"
+        ).read_text(encoding="utf-8")
+    )
+    for metric, values in loop_data["results"]["headline"].items():
+        card = _single_node(loop_document, attribute="data-benefit-card", value=metric)
+        assert int(card.attributes["data-native-value"]) == values["native-llm"]
+        assert int(card.attributes["data-ai-sdlc-value"]) == values["ai-sdlc-five-loop"]
+
+    expert_document = _parse_document(
+        Path(
+            "deliverables/ai-sdlc-2.0-offline-product-site/dynamic-expert-review.html"
+        ).read_text(encoding="utf-8")
+    )
+    for metric, values in expert_data["results"]["headline"].items():
+        card = _single_node(
+            expert_document, attribute="data-benefit-card", value=metric
+        )
+        assert (
+            int(card.attributes["data-without-expert-value"])
+            == values["five-loop-without-experts"]
+        )
+        assert (
+            int(card.attributes["data-with-expert-value"])
+            == values["five-loop-with-dynamic-experts"]
+        )
+
+    overall_document = _parse_document(
+        Path(
+            "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
+        ).read_text(encoding="utf-8")
+    )
+    for metric, values in overall_data["results"].items():
+        row = _single_node(
+            overall_document, attribute="data-overall-metric-row", value=metric
+        )
+        assert int(row.attributes["data-native-value"]) == values["native-llm"]
+        assert (
+            int(row.attributes["data-superpowers-value"]) == values["llm-superpowers"]
+        )
+        assert int(row.attributes["data-ai-sdlc-value"]) == values["llm-ai-sdlc"]
 
 
 def test_loop_page_covers_formal_workitem_lifecycle() -> None:
@@ -1228,9 +1334,7 @@ def test_expert_risk_contract_rejects_stage_expert_swap() -> None:
 
 
 def test_site_javascript_executes_complete_expert_tab_browser_contract() -> None:
-    site_js = Path(
-        "deliverables/ai-sdlc-2.0-offline-product-site/assets/js/site.js"
-    )
+    site_js = Path("deliverables/ai-sdlc-2.0-offline-product-site/assets/js/site.js")
 
     observed = _execute_tab_browser_contract(site_js)
 
@@ -1335,9 +1439,7 @@ def test_shared_navigation_collapses_at_platform_tablet_acceptance_width() -> No
     )
     assert tablet_rule is not None
     assert ".js [data-nav-toggle]" in tablet_rule.group("rules")
-    assert '.js [data-nav-menu]:not([data-open="true"])' in tablet_rule.group(
-        "rules"
-    )
+    assert '.js [data-nav-menu]:not([data-open="true"])' in tablet_rule.group("rules")
 
 
 def test_platform_contract_rejects_swapped_adapter_paths() -> None:
@@ -1397,9 +1499,7 @@ def test_platform_contract_rejects_lean_code_in_strict_lane() -> None:
         "deliverables/ai-sdlc-2.0-offline-product-site/platform-capabilities.html"
     ).read_text(encoding="utf-8")
     document = _parse_document(markup)
-    lean_code = _single_node(
-        document, attribute="data-control-item", value="Lean Code"
-    )
+    lean_code = _single_node(document, attribute="data-control-item", value="Lean Code")
     strict_identity = _single_node(
         document, attribute="data-control-item", value="identity"
     )
@@ -1454,8 +1554,7 @@ def test_platform_page_closes_with_bounded_claims_and_download_cta() -> None:
     closing = _single_node(document, attribute="data-platform-closing")
     assert (
         "Prompt 和 Skills 告诉 AI 怎么做；AI-SDLC 继续管理它做到哪一步、"
-        "凭什么继续，以及何时可以结束。"
-        in _node_text(closing)
+        "凭什么继续，以及何时可以结束。" in _node_text(closing)
     )
     ctas = [
         node
@@ -1479,7 +1578,11 @@ def test_missing_required_pages_are_rejected(tmp_path: Path) -> None:
     (
         ('<main id="main">', '<div id="main">', "invalid_main_count"),
         ("<h1>Home</h1>", "<h2>Home</h2>", "invalid_h1_count"),
-        ('<a href="#main">Skip</a>', '<a href="#content">Skip</a>', "missing_skip_link"),
+        (
+            '<a href="#main">Skip</a>',
+            '<a href="#content">Skip</a>',
+            "missing_skip_link",
+        ),
         (
             '<meta name="viewport" content="width=device-width, initial-scale=1">',
             "",
@@ -1710,7 +1813,10 @@ def test_homepage_video_defaults_to_an_honest_local_empty_state() -> None:
     root = Path("deliverables/ai-sdlc-2.0-offline-product-site")
     homepage = (root / "index.html").read_text(encoding="utf-8")
 
-    assert '<img data-video-empty-poster src="assets/images/video-poster.png" alt="">' in homepage
+    assert (
+        '<img data-video-empty-poster src="assets/images/video-poster.png" alt="">'
+        in homepage
+    )
 
 
 def test_video_configuration_is_immutable_and_defaults_to_empty_state() -> None:
@@ -1754,9 +1860,7 @@ def test_homepage_keeps_native_video_controls_and_initializes_video() -> None:
 
 
 @pytest.mark.parametrize("field", ("src", "poster", "captions"))
-def test_missing_configured_video_media_is_rejected(
-    tmp_path: Path, field: str
-) -> None:
+def test_missing_configured_video_media_is_rejected(tmp_path: Path, field: str) -> None:
     values = {"src": "", "poster": "", "captions": ""}
     values[field] = f"assets/video/missing-{field}.mp4"
     _write(
@@ -1977,9 +2081,7 @@ def _guide_markup() -> str:
 
 
 def test_downloads_resource_contract() -> None:
-    markup = (_offline_site_root() / "downloads-docs.html").read_text(
-        encoding="utf-8"
-    )
+    markup = (_offline_site_root() / "downloads-docs.html").read_text(encoding="utf-8")
     document = _parse_document(markup)
     visible_text = _node_text(document)
 
@@ -2009,10 +2111,7 @@ def test_downloads_resource_contract() -> None:
         assert row.attributes.get("data-download-platform")
         assert platform in _node_text(row)
         assert filename in _node_text(row)
-        hrefs = {
-            link.attributes.get("href")
-            for link in _find_nodes(row, tag="a")
-        }
+        hrefs = {link.attributes.get("href") for link in _find_nodes(row, tag="a")}
         assert hrefs == {asset_url, f"{asset_url}.sha256"}
 
     external_links = [
@@ -2022,8 +2121,7 @@ def test_downloads_resource_contract() -> None:
     ]
     assert external_links
     assert all(
-        link.attributes.get("href") in ALLOWED_EXTERNAL_URLS
-        for link in external_links
+        link.attributes.get("href") in ALLOWED_EXTERNAL_URLS for link in external_links
     )
     assert all("需要联网" in _node_text(link) for link in external_links)
     assert "路径 1A" not in visible_text
@@ -2041,9 +2139,7 @@ def test_downloads_resource_contract() -> None:
         "v2.0.0/ai-sdlc-offline-2.0.0-linux-amd64.tar.gz.sha512",
     ),
 )
-def test_mutated_official_resource_url_is_rejected(
-    tmp_path: Path, url: str
-) -> None:
+def test_mutated_official_resource_url_is_rejected(tmp_path: Path, url: str) -> None:
     _write(tmp_path, "index.html", f'<a href="{url}">resource</a>')
 
     issues = validate_site(tmp_path)
@@ -2092,15 +2188,15 @@ def test_user_guide_source_parity() -> None:
     scenario_tabs = _find_nodes(
         document, tag="a", attribute="data-guide-scenario-selector"
     )
-    assert [tab.attributes.get("data-guide-scenario-selector") for tab in scenario_tabs] == [
+    assert [
+        tab.attributes.get("data-guide-scenario-selector") for tab in scenario_tabs
+    ] == [
         "existing-offline",
         "existing-online",
         "new-offline",
         "new-online",
     ]
-    assert [
-        _node_text(tab) for tab in scenario_tabs
-    ] == [
+    assert [_node_text(tab) for tab in scenario_tabs] == [
         "已有项目 + 离线安装包",
         "已有项目 + 在线安装",
         "全新项目 + 离线安装包",
@@ -2112,9 +2208,7 @@ def test_user_guide_source_parity() -> None:
         "#path-3a",
         "#path-4a",
     ]
-    os_tabs = _find_nodes(
-        document, tag="button", attribute="data-guide-tab-scenario"
-    )
+    os_tabs = _find_nodes(document, tag="button", attribute="data-guide-tab-scenario")
     assert [tab.attributes.get("data-guide-tab-scenario") for tab in os_tabs] == [
         scenario for _, scenario, _ in GUIDE_PATH_CONTRACTS
     ]
@@ -2124,10 +2218,16 @@ def test_guide_offline_and_online_os_labels_are_scenario_specific() -> None:
     document = _parse_document(_guide_markup())
 
     for path_id, path_code, os_label, current_path_label in GUIDE_PATH_LABEL_CONTRACTS:
-        tab = _single_node(document, tag="button", attribute="id", value=f"{path_id}-tab")
+        tab = _single_node(
+            document, tag="button", attribute="id", value=f"{path_id}-tab"
+        )
         panel = _single_node(document, tag="section", attribute="id", value=path_id)
-        path_index = _single_node(panel, tag="p", attribute="class", value="guide-path-index")
-        current_path = _single_node(panel, tag="aside", attribute="class", value="guide-note")
+        path_index = _single_node(
+            panel, tag="p", attribute="class", value="guide-path-index"
+        )
+        current_path = _single_node(
+            panel, tag="aside", attribute="class", value="guide-note"
+        )
 
         assert _node_text(tab) == f"{path_code} {os_label}"
         assert _node_text(path_index) == f"{path_code} / {os_label}"
@@ -2257,7 +2357,9 @@ def test_guide_parity_rejects_swapped_expected_and_troubleshoot_parts(
     markup = markup.replace(
         'data-guide-part="troubleshoot"', 'data-guide-part="expected"', 1
     )
-    markup = markup.replace('data-guide-part="swap"', 'data-guide-part="troubleshoot"', 1)
+    markup = markup.replace(
+        'data-guide-part="swap"', 'data-guide-part="troubleshoot"', 1
+    )
     rendered.write_text(markup, encoding="utf-8")
 
     issues = validate_guide_parity(source, rendered)
@@ -2268,9 +2370,7 @@ def test_guide_parity_rejects_swapped_expected_and_troubleshoot_parts(
 
 
 def test_guide_hides_os_tabs_outside_the_active_scenario() -> None:
-    styles = (_offline_site_root() / "assets/css/pages.css").read_text(
-        encoding="utf-8"
-    )
+    styles = (_offline_site_root() / "assets/css/pages.css").read_text(encoding="utf-8")
 
     assert re.search(
         r"\.js\s+\.guide-path-tabs\s+\[hidden\]\s*\{[^}]*display:\s*none",
@@ -2393,9 +2493,9 @@ def test_persisted_browser_acceptance_receipt_is_self_verifying() -> None:
     assert payload["schemaVersion"] == 3
     assert re.fullmatch(r"[0-9a-f]{40}", payload["inputs"]["inputCommit"])
     assert payload["inputs"]["copyRootKind"] == "fresh-external-copy"
-    assert payload["inputs"]["manifestSha256"] == sha256(
-        manifest.read_bytes()
-    ).hexdigest()
+    assert (
+        payload["inputs"]["manifestSha256"] == sha256(manifest.read_bytes()).hexdigest()
+    )
     assert payload["summary"] == {
         "stateCount": 135,
         "stateFailures": 0,
@@ -2544,12 +2644,12 @@ Reviewed product baseline: `{reviewed_commit}`
 Reviewed at UTC: `2026-08-17T20:00:00Z`
 Verdict: `PASS`
 Finding count: `0`
-Canonical content SHA256: `{'0' * 64}`
+Canonical content SHA256: `{"0" * 64}`
 Canonical hash rule: `SHA-256 of UTF-8 file bytes after replacing the Canonical content SHA256 value with 64 ASCII zeroes.`
 
 ## Input hashes
 
-`fixture`: `{'a' * 64}`
+`fixture`: `{"a" * 64}`
 
 ## Scope
 

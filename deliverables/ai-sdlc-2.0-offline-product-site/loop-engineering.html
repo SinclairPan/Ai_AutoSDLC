@@ -46,6 +46,59 @@
       </section>
 
       <section
+        class="benefit-benchmark benefit-benchmark-loop"
+        data-benefit-dataset="loop"
+        aria-labelledby="loop-benefit-title"
+      >
+        <div class="benefit-heading">
+          <div>
+            <p class="page-eyebrow">Current benefit benchmark</p>
+            <h2 id="loop-benefit-title">五阶段 Loop，把一次生成推进为可验证交付</h2>
+          </div>
+          <p class="benefit-model">gpt-5.6-sol / high · 50 个优势工程场景</p>
+        </div>
+        <div class="benefit-card-grid" aria-label="裸 LLM 与五阶段 Loop 主指标比较">
+          <article class="benefit-card" data-benefit-card="requirement_understanding" data-native-value="76" data-ai-sdlc-value="94">
+            <p>需求理解</p><strong>76% → 94%</strong><span>+18 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="requirement_design" data-native-value="64" data-ai-sdlc-value="93">
+            <p>需求设计</p><strong>64% → 93%</strong><span>+29 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="development_traceability" data-native-value="55" data-ai-sdlc-value="92">
+            <p>需求开发追踪覆盖</p><strong>55% → 92%</strong><span>+37 pts</span>
+          </article>
+          <article class="benefit-card" data-benefit-card="code_quality" data-native-value="58" data-ai-sdlc-value="87">
+            <p>代码质量</p><strong>58% → 87%</strong><span>+29 pts</span>
+          </article>
+        </div>
+        <div class="benefit-stage-table" role="table" aria-label="五阶段累计缺口消除进度">
+          <div role="row" class="benefit-stage-row benefit-stage-header">
+            <span role="columnheader">阶段</span><span role="columnheader">累计消除</span><span role="columnheader">核心作用</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="requirement">
+            <strong role="cell">Requirement</strong><span role="cell">39%</span><span role="cell">冻结目标、范围、非目标与验收条件</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="design-contract">
+            <strong role="cell">Design Contract</strong><span role="cell">58%</span><span role="cell">补齐接口、状态、风险与任务映射</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="implementation">
+            <strong role="cell">Implementation</strong><span role="cell">74%</span><span role="cell">绑定实现、测试和当前候选证据</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="frontend-evidence">
+            <strong role="cell">Frontend Evidence</strong><span role="cell">85%</span><span role="cell">验证页面、交互、console 与证据身份</span>
+          </div>
+          <div role="row" class="benefit-stage-row" data-loop-stage-delta data-stage="local-pr-review">
+            <strong role="cell">Local PR Review</strong><span role="cell">92%</span><span role="cell">拦截跨阶段漂移和发布前回归</span>
+          </div>
+        </div>
+        <p class="benefit-disclosure">
+          <strong>证据锚定合成基准：</strong>场景为 advantage-aligned engineering scenarios，
+          用于展示 AI-SDLC 在复杂工程交付中的机制优势，不代表随机总体或客户生产统计。
+          <a href="assets/data/loop-benefit-data.json">查看完整数据</a>
+        </p>
+      </section>
+
+      <section
         class="loop-lifecycle"
         data-workitem-lifecycle
         aria-labelledby="workitem-lifecycle-title"

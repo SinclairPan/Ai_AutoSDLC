@@ -1,0 +1,68 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "arms": {
+      "type": "object"
+    },
+    "benchmark_type": {
+      "const": "evidence-anchored-synthetic"
+    },
+    "capability_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "generated_at_utc": {
+      "type": "string"
+    },
+    "limitations": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 3,
+      "type": "array"
+    },
+    "metric_definitions": {
+      "type": "object"
+    },
+    "model_id": {
+      "const": "gpt-5.6-sol"
+    },
+    "reasoning_effort": {
+      "const": "high"
+    },
+    "results": {
+      "type": "object"
+    },
+    "scenario_digest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "schema_version": {
+      "type": "string"
+    },
+    "selection_disclosure": {
+      "const": "advantage-aligned engineering scenarios"
+    },
+    "source_commit": {
+      "pattern": "^[0-9a-f]{40}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "schema_version",
+    "benchmark_type",
+    "generated_at_utc",
+    "source_commit",
+    "model_id",
+    "reasoning_effort",
+    "selection_disclosure",
+    "arms",
+    "metric_definitions",
+    "scenario_digest",
+    "capability_digest",
+    "results",
+    "limitations"
+  ],
+  "type": "object"
+}

@@ -1,0 +1,10 @@
+{
+  "benchmark_type": "evidence-anchored-synthetic",
+  "metric_count": 14,
+  "model_id": "gpt-5.6-sol",
+  "reasoning_effort": "high",
+  "scenario_count": 50,
+  "schema_version": "ai-sdlc-product-benefit-contract/v1",
+  "selection_disclosure": "advantage-aligned engineering scenarios",
+  "superpowers_version": "6.3.0"
+}
